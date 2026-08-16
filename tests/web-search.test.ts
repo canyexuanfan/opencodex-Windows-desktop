@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { parseRequest } from "../src/responses/parser";
 import { planWebSearch, shouldResolveOpenAiWebSearchSidecar, webSearchStallTimeoutSec } from "../src/web-search";
 import { runWithWebSearch as runWithWebSearchProduction, type WebSearchLoopDeps } from "../src/web-search/loop";
+import { runWebSearch as runOpenAiWebSearch } from "../src/web-search/executor";
 import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
 import { headersForCodexAuthContext } from "../src/codex/auth-context";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar } from "../src/providers/openai-sidecar";
@@ -11,6 +12,7 @@ import type { OcxMessage, OcxParsedRequest } from "../src/types";
 import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
 import { createTestTranslatorBudget } from "./helpers/translator-budget";
 
+/** Run the web-search loop with a default test translator budget. */
 function runWithWebSearch(
   deps: Omit<WebSearchLoopDeps, "incomingMeta"> & { incomingMeta?: WebSearchLoopDeps["incomingMeta"] },
 ): Promise<Response> {
@@ -22,6 +24,100 @@ function runWithWebSearch(
     },
   });
 }
+
+describe("issue #1001 — forced-answer passes must produce usable output", () => {
+  const webSearchFirstPass: AdapterEvent[] = [
+    { type: "tool_call_start", id: "ws1", name: "web_search" },
+    { type: "tool_call_delta", arguments: "{\"q\":\"docs\"}" },
+    { type: "tool_call_end" },
+    { type: "done" },
+  ];
+
+  function twoPassAdapter(secondPass: AdapterEvent[]): ProviderAdapter {
+    let pass = 0;
+    return {
+      name: "two-pass",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: async () => new Response("wire", { status: 200 }),
+      async *parseStream() {
+        const events = pass++ === 0 ? webSearchFirstPass : secondPass;
+        for (const event of events) yield event;
+      },
+      async parseResponse() {
+        throw new Error("parseResponse must be unreachable");
+      },
+    };
+  }
+
+  async function drive(secondPass: AdapterEvent[]) {
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: twoPassAdapter(secondPass),
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.6-luna", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+    });
+    return collectSse(response.body!);
+  }
+
+  test("a malformed forced-answer tool call (blank id/name) becomes response.failed, never completed", async () => {
+    const frames = await drive([
+      { type: "tool_call_start", id: "", name: "" },
+      { type: "tool_call_delta", arguments: "{\"x\":1}" },
+      { type: "tool_call_end" },
+      { type: "done" },
+    ]);
+    expect(frames.some(frame => frame.event === "response.failed")).toBe(true);
+    expect(frames.some(frame => frame.event === "response.completed")).toBe(false);
+  });
+
+  test("an unterminated tool call on the forced pass is malformed", async () => {
+    const frames = await drive([
+      { type: "tool_call_start", id: "c1", name: "shell" },
+      { type: "tool_call_delta", arguments: "{\"cmd\":\"ls\"" },
+      { type: "done" },
+    ]);
+    expect(frames.some(frame => frame.event === "response.failed")).toBe(true);
+    expect(frames.some(frame => frame.event === "response.completed")).toBe(false);
+  });
+
+  test("a forced pass with no text and no tool call becomes response.failed", async () => {
+    const frames = await drive([{ type: "done" }]);
+    expect(frames.some(frame => frame.event === "response.failed")).toBe(true);
+    expect(frames.some(frame => frame.event === "response.completed")).toBe(false);
+  });
+
+  test("commentary-only output does not satisfy the forced pass", async () => {
+    const frames = await drive([
+      { type: "text_delta", text: "thinking out loud", phase: "commentary" },
+      { type: "done" },
+    ]);
+    expect(frames.some(frame => frame.event === "response.failed")).toBe(true);
+    expect(frames.some(frame => frame.event === "response.completed")).toBe(false);
+  });
+
+  test("visible text on the forced pass completes normally", async () => {
+    const frames = await drive([
+      { type: "text_delta", text: "final answer" },
+      { type: "done" },
+    ]);
+    expect(frames.some(frame => frame.event === "response.completed")).toBe(true);
+    expect(frames.some(frame => frame.event === "response.failed")).toBe(false);
+  });
+
+  test("a valid closed non-web tool call without text is allowed to complete", async () => {
+    const frames = await drive([
+      { type: "tool_call_start", id: "call_1", name: "shell" },
+      { type: "tool_call_delta", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "tool_call_end" },
+      { type: "done" },
+    ]);
+    expect(frames.some(frame => frame.event === "response.completed")).toBe(true);
+    expect(frames.some(frame => frame.event === "response.failed")).toBe(false);
+  });
+});
 
 const routedProvider: OcxProviderConfig = {
   adapter: "openai-chat",
@@ -60,6 +156,39 @@ function parsedWithWebSearch() {
 }
 
 describe("web-search sidecar planning", () => {
+  test("canonical sidecar discovery defaults only an omitted OpenAI auth mode to forward", () => {
+    const canonicalWithoutAuthMode: OcxConfig = {
+      port: 10100,
+      defaultProvider: "openai",
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex///",
+          codexAccountMode: "direct",
+        },
+      },
+    };
+    expect(listOpenAiForwardSidecarCandidates(canonicalWithoutAuthMode)).toMatchObject([{
+      providerName: "openai",
+      provider: {
+        authMode: "forward",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+      },
+      accountMode: "direct",
+    }]);
+
+    for (const openai of [
+      { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "key" },
+      { adapter: "openai-chat", baseUrl: "https://chatgpt.com/backend-api/codex" },
+      { adapter: "openai-responses", baseUrl: "https://proxy.example.test/v1" },
+    ] satisfies OcxProviderConfig[]) {
+      expect(listOpenAiForwardSidecarCandidates({
+        ...canonicalWithoutAuthMode,
+        providers: { openai },
+      })).toEqual([]);
+    }
+  });
+
   test("central Direct sidecar selection never treats a proxy admission bearer as Codex auth", async () => {
     const cfg: OcxConfig = {
       port: 10100,
@@ -190,6 +319,30 @@ describe("web-search sidecar planning", () => {
     expect(plan?.settings.model).toBe("gpt-5.6-luna");
   });
 
+  test("planWebSearch never arms a sidecar excluded by tool_choice", () => {
+    const parsed = parsedWithWebSearch();
+    const sidecar = {
+      providerName: "openai" as const,
+      provider: forwardProvider,
+      accountMode: "direct" as const,
+      authContext: { kind: "main" as const, accountId: null },
+      headers: new Headers({ authorization: "Bearer chatgpt" }),
+    };
+    const plan = () => planWebSearch(config(), parsed, false, routedProvider, "model", sidecar);
+
+    parsed.options.toolChoice = "none";
+    expect(plan()).toBeUndefined();
+    parsed.options.toolChoice = { name: "read_file" };
+    expect(plan()).toBeUndefined();
+    parsed.options.toolChoice = { allowedTools: ["read_file"], mode: "required" };
+    expect(plan()).toBeUndefined();
+
+    parsed.options.toolChoice = { name: "web_search" };
+    expect(plan()).toBeDefined();
+    parsed.options.toolChoice = { allowedTools: ["web_search"], mode: "required" };
+    expect(plan()).toBeDefined();
+  });
+
   test("planWebSearch activates for pool-selected headers even when raw inbound auth would be main", () => {
     const parsed = parsedWithWebSearch();
     const selectedHeaders = headersForCodexAuthContext(
@@ -228,6 +381,40 @@ describe("web-search sidecar planning", () => {
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
+
+test("OpenAI web-search execution uses the pinned canonical URL and selected credentials", async () => {
+  const cfg = config({
+    providers: {
+      routed: routedProvider,
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex///",
+        authMode: "forward",
+        codexAccountMode: "direct",
+      },
+    },
+  });
+  const candidate = listOpenAiForwardSidecarCandidates(cfg)[0]!;
+  let observedUrl = "";
+  let observedHeaders = new Headers();
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    observedUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    observedHeaders = new Headers(init?.headers);
+    return new Response("data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
+  }) as typeof fetch;
+
+  await runOpenAiWebSearch(
+    "current docs",
+    { type: "web_search" },
+    candidate.provider,
+    new Headers({ authorization: "Bearer selected-token", "chatgpt-account-id": "selected-account" }),
+    { model: "gpt-5.6-luna", reasoning: "low", timeoutMs: 1_000 },
+  );
+
+  expect(observedUrl).toBe("https://chatgpt.com/backend-api/codex/responses");
+  expect(observedHeaders.get("authorization")).toBe("Bearer selected-token");
+  expect(observedHeaders.get("chatgpt-account-id")).toBe("selected-account");
+});
 
 async function collectSse(stream: ReadableStream<Uint8Array>): Promise<{ event?: string; data: Record<string, unknown> }[]> {
   const reader = stream.getReader();
@@ -286,6 +473,47 @@ function scriptedAdapter(firstPass: AdapterEvent[]): ProviderAdapter {
 }
 
 describe("BUG-R86 routed web-search timeout semantics", () => {
+  test("web-search-loop SSE snapshots preserve the client-facing model selector", async () => {
+    const parsed = parseRequest({
+      model: "claude-sonnet-5",
+      input: "hi",
+      stream: true,
+      tools: [{ type: "web_search" }],
+    });
+    parsed._responseModelId = "anthropic/claude-sonnet-5";
+    let upstreamModel = "";
+    const adapter: ProviderAdapter = {
+      name: "identity",
+      buildRequest: request => {
+        upstreamModel = request.modelId;
+        return { url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" };
+      },
+      fetchResponse: async () => new Response("wire", { status: 200 }),
+      async *parseStream() {
+        yield { type: "text_delta", text: "answer" };
+        yield { type: "done" };
+      },
+    };
+    const response = await runWithWebSearch({
+      parsed,
+      adapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.6-luna", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+    });
+    const frames = await collectSse(response.body!);
+    const models = frames.flatMap(frame => {
+      const responseModel = (frame.data.response as { model?: unknown } | undefined)?.model;
+      return typeof responseModel === "string" ? [responseModel] : [];
+    });
+
+    expect(upstreamModel).toBe("claude-sonnet-5");
+    expect(models.length).toBeGreaterThan(0);
+    expect(new Set(models)).toEqual(new Set(["anthropic/claude-sonnet-5"]));
+  });
+
   test("translator overflow remains typed through the sidecar loop and bridge", async () => {
     const adapter: ProviderAdapter = {
       name: "overflow",
@@ -623,6 +851,218 @@ describe("web-search sidecar native web_search_call emission", () => {
     ]);
   });
 
+  test("retryOn429 replays on the same key before on429 rotation", async () => {
+    globalThis.fetch = (() => Promise.resolve(new Response(
+      'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+      { headers: { "Content-Type": "text/event-stream" } },
+    ))) as typeof fetch;
+
+    let sends = 0;
+    let rotations = 0;
+    let retrySends = 0;
+    let builds = 0;
+    const retryingAdapter: ProviderAdapter = {
+      name: "mock-retry429",
+      buildRequest: () => {
+        builds += 1;
+        return {
+          url: "https://routed.test/v1",
+          method: "POST",
+          headers: {},
+          body: "{}",
+        };
+      },
+      fetchResponse: async () => {
+        sends += 1;
+        if (sends === 1) {
+          return new Response("rate limited", { status: 429, headers: { "retry-after": "30" } });
+        }
+        return new Response("{}", { status: 200 });
+      },
+      async *parseStream() {
+        yield { type: "text_delta", text: "answer after same-key retry" };
+        yield { type: "done" };
+      },
+      async parseResponse() { throw new Error("parseResponse must be unreachable"); },
+    };
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: retryingAdapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+      retryOn429Policy: { enabled: true, attempts: 2, intervalMs: 120, maxIntervalMs: 60_000, respectRetryAfter: false },
+      on429: () => {
+        rotations += 1;
+        return null;
+      },
+      onAttemptSend: recovery => {
+        if (recovery === "rate-limit-429") retrySends += 1;
+      },
+    });
+    expect(response.status).toBe(200);
+    const frames = await collectSse(response.body!);
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    const output = completed.output as { type: string; content?: { text?: string }[] }[];
+    expect(output.find(o => o.type === "message")?.content?.[0]?.text).toBe("answer after same-key retry");
+    expect(sends).toBe(2);
+    expect(rotations).toBe(0);
+    expect(retrySends).toBe(1);
+    // Same-target replay reuses the ONE built request (builder runs once per target sequence).
+    expect(builds).toBe(1);
+  });
+
+  test("retry wait longer than the stall budget still succeeds (heartbeats feed the watchdog)", async () => {
+    globalThis.fetch = (() => Promise.resolve(new Response(
+      'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+      { headers: { "Content-Type": "text/event-stream" } },
+    ))) as typeof fetch;
+
+    let sends = 0;
+    const retryingAdapter: ProviderAdapter = {
+      name: "mock-retry429",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: async () => {
+        sends += 1;
+        if (sends === 1) {
+          return new Response("rate limited", { status: 429, headers: { "retry-after": "30" } });
+        }
+        return new Response("{}", { status: 200 });
+      },
+      async *parseStream() {
+        yield { type: "text_delta", text: "answer after long backoff" };
+        yield { type: "done" };
+      },
+      async parseResponse() { throw new Error("parseResponse must be unreachable"); },
+    };
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: retryingAdapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+      stallTimeoutSec: 1,
+      retryOn429Policy: { enabled: true, attempts: 1, intervalMs: 1_500, maxIntervalMs: 60_000, respectRetryAfter: false },
+    });
+    const frames = await collectSse(response.body!);
+    // A 1.5s backoff under a 1s stall budget must not trip upstream_stall_timeout.
+    expect(sends).toBe(2);
+    expect(frames.find(f => f.event === "response.completed")).toBeDefined();
+    expect(frames.find(f => f.event === "response.failed")).toBeUndefined();
+  }, 5_000);
+
+  test("retry wait longer than connectTimeoutMs restarts the header deadline (no 504)", async () => {
+    globalThis.fetch = (() => Promise.resolve(new Response(
+      'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+      { headers: { "Content-Type": "text/event-stream" } },
+    ))) as typeof fetch;
+
+    let sends = 0;
+    const retryingAdapter: ProviderAdapter = {
+      name: "mock-retry429",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: async () => {
+        sends += 1;
+        if (sends === 1) {
+          return new Response("rate limited", { status: 429, headers: { "retry-after": "30" } });
+        }
+        return new Response("{}", { status: 200 });
+      },
+      async *parseStream() {
+        yield { type: "text_delta", text: "answer after deadline restart" };
+        yield { type: "done" };
+      },
+      async parseResponse() { throw new Error("parseResponse must be unreachable"); },
+    };
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: retryingAdapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+      connectTimeoutMs: 100,
+      retryOn429Policy: { enabled: true, attempts: 1, intervalMs: 150, maxIntervalMs: 60_000, respectRetryAfter: false },
+    });
+    const frames = await collectSse(response.body!);
+    // The deliberate backoff must not consume the response-header deadline: a fresh deadline is
+    // armed after the wait, so the replay gets a new connect budget instead of a 504.
+    expect(sends).toBe(2);
+    expect(frames.find(f => f.event === "response.completed")).toBeDefined();
+    expect(frames.find(f => f.event === "response.failed")).toBeUndefined();
+  }, 5_000);
+
+  test("retryOn429 budget is shared across iterations (per request, not per round)", async () => {
+    globalThis.fetch = ((input) => {
+      const url = String(input);
+      if (url.startsWith("https://routed.test/")) return Promise.resolve(new Response("{}", { status: 200 }));
+      // sidecar /responses: return a minimal completed SSE so the search round advances.
+      return Promise.resolve(new Response(
+        'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+        { headers: { "Content-Type": "text/event-stream" } },
+      ));
+    }) as typeof fetch;
+
+    let sends = 0;
+    let retrySends = 0;
+    let rotations = 0;
+    const retryingAdapter: ProviderAdapter = {
+      name: "mock-retry429",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: async () => {
+        sends += 1;
+        if (sends === 1 || sends === 3) {
+          return new Response("rate limited", { status: 429, headers: { "retry-after": "30" } });
+        }
+        return new Response("{}", { status: 200 });
+      },
+      async *parseStream() {
+        if (sends === 2) {
+          // Round 0 success carries a web_search call so the loop advances to a forced-answer round.
+          yield { type: "tool_call_start", id: "call_1", name: "web_search" };
+          yield { type: "tool_call_delta", arguments: JSON.stringify({ query: "current docs" }) };
+          yield { type: "tool_call_end" };
+        } else {
+          yield { type: "text_delta", text: "unused" };
+        }
+        yield { type: "done" };
+      },
+      async parseResponse() { throw new Error("parseResponse must be unreachable"); },
+    };
+
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter: retryingAdapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+      retryOn429Policy: { enabled: true, attempts: 1, intervalMs: 50, maxIntervalMs: 60_000, respectRetryAfter: false },
+      on429: () => {
+        rotations += 1;
+        return null;
+      },
+      onAttemptSend: recovery => {
+        if (recovery === "rate-limit-429") retrySends += 1;
+      },
+    });
+    const frames = await collectSse(response.body!);
+    expect(sends).toBe(3);
+    expect(retrySends).toBe(1);
+    expect(rotations).toBe(1);
+    const failed = frames.find(f => f.event === "response.failed")?.data.response as { error?: { message?: string } } | undefined;
+    expect(failed?.error?.message ?? "").toContain("429");
+  });
+
   test("loop 429 with exhausted pool (on429 null) surfaces the provider error", async () => {
     const firstAdapter: ProviderAdapter = {
       name: "mock-429",
@@ -783,8 +1223,20 @@ describe("web-search sidecar native web_search_call emission", () => {
       async parseResponse() { throw new Error("parseResponse must be unreachable"); },
     };
 
+    const parsed = parseRequest({ model: "routed/model", input: "look up docs", stream: true, tools: [{ type: "web_search" }] });
+    parsed._clientThreadId = "web-search-raw-replay";
+    parsed._reasoningReplayScope = {
+      clientThreadId: parsed._clientThreadId,
+      current: {
+        providerName: "routed",
+        providerDestinationIdentity: "destination:routed",
+        adapterName: adapter.name,
+        modelId: "model",
+        credentialIdentity: "key:test",
+      },
+    };
     const response = await runWithWebSearch({
-      parsed: parseRequest({ model: "routed/model", input: "look up docs", stream: true, tools: [{ type: "web_search" }] }),
+      parsed,
       adapter,
       forwardProvider,
       hostedTool: { type: "web_search" },
@@ -980,8 +1432,20 @@ describe("web-search sidecar native web_search_call emission", () => {
       preserveReasoningContentModels: ["deepseek-v4-flash"],
     };
 
+    const parsed = parseRequest({ model: "deepseek-v4-flash", input: "look up docs", stream: true, tools: [{ type: "web_search" }] });
+    parsed._clientThreadId = "web-search-deepseek-replay";
+    parsed._reasoningReplayScope = {
+      clientThreadId: parsed._clientThreadId,
+      current: {
+        providerName: "routed",
+        providerDestinationIdentity: "destination:deepseek",
+        adapterName: "openai-chat",
+        modelId: "deepseek-v4-flash",
+        credentialIdentity: "key:test",
+      },
+    };
     const response = await runWithWebSearch({
-      parsed: parseRequest({ model: "deepseek-v4-flash", input: "look up docs", stream: true, tools: [{ type: "web_search" }] }),
+      parsed,
       adapter: createOpenAIChatAdapter(deepseekProvider),
       forwardProvider,
       hostedTool: { type: "web_search" },
@@ -1628,5 +2092,312 @@ describe("#398 sidecar failure degradation", () => {
     // The raw thrown message (fake secret) must never leak into any SSE frame.
     const raw = frames.map(f => JSON.stringify(f.data)).join("");
     expect(raw.includes("LEAKMARKER_should_not_appear")).toBe(false);
+  });
+});
+
+describe("web-search sidecar live streaming (streamRoutedModelOutput)", () => {
+  /** Incremental SSE frame reader so tests can observe delivery ORDER relative to adapter progress. */
+  function frameReader(stream: ReadableStream<Uint8Array>) {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    const frames: { event?: string; data: Record<string, unknown> }[] = [];
+    const parse = (frame: string) => {
+      const lines = frame.split("\n");
+      const event = lines.find(line => line.startsWith("event: "))?.slice(7);
+      const dataLine = lines.find(line => line.startsWith("data: "));
+      if (dataLine?.slice(6) === "[DONE]") return undefined;
+      return { event, data: JSON.parse(dataLine?.slice(6) ?? "{}") as Record<string, unknown> };
+    };
+    return {
+      frames,
+      /** Read until a frame matches, or the stream ends. Returns the matching frame or undefined. */
+      async readUntil(match: (f: { event?: string; data: Record<string, unknown> }) => boolean) {
+        for (const f of frames) if (match(f)) return f;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) return undefined;
+          buffered += decoder.decode(value, { stream: true });
+          const parts = buffered.split("\n\n");
+          buffered = parts.pop() ?? "";
+          for (const part of parts) {
+            const trimmed = part.trim();
+            if (!trimmed) continue;
+            const parsed = parse(trimmed);
+            if (!parsed) continue;
+            frames.push(parsed);
+            if (match(parsed)) return parsed;
+          }
+        }
+      },
+      async drain() {
+        await this.readUntil(() => false);
+        return frames;
+      },
+    };
+  }
+
+  const outputTextOf = (frames: { event?: string; data: Record<string, unknown> }[]): string =>
+    frames
+      .filter(f => f.data.type === "response.output_text.delta")
+      .map(f => String(f.data.delta ?? ""))
+      .join("");
+
+  /**
+   * Bound a readUntil wait with a deadline that REJECTS. The deadline must never release an
+   * adapter gate: doing so would let a buffered implementation pass via the terminal replay.
+   */
+  const within = async <T>(wait: Promise<T>, what: string): Promise<T> => {
+    let timer!: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`timed out waiting for ${what} — output was not delivered live`)),
+        5_000,
+      );
+    });
+    try {
+      return await Promise.race([wait, deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  test("leading text deltas stream live: the client sees them while the adapter is still mid-turn", async () => {
+    // The adapter blocks after its first delta until the TEST has observed that delta on the wire.
+    // Buffered delivery would deadlock here; the rejecting 5s deadline turns that into a failure.
+    let releaseAdapter!: () => void;
+    const clientSawFirstDelta = new Promise<void>(resolve => { releaseAdapter = resolve; });
+    const adapter: ProviderAdapter = {
+      name: "gated",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: async () => new Response("wire", { status: 200 }),
+      async *parseStream() {
+        yield { type: "text_delta", text: "Hello " } satisfies AdapterEvent;
+        await clientSawFirstDelta;
+        yield { type: "text_delta", text: "World" } satisfies AdapterEvent;
+        yield { type: "done" } satisfies AdapterEvent;
+      },
+      async parseResponse() {
+        throw new Error("parseResponse must be unreachable");
+      },
+    };
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.6-luna", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+      streamRoutedModelOutput: true,
+    });
+    const sse = frameReader(response.body!);
+    const first = await within(
+      sse.readUntil(f => f.data.type === "response.output_text.delta"),
+      "the first live text delta",
+    );
+    expect(first?.data.delta).toBe("Hello ");
+    releaseAdapter();
+    const frames = await sse.drain();
+    // Every delta exactly once — the terminal replay must skip what already streamed.
+    expect(outputTextOf(frames)).toBe("Hello World");
+    expect(frames.some(f => f.event === "response.completed")).toBe(true);
+  });
+
+  test("leading reasoning deltas stream live: the client sees them while the adapter is still mid-turn", async () => {
+    // Same gate as the text test, but for the reasoning path: thinking_delta must reach the
+    // client as response.reasoning_summary_text.delta before the adapter is allowed to finish.
+    let releaseAdapter!: () => void;
+    const clientSawFirstReasoning = new Promise<void>(resolve => { releaseAdapter = resolve; });
+    const adapter: ProviderAdapter = {
+      name: "gated-reasoning",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: async () => new Response("wire", { status: 200 }),
+      async *parseStream() {
+        yield { type: "thinking_delta", thinking: "Considering " } satisfies AdapterEvent;
+        await clientSawFirstReasoning;
+        yield { type: "thinking_delta", thinking: "options" } satisfies AdapterEvent;
+        yield { type: "text_delta", text: "Answer" } satisfies AdapterEvent;
+        yield { type: "done" } satisfies AdapterEvent;
+      },
+      async parseResponse() {
+        throw new Error("parseResponse must be unreachable");
+      },
+    };
+    const response = await runWithWebSearch({
+      // Without reasoning.summary the parser sets hideThinkingSummary and no reasoning frame is
+      // ever client-visible; "auto" matches what Codex sends on real turns.
+      parsed: parseRequest({
+        model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }],
+        reasoning: { summary: "auto" },
+      }),
+      adapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.6-luna", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+      streamRoutedModelOutput: true,
+    });
+    const sse = frameReader(response.body!);
+    const first = await within(
+      sse.readUntil(f => f.data.type === "response.reasoning_summary_text.delta"),
+      "the first live reasoning delta",
+    );
+    expect(first?.data.delta).toBe("Considering ");
+    releaseAdapter();
+    const frames = await sse.drain();
+    // Each reasoning delta exactly once — the terminal replay must not duplicate the streamed head.
+    const reasoning = frames
+      .filter(f => f.data.type === "response.reasoning_summary_text.delta")
+      .map(f => String(f.data.delta ?? ""))
+      .join("");
+    expect(reasoning).toBe("Considering options");
+    expect(outputTextOf(frames)).toBe("Answer");
+    expect(frames.some(f => f.event === "response.completed")).toBe(true);
+  });
+
+  test("default (flag unset) keeps full buffering: no text reaches the client before the adapter finishes", async () => {
+    let adapterFinished = false;
+    const adapter: ProviderAdapter = {
+      name: "paced",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: async () => new Response("wire", { status: 200 }),
+      async *parseStream() {
+        yield { type: "text_delta", text: "Hello " } satisfies AdapterEvent;
+        await new Promise(resolve => setTimeout(resolve, 100));
+        yield { type: "text_delta", text: "World" } satisfies AdapterEvent;
+        adapterFinished = true;
+        yield { type: "done" } satisfies AdapterEvent;
+      },
+      async parseResponse() {
+        throw new Error("parseResponse must be unreachable");
+      },
+    };
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.6-luna", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+    });
+    const sse = frameReader(response.body!);
+    const first = await sse.readUntil(f => f.data.type === "response.output_text.delta");
+    // By the time the FIRST delta is visible, the adapter must already be past its last delta.
+    expect(adapterFinished).toBe(true);
+    expect(first).toBeDefined();
+    const frames = await sse.drain();
+    expect(outputTextOf(frames)).toBe("Hello World");
+  });
+
+  test("the live window closes at the first tool_call_start; the buffered tail replays once, in order", async () => {
+    // The adapter withholds the tool call until the TEST has seen "prefix " on the wire, so a
+    // buffered implementation (which delivers nothing before the terminal replay) deadlocks the
+    // gate instead of passing on identical final frames.
+    let releaseToolCall!: () => void;
+    const clientSawPrefix = new Promise<void>(resolve => { releaseToolCall = resolve; });
+    const adapter: ProviderAdapter = {
+      name: "tool-tail",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: async () => new Response("wire", { status: 200 }),
+      async *parseStream() {
+        yield { type: "text_delta", text: "prefix " } satisfies AdapterEvent;
+        await clientSawPrefix;
+        yield { type: "tool_call_start", id: "call_1", name: "shell" } satisfies AdapterEvent;
+        yield { type: "tool_call_delta", arguments: "{\"cmd\":\"ls\"}" } satisfies AdapterEvent;
+        yield { type: "tool_call_end" } satisfies AdapterEvent;
+        yield { type: "text_delta", text: "suffix" } satisfies AdapterEvent;
+        yield { type: "done" } satisfies AdapterEvent;
+      },
+      async parseResponse() {
+        throw new Error("parseResponse must be unreachable");
+      },
+    };
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter,
+      forwardProvider,
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.6-luna", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+      streamRoutedModelOutput: true,
+    });
+    const sse = frameReader(response.body!);
+    const prefixDelta = await within(
+      sse.readUntil(f => f.data.type === "response.output_text.delta"),
+      "the live prefix delta before the tool call",
+    );
+    expect(prefixDelta?.data.delta).toBe("prefix ");
+    releaseToolCall();
+    const frames = await sse.drain();
+    expect(outputTextOf(frames)).toBe("prefix suffix");
+    // The real tool call still reaches the client exactly once, and the replayed tail keeps
+    // wire order: prefix delta → function_call item → suffix delta.
+    const isCallAdd = (f: { data: Record<string, unknown> }) =>
+      f.data.type === "response.output_item.added"
+      && (f.data.item as Record<string, unknown> | undefined)?.type === "function_call";
+    expect(frames.filter(isCallAdd).length).toBe(1);
+    const prefixIdx = frames.findIndex(f => f.data.type === "response.output_text.delta" && f.data.delta === "prefix ");
+    const callIdx = frames.findIndex(isCallAdd);
+    const suffixIdx = frames.findIndex(f => f.data.type === "response.output_text.delta" && f.data.delta === "suffix");
+    expect(prefixIdx).toBeGreaterThanOrEqual(0);
+    expect(callIdx).toBeGreaterThan(prefixIdx);
+    expect(suffixIdx).toBeGreaterThan(callIdx);
+    expect(frames.some(f => f.event === "response.completed")).toBe(true);
+  });
+
+  test("search loop: pre-search text streams live (documented tradeoff), the final answer arrives once", async () => {
+    // The first pass withholds its web_search call until the TEST has seen "Let me check. " on
+    // the wire — a buffered implementation would deadlock the gate rather than pass on final
+    // frames alone.
+    let releaseWebSearch!: () => void;
+    const clientSawPreSearchText = new Promise<void>(resolve => { releaseWebSearch = resolve; });
+    let pass = 0;
+    const adapter: ProviderAdapter = {
+      name: "search-then-answer",
+      buildRequest: () => ({ url: "https://routed.test/v1", method: "POST", headers: {}, body: "{}" }),
+      fetchResponse: async () => new Response("wire", { status: 200 }),
+      async *parseStream() {
+        if (pass++ === 0) {
+          yield { type: "text_delta", text: "Let me check. " } satisfies AdapterEvent;
+          await clientSawPreSearchText;
+          yield { type: "tool_call_start", id: "ws1", name: "web_search" } satisfies AdapterEvent;
+          yield { type: "tool_call_delta", arguments: "{\"query\":\"docs\"}" } satisfies AdapterEvent;
+          yield { type: "tool_call_end" } satisfies AdapterEvent;
+          yield { type: "done" } satisfies AdapterEvent;
+        } else {
+          yield { type: "text_delta", text: "Final answer." } satisfies AdapterEvent;
+          yield { type: "done" } satisfies AdapterEvent;
+        }
+      },
+      async parseResponse() {
+        throw new Error("parseResponse must be unreachable");
+      },
+    };
+    const response = await runWithWebSearch({
+      parsed: parseRequest({ model: "routed/model", input: "hi", stream: true, tools: [{ type: "web_search" }] }),
+      adapter,
+      forwardProvider: { ...forwardProvider, baseUrl: "https://chatgpt.test/v1" },
+      hostedTool: { type: "web_search" },
+      selectedForwardHeaders: new Headers({ authorization: "Bearer token" }),
+      settings: { model: "gpt-5.6-luna", reasoning: "low", timeoutMs: 30_000 },
+      maxSearches: 1,
+      streamRoutedModelOutput: true,
+    });
+    const sse = frameReader(response.body!);
+    const preSearchDelta = await within(
+      sse.readUntil(f => f.data.type === "response.output_text.delta"),
+      "the live pre-search text delta",
+    );
+    expect(preSearchDelta?.data.delta).toBe("Let me check. ");
+    releaseWebSearch();
+    const frames = await sse.drain();
+    const text = outputTextOf(frames);
+    // Pre-search text is visible exactly once, then the post-search answer exactly once.
+    expect(text).toBe("Let me check. Final answer.");
+    expect(frames.some(f => f.event === "response.completed")).toBe(true);
   });
 });

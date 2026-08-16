@@ -33,7 +33,16 @@ function config(extra?: Partial<OcxConfig>): OcxConfig {
 
 /** Rows in the shape GET /api/models actually returns, including a disabled one. */
 const ROWS = [
-  { provider: "openai", id: "gpt-5.6-luna", namespaced: "gpt-5.6-luna", native: true, disabled: false, contextWindow: 272_000 },
+  {
+    provider: "openai",
+    id: "gpt-5.6-luna",
+    namespaced: "gpt-5.6-luna",
+    native: true,
+    disabled: false,
+    contextWindow: 272_000,
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "high",
+  },
   { provider: "anthropic", id: "claude-opus-5", namespaced: "anthropic/claude-opus-5", disabled: false, contextWindow: 200_000, displayName: "Claude Opus 5" },
   { provider: "custom", id: "no-context", namespaced: "custom/no-context", disabled: false },
   { provider: "banned", id: "hidden", namespaced: "banned/hidden", disabled: true, contextWindow: 100_000 },
@@ -139,11 +148,15 @@ describe("ocx export human output (accept criterion 2)", () => {
     expect(result.stdout).toContain("3 models; 1 omit context limits");
   });
 
-  test("Pi names its own destination and env var", async () => {
+  test("Pi names its own destination and needs no env var", async () => {
     const proxy = fakeProxy();
     const result = await run(["--client", "pi"], { baseUrl: proxy.baseUrl });
     expect(result.stdout).toContain(join(".pi", "agent", "models.json"));
-    expect(result.stdout).toContain("export OPENCODEX_API_KEY=");
+    // Pi resolves `apiKey` before building its model list and hides the provider
+    // when an env reference is unset, so a loopback bind ships the non-secret
+    // placeholder instead of an env var the user was never told to export.
+    expect(result.stdout).toContain("opencodex-loopback");
+    expect(result.stdout).not.toContain("export OPENCODEX_API_KEY=");
   });
 });
 
@@ -198,13 +211,35 @@ describe("ocx export --out (accept criterion 3)", () => {
 });
 
 describe("ocx export argument validation (accept criterion 4)", () => {
-  test("an unknown --client names both valid values", async () => {
+  test("an unknown --client names every valid value", async () => {
     const proxy = fakeProxy();
     const result = await run(["--client", "cursor"], { baseUrl: proxy.baseUrl });
     expect(result.code).toBe(2);
-    expect(result.stderr).toContain("opencode");
-    expect(result.stderr).toContain("pi");
+    for (const id of ["opencode", "pi", "omp", "hermes", "openclaw", "kimi", "gajae", "dsh", "mcode"]) {
+      expect(result.stderr).toContain(id);
+    }
     expect(result.stdout).toBe("");
+  });
+
+  test("--out writes each client's own format, not JSON for all of them", async () => {
+    const proxy = fakeProxy();
+    // A YAML client: JSON would parse as YAML but is not what the user expects
+    // to find in config.yaml, and a TOML client would not parse at all.
+    const yamlTarget = join(tempDir(), "hermes-config.yaml");
+    const yaml = await run(["--client", "hermes", "--out", yamlTarget], { baseUrl: proxy.baseUrl });
+    expect(yaml.code).toBe(0);
+    const yamlText = readFileSync(yamlTarget, "utf8");
+    expect(yamlText.startsWith("providers:")).toBe(true);
+    expect(Bun.YAML.parse(yamlText)).toHaveProperty("providers.opencodex");
+
+    const tomlTarget = join(tempDir(), "kimi-config.toml");
+    const toml = await run(["--client", "kimi", "--out", tomlTarget], { baseUrl: proxy.baseUrl });
+    expect(toml.code).toBe(0);
+    const tomlText = readFileSync(tomlTarget, "utf8");
+    expect(Bun.TOML.parse(tomlText)).toHaveProperty("providers.opencodex");
+    // Exactly one trailing newline, for every format.
+    expect(tomlText.endsWith("\n")).toBe(true);
+    expect(tomlText.endsWith("\n\n")).toBe(false);
   });
 
   test("a missing --client is a usage error", async () => {
@@ -275,8 +310,10 @@ describe("ocx export never serializes a key (accept criterion 6)", () => {
     for (const [args, envRef] of [
       [["--client", "opencode"], "{env:OPENCODEX_OPENCODE_API_KEY}"],
       [["--client", "opencode", "--json"], "{env:OPENCODEX_OPENCODE_API_KEY}"],
-      [["--client", "pi"], "$OPENCODEX_API_KEY"],
-      [["--client", "pi", "--json"], "$OPENCODEX_API_KEY"],
+      // Pi ships the non-secret loopback placeholder rather than an env reference;
+      // the property under test is unchanged — no real key ever reaches stdout.
+      [["--client", "pi"], "opencodex-loopback"],
+      [["--client", "pi", "--json"], "opencodex-loopback"],
     ] as Array<[string[], string]>) {
       logs = [];
       errors = [];
@@ -299,5 +336,11 @@ describe("export row filtering", () => {
     expect(models).toHaveLength(1);
     expect(models[0]!.namespaced).toBe("a/two");
     expect(models[0]!.inputModalities).toEqual(["text", "image"]);
+  });
+
+  test("preserves reasoning metadata with management-loader parity", () => {
+    const [model] = exportModelsFromProxyRows([ROWS[0]!], config());
+    expect(model?.reasoningEfforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(model?.defaultReasoningEffort).toBe("high");
   });
 });

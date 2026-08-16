@@ -26,23 +26,58 @@ on:
         default: true
       expected-sha:
         description: "Immutable release commit this dispatch must publish (fail if the branch moved)"
-        required: false
+        required: true
         type: string
 
-permissions:
-  contents: write # create the matching GitHub Release + version tag after npm publish
-  actions: read # verify the release commit already passed Cross-platform CI
-  pull-requests: read # credit-takeovers looks up landing/source PR authors via gh api
-  id-token: write # OIDC auth for Trusted Publishing + automatic provenance attestation
+permissions: {}
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
+  validate-dispatch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted dispatch guard
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          path: trusted-dispatch
+
+      - name: Validate release dispatch
+        env:
+          EXPECTED_SHA: ${{ inputs.expected-sha }}
+        run: |
+          node - <<'NODE'
+          const { validateReleaseDispatch } = require(
+            "./trusted-dispatch/.github/scripts/release-dispatch-guard.cjs",
+          );
+
+          const failure = validateReleaseDispatch({
+            eventName: process.env.GITHUB_EVENT_NAME,
+            ref: process.env.GITHUB_REF,
+            expectedSha: process.env.EXPECTED_SHA,
+            actualSha: process.env.GITHUB_SHA,
+          });
+
+          if (failure) {
+            console.error(`::error::${failure}`);
+            process.exit(1);
+          }
+          NODE
   publish:
+    needs: validate-dispatch
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -54,13 +89,14 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected-sha }}
         run: |
           if [ -z "$EXPECTED_SHA" ]; then
-            echo "::warning::no expected-sha supplied; publishing whatever the branch currently points at"
+            echo "::error::expected-sha is required; refusing to publish without an audited commit"
+            exit 1
           elif [ "$GITHUB_SHA" != "$EXPECTED_SHA" ]; then
             echo "::error::branch moved after the release audit (expected ${EXPECTED_SHA}, got ${GITHUB_SHA}) — refusing to publish an unaudited commit"
             exit 1
           fi
 
-      # opencodex is bun-native (the prepublishOnly GUI build + typecheck run under bun).
+      # opencodex is bun-native (the prepublishOnly audit, GUI build, and typecheck run under bun).
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
@@ -92,6 +128,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Dependency audit (high severity)
+        run: bun run audit:high
+
       - name: Verify version matches package.json
         env:
           RELEASE_VERSION: ${{ inputs.version }}
@@ -103,6 +142,8 @@ jobs:
             exit 1;
           }
 
+      # The exact-SHA CI gate includes the hosted Linux, Windows, and macOS
+      # keyring smoke matrix. Do not duplicate its Linux bootstrap here.
       - name: Require successful Cross-platform CI for this commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -140,22 +181,33 @@ jobs:
           ci_url="$(
             gh run list \
               --workflow ci.yml \
+              --branch "${GITHUB_REF#refs/heads/}" \
               --commit "$GITHUB_SHA" \
-              --status success \
+              --event push \
               --limit 10 \
-              --json conclusion,headSha,url,workflowName \
-              --jq '.[0].url // ""'
+              --json conclusion,url \
+              --jq '[.[] | select(.conclusion == "success")][0].url // ""'
           )"
 
           if [ -z "$ci_url" ]; then
-            echo "::error::No successful Cross-platform CI run found for ${GITHUB_SHA}. Wait for CI to pass before releasing."
+            # Deliberately narrower than "any successful ci.yml run for this SHA".
+            # The release branch's own push run is the one whose trigger set,
+            # runner selection, and job graph match what is being published —
+            # a green PR run for the same SHA ran against a merge ref with a
+            # different trigger context. Accepting it here would let a publish
+            # proceed while the promotion run was still pending, or had failed.
+            echo "::error::No successful Cross-platform CI run found for ${GITHUB_SHA} on ${GITHUB_REF#refs/heads/} (push event). A pull-request run does not qualify. Wait for the promotion run to pass before releasing."
             gh run list --workflow ci.yml --commit "$GITHUB_SHA" --limit 10 || true
             exit 1
           fi
 
           echo "Cross-platform CI passed for ${GITHUB_SHA}: ${ci_url}"
 
-          # Notes / service baseline:
+          # Service baseline (lineage-relative): merged tags only, so the
+          # changed-files gate compares against the last release actually
+          # reachable from this commit. The release-notes baseline below uses the
+          # full tag set instead, so a stable on another lineage can anchor the
+          # changelog range.
           # - Preview: newest prior release of either channel (stable or preview). A
           #   preview→preview-only baseline skips a shipped stable and restates it.
           # - Stable: newest prior stable only (matching preview carry adjusts the
@@ -177,10 +229,9 @@ jobs:
               gh run list \
                 --workflow service-lifecycle.yml \
                 --commit "$GITHUB_SHA" \
-                --status success \
                 --limit 10 \
                 --json conclusion,headSha,url,workflowName \
-                --jq '.[0].url // ""'
+                --jq '[.[] | select(.conclusion == "success")][0].url // ""'
             )"
             if [ -z "$service_url" ]; then
               echo "::error::Service-related files changed since ${previous_tag:-initial commit}, but no successful Service lifecycle run was found for ${GITHUB_SHA}."
@@ -243,6 +294,25 @@ jobs:
             fi
           fi
 
+      - name: Build and validate release changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          NPM_DIST_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          notes_file="$GITHUB_WORKSPACE/.release-notes.md"
+          bun scripts/build-release-changelog.ts \
+            --version "$RELEASE_VERSION" \
+            --dist-tag "$NPM_DIST_TAG" \
+            --repository "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --out "$notes_file"
+          test -s "$notes_file" || {
+            echo "::error::release changelog builder produced an empty notes file"
+            exit 1
+          }
+
       - name: Publish (or dry-run)
         env:
           DRY_RUN: ${{ inputs.dry-run }}
@@ -281,11 +351,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ inputs.version }}
-          NPM_DIST_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
 
           release_tag="v${RELEASE_VERSION}"
+          notes_file="$GITHUB_WORKSPACE/.release-notes.md"
+          test -s "$notes_file" || {
+            echo "::error::validated release notes are missing; refusing to tag or create a release"
+            exit 1
+          }
 
           git fetch --force --tags origin
 
@@ -295,157 +369,10 @@ jobs:
             exit 1
           fi
 
-          # Channel previous tag for Full Changelog + default notes baseline.
-          # Preview baselines any prior release; stable baselines prior stable only.
-          previous_tag="$(
-            git tag --merged HEAD --list 'v[0-9]*' |
-              bun scripts/release-notes.ts previous-release-tag "$RELEASE_VERSION"
-          )"
-          npm_metadata="Published to npm as \`@bitkyc08/opencodex@${RELEASE_VERSION}\` with dist-tag \`${NPM_DIST_TAG}\`."
-
-          # Preview builds must be marked prerelease so GitHub "latest" keeps pointing at the
-          # stable channel (matching npm dist-tags); see issue #64.
           prerelease_flag=""
           if [[ "$RELEASE_VERSION" == *-preview.* ]]; then
             prerelease_flag="--prerelease"
           fi
-
-          # Build notes before tagging: if generate-notes fails after a tag push, preflight
-          # blocks retries because the tag already exists. API uses target_commitish, so the
-          # tag need not exist yet. Preflight already rejects an existing GitHub Release for
-          # non-dry runs, so this step only creates.
-          notes_file="$(mktemp)"
-          carried_file="$(mktemp)"
-          delta_file="$(mktemp)"
-          commits_file="$(mktemp)"
-          : > "$carried_file"
-          : > "$delta_file"
-          : > "$commits_file"
-
-          # Stable releases after matching previews: aggregate every matching preview
-          # changelog (oldest→newest; each preview body is incremental), then only
-          # generate-notes / commits for the post-preview delta when the newest
-          # *successfully carried* preview tag is an ancestor of this commit. Never
-          # advance the baseline to a later preview that is missing/empty — that would
-          # drop the gap between the last carried preview and that later tag.
-          notes_range_start="$previous_tag"
-          if [[ "$RELEASE_VERSION" != *-preview.* ]]; then
-            preview_carry_tags="$(
-              git tag --list "v${RELEASE_VERSION}-preview.*" |
-                bun scripts/release-notes.ts matching-preview-tags "$RELEASE_VERSION"
-            )"
-            newest_carried_preview_tag=""
-            carried_part_files=()
-            # Probe repo readability once so a token/permission 404 cannot be
-            # mistaken for "this preview tag has no release".
-            gh api "repos/${GITHUB_REPOSITORY}" --jq '.full_name' > /dev/null
-            view_err="$(mktemp)"
-            while IFS= read -r preview_carry_tag; do
-              [ -n "$preview_carry_tag" ] || continue
-              : > "$view_err"
-              set +e
-              # Prefer HTTP status over stderr prose: auth failures also say "Not Found".
-              gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${preview_carry_tag}" \
-                --jq '.body' > "${carried_file}.raw" 2>"$view_err"
-              view_status=$?
-              set -e
-              if [ "$view_status" -eq 0 ]; then
-                bun scripts/release-notes.ts strip-carried "${carried_file}.raw" > "${carried_file}.one"
-                if bun scripts/release-notes.ts has-meaningful "${carried_file}.one"; then
-                  part_file="${carried_file}.part.${#carried_part_files[@]}"
-                  cp "${carried_file}.one" "$part_file"
-                  carried_part_files+=("$part_file")
-                  newest_carried_preview_tag="$preview_carry_tag"
-                  echo "::notice::Carrying preview release notes from ${preview_carry_tag} into ${release_tag}"
-                else
-                  echo "::notice::Preview release ${preview_carry_tag} has no usable changelog after strip; leaving carried baseline unchanged for this tag"
-                fi
-              elif grep -qE 'HTTP 404' "$view_err"; then
-                echo "::notice::Matching preview tag ${preview_carry_tag} has no GitHub Release; skipping"
-              else
-                echo "::error::Failed to look up GitHub Release for ${preview_carry_tag} (operational error, not a missing release)"
-                cat "$view_err" >&2 || true
-                exit 1
-              fi
-            done <<< "$preview_carry_tags"
-
-            if [ "${#carried_part_files[@]}" -gt 0 ]; then
-              bun scripts/release-notes.ts join-carried --out "$carried_file" "${carried_part_files[@]}"
-            fi
-
-            if [ -n "$newest_carried_preview_tag" ]; then
-              if git merge-base --is-ancestor "$newest_carried_preview_tag" "$GITHUB_SHA"; then
-                notes_range_start="$newest_carried_preview_tag"
-                echo "::notice::Using preview tag ${newest_carried_preview_tag} as notes/commits baseline (ancestor of ${GITHUB_SHA})"
-              else
-                echo "::notice::Preview tag ${newest_carried_preview_tag} is not an ancestor of ${GITHUB_SHA}; keeping channel baseline ${previous_tag:-none} for generate-notes/commits"
-              fi
-            fi
-          fi
-
-          if [ -n "$notes_range_start" ]; then
-            generate_notes_api=(
-              "repos/${GITHUB_REPOSITORY}/releases/generate-notes"
-              -f "tag_name=${release_tag}"
-              -f "target_commitish=${GITHUB_SHA}"
-              -f "previous_tag_name=${notes_range_start}"
-            )
-            # Fail closed: missing PR categories is a broken release note, not a soft skip.
-            pr_notes="$(gh api "${generate_notes_api[@]}" --jq '.body')"
-            # Drop generate-notes' trailing compare link; we re-append it after the commit list.
-            printf '%s\n' "$pr_notes" | sed '/^\*\*Full Changelog\*\*:/d' > "$delta_file"
-          else
-            # First release on this channel: never call generate-notes without previous_tag_name.
-            # GitHub would baseline the newest repo tag, which may belong to the other channel.
-            echo "::notice::No previous channel tag; skipping generate-notes (commits-only notes)"
-          fi
-
-          # Rewrite takeover credits on both carried preview notes and the since-preview
-          # delta. Carried bodies may predate this helper and would otherwise keep
-          # landing-author-only attribution on stable releases.
-          if [ -s "$carried_file" ]; then
-            bun scripts/release-notes.ts credit-takeovers \
-              --repo "$GITHUB_REPOSITORY" \
-              --in "$carried_file" \
-              --out "$carried_file"
-          fi
-          if [ -s "$delta_file" ]; then
-            bun scripts/release-notes.ts credit-takeovers \
-              --repo "$GITHUB_REPOSITORY" \
-              --in "$delta_file" \
-              --out "$delta_file"
-          fi
-
-          if [ -n "$notes_range_start" ]; then
-            commit_range="${notes_range_start}..${GITHUB_SHA}"
-            git log --pretty=format:'- %s (%h)' "$commit_range" > "$commits_file"
-          else
-            # First release on a channel has no previous tag; cap history so the notes
-            # body stays within GitHub release size limits.
-            git log --pretty=format:'- %s (%h)' --max-count=100 "$GITHUB_SHA" > "$commits_file"
-          fi
-          # `--pretty=format:` omits the trailing newline; normalize for downstream readers.
-          if [ -s "$commits_file" ]; then
-            printf '\n' >> "$commits_file"
-          fi
-
-          assemble_args=(
-            bun scripts/release-notes.ts assemble
-            --npm-metadata "$npm_metadata"
-            --carried "$carried_file"
-            --delta "$delta_file"
-            --commits "$commits_file"
-            --out "$notes_file"
-            --compare-to "$release_tag"
-            --repository "$GITHUB_REPOSITORY"
-          )
-          # Prefer the stable-channel previous tag for the compare link when present.
-          if [ -n "$previous_tag" ]; then
-            assemble_args+=(--compare-from "$previous_tag")
-          elif [ -n "$notes_range_start" ]; then
-            assemble_args+=(--compare-from "$notes_range_start")
-          fi
-          "${assemble_args[@]}"
 
           if [ -z "$existing_tag_sha" ]; then
             git tag "$release_tag" "$GITHUB_SHA"

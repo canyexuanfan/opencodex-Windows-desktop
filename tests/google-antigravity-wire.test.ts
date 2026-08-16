@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { createGoogleAdapter as createGoogleAdapterProduction } from "../src/adapters/google";
 import { antigravitySessionId, isLikelyRealThoughtSignature } from "../src/adapters/google-antigravity-wire";
-import { ANTIGRAVITY_MODELS, ANTIGRAVITY_MODEL_EFFORTS, canonicalAntigravityUsageModel } from "../src/providers/antigravity-models";
+import { ANTIGRAVITY_MODELS, ANTIGRAVITY_MODEL_EFFORTS, canonicalAntigravityUsageModel, parseAntigravityAvailableModels, resolveAntigravityEffortWireModel, resolveAntigravityWireModelId } from "../src/providers/antigravity-models";
+import { MODEL_DISCOVERY_MAX_MODEL_ID_LENGTH, MODEL_DISCOVERY_MAX_MODELS } from "../src/providers/model-discovery";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig } from "../src/types";
 import { withTestTranslatorBudget } from "./helpers/translator-budget";
 
@@ -55,7 +56,11 @@ describe("antigravity CCA envelope", () => {
     expect(env.request.model).toBeUndefined();
     expect(env.request.safetySettings).toBeUndefined();
     expect(req.headers["Authorization"]).toBe("Bearer ya29.token");
-    expect(req.headers["User-Agent"]).toMatch(/^antigravity\/cli\/[\d.]+ \(aidev_client; os_type=\w+; arch=\w+\)$/);
+    // The exact default must not drift: Google gates models by family AND version,
+    // so any change to version/platform could silently re-lock gemini-3.7-flash.
+    expect(req.headers["User-Agent"]).toBe(
+      "antigravity/ide/2.5.5 (aidev_client; os_type=windows; arch=amd64)",
+    );
     // The literal "antigravity" giveaway UA must no longer be sent.
     expect(req.headers["User-Agent"]).not.toBe("antigravity");
     // x-goog-api-client is NOT sent on runtime requests (CLIProxyAPI only uses it during onboarding).
@@ -71,10 +76,10 @@ describe("antigravity CCA envelope", () => {
     expect(req.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse");
   });
 
-  test("exposes only Gemini 3.6 Flash tiers while hidden compatibility aliases resolve to them", async () => {
+  test("exposes Gemini 3.7 Flash while retired Flash ids resolve to it", async () => {
     // Collapsed picker: base models only.
     expect(ANTIGRAVITY_MODELS).toEqual([
-      "gemini-3.6-flash",
+      "gemini-3.7-flash",
       "gemini-3.1-pro",
       "gemini-3.1-flash-image",
       "claude-sonnet-4-6",
@@ -82,6 +87,7 @@ describe("antigravity CCA envelope", () => {
       "gpt-oss-120b-medium",
     ]);
     for (const hidden of [
+      "gemini-3.6-flash",
       "gemini-3.6-flash-low",
       "gemini-3.6-flash-medium",
       "gemini-3.6-flash-high",
@@ -100,11 +106,13 @@ describe("antigravity CCA envelope", () => {
     }
 
     for (const [alias, wire] of [
-      ["gemini-3.5-flash-extra-low", "gemini-3.6-flash-low"],
-      ["gemini-3.5-flash-low", "gemini-3.6-flash-medium"],
-      ["gemini-3.5-flash-mid", "gemini-3.6-flash-medium"],
-      ["gemini-3.5-flash-high", "gemini-3.6-flash-high"],
-      ["gemini-3-flash-agent", "gemini-3.6-flash-high"],
+      // Google retires the previous Flash generation from CCA when the next ships, so
+      // every retired id — 3.6 tiers included — now lands on 3.7.
+      ["gemini-3.5-flash-extra-low", "gemini-3.7-flash-tiered"],
+      ["gemini-3.5-flash-low", "gemini-3.7-flash-tiered"],
+      ["gemini-3.5-flash-mid", "gemini-3.7-flash-tiered"],
+      ["gemini-3.5-flash-high", "gemini-3.7-flash-tiered"],
+      ["gemini-3-flash-agent", "gemini-3.7-flash-tiered"],
       ["gemini-3.1-pro-high", "gemini-pro-agent"],
       ["gemini-3.1-pro-preview", "gemini-pro-agent"],
     ]) {
@@ -114,8 +122,152 @@ describe("antigravity CCA envelope", () => {
 
     for (const modelId of ["gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-high"]) {
       const req = await createGoogleAdapter(provider).buildRequest(parsed("x", false, modelId));
-      expect(JSON.parse(req.body).model).toBe(modelId);
+      // The retired tier ids no longer exist upstream; they route to the live model.
+      expect(JSON.parse(req.body).model).toBe("gemini-3.7-flash-tiered");
     }
+  });
+
+  test("collapses a complete CCA Gemini tier set but retains partial sets as wire IDs", () => {
+    const payload = (modelIds: string[]) => ({
+      models: Object.fromEntries(modelIds.map(id => [id, { maxTokens: 1_048_576 }])),
+      agentModelSorts: [{ groups: [{ modelIds }] }],
+    });
+
+    expect(parseAntigravityAvailableModels(payload([
+      "gemini-3.7-flash-low",
+      "gemini-3.7-flash-medium",
+      "gemini-3.7-flash-high",
+    ]))?.map(model => model.id)).toEqual(["gemini-3.7-flash"]);
+    expect(parseAntigravityAvailableModels(payload([
+      "future-flash-low",
+      "future-flash-medium",
+      "future-flash-high",
+    ]))?.map(model => model.id)).toEqual([
+      "future-flash-low",
+      "future-flash-medium",
+      "future-flash-high",
+    ]);
+    expect(parseAntigravityAvailableModels(payload([
+      "future-flash-low",
+      "future-flash-high",
+    ]))?.map(model => model.id)).toEqual([
+      "future-flash-low",
+      "future-flash-high",
+    ]);
+    expect(parseAntigravityAvailableModels({
+      models: {
+        "future-flash-tiered": { maxTokens: 1_048_576 },
+      },
+      agentModelSorts: [{ groups: [{ modelIds: [] }] }],
+      tieredModelIds: { flash: ["future-flash-tiered"] },
+    })?.map(model => model.id)).toEqual(["future-flash-tiered"]);
+    expect(parseAntigravityAvailableModels({
+      models: {
+        "gemini-3.7-flash-tiered": { maxTokens: 1_048_576 },
+      },
+      agentModelSorts: [{ groups: [{ modelIds: [] }] }],
+      tieredModelIds: { flash: ["gemini-3.7-flash-tiered"] },
+    })?.map(model => model.id)).toEqual(["gemini-3.7-flash"]);
+    expect(parseAntigravityAvailableModels({
+      models: { "-tiered": { maxTokens: 1_048_576 } },
+      agentModelSorts: [{ groups: [{ modelIds: ["-tiered"] }] }],
+    })?.map(model => model.id)).toEqual(["-tiered"]);
+    expect(parseAntigravityAvailableModels(payload([
+      "-low",
+      "-medium",
+      "-high",
+    ]))?.map(model => model.id)).toEqual(["-low", "-medium", "-high"]);
+    expect(parseAntigravityAvailableModels(payload([
+      "gemini-3.1-pro-low",
+      "gemini-pro-agent",
+    ]))?.map(model => model.id)).toEqual(["gemini-3.1-pro"]);
+    expect(parseAntigravityAvailableModels(payload([
+      "gemini-3.1-pro-low",
+    ]))?.map(model => model.id)).toEqual([
+      "gemini-3.1-pro-low",
+    ]);
+  });
+
+  test("keeps unknown discovered tier IDs directly routable", async () => {
+    for (const modelId of ["future-flash-tiered", "future-flash-low"]) {
+      const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort(modelId, "high"));
+      const env = JSON.parse(req.body);
+      expect(env.model).toBe(modelId);
+      expect(env.request.generationConfig?.thinkingConfig).toBeUndefined();
+    }
+  });
+
+  test("ignores inherited CCA model and alias properties", () => {
+    const inheritedModels = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(inheritedModels, "__proto__", {
+      value: { maxTokens: 1_048_576 },
+      enumerable: true,
+    });
+    const models = Object.create(inheritedModels);
+
+    expect(parseAntigravityAvailableModels({
+      models,
+      agentModelSorts: [{ groups: [{ modelIds: ["__proto__"] }] }],
+    })).toBeNull();
+    expect(resolveAntigravityWireModelId("__proto__")).toBe("__proto__");
+    expect(resolveAntigravityEffortWireModel("__proto__", "high")).toEqual({
+      wireModelId: "__proto__",
+    });
+  });
+
+  test("rejects malformed and oversized CCA agent-model lists", () => {
+    const payload = (modelIds: unknown[]) => ({
+      models: Object.fromEntries(modelIds.map(id => [String(id), { maxTokens: 1_048_576 }])),
+      agentModelSorts: [{ groups: [{ modelIds }] }],
+    });
+
+    for (const invalidId of [" ", "bad\u0000id", "x".repeat(MODEL_DISCOVERY_MAX_MODEL_ID_LENGTH + 1)]) {
+      expect(parseAntigravityAvailableModels(payload([invalidId]))).toBeNull();
+    }
+    expect(parseAntigravityAvailableModels({
+      models: {},
+      agentModelSorts: [{ groups: [{
+        modelIds: Array.from({ length: MODEL_DISCOVERY_MAX_MODELS + 1 }, (_, index) => `model-${index}`),
+      }] }],
+    })).toBeNull();
+  });
+
+  test("rejects malformed CCA agent-model containers and missing agent metadata", () => {
+    expect(parseAntigravityAvailableModels({
+      models: {},
+      agentModelSorts: [{}],
+    })).toBeNull();
+    expect(parseAntigravityAvailableModels({
+      models: {},
+      agentModelSorts: [{ groups: {} }],
+    })).toBeNull();
+    expect(parseAntigravityAvailableModels({
+      models: {},
+      agentModelSorts: [{ groups: [{ modelIds: {} }] }],
+    })).toBeNull();
+    expect(parseAntigravityAvailableModels({
+      models: {},
+      agentModelSorts: [{ groups: [{ modelIds: ["agent-model"] }] }],
+    })).toBeNull();
+  });
+
+  test("normalizes untrusted CCA model limits before publishing a catalog", () => {
+    const oversized = Array.from(
+      { length: MODEL_DISCOVERY_MAX_MODELS + 1 },
+      (_, index) => `model-${index}`,
+    );
+    const payload = {
+      models: Object.fromEntries(oversized.map(id => [id, { maxTokens: 1_048_576 }])),
+      agentModelSorts: [{ groups: [{ modelIds: oversized }] }],
+    };
+    for (const limit of [Number.NaN, Infinity, MODEL_DISCOVERY_MAX_MODELS + 1]) {
+      expect(parseAntigravityAvailableModels(payload, limit)).toBeNull();
+    }
+    expect(parseAntigravityAvailableModels({
+      models: { "agent-model": { maxTokens: 1_048_576 } },
+      agentModelSorts: [{ groups: [{ modelIds: ["agent-model"] }] }],
+      imageGenerationModelIds: ["gemini-3.1-flash-image"],
+    }, 1)).toBeNull();
   });
 
   test("throws when no project id is available", async () => {
@@ -126,6 +278,86 @@ describe("antigravity CCA envelope", () => {
   test("sessionId is deterministic for the same first user text", () => {
     expect(antigravitySessionId(parsed("same"))).toBe(antigravitySessionId(parsed("same")));
     expect(antigravitySessionId(parsed("a"))).not.toBe(antigravitySessionId(parsed("b")));
+  });
+
+  // #1297. The id must be identical on consecutive turns or the replay cache stops
+  // finding thought signatures. First-user text only holds while that message
+  // survives verbatim, and Codex compacts long histories.
+  function threaded(text: string, threadId?: string): OcxParsedRequest {
+    const base = parsed(text) as OcxParsedRequest & { _clientThreadId?: string };
+    if (threadId) base._clientThreadId = threadId;
+    return base;
+  }
+
+  test("#1297: one thread keeps one session id after history compaction changes the first message", () => {
+    // Turn N and turn N+1 of the same conversation, where the client has dropped
+    // or summarised the earliest user message between them.
+    expect(antigravitySessionId(threaded("original first message", "thread-a")))
+      .toBe(antigravitySessionId(threaded("summary of earlier turns", "thread-a")));
+  });
+
+  test("#1297: distinct threads do not collide even with identical text", () => {
+    expect(antigravitySessionId(threaded("hi", "thread-a")))
+      .not.toBe(antigravitySessionId(threaded("hi", "thread-b")));
+  });
+
+  test("#1297: promptCacheKey does not influence the id", () => {
+    // Deliberately not the anchor: it is arbitrary Responses input and is shared
+    // across conversations for some clients, so it identifies a cache cohort.
+    const withKey = threaded("same text", "thread-a") as OcxParsedRequest;
+    (withKey.options as Record<string, unknown>).promptCacheKey = "cohort-1";
+    const otherKey = threaded("same text", "thread-a") as OcxParsedRequest;
+    (otherKey.options as Record<string, unknown>).promptCacheKey = "cohort-2";
+    expect(antigravitySessionId(withKey)).toBe(antigravitySessionId(otherKey));
+  });
+
+  test("#1297: the prefix separates a thread id from the bare same text", () => {
+    // Scope of the guarantee, stated exactly: prefixing stops the RAW-EQUAL case.
+    expect(antigravitySessionId(threaded("thread-a", undefined)))
+      .not.toBe(antigravitySessionId(threaded("anything", "thread-a")));
+    // It is not full domain separation — a first message that is literally the
+    // prefixed form still shares the preimage. Asserted rather than hidden,
+    // because tagging the text anchor too would change every existing
+    // Google-visible id for live conversations. Harmless here: signatures are
+    // keyed on functionCall identity, so a shared id misattributes nothing.
+    expect(antigravitySessionId(threaded("codex-thread:thread-a", undefined)))
+      .toBe(antigravitySessionId(threaded("anything", "thread-a")));
+  });
+
+  test("#1297: clients without the thread header keep the text anchor", () => {
+    // A scoped repair, not a universal one — this behaviour is unchanged.
+    expect(antigravitySessionId(threaded("same", undefined)))
+      .toBe(antigravitySessionId(threaded("same", undefined)));
+    expect(antigravitySessionId(threaded("a", undefined)))
+      .not.toBe(antigravitySessionId(threaded("b", undefined)));
+  });
+
+  test("#1297: the wire id shape is unchanged", () => {
+    // It is sent to Google as `request.sessionId`, so the format must not move:
+    // "-" followed by a masked uint63.
+    for (const id of [
+      antigravitySessionId(threaded("text only", undefined)),
+      antigravitySessionId(threaded("text", "thread-a")),
+    ]) {
+      expect(id).toMatch(/^-\d+$/);
+      expect(BigInt(id.slice(1))).toBeLessThanOrEqual(0x7fffffffffffffffn);
+    }
+  });
+
+  test("#1297: the built CCA envelope carries the stable sessionId across turns", async () => {
+    // The helper tests above prove the derivation; this one proves the value
+    // actually reaches `request.sessionId` on the wire, which is what Google
+    // sees and what the CCA replay path is keyed by.
+    const adapter = createGoogleAdapter(provider);
+    const turnOne = JSON.parse((await adapter.buildRequest(threaded("original first message", "thread-a"))).body);
+    const turnTwo = JSON.parse((await adapter.buildRequest(threaded("summary of earlier turns", "thread-a"))).body);
+
+    expect(turnOne.request.sessionId).toBe(antigravitySessionId(threaded("original first message", "thread-a")));
+    expect(turnTwo.request.sessionId).toBe(turnOne.request.sessionId);
+
+    // A different thread must still land on a different session.
+    const other = JSON.parse((await adapter.buildRequest(threaded("original first message", "thread-b"))).body);
+    expect(other.request.sessionId).not.toBe(turnOne.request.sessionId);
   });
 
   test("claude-on-antigravity forces toolConfig.functionCallingConfig.mode=VALIDATED", async () => {
@@ -163,31 +395,33 @@ describe("antigravity CCA envelope", () => {
 
   // ── Effort routing: base model + effort → wire model ID + thinkingConfig ──
 
-  test("gemini-3.6-flash with effort=high routes to gemini-3.6-flash-high + thinkingConfig", async () => {
-    const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.6-flash", "high"));
+  // 3.7 Flash carries its tiers on thinkingLevel against ONE wire id, unlike the 3.6
+  // generation which used suffixed wire ids.
+  test("gemini-3.7-flash with effort=high keeps the wire id + thinkingConfig", async () => {
+    const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.7-flash", "high"));
     const env = JSON.parse(req.body);
-    expect(env.model).toBe("gemini-3.6-flash-high");
+    expect(env.model).toBe("gemini-3.7-flash-tiered");
     expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
   });
 
-  test("gemini-3.6-flash with effort=low routes to gemini-3.6-flash-low + thinkingConfig", async () => {
-    const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.6-flash", "low"));
+  test("gemini-3.7-flash with effort=low keeps the wire id + thinkingConfig", async () => {
+    const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.7-flash", "low"));
     const env = JSON.parse(req.body);
-    expect(env.model).toBe("gemini-3.6-flash-low");
+    expect(env.model).toBe("gemini-3.7-flash-tiered");
     expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("low");
   });
 
-  test("gemini-3.6-flash with no effort defaults to medium wire ID, no thinkingConfig", async () => {
-    const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.6-flash"));
+  test("gemini-3.7-flash with no effort still sends the documented medium default", async () => {
+    const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.7-flash"));
     const env = JSON.parse(req.body);
-    expect(env.model).toBe("gemini-3.6-flash-medium");
-    expect(env.request.generationConfig?.thinkingConfig).toBeUndefined();
+    expect(env.model).toBe("gemini-3.7-flash-tiered");
+    expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("medium");
   });
 
-  test("gemini-3.6-flash with effort=max clamps to high", async () => {
-    const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.6-flash", "max"));
+  test("gemini-3.7-flash with effort=max clamps to high", async () => {
+    const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.7-flash", "max"));
     const env = JSON.parse(req.body);
-    expect(env.model).toBe("gemini-3.6-flash-high");
+    expect(env.model).toBe("gemini-3.7-flash-tiered");
     expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
   });
 
@@ -221,25 +455,28 @@ describe("antigravity CCA envelope", () => {
 
   // ── Suffix-ID precedence: suffix IS the effort, no thinkingConfig ──
 
-  test("suffix ID gemini-3.6-flash-low with effort=high keeps suffix, no thinkingConfig", async () => {
+  test("retired suffix id gemini-3.6-flash-low with effort=high routes to 3.7 at high", async () => {
+    // A retired id must not keep its dead wire id, and an explicit effort still wins.
     const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.6-flash-low", "high"));
     const env = JSON.parse(req.body);
-    expect(env.model).toBe("gemini-3.6-flash-low");
-    expect(env.request.generationConfig?.thinkingConfig).toBeUndefined();
+    expect(env.model).toBe("gemini-3.7-flash-tiered");
+    expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("high");
   });
 
-  test("suffix ID gemini-3.6-flash-low with no effort keeps suffix, no thinkingConfig", async () => {
+  test("retired suffix id with no effort routes to 3.7 carrying the tier it encoded", async () => {
+    // The suffix used to BE the effort. Now that the wire id is gone, the tier has to
+    // survive as an explicit thinkingLevel or the user silently loses their choice.
     const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.6-flash-low"));
     const env = JSON.parse(req.body);
-    expect(env.model).toBe("gemini-3.6-flash-low");
-    expect(env.request.generationConfig?.thinkingConfig).toBeUndefined();
+    expect(env.model).toBe("gemini-3.7-flash-tiered");
+    expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("low");
   });
 
-  test("legacy compat alias gemini-3.5-flash-high resolves to gemini-3.6-flash-high, no thinkingConfig", async () => {
+  test("legacy 3.5 compat alias now resolves to 3.7 with an explicit effort", async () => {
     const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort("gemini-3.5-flash-high", "low"));
     const env = JSON.parse(req.body);
-    expect(env.model).toBe("gemini-3.6-flash-high");
-    expect(env.request.generationConfig?.thinkingConfig).toBeUndefined();
+    expect(env.model).toBe("gemini-3.7-flash-tiered");
+    expect(env.request.generationConfig?.thinkingConfig?.thinkingLevel).toBe("low");
   });
 
   // ── Claude Opus effort via thinkingConfig (no suffix variants) ──
@@ -349,6 +586,39 @@ describe("antigravity parseResponse unwraps response (non-streaming)", () => {
     applyAntigravityReplay("gemini-3-pro", antigravitySessionId(followup), contents);
     expect((contents[0].parts[0] as { thoughtSignature?: string }).thoughtSignature).toBe("sig-nonstream0000000");
   });
+
+  // Guard for #1503: routing `thought: true` text to the reasoning channel must not disturb
+  // signature observation. Gemini 3 rejects a follow-up turn whose first function-call part
+  // lost its signature, so a classification change that also dropped replay would trade a
+  // visible-text bug for a hard 400. Asserting the signature survives a payload that mixes a
+  // thought part with a signed function call is the direct proof, rather than inferring it
+  // from unrelated fixtures that happen to still pass.
+  test("a thought part alongside a signed function call does not disturb replay", async () => {
+    const { __resetAntigravityReplayCache, applyAntigravityReplay } = await import("../src/adapters/google-antigravity-replay");
+    __resetAntigravityReplayCache();
+    const adapter = createGoogleAdapter(provider);
+    await adapter.buildRequest(parsed("hello world"));
+    const body = JSON.stringify({
+      response: {
+        candidates: [{
+          content: {
+            parts: [
+              { thought: true, text: "deciding which tool to call" },
+              { functionCall: { name: "do_x", args: { a: 1 } }, thoughtSignature: "sig-withthought00000" },
+            ],
+          },
+        }],
+      },
+    });
+    const events = await adapter.parseResponse!(new Response(body, { status: 200 }));
+
+    expect(events).not.toContainEqual({ type: "text_delta", text: "deciding which tool to call" });
+
+    const followup = parsed("hello world");
+    const contents = [{ role: "model", parts: [{ functionCall: { name: "do_x", args: { a: 1 } } }] }];
+    applyAntigravityReplay("gemini-3-pro", antigravitySessionId(followup), contents);
+    expect((contents[0].parts[0] as { thoughtSignature?: string }).thoughtSignature).toBe("sig-withthought00000");
+  });
 });
 
 describe("antigravity history preserves tool-call thoughtSignature", () => {
@@ -445,8 +715,10 @@ describe("isLikelyRealThoughtSignature", () => {
 
 describe("canonicalAntigravityUsageModel", () => {
   test("maps wire/compat ids to picker bases", () => {
-    expect(canonicalAntigravityUsageModel("gemini-3.5-flash-mid")).toBe("gemini-3.6-flash");
-    expect(canonicalAntigravityUsageModel("gemini-3.6-flash-high")).toBe("gemini-3.6-flash");
+    // Retired ids keep their own identity here on purpose: a usage row records the model
+    // that was actually called, so collapsing it into 3.7 would move historical spend.
+    expect(canonicalAntigravityUsageModel("gemini-3.5-flash-mid")).toBe("gemini-3.5-flash-mid");
+    expect(canonicalAntigravityUsageModel("gemini-3.6-flash-high")).toBe("gemini-3.6-flash-high");
     expect(canonicalAntigravityUsageModel("gemini-pro-agent")).toBe("gemini-3.1-pro");
     expect(canonicalAntigravityUsageModel("gemini-3.1-pro-low")).toBe("gemini-3.1-pro");
     expect(canonicalAntigravityUsageModel("claude-opus-4-6-thinking")).toBe("claude-opus-4-6-thinking");

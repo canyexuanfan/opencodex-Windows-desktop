@@ -8,17 +8,21 @@ import type {
   OcxToolResultMessage,
 } from "../../types";
 import { isAllowedToolChoice, namespacedToolName, toolChoiceAliases, type OcxTool, type OcxToolChoice } from "../../types";
-import type { CursorRequestMessage, CursorRunRequest } from "./types";
+import type { CursorRequestMessage, CursorRequestedModelParameter, CursorRunRequest } from "./types";
 import { cursorWireModelSelection, type CursorRoutingLevel } from "./discovery";
-import { cursorEffortSuffix, cursorWireModelIdWithEffort } from "./effort-map";
+import { cursorEffortSuffix, cursorRequestWireModelIdWithEffort } from "./effort-map";
 import {
   cursorMcpToolEncodedSize,
   cursorMcpToolsEncodedSize,
   cursorToolAllowedByChoice,
   cursorToolChoiceAliases,
+  cursorStructuredEditTools,
   cursorToolWireName,
   cursorToolsForActivePrompt,
+  isCursorStructuredEditToolName,
   isBareCodexShellBridgeTool,
+  isCursorExecutionPathTool,
+  isCursorWaitTool,
 } from "./tool-definitions";
 import { lookupCursorThreadConversation } from "./thread-continuity";
 
@@ -37,18 +41,25 @@ function explicitlySelectedNames(choice: OcxToolChoice | undefined): Set<string>
 }
 
 function toolPriority(tool: OcxTool, selectedNames: ReadonlySet<string>): number {
-  // Shell bridge and apply_patch outrank unrelated allowed_tools entries so a large
-  // selected filler cannot starve the Codex execution path during truncation (#399).
+  // Execution path (bare or opencodex-responses `exec` / `exec_command` / `shell_command`)
+  // outranks filler so a crowded catalog cannot drop the Codex shell bridge (#399).
+  if (isCursorExecutionPathTool(tool)) return 0;
   if (isBareCodexShellBridgeTool(tool)) return 0;
-  if (!tool.namespace && tool.name === "apply_patch") return 1;
-  if (cursorToolChoiceAliases(tool).some(name => selectedNames.has(name))) return 2;
-  if (tool.loadedFromToolSearch) return 3;
-  if (!tool.namespace) return 4;
-  return 5;
+  // `wait` only resumes a yielded exec cell. Keep it with the execution path, but after
+  // `exec` itself so a large wait schema cannot starve the tool that creates the cell.
+  if (isCursorWaitTool(tool)) return 1;
+  if (!tool.namespace && tool.name === "apply_patch") return 2;
+  // Structured edit tools convert to apply_patch on the return path, so they must survive the
+  // same byte/count truncation as the freeform tool they stand in for (#1017).
+  if (!tool.namespace && isCursorStructuredEditToolName(tool.name)) return 2;
+  if (cursorToolChoiceAliases(tool).some(name => selectedNames.has(name))) return 3;
+  if (tool.loadedFromToolSearch) return 4;
+  if (!tool.namespace) return 5;
+  return 6;
 }
 
 function isPinnedCursorTool(tool: OcxTool, selectedNames: ReadonlySet<string>): boolean {
-  return toolPriority(tool, selectedNames) <= 2;
+  return toolPriority(tool, selectedNames) <= 3;
 }
 
 /**
@@ -61,7 +72,11 @@ export function applyCursorToolBudget(
   toolChoice: OcxToolChoice | undefined,
 ): CursorToolBudgetResult {
   const catalog = tools ?? [];
-  const eligible = catalog.filter(tool => cursorToolAllowedByChoice(tool, toolChoice, catalog));
+  const baseEligible = catalog.filter(tool => cursorToolAllowedByChoice(tool, toolChoice, catalog));
+  // Synthetic structured edit tools ride along with the freeform apply_patch tool (#1017). They are
+  // part of the advertised catalog, so their serialized size counts toward the byte ceiling here.
+  const synthetic = cursorStructuredEditTools(catalog, toolChoice);
+  const eligible = [...baseEligible, ...synthetic];
   if (
     eligible.length <= CURSOR_TOOL_COUNT_LIMIT
     && cursorMcpToolsEncodedSize(eligible, toolChoice) <= CURSOR_TOOL_BYTES_LIMIT
@@ -87,7 +102,7 @@ export function applyCursorToolBudget(
     return true;
   };
 
-  // Phase 1: selected tools + shell bridge + apply_patch (priority <= 2).
+  // Phase 1: selected tools + execution path + apply_patch (priority <= 3).
   // Pins are admitted before filler so a crowded catalog cannot drop the Codex execution path (#399).
   for (const candidate of candidates) {
     if (!isPinnedCursorTool(candidate.tool, selectedNames)) continue;
@@ -99,9 +114,49 @@ export function applyCursorToolBudget(
     tryKeep(candidate.tool);
   }
 
+  const evictNonExecutionPath = (needBytes: number): void => {
+    for (let i = kept.length - 1; i >= 0; i--) {
+      const occupant = kept[i];
+      if (!occupant || isCursorExecutionPathTool(occupant)) continue;
+      kept.splice(i, 1);
+      keptSet.delete(occupant);
+      keptBytes -= cursorMcpToolEncodedSize(occupant, toolChoice);
+      if (kept.length < CURSOR_TOOL_COUNT_LIMIT && keptBytes + needBytes <= CURSOR_TOOL_BYTES_LIMIT) {
+        return;
+      }
+    }
+  };
+
+  // Force-admit at least one execution-path tool when one was eligible. Priority-0
+  // admission can still fail if the tool itself is larger than leftover room after
+  // earlier same-priority pins; evict wait/patch/filler rather than ship wait-only.
+  for (const tool of eligible) {
+    if (!isCursorExecutionPathTool(tool) || keptSet.has(tool)) continue;
+    const need = cursorMcpToolEncodedSize(tool, toolChoice);
+    if (need > CURSOR_TOOL_BYTES_LIMIT) continue;
+    evictNonExecutionPath(need);
+    tryKeep(tool);
+    if (keptSet.has(tool)) break;
+  }
+
+  const eligibleHasExecutionPath = eligible.some(isCursorExecutionPathTool);
+  const keptHasExecutionPath = eligible.some(tool => keptSet.has(tool) && isCursorExecutionPathTool(tool));
+  // Never advertise `wait` after dropping the tool that creates the exec cell.
+  if (eligibleHasExecutionPath && !keptHasExecutionPath) {
+    for (const tool of eligible) {
+      if (!isCursorWaitTool(tool) || !keptSet.has(tool)) continue;
+      keptSet.delete(tool);
+      const index = kept.indexOf(tool);
+      if (index >= 0) kept.splice(index, 1);
+      keptBytes -= cursorMcpToolEncodedSize(tool, toolChoice);
+    }
+  }
+
   return {
     tools: eligible.filter(tool => keptSet.has(tool)),
-    omitted: eligible.filter(tool => !keptSet.has(tool)),
+    // Synthetic tools are pinned in phase 1 and never reported as omitted; the note counts only
+    // tools the client itself requested.
+    omitted: baseEligible.filter(tool => !keptSet.has(tool)),
   };
 }
 
@@ -117,17 +172,30 @@ function catalogLimitNote(kept: readonly OcxTool[], omitted: readonly OcxTool[])
 }
 
 /**
- * Resolve a `cursor/<model>` selection + Codex reasoning effort to the actual Cursor model id. Cursor
-* encodes the effort as a per-model suffix (`claude-4.6-opus-high`); `cursorEffortSuffix` picks the
- * right tier for that specific model (literal pass-through, with rank clamp fallback) or
-* `undefined` for non-reasoning models like `composer-2.5`. A fully-qualified id (one that isn't a
-* known effort base) passes through unchanged.
+ * Resolve a `cursor/<model>` selection + Codex reasoning effort to Cursor's requested model shape.
+ * Most models encode effort in a flat id (`claude-4.6-opus-high`). Grok Fast is parameterized
+ * instead: current Cursor clients send the matching Grok base id plus `effort` and `fast` parameters.
+ * A fully-qualified id (one that is not a known effort base) passes through unchanged.
  */
-function normalizeCursorModelId(modelId: string, reasoning?: string): { modelId: string; routingLevel?: CursorRoutingLevel } {
+function normalizeCursorModelId(modelId: string, reasoning?: string): {
+  modelId: string;
+  requestedModelParameters?: readonly CursorRequestedModelParameter[];
+  routingLevel?: CursorRoutingLevel;
+} {
   const selection = cursorWireModelSelection(modelId);
   const id = selection.modelId;
   const suffix = cursorEffortSuffix(id, reasoning);
-  return { ...selection, modelId: suffix ? cursorWireModelIdWithEffort(id, suffix) : id };
+  if ((id === "grok-4.5-fast" || id === "grok-4.6-fast") && suffix) {
+    return {
+      ...selection,
+      modelId: id.slice(0, -"-fast".length),
+      requestedModelParameters: [
+        { id: "effort", value: suffix },
+        { id: "fast", value: "true" },
+      ],
+    };
+  }
+  return { ...selection, modelId: suffix ? cursorRequestWireModelIdWithEffort(id, suffix) : id };
 }
 
 function contentPartToText(part: OcxContentPart | OcxAssistantContentPart): string | undefined {
@@ -241,6 +309,7 @@ export function createCursorRequest(
   const model = normalizeCursorModelId(parsed.modelId, parsed.options.reasoning);
   return {
     modelId: model.modelId,
+    ...(model.requestedModelParameters ? { requestedModelParameters: model.requestedModelParameters } : {}),
     ...(model.routingLevel ? { routingLevel: model.routingLevel } : {}),
     conversationId: resolveCursorConversationId(parsed, model.modelId, options),
     system: [...(parsed.context.systemPrompt ?? []), ...(limitNote ? [limitNote] : [])],

@@ -29,6 +29,20 @@ export function encodeRoutedModelId(id: string): string {
   return id.includes("/") ? id.replaceAll("/", SLUG_ALIAS_SEPARATOR) : id;
 }
 
+/**
+ * True when `modelId` shares a Codex-facing encoded form with a different known id.
+ * That collision is what makes `provider/openai-gpt-5.5` decode to native `openai-gpt-5.5`
+ * while a custom `openai/gpt-5.5` row is still visible.
+ */
+export function encodedModelIdCollides(modelId: string, knownIds: Iterable<string>): boolean {
+  const encoded = encodeRoutedModelId(modelId);
+  for (const id of knownIds) {
+    if (id === modelId) continue;
+    if (encodeRoutedModelId(id) === encoded) return true;
+  }
+  return false;
+}
+
 /** Codex-facing routed slug: exactly one "/" — `<provider>/<encoded id>`. */
 export function routedSlug(provider: string, id: string): string {
   return `${provider}/${encodeRoutedModelId(id)}`;
@@ -51,17 +65,39 @@ export function decodeRoutedModelId(requested: string, knownIds: Iterable<string
   return aliasMatch ?? requested;
 }
 
+/**
+ * Decode a Codex-facing id, but fail when a custom slash id and another known id
+ * share the same encoded form. Write-time checks cannot cover a later live cache.
+ */
+export function decodeRoutedModelIdOrThrow(requested: string, knownIds: Iterable<string>): string {
+  const ids = [...knownIds];
+  const encodedRequested = encodeRoutedModelId(requested);
+  const matches = new Set<string>();
+  for (const id of ids) {
+    if (id === requested || encodeRoutedModelId(id) === encodedRequested) matches.add(id);
+  }
+  if (matches.size > 1) throw new Error(`ambiguous model id "${requested}"`);
+  return decodeRoutedModelId(requested, ids);
+}
+
 /** Does a stored config slug name this routed model, in either raw or encoded form? */
 export function slugEquals(stored: string, provider: string, id: string): boolean {
   return stored === `${provider}/${id}` || stored === routedSlug(provider, id);
 }
 
+/** Stable key for the exact equivalence relation used by catalog/config slug matching. */
+export function slugEquivalenceKey(slug: string): string {
+  const slash = slug.indexOf("/");
+  return slash <= 0
+    ? JSON.stringify(["exact", slug])
+    : JSON.stringify([
+      "routed",
+      slug.slice(0, slash),
+      encodeRoutedModelId(slug.slice(slash + 1)),
+    ]);
+}
+
 /** Equivalence between two routed slugs regardless of raw/encoded mix. */
 export function slugsEquivalent(a: string, b: string): boolean {
-  if (a === b) return true;
-  const pa = a.indexOf("/");
-  const pb = b.indexOf("/");
-  if (pa <= 0 || pb <= 0) return false;
-  if (a.slice(0, pa) !== b.slice(0, pb)) return false;
-  return encodeRoutedModelId(a.slice(pa + 1)) === encodeRoutedModelId(b.slice(pb + 1));
+  return a === b || slugEquivalenceKey(a) === slugEquivalenceKey(b);
 }

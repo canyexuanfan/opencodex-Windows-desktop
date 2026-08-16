@@ -18,6 +18,8 @@ interface LoggedCall {
 
 interface ReleaseScenario {
   branch?: string;
+  npmLatest?: string;
+  npmPreview?: string;
   headSha?: string;
   remoteHeadSha?: string;
   privacyExitCode?: number;
@@ -104,6 +106,14 @@ process.exit(1);
 
 const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_RELEASE_LOG, JSON.stringify({ name: "npm", args }) + "\\n");
+
+if (args[0] === "view" && args.includes("dist-tags")) {
+  process.stdout.write(JSON.stringify({
+    latest: process.env.FAKE_NPM_LATEST ?? "0.0.1",
+    preview: process.env.FAKE_NPM_PREVIEW ?? "0.0.1-preview.0",
+  }) + "\\n");
+  process.exit(0);
+}
 
 if (args[0] === "view") {
   console.error("npm ERR! code E404");
@@ -216,6 +226,8 @@ function runRelease(version: string, scenario: ReleaseScenario = {}) {
       FAKE_BUN_TSC_EXIT_CODE: String(scenario.typecheckExitCode ?? 0),
       FAKE_BUN_TEST_EXIT_CODE: String(scenario.testExitCode ?? 0),
       FAKE_BUN_PRIVACY_EXIT_CODE: String(scenario.privacyExitCode ?? 0),
+      ...(scenario.npmLatest ? { FAKE_NPM_LATEST: scenario.npmLatest } : {}),
+      ...(scenario.npmPreview ? { FAKE_NPM_PREVIEW: scenario.npmPreview } : {}),
     },
     encoding: "utf8",
   });
@@ -226,7 +238,7 @@ function runRelease(version: string, scenario: ReleaseScenario = {}) {
 }
 
 describe("release helper", () => {
-  test("preflight runs typecheck, test suite, and privacy scan before version bump on main dry-runs", () => {
+  test("preflight runs the shared audit, typecheck, test suite, and privacy scan before version bump", () => {
     const { calls, result } = runRelease("9.9.9");
 
     // Report what the script actually said. A bare status assertion turned a
@@ -234,6 +246,7 @@ describe("release helper", () => {
     // which cost a full CI round to diagnose.
     expect(`${result.status}\n${result.stderr ?? ""}`.trim()).toBe("0");
 
+    const auditIndex = findCallIndex(calls, "bun", call => call.args.join(" ") === "run audit:high");
     const typecheckIndex = findCallIndex(calls, "bun", call => call.args.join(" ") === "x tsc --noEmit");
     const testIndex = findCallIndex(calls, "bun", call => call.args.join(" ") === "test --isolate tests");
     const privacyIndex = findCallIndex(calls, "bun", call => call.args.join(" ") === "run privacy:scan");
@@ -246,11 +259,34 @@ describe("release helper", () => {
       && call.args.includes("dry-run=true"),
     );
 
-    expect(typecheckIndex).toBeGreaterThanOrEqual(0);
+    expect(auditIndex).toBeGreaterThanOrEqual(0);
+    expect(typecheckIndex).toBeGreaterThan(auditIndex);
     expect(testIndex).toBeGreaterThan(typecheckIndex);
     expect(privacyIndex).toBeGreaterThan(testIndex);
     expect(versionIndex).toBeGreaterThan(privacyIndex);
     expect(dispatchIndex).toBeGreaterThan(versionIndex);
+  });
+
+  test("an obsolete version that would move latest backwards aborts before the bump", () => {
+    const { calls, result } = runRelease("9.9.8", { npmLatest: "9.9.9" });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr ?? "").toContain("does not move the 'latest' channel forward");
+    expect(findCallIndex(calls, "npm", call => call.args[0] === "version")).toBe(-1);
+    expect(findCallIndex(calls, "git", call => call.args[0] === "commit")).toBe(-1);
+  });
+
+  test("a version newer than the channel tip passes the forward guard", () => {
+    const { calls, result } = runRelease("9.9.10", { npmLatest: "9.9.9" });
+
+    expect(`${result.status}\n${result.stderr ?? ""}`.trim()).toBe("0");
+    expect(findCallIndex(calls, "npm", call => call.args.join(" ") === "version 9.9.10 --no-git-tag-version")).toBeGreaterThanOrEqual(0);
+  });
+
+  test("preview releases compare against the preview channel, not latest", () => {
+    const { result } = runRelease("9.9.9-preview.2", { branch: "preview", npmLatest: "10.0.0", npmPreview: "9.9.9-preview.1" });
+
+    expect(`${result.status}\n${result.stderr ?? ""}`.trim()).toBe("0");
   });
 
   test("failed privacy scan aborts before version bump, commit, and push", () => {
@@ -359,5 +395,25 @@ describe("release helper", () => {
 
     // And the launcher must still be the thing it reaches for.
     expect(withoutComments).toContain("commandInvocation");
+  });
+
+  // #1753 review follow-up: build metadata on the channel tip is valid semver
+  // and compares by precedence only; an unparseable tip must fail CLOSED
+  // (Number() on a garbage core used to yield NaN and pass any candidate).
+  test("channel tip with build metadata compares by precedence, not NaN", () => {
+    const { result } = runRelease("2.19.4", { npmLatest: "2.19.3+build.1" });
+    expect(`${result.status}\n${result.stderr ?? ""}`.trim()).toBe("0");
+  });
+
+  test("channel tip equal after stripping build metadata does not move forward", () => {
+    const { result } = runRelease("2.19.3", { npmLatest: "2.19.3+build.1" });
+    expect(result.status).toBe(1);
+    expect(result.stderr ?? "").toContain("does not move");
+  });
+
+  test("unparseable channel tip fails closed", () => {
+    const { result } = runRelease("2.19.4", { npmLatest: "not-a-version" });
+    expect(result.status).toBe(1);
+    expect(result.stderr ?? "").toContain("cannot compare release versions");
   });
 });

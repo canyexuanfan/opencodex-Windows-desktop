@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createResponsesPassthroughAdapter as createResponsesPassthroughAdapterProduction } from "../src/adapters/openai-responses";
+import { openaiResponsesUrl } from "../src/adapters/openai-responses-url";
 import { enrichProviderFromRegistry, providerConfigSeed } from "../src/providers/derive";
 import { getProviderRegistryEntry } from "../src/providers/registry";
 import { sanitizeEncryptedContentInPlace } from "../src/server/responses";
@@ -11,9 +12,106 @@ const createResponsesPassthroughAdapter = (...args: Parameters<typeof createResp
 
 const provider = {
   adapter: "openai-responses",
-  baseUrl: "https://chatgpt.example/backend-api/codex",
+  baseUrl: "https://chatgpt.com/backend-api/codex",
   authMode: "forward" as const,
 };
+
+test("noncanonical forward providers cannot receive caller or runtime credentials", () => {
+  const userInfoUrl = new URL("https://chatgpt.com/backend-api/codex");
+  userInfoUrl.username = "user";
+  userInfoUrl.password = "secret";
+  for (const baseUrl of [
+    "https://provider.example/v1/",
+    "https://chatgpt.com/backend-api/not-codex",
+    "https://chatgpt.example/backend-api/codex",
+    "https://chatgpt.com/backend-api/codex?target=custom",
+    "https://chatgpt.com/backend-api/codex#custom",
+    userInfoUrl.toString(),
+  ]) {
+    const adapter = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl,
+      authMode: "forward",
+      headers: { "x-provider-option": "enabled" },
+      _codexAccountRequired: true,
+      _codexAccountOverride: {
+        accessToken: "runtime-secret",
+        chatgptAccountId: "runtime-account",
+      },
+    } as Parameters<typeof createResponsesPassthroughAdapter>[0]);
+    const request = adapter.buildRequest({
+      modelId: "test-model",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { model: "test-model", input: "ping" },
+    }, {
+      headers: new Headers({
+        authorization: "Bearer caller-secret",
+        "chatgpt-account-id": "caller-account",
+        session_id: "caller-session",
+      }),
+    });
+
+    expect(request.url).toBe(`${baseUrl.replace(/\/+$/, "")}/responses`);
+    expect(request.headers["x-provider-option"]).toBe("enabled");
+    expect(request.headers.authorization).toBeUndefined();
+    expect(request.headers["chatgpt-account-id"]).toBeUndefined();
+    expect(request.headers.session_id).toBeUndefined();
+  }
+});
+
+test("canonical forward providers normalize trailing slashes and let the pool override win", () => {
+  const adapter = createResponsesPassthroughAdapter({
+    ...provider,
+    baseUrl: "https://chatgpt.com/backend-api/codex///",
+    _codexAccountRequired: true,
+    _codexAccountOverride: {
+      accessToken: "runtime-secret",
+      chatgptAccountId: "runtime-account",
+    },
+  } as Parameters<typeof createResponsesPassthroughAdapter>[0]);
+  const request = adapter.buildRequest({
+    modelId: "test-model",
+    context: { messages: [] },
+    stream: true,
+    options: {},
+    _rawBody: { model: "test-model", input: "ping" },
+  }, { headers: new Headers({ authorization: "Bearer caller-secret" }) });
+
+  expect(request.url).toBe("https://chatgpt.com/backend-api/codex/responses");
+  expect(request.headers.authorization).toBe("Bearer runtime-secret");
+  expect(request.headers["chatgpt-account-id"]).toBe("runtime-account");
+});
+
+test("noncanonical pool-required providers use only their configured static credentials", () => {
+  const adapter = createResponsesPassthroughAdapter({
+    adapter: "openai-responses",
+    baseUrl: "https://provider.example/v1/",
+    authMode: "forward",
+    headers: { authorization: "Bearer provider-static", "x-provider-option": "enabled" },
+    _codexAccountRequired: true,
+  } as Parameters<typeof createResponsesPassthroughAdapter>[0]);
+  const request = adapter.buildRequest({
+    modelId: "test-model",
+    context: { messages: [] },
+    stream: true,
+    options: {},
+    _rawBody: { model: "test-model", input: "ping" },
+  }, {
+    headers: new Headers({
+      authorization: "Bearer caller-secret",
+      "chatgpt-account-id": "caller-account",
+      session_id: "caller-session",
+    }),
+  });
+
+  expect(request.url).toBe("https://provider.example/v1/responses");
+  expect(request.headers["x-provider-option"]).toBe("enabled");
+  expect(request.headers.authorization).toBe("Bearer provider-static");
+  expect(request.headers["chatgpt-account-id"]).toBeUndefined();
+  expect(request.headers.session_id).toBeUndefined();
+});
 
 test("passthrough serialized-body observation releases after the request settles", () => {
   const budget = createTranslatorBudget();
@@ -53,6 +151,8 @@ describe("OpenAI Responses key-auth URL construction", () => {
       ["https://api.openai.example", "https://api.openai.example/v1/responses"],
       ["https://api.openai.example/v1", "https://api.openai.example/v1/responses"],
       ["https://api.openai.example/v1/", "https://api.openai.example/v1/responses"],
+      ["https://api.openai.example/v1/responses", "https://api.openai.example/v1/responses"],
+      ["https://api.openai.example/v1/responses/", "https://api.openai.example/v1/responses"],
     ] as const) {
       expect(buildKeyAuthUrl(baseUrl)).toBe(expectedUrl);
     }
@@ -93,6 +193,40 @@ describe("DeepSeek Responses endpoint contract", () => {
       .toBe("https://api.cerebras.ai/v1/responses");
   });
 
+  test("key-auth routed Responses converts exec custom tools while native forward preserves them", () => {
+    const rawBody = {
+      model: "deepseek-v4-flash",
+      input: "ping",
+      tools: [
+        { type: "custom", name: "exec", description: "Run JavaScript", format: { type: "grammar", syntax: "lark" } },
+        { type: "custom", name: "apply_patch", description: "Apply a patch", format: { type: "grammar", syntax: "lark" } },
+      ],
+    };
+    const parsed = {
+      modelId: "deepseek-v4-flash",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: rawBody,
+    };
+    const keyed = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://api.deepseek.com",
+      responsesPath: "/responses",
+      authMode: "key" as const,
+      apiKey: "sk-test",
+    });
+    const keyedBody = JSON.parse(keyed.buildRequest(parsed, { headers: new Headers() }).body) as typeof rawBody;
+    expect(keyedBody.tools[0]).toMatchObject({ type: "function", name: "exec" });
+    expect(keyedBody.tools[1]).toMatchObject({ type: "custom", name: "apply_patch" });
+
+    const nativeBody = JSON.parse(createResponsesPassthroughAdapter(provider).buildRequest(
+      { ...parsed, modelId: "gpt-5.6-sol" },
+      { headers: new Headers({ authorization: "Bearer token" }) },
+    ).body) as typeof rawBody;
+    expect(nativeBody.tools).toEqual(rawBody.tools);
+  });
+
   test("a config saved before the fix is backfilled, and a hand-set path is preserved", () => {
     const saved = { adapter: "openai-chat", baseUrl: "https://api.deepseek.com", apiKey: "sk-test" } as Parameters<typeof enrichProviderFromRegistry>[1];
     enrichProviderFromRegistry("deepseek", saved);
@@ -105,6 +239,162 @@ describe("DeepSeek Responses endpoint contract", () => {
 });
 
 describe("OpenAI Responses passthrough sanitization", () => {
+  const deferredToolBody = {
+    model: "routed-model",
+    input: [
+      {
+        type: "tool_search_call",
+        call_id: "call_search",
+        execution: "client",
+        arguments: { query: "deferred read" },
+      },
+      {
+        type: "tool_search_output",
+        call_id: "call_search",
+        status: "completed",
+        execution: "client",
+        tools: [{
+          type: "namespace",
+          name: "workspace",
+          description: "Workspace tools",
+          tools: [{
+            type: "function",
+            name: "deferred_read",
+            description: "Read deferred data",
+            strict: false,
+            defer_loading: true,
+            parameters: {
+              type: "object",
+              properties: { id: { type: "string" } },
+              required: ["id"],
+              additionalProperties: false,
+            },
+          }, {
+            type: "function",
+            name: "declared_deferred_read",
+            description: "Read declared deferred data",
+            defer_loading: true,
+            parameters: { type: "object", properties: {}, additionalProperties: false },
+          }],
+        }],
+      },
+    ],
+    tools: [
+      {
+        type: "namespace",
+        name: "workspace",
+        description: "Workspace tools",
+        tools: [{
+          type: "function",
+          name: "upfront_read",
+          description: "Read upfront data",
+          parameters: { type: "object", properties: {}, additionalProperties: false },
+        }, {
+          type: "function",
+          name: "declared_deferred_read",
+          description: "Read declared deferred data",
+          defer_loading: true,
+          parameters: { type: "object", properties: {}, additionalProperties: false },
+        }],
+      },
+      {
+        type: "tool_search",
+        execution: "client",
+        description: "Search deferred tools",
+        parameters: {
+          type: "object",
+          properties: { query: { type: "string" } },
+          required: ["query"],
+          additionalProperties: false,
+        },
+      },
+    ],
+  };
+
+  test("routed passthrough promotes tool-search results into the active namespace", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://provider.example/v1",
+      authMode: "key",
+      apiKey: "test-key",
+    });
+    const body = JSON.parse(adapter.buildRequest({
+      modelId: deferredToolBody.model,
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: deferredToolBody,
+    }, { headers: new Headers() }).body) as {
+      tools: Array<{
+        type: string;
+        name?: string;
+        tools?: Array<{ name: string; defer_loading?: boolean }>;
+      }>;
+    };
+
+    const namespace = body.tools.find(tool => tool.type === "namespace" && tool.name === "workspace");
+    expect(namespace?.tools?.map(tool => tool.name)).toEqual([
+      "upfront_read",
+      "declared_deferred_read",
+      "deferred_read",
+    ]);
+    expect(namespace?.tools?.find(tool => tool.name === "declared_deferred_read"))
+      .not.toHaveProperty("defer_loading");
+    expect(namespace?.tools?.find(tool => tool.name === "deferred_read"))
+      .not.toHaveProperty("defer_loading");
+  });
+
+  test("canonical forward passthrough leaves tool-search loading to the native backend", () => {
+    const body = JSON.parse(createResponsesPassthroughAdapter(provider).buildRequest({
+      modelId: deferredToolBody.model,
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: deferredToolBody,
+    }, { headers: new Headers({ authorization: "Bearer test" }) }).body) as { tools: unknown[] };
+
+    expect(body.tools).toEqual(deferredToolBody.tools);
+  });
+
+  test("routed passthrough promotes tool-search results into Responses Lite additional tools", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://provider.example/v1",
+      authMode: "key",
+      apiKey: "test-key",
+    });
+    const { tools, ...bodyWithoutTools } = deferredToolBody;
+    const rawBody = {
+      ...bodyWithoutTools,
+      input: [
+        ...bodyWithoutTools.input,
+        { type: "additional_tools", role: "developer", tools },
+      ],
+    };
+    const body = JSON.parse(adapter.buildRequest({
+      modelId: rawBody.model,
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: rawBody,
+    }, { headers: new Headers() }).body) as {
+      tools?: unknown[];
+      input: Array<{
+        type: string;
+        tools?: Array<{ type: string; name?: string; tools?: Array<{ name: string }> }>;
+      }>;
+    };
+
+    expect(body.tools).toBeUndefined();
+    const additionalTools = body.input.find(item => item.type === "additional_tools")?.tools;
+    const namespace = additionalTools?.find(tool => tool.type === "namespace" && tool.name === "workspace");
+    expect(namespace?.tools?.map(tool => tool.name)).toEqual([
+      "upfront_read",
+      "declared_deferred_read",
+      "deferred_read",
+    ]);
+  });
+
   test("normalizes top-level function schemas in the serialized raw body (#745)", () => {
     const validParameters = {
       type: "object",
@@ -307,6 +597,37 @@ describe("OpenAI Responses passthrough sanitization", () => {
       content: [{ type: "input_text", text: "delegated task" }],
     });
     expect(input[0]).not.toHaveProperty("id");
+  });
+
+  test("backfills queries on a replayed single-query web_search_call (#930)", () => {
+    // The bridge fix only helps items created after it. A conversation that already
+    // recorded {type:"search", query:"..."} replays that stored item every turn, and
+    // DeepSeek's parser rejects the whole request over it — so upgrading alone would
+    // leave those threads permanently broken.
+    const adapter = createResponsesPassthroughAdapter(provider);
+    const request = adapter.buildRequest({
+      modelId: "provider-model",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "provider-model",
+        input: [
+          { type: "web_search_call", id: "ws_legacy", status: "completed", action: { type: "search", query: "legacy" } },
+          { type: "web_search_call", id: "ws_batch", status: "completed", action: { type: "search", queries: ["a", "b"] } },
+          { type: "web_search_call", id: "ws_other", status: "completed", action: { type: "open_page", url: "https://example.test" } },
+        ],
+      },
+    }, meta);
+    const input = (JSON.parse(request.body) as { input: Array<{ action: Record<string, unknown> }> }).input;
+
+    // Repaired: singular query gains the array the strict parser requires.
+    expect(input[0].action).toEqual({ type: "search", query: "legacy", queries: ["legacy"] });
+    // Untouched: a batch already satisfies the parser, and adding `query` would collapse
+    // the native plural rendering.
+    expect(input[1].action).toEqual({ type: "search", queries: ["a", "b"] });
+    // Untouched: not a search action.
+    expect(input[2].action).toEqual({ type: "open_page", url: "https://example.test" });
   });
 
   test("strips invalid type-specific ids from serialized input items", () => {
@@ -951,6 +1272,7 @@ describe("OpenAI Responses hosted-tool name conflicts", () => {
     const body = JSON.parse(request.body) as {
       tools: Array<{ type: string }>;
       input: Array<{ type: string; tools?: Array<{ type: string; name?: string }> }>;
+      tool_choice?: { type: string; name?: string };
     };
     const additionalTools = body.input.find(item => item.type === "additional_tools");
 
@@ -1083,6 +1405,431 @@ describe("OpenAI Responses hosted-tool name conflicts", () => {
       { type: "image_generation" },
     ]);
     expect(body.tool_choice).toEqual({ type: "function", name: "image_gen.imagegen" });
+  });
+
+  test("configured model removes an empty image_gen namespace and preserves hosted image generation", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      ...keyedProvider,
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    });
+    const request = adapter.buildRequest({
+      modelId: "provider-image-model",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "provider-image-model",
+        tools: [{ type: "image_generation" }],
+        input: [{
+          type: "additional_tools",
+          role: "developer",
+          tools: [
+            { type: "namespace", name: "image_gen", tools: [] },
+            { type: "web_search" },
+          ],
+        }],
+        tool_choice: { type: "function", name: "image_gen.imagegen" },
+      },
+    }, meta);
+    const body = JSON.parse(request.body) as {
+      tools: Array<{ type: string }>;
+      input: Array<{ type: string; tools?: Array<{ type: string; name?: string }> }>;
+    };
+    const additionalTools = body.input.find(item => item.type === "additional_tools");
+
+    expect(body.tools).toEqual([{ type: "image_generation" }]);
+    expect(additionalTools?.tools).toEqual([{ type: "web_search" }]);
+    expect(body.tool_choice).toEqual({ type: "image_generation" });
+  });
+
+  test("an inherited Object.prototype key is not read as a preference", () => {
+    // `provider.modelPreferHostedTools?.[modelId]` walked the prototype chain, so a
+    // routed model literally named `constructor` or `toString` yielded a function
+    // and threw on `.includes` before the request was ever dispatched.
+    const adapter = createResponsesPassthroughAdapter({
+      ...keyedProvider,
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    });
+    for (const inheritedKey of ["constructor", "toString", "hasOwnProperty"]) {
+      const request = adapter.buildRequest({
+        modelId: inheritedKey,
+        context: { messages: [] },
+        stream: true,
+        options: {},
+        _rawBody: {
+          model: inheritedKey,
+          tools: [{ type: "image_generation" }],
+          tool_choice: { type: "function", name: "image_gen.imagegen" },
+        },
+      }, meta);
+      const body = JSON.parse(request.body) as { tool_choice: unknown };
+      // Unconfigured model: ordinary normalization applies, the hosted preference does not.
+      expect(body.tool_choice).toEqual({ type: "function", name: "image_gen.imagegen" });
+    }
+  });
+
+  test("multi-container stripping restores hosted image generation exactly once", () => {
+    // Stripping runs over every container. Restoration must not: tool declarations are
+    // request-scoped, and `hasHostedImageGenDeclaration` treats a declaration in any
+    // container as covering the request. #924 briefly restored into each stripped
+    // container and put `image_generation` on the wire twice; this asserts against both
+    // that and the original defect of losing the capability entirely.
+    const adapter = createResponsesPassthroughAdapter({
+      ...keyedProvider,
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    });
+    const request = adapter.buildRequest({
+      modelId: "provider-image-model",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "provider-image-model",
+        input: [
+          {
+            type: "additional_tools",
+            role: "developer",
+            tools: [{ type: "namespace", name: "image_gen", tools: [] }, { type: "web_search" }],
+          },
+          {
+            type: "additional_tools",
+            role: "developer",
+            tools: [{ type: "namespace", name: "image_gen", tools: [] }],
+          },
+        ],
+      },
+    }, meta);
+    const body = JSON.parse(request.body) as {
+      input: Array<{ type: string; tools?: Array<{ type: string }> }>;
+    };
+    const containers = body.input.filter(item => item.type === "additional_tools");
+
+    expect(containers).toHaveLength(2);
+    const hostedDeclarations = containers.flatMap(container =>
+      (container.tools ?? []).filter(tool => tool.type === "image_generation"));
+    // Exactly one hosted declaration on the wire, riding the first stripped container
+    // so the capability is neither lost nor duplicated.
+    expect(hostedDeclarations).toEqual([{ type: "image_generation" }]);
+    expect(containers[0].tools).toContainEqual({ type: "image_generation" });
+  });
+
+  test("configured model rewrites a custom image-gen selector", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      ...keyedProvider,
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    });
+    const request = adapter.buildRequest({
+      modelId: "provider-image-model",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "provider-image-model",
+        input: [],
+        tools: [
+          { type: "custom", name: "image_gen.render" },
+          { type: "image_generation" },
+        ],
+        tool_choice: { type: "custom", name: "image_gen.render" },
+      },
+    }, meta);
+    const body = JSON.parse(request.body) as {
+      tools: Array<{ type: string }>;
+      tool_choice: { type: string };
+    };
+
+    expect(body.tools).toEqual([{ type: "image_generation" }]);
+    expect(body.tool_choice).toEqual({ type: "image_generation" });
+  });
+
+  test("configured model retains a hosted declaration for a wrapper-only selector", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      ...keyedProvider,
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    });
+    const request = adapter.buildRequest({
+      modelId: "provider-image-model",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "provider-image-model",
+        input: [],
+        tools: [{ type: "namespace", name: "image_gen", tools: [] }],
+        tool_choice: { type: "function", name: "image_gen.imagegen" },
+      },
+    }, meta);
+    const body = JSON.parse(request.body) as {
+      tools: Array<{ type: string }>;
+      tool_choice: { type: string };
+    };
+
+    expect(body.tools).toEqual([{ type: "image_generation" }]);
+    expect(body.tool_choice).toEqual({ type: "image_generation" });
+  });
+
+  test("configured model retains hosted image generation without a forced selector", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      ...keyedProvider,
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    });
+
+    for (const toolChoice of ["auto", "none", undefined] as const) {
+      const request = adapter.buildRequest({
+        modelId: "provider-image-model",
+        context: { messages: [] },
+        stream: true,
+        options: {},
+        _rawBody: {
+          model: "provider-image-model",
+          input: [],
+          tools: [{ type: "namespace", name: "image_gen", tools: [] }],
+          ...(toolChoice === undefined ? {} : { tool_choice: toolChoice }),
+        },
+      }, meta);
+      const body = JSON.parse(request.body) as {
+        tools: Array<{ type: string }>;
+        tool_choice?: string;
+      };
+
+      expect(body.tools).toEqual([{ type: "image_generation" }]);
+      expect(body.tool_choice).toBe(toolChoice);
+    }
+  });
+
+  test("configured model retains a hosted declaration in wrapper-only additional tools", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      ...keyedProvider,
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    });
+    const request = adapter.buildRequest({
+      modelId: "provider-image-model",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "provider-image-model",
+        tools: [],
+        input: [{
+          type: "additional_tools",
+          role: "developer",
+          tools: [{ type: "namespace", name: "image_gen", tools: [] }],
+        }],
+        tool_choice: { type: "function", name: "image_gen.imagegen" },
+      },
+    }, meta);
+    const body = JSON.parse(request.body) as {
+      input: Array<{ type: string; tools?: Array<{ type: string }> }>;
+      tool_choice: { type: string };
+    };
+    const additionalTools = body.input.find(item => item.type === "additional_tools");
+
+    expect(additionalTools?.tools).toEqual([{ type: "image_generation" }]);
+    expect(body.tool_choice).toEqual({ type: "image_generation" });
+  });
+
+  test("configured model restores hosted image generation in unforced additional tools", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      ...keyedProvider,
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    });
+    const request = adapter.buildRequest({
+      modelId: "provider-image-model",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "provider-image-model",
+        tools: [],
+        input: [{
+          type: "additional_tools",
+          role: "developer",
+          tools: [{ type: "namespace", name: "image_gen", tools: [] }],
+        }],
+        tool_choice: "auto",
+      },
+    }, meta);
+    const body = JSON.parse(request.body) as {
+      input: Array<{ type: string; tools?: Array<{ type: string }> }>;
+      tool_choice: string;
+    };
+    const additionalTools = body.input.find(item => item.type === "additional_tools");
+
+    expect(additionalTools?.tools).toEqual([{ type: "image_generation" }]);
+    expect(body.tool_choice).toBe("auto");
+  });
+
+  test("configured model retains unrelated allowed-tools selector entries", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      ...keyedProvider,
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    });
+    const request = adapter.buildRequest({
+      modelId: "provider-image-model",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "provider-image-model",
+        input: [],
+        tools: [
+          { type: "namespace", name: "image_gen", tools: [] },
+          { type: "image_generation" },
+          { type: "function", name: "exec_command", parameters: {} },
+        ],
+        tool_choice: {
+          type: "allowed_tools",
+          mode: "required",
+          tools: [
+            { type: "function", name: "image_gen.imagegen" },
+            { type: "function", name: "exec_command" },
+          ],
+        },
+      },
+    }, meta);
+    const body = JSON.parse(request.body) as {
+      tools: Array<{ type: string; name?: string }>;
+      tool_choice?: { type: string; mode: string; tools: Array<{ type: string; name?: string }> };
+    };
+
+    expect(body.tools).toEqual([
+      { type: "image_generation" },
+      { type: "function", name: "exec_command", parameters: { type: "object" } },
+    ]);
+    expect(body.tool_choice).toEqual({
+      type: "allowed_tools",
+      mode: "required",
+      tools: [
+        { type: "image_generation" },
+        { type: "function", name: "exec_command" },
+      ],
+    });
+  });
+
+  test("configured model rewrites custom image-gen entries in an allowed-tools selector", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      ...keyedProvider,
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    });
+    const request = adapter.buildRequest({
+      modelId: "provider-image-model",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "provider-image-model",
+        input: [],
+        tools: [
+          { type: "custom", name: "image_gen.render" },
+          { type: "image_generation" },
+          { type: "custom", name: "exec_command" },
+        ],
+        tool_choice: {
+          type: "allowed_tools",
+          mode: "required",
+          tools: [
+            { type: "custom", name: "image_gen.render" },
+            { type: "custom", name: "exec_command" },
+          ],
+        },
+      },
+    }, meta);
+    const body = JSON.parse(request.body) as {
+      tools: Array<{ type: string; name?: string }>;
+      tool_choice: { type: string; mode: string; tools: Array<{ type: string; name?: string }> };
+    };
+
+    expect(body.tools).toEqual([
+      { type: "image_generation" },
+      { type: "function", name: "exec_command", parameters: { type: "object" } },
+    ]);
+    expect(body.tool_choice).toEqual({
+      type: "allowed_tools",
+      mode: "required",
+      tools: [
+        { type: "image_generation" },
+        { type: "function", name: "exec_command" },
+      ],
+    });
+  });
+
+  test("hosted-tool preference stays scoped to its configured model", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      ...keyedProvider,
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    });
+    const request = adapter.buildRequest({
+      modelId: "other-model",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "other-model",
+        input: [],
+        tools: [
+          { type: "namespace", name: "image_gen", tools: [] },
+          { type: "image_generation" },
+        ],
+      },
+    }, meta);
+    const body = JSON.parse(request.body) as { tools: Array<Record<string, unknown>> };
+
+    expect(body.tools).toEqual([
+      { type: "namespace", name: "image_gen", tools: [] },
+      { type: "image_generation" },
+    ]);
+  });
+
+  test("hosted-tool preference uses the exact model id", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      ...keyedProvider,
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    });
+    const request = adapter.buildRequest({
+      modelId: "provider-image-model:variant",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "provider-image-model:variant",
+        input: [],
+        tools: [
+          { type: "namespace", name: "image_gen", tools: [] },
+          { type: "image_generation" },
+        ],
+      },
+    }, meta);
+    const body = JSON.parse(request.body) as { tools: Array<Record<string, unknown>> };
+
+    expect(body.tools).toEqual([
+      { type: "namespace", name: "image_gen", tools: [] },
+      { type: "image_generation" },
+    ]);
+  });
+
+  test("hosted-tool preference honors an OpenAI virtual model's selected id", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      ...keyedProvider,
+      modelPreferHostedTools: { "gpt-5.6-sol-pro": ["image_generation"] },
+    });
+    const request = adapter.buildRequest({
+      modelId: "gpt-5.6-sol",
+      _openAiVirtualSelectedModelId: "gpt-5.6-sol-pro",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "gpt-5.6-sol",
+        input: [],
+        tools: [
+          { type: "namespace", name: "image_gen", tools: [] },
+          { type: "image_generation" },
+        ],
+      },
+    }, meta);
+    const body = JSON.parse(request.body) as { tools: Array<Record<string, unknown>> };
+
+    expect(body.tools).toEqual([{ type: "image_generation" }]);
   });
 
   test("keyed platform preserves hosted image_generation for replay-only image-gen calls", () => {
@@ -1265,5 +2012,16 @@ describe("OpenAI Responses forward-mode unsupported param stripping", () => {
 
     expect(body.max_output_tokens).toBe(32000);
     expect(body.metadata).toEqual({ user_id: "u-1" });
+  });
+});
+
+describe("openaiResponsesUrl", () => {
+  test("does not strip mid-path /v1 or a non-endpoint responses suffix", () => {
+    expect(openaiResponsesUrl("https://proxy.example.com/v1/relay")).toBe(
+      "https://proxy.example.com/v1/relay/v1/responses",
+    );
+    expect(openaiResponsesUrl("https://api.example.com/somev1")).toBe(
+      "https://api.example.com/somev1/v1/responses",
+    );
   });
 });

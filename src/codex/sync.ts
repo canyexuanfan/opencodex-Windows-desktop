@@ -1,14 +1,20 @@
-import { currentExternalCodexModelProvider, injectCodexConfig, restoreNativeCodex } from "./inject";
+import { currentExternalCodexModelProvider, injectCodexConfig } from "./inject";
 import { printProjectCodexConfigWarnings, groupProjectCodexConfigWarningsByPath, type ProjectCodexConfigWarning } from "./project-config-warnings";
 import { refreshCodexModelCatalog } from "./refresh";
 import { applyProxyEnv, loadConfig } from "../config";
 import type { OcxConfig } from "../types";
 import { collectOrcaCodexHomeDiagnostic } from "./home";
 import { summarizeComboCatalogOmissions, type ComboCatalogOmission } from "./catalog/aggregation";
-import { findLiveProxy, proxyIdentityAt } from "../server/proxy-liveness";
+import { shouldSyncCodexOnStart } from "./desired-state";
+import { admitCodexWrite, type CodexAdmission } from "./admission";
 
 export interface CodexSyncResult {
+  /** `skipped` is policy truth, never evidence that Codex was written. */
+  status: "applied" | "skipped" | "refused";
   ok: boolean;
+  skippedReason?: "desired_disabled";
+  /** Present when unattended convergence refused another service's native home. */
+  authority?: "service-home";
   added: number;
   catalogPath: string | null;
   catalogExists: boolean;
@@ -22,32 +28,34 @@ export interface CodexSyncResult {
   projectConfigGrouped?: { path: string; issues: string[]; bypass: string }[];
 }
 
-export interface CodexSyncDeps {
+type CodexSyncAdmission = Extract<CodexAdmission, { kind: "refused" }> | { readonly kind: "admitted" };
+
+interface CodexSyncDeps {
   refreshCodexModelCatalog: typeof refreshCodexModelCatalog;
   injectCodexConfig: typeof injectCodexConfig;
+  /** The sync entry only needs this admission's service-home verdict. */
+  admitCodexWrite?: () => CodexSyncAdmission;
   currentExternalCodexModelProvider?: typeof currentExternalCodexModelProvider;
   collectCodexHomeDiagnostic?: typeof collectOrcaCodexHomeDiagnostic;
-  /** Identity-checked liveness gate. Tests may provide a deterministic live proxy. */
-  findLiveProxy?: typeof findLiveProxy;
-  /** Restore marker-owned routing when the liveness gate finds no proxy. */
-  restoreNativeCodex?: typeof restoreNativeCodex;
-}
-
-export interface CodexSyncOptions {
-  /**
-   * The management API is executing inside the serving proxy process. Passing its listener port
-   * skips the initial runtime-file lookup, but a PID-matched /healthz probe still runs immediately
-   * before injection so a stopped or replaced listener cannot receive marker-owned routing.
-   */
-  trustedServerPort?: number;
-  /** Test seam for the final trusted-port /healthz probe. */
-  proxyIdentityAt?: typeof proxyIdentityAt;
 }
 
 const defaultDeps: CodexSyncDeps = {
   refreshCodexModelCatalog,
   injectCodexConfig,
 };
+
+function reportCodexHomeTarget(
+  log: Pick<Console, "log" | "error"> | null,
+  collectDiagnostic: typeof collectOrcaCodexHomeDiagnostic,
+): void {
+  if (!log) return;
+  const target = collectDiagnostic();
+  log.log(`   Target Codex home: ${target.effectiveCodexHome}`);
+  if (target.warning) {
+    log.error(`WARNING: ${target.warning}`);
+    log.error(`Action: ${target.action}`);
+  }
+}
 
 let codexSyncsBlocked = false;
 let activeCodexSyncs = 0;
@@ -69,46 +77,81 @@ export async function waitForActiveCodexSyncs(timeoutMs = 5_000): Promise<boolea
   return activeCodexSyncs === 0;
 }
 
-function blockedSyncResult(): CodexSyncResult {
-  return {
-    ok: false,
-    added: 0,
-    catalogPath: null,
-    catalogExists: false,
-    catalogWritten: false,
-    cacheSynced: false,
-    message: "Codex sync refused: OpenCodex is preparing a safe shutdown.",
-  };
-}
-
-function reportCodexHomeTarget(
-  log: Pick<Console, "log" | "error"> | null,
-  collectDiagnostic: typeof collectOrcaCodexHomeDiagnostic,
-): void {
-  if (!log) return;
-  const target = collectDiagnostic();
-  log.log(`   Target Codex home: ${target.effectiveCodexHome}`);
-  if (target.warning) {
-    log.error(`WARNING: ${target.warning}`);
-    log.error(`Action: ${target.action}`);
-  }
-}
-
-async function syncModelsToCodexImpl(
+export async function syncModelsToCodex(
   port?: number,
   config: OcxConfig = loadConfig(),
   log: Pick<Console, "log" | "error"> | null = console,
   deps: CodexSyncDeps = defaultDeps,
-  options: CodexSyncOptions = {},
 ): Promise<CodexSyncResult> {
+  if (codexSyncsBlocked) {
+    return {
+      status: "refused",
+      ok: false,
+      added: 0,
+      catalogPath: null,
+      catalogExists: false,
+      catalogWritten: false,
+      cacheSynced: false,
+      message: "Codex sync refused: OpenCodex is preparing a safe shutdown.",
+    };
+  }
+  activeCodexSyncs += 1;
+  try {
+    return await syncModelsToCodexInner(port, config, log, deps);
+  } finally {
+    activeCodexSyncs -= 1;
+  }
+}
+
+async function syncModelsToCodexInner(
+  port?: number,
+  config: OcxConfig = loadConfig(),
+  log: Pick<Console, "log" | "error"> | null = console,
+  deps: CodexSyncDeps = defaultDeps,
+): Promise<CodexSyncResult> {
+  // `config` can be the server's startup object. The decision, however, is a
+  // durable user switch and must be read again at this production boundary: a
+  // PUT OFF while provider discovery is in flight cannot be allowed to commit
+  // through an older captured object.
+  if (!shouldSyncCodexOnStart(loadConfig())) {
+    return {
+      status: "skipped",
+      skippedReason: "desired_disabled",
+      ok: true,
+      added: 0,
+      catalogPath: null,
+      catalogExists: false,
+      catalogWritten: false,
+      cacheSynced: false,
+      message: "Codex integration is OFF; no Codex config, catalog, cache, or history was changed.",
+    };
+  }
+  // Catalog gathering precedes injection and can itself write the native
+  // catalog/cache. It therefore needs the same unattended service-home veto as
+  // the injector, before it gets a chance to create any artifact.
+  const admission = (deps.admitCodexWrite ?? admitCodexWrite)();
+  if (admission.kind === "refused" && admission.authority === "service-home") {
+    return {
+      status: "refused",
+      authority: "service-home",
+      ok: false,
+      added: 0,
+      catalogPath: null,
+      catalogExists: false,
+      catalogWritten: false,
+      cacheSynced: false,
+      message: admission.message,
+    };
+  }
+  const p = port ?? config.port ?? 10100;
   const externalProvider = (deps.currentExternalCodexModelProvider ?? currentExternalCodexModelProvider)();
   if (externalProvider) {
-    // External providers are intentionally preserved and do not require a local proxy. The
-    // endpoint in this diagnostic is only advisory; do not let it become a config mutation.
-    const result = await deps.injectCodexConfig(port ?? config.port ?? 10100, config, {});
-    log?.log(result.message);
+    const result = await deps.injectCodexConfig(p, config, {});
+    if (result.success) log?.log(result.message);
+    else log?.error(result.message);
     reportCodexHomeTarget(log, deps.collectCodexHomeDiagnostic ?? collectOrcaCodexHomeDiagnostic);
     return {
+      status: "applied",
       ok: result.success,
       added: 0,
       catalogPath: null,
@@ -120,36 +163,27 @@ async function syncModelsToCodexImpl(
     };
   }
 
-  // Never write a marker-owned Codex route unless an identity-checked OpenCodex proxy is alive.
-  // The old `port ?? config.port ?? 10100` fallback could persist a dead dynamic port after a
-  // crash/restart. `findLiveProxy` resolves runtime-port.json first and verifies /healthz, so the
-  // returned port is the single source of truth even when the configured port has drifted.
-  const locateLive = deps.findLiveProxy ?? findLiveProxy;
-  const live = options.trustedServerPort !== undefined
-    ? { pid: process.pid, port: options.trustedServerPort, hostname: config.hostname, source: "runtime" as const }
-    : await locateLive({
-      configFn: () => ({ port: config.port, hostname: config.hostname }),
-    });
-  if (!live) {
-    const restored = (deps.restoreNativeCodex ?? restoreNativeCodex)();
-    const message = restored.success
-      ? "Codex sync skipped: no healthy OpenCodex proxy found; native Codex routing was restored. Start the proxy before syncing again."
-      : `Codex sync skipped: no healthy OpenCodex proxy found, and native Codex routing could not be restored: ${restored.message}`;
-    log?.error(message);
+  // Injection has deterministic refusal paths (for example an ambiguous marker-owned TOML
+  // table) that do not depend on provider discovery. Exercise the SAME transformation and
+  // coordination eligibility before catalog gathering: a known-bad config must not turn a
+  // working catalog/cache into the partial result of an otherwise unnecessary refresh.
+  const preflight = await deps.injectCodexConfig(p, config, { validateOnly: true });
+  if (!preflight.success) {
+    log?.error(preflight.message);
     reportCodexHomeTarget(log, deps.collectCodexHomeDiagnostic ?? collectOrcaCodexHomeDiagnostic);
     return {
+      status: "applied",
       ok: false,
       added: 0,
       catalogPath: null,
       catalogExists: false,
       catalogWritten: false,
       cacheSynced: false,
-      message,
+      message: preflight.message,
+      ...(preflight.nativeSubagentDefaultsWarning
+        ? { nativeSubagentDefaultsWarning: preflight.nativeSubagentDefaultsWarning }
+        : {}),
     };
-  }
-  const initialPort = live.port;
-  if (port !== undefined && port !== initialPort) {
-    log?.error(`Codex sync corrected a stale port ${port} to the live OpenCodex port ${initialPort}.`);
   }
 
   applyProxyEnv(config); // `ocx ensure`/`ocx sync` fetch provider models outside the server process
@@ -189,49 +223,27 @@ async function syncModelsToCodexImpl(
     log?.error(warning);
   }
 
-  // The first liveness check intentionally happens before the potentially slow catalog refresh,
-  // but that check is not a lease. The proxy can stop (and restore Codex) while the catalog is
-  // being fetched; injecting the original port here would recreate the dead-route bug. Recheck
-  // immediately before the file write and use the newly observed port when a soft start moved.
-  const finalLive = options.trustedServerPort !== undefined
-    ? await (options.proxyIdentityAt ?? proxyIdentityAt)(
-      options.trustedServerPort,
-      { hostname: config.hostname, expectedPid: process.pid },
-    ).then(identity => identity
-      ? { pid: identity.pid, port: options.trustedServerPort!, hostname: config.hostname, source: "runtime" as const }
-      : null)
-    : await locateLive({
-      configFn: () => ({ port: config.port, hostname: config.hostname }),
-    });
-  if (!finalLive) {
-    const restored = (deps.restoreNativeCodex ?? restoreNativeCodex)();
-    const message = restored.success
-      ? "Codex sync skipped: OpenCodex proxy stopped during catalog refresh; native Codex routing was restored."
-      : `Codex sync skipped: OpenCodex proxy stopped during catalog refresh, and native Codex routing could not be restored: ${restored.message}`;
-    log?.error(message);
-    reportCodexHomeTarget(log, deps.collectCodexHomeDiagnostic ?? collectOrcaCodexHomeDiagnostic);
+  const result = await deps.injectCodexConfig(p, config, { catalogPath: catalogPathForInjection });
+  if (result.status === "skipped") {
     return {
-      ok: false,
-      added,
-      catalogPath,
-      catalogExists,
-      catalogWritten,
-      cacheSynced,
-      message,
-      ...(warning ? { warning } : {}),
-      ...(comboOmissions.length > 0 ? { comboOmissions } : {}),
+      status: "skipped",
+      // The apply direction's only under-lock policy skip is desired OFF.
+      skippedReason: "desired_disabled",
+      ok: true,
+      added: 0,
+      catalogPath: null,
+      catalogExists: false,
+      catalogWritten: false,
+      cacheSynced: false,
+      message: result.message,
     };
   }
-  const p = finalLive.port;
-  if (p !== initialPort) {
-    log?.error(`Codex sync refreshed the live OpenCodex port from ${initialPort} to ${p}.`);
-  }
-
-  const result = await deps.injectCodexConfig(p, config, { catalogPath: catalogPathForInjection });
-  log?.log(result.message);
+  if (result.success) log?.log(result.message);
+  else log?.error(result.message);
   reportCodexHomeTarget(log, deps.collectCodexHomeDiagnostic ?? collectOrcaCodexHomeDiagnostic);
   const projectConfigWarnings = printProjectCodexConfigWarnings(log, { cwd: process.cwd() });
   return {
+    status: "applied",
     ok: result.success,
     added,
     catalogPath,
@@ -247,20 +259,4 @@ async function syncModelsToCodexImpl(
       projectConfigGrouped: groupProjectCodexConfigWarningsByPath(projectConfigWarnings),
     } : {}),
   };
-}
-
-export async function syncModelsToCodex(
-  port?: number,
-  config: OcxConfig = loadConfig(),
-  log: Pick<Console, "log" | "error"> | null = console,
-  deps: CodexSyncDeps = defaultDeps,
-  options: CodexSyncOptions = {},
-): Promise<CodexSyncResult> {
-  if (codexSyncsBlocked) return blockedSyncResult();
-  activeCodexSyncs += 1;
-  try {
-    return await syncModelsToCodexImpl(port, config, log, deps, options);
-  } finally {
-    activeCodexSyncs -= 1;
-  }
 }

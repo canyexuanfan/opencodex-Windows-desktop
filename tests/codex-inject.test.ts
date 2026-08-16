@@ -115,6 +115,19 @@ describe("Codex config injection", () => {
     expect(stripped).toContain('model_verbosity = "high"');
   });
 
+  test("malformed quoted root values cannot wedge restore transforms", () => {
+    const slashRun = "\\".repeat(64);
+    const stripped = stripOpencodexConfig([
+      'model_provider = "opencodex"',
+      `model = "${slashRun}`,
+      `model_catalog_json = "${slashRun}`,
+      "",
+    ].join("\n"));
+
+    expect(stripped).toContain(`model = "${slashRun}`);
+    expect(stripped).toContain(`model_catalog_json = "${slashRun}`);
+  }, 2_000);
+
   test("preserves non-opencodex routed model names during fallback restore", () => {
     const stripped = stripOpencodexConfig([
       'model_provider = "proxy"',
@@ -139,7 +152,29 @@ describe("Codex config injection", () => {
     expect(profile).not.toContain('model_provider = "opencodex"');
     expect(profile).not.toContain("[model_providers.opencodex]");
     expect(profile).not.toContain("model_catalog_json");
-    expect(profile).toContain("fast_mode = true");
+  });
+
+  test("fallback profile does not force fast_mode when fastMode is unset", () => {
+    expect(buildProfileFile(10100, null)).not.toContain("fast_mode");
+    expect(buildProfileFile(10100, null, false, true, "192.168.1.20")).not.toContain("fast_mode");
+  });
+
+  test("fallback profile mirrors an explicit fastMode=true override", () => {
+    const loopback = buildProfileFile(10100, null, false, false, undefined, true);
+
+    expect(loopback).toContain("fast_mode = true");
+    expect(loopback).not.toContain("fast_mode = false");
+  });
+
+  test("fallback profile mirrors an explicit fastMode=false override", () => {
+    const loopback = buildProfileFile(10100, null, false, false, undefined, false);
+
+    expect(loopback).toContain("fast_mode = false");
+    expect(loopback).not.toContain("fast_mode = true");
+
+    const legacy = buildProfileFile(10100, null, false, true, "192.168.1.20", false);
+    expect(legacy).toContain("fast_mode = false");
+    expect(legacy).not.toContain("fast_mode = true");
   });
 
   test("non-loopback fallback profile keeps the legacy provider-table shape with the injected host", () => {

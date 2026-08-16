@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { atomicWriteFile, getConfigDir } from "../config";
 import { hasStarPromptRun } from "../cli/star-prompt";
+import { selfLaunchArgv } from "../lib/self-launch-argv";
 import {
   type Channel,
   currentVersion,
@@ -83,8 +84,12 @@ function gt(a: number[], b: number[]): boolean {
 
 /**
  * Channel-aware "is latest newer than current?".
- * - latest channel: compare maj.min.pat only; prereleases are never "newer"
- *   (parity with codex-rs), so stable users are not pushed onto previews.
+ * - latest channel: compare maj.min.pat only; prerelease TARGETS are never
+ *   "newer" (parity with codex-rs), so stable users are not pushed onto
+ *   previews. An installed preview CURRENT compares by its maj.min.pat core,
+ *   so a stable release with a strictly higher base is offered (same base is
+ *   content-lateral promotion and stays not-newer, mirroring the preview
+ *   channel's O3 rule).
  * - preview channel: preview-vs-preview compares the trailing -preview.N; a
  *   stable release with a strictly higher base counts as newer (O3), while a
  *   stable release with the same base as the current preview does not.
@@ -92,7 +97,7 @@ function gt(a: number[], b: number[]): boolean {
 export function isNewer(latest: string, current: string, channel: Channel): boolean {
   if (channel === "latest") {
     const l = parseStable(latest);
-    const c = parseStable(current);
+    const c = parseStable(current) ?? parsePreview(current)?.slice(0, 3);
     if (!l || !c) return false;
     return gt(l, c);
   }
@@ -192,9 +197,10 @@ function cacheIsStale(cache: VersionCache | null): boolean {
 export function triggerBackgroundRefreshIfStale(channel: Channel, cache: VersionCache | null): void {
   if (!cacheIsStale(cache)) return;
   try {
-    const entry = process.argv[1];
-    if (!entry || !existsSync(entry)) return;
-    const child = spawn(process.execPath, [entry, "__refresh-version", channel], {
+    const commandArgs = ["__refresh-version", channel];
+    const args = selfLaunchArgv(commandArgs);
+    if (args.length > commandArgs.length && (!args[0] || !existsSync(args[0]))) return;
+    const child = spawn(process.execPath, args, {
       detached: true,
       stdio: "ignore",
       windowsHide: true,

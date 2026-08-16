@@ -62,8 +62,9 @@ the `server/responses.ts` facade and its `server/responses/*.ts` modules:
    seven adapters. Responses passthrough relays the native body, Cursor runs its bidirectional
    `runTurn` transport, and translated adapters build/fetch/parse an upstream request.
 6. For routed models with a hosted `web_search` tool, `web-search/` exposes a synthetic function,
-   executes the real search through the ChatGPT sidecar, feeds results back to the routed model, and
-   repeats within the configured loop limit.
+   executes the real search through the configured backend (the OpenAI/ChatGPT sidecar or Anthropic),
+   feeds results back to the routed model, and repeats within the configured loop limit. This loop
+   supports only the standard HTTP path; adapters that implement `runTurn`, such as Cursor, bypass it.
 7. `bridge.ts` produces Responses SSE or JSON. `server/request-log.ts` and `usage/` collect terminal
    status, latency, provider/model labels, and best-effort token usage without changing the response.
 
@@ -141,6 +142,13 @@ WebSocket upgrade while `websockets` is `false`, opencodex returns `426 upgrade_
 falls back to HTTP for that session. When `"websockets": true` is set, the same endpoint accepts the
 upgrade and uses the WebSocket bridge.
 
+Independently of that client-facing setting, canonical ChatGPT forward requests with root-level
+`stream: true` may use Codex's upstream WebSocket transport on stable Bun 1.4.0 or newer.
+Bundled Bun 1.3.14, prereleases, and unverifiable runtime identities use HTTP/SSE. Successful
+upstream WS responses keep the downstream SSE contract and bypass `tee()` through a bounded eager
+single-reader relay (4 MiB per raw/enveloped frame and an 8 MiB producer queue). Queue overflow
+closes the upstream and emits a terminal downstream `response.failed` event followed by `[DONE]`.
+
 Codex context compaction works for routed models. `server/responses/compact.ts` handles
 `POST /v1/responses/compact` by running an internal routed summarization turn and returning compacted
 history, while `responses/parser.ts` and `bridge.ts` handle remote compaction v2
@@ -165,6 +173,12 @@ upstream providers may support only a smaller subset or require a real alias. Th
 - Clamps a requested effort to the closest supported tier when the exact level is unavailable.
 - Resolves per-model and per-provider `reasoningEffortMap` overrides for custom wire mappings.
 - Drops the effort entirely for models listed in `noReasoningModels`.
+
+Qwen3.8-Max is an explicit direct-effort exception to the older Qwen3.x budget contract. Alibaba
+Token Plan records its upstream-supported ladder as `low`, `medium`, and `xhigh` (the default), and
+sends the effective value as `reasoning_effort`; Codex-only compatibility tops are clamped to
+`xhigh` on the wire. Runtime registry enrichment repairs older persisted preset metadata that still
+classifies this model as a `thinking_budget` model.
 
 ## Core types
 

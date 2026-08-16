@@ -8,12 +8,25 @@
 export class ChatCompletionsRequestError extends Error {}
 
 type Rec = Record<string, unknown>;
+type ChatCompletionsRoutingBody = Rec & { model: string; messages: unknown[] };
 
 function isRec(v: unknown): v is Rec {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
+/** Validate only the fields needed before Chat routing, without projecting the body. */
+export function assertChatCompletionsRoutingBody(raw: unknown): asserts raw is ChatCompletionsRoutingBody {
+  if (!isRec(raw)) throw new ChatCompletionsRequestError("request body must be a JSON object");
+  if (typeof raw.model !== "string" || raw.model.length === 0) {
+    throw new ChatCompletionsRequestError("model is required");
+  }
+  if (!Array.isArray(raw.messages) || raw.messages.length === 0) {
+    throw new ChatCompletionsRequestError("messages must be a non-empty array");
+  }
+}
+
 const OUTPUT_CONFIG_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+const OUTPUT_CONFIG_SUMMARIES = new Set(["auto", "concise", "detailed", "none"]);
 
 function contentToText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -206,17 +219,27 @@ function resolveReasoningEffort(raw: Rec): string | undefined {
 }
 
 /**
+ * Chat Completions clients (Grok Build, Copilot, OpenAI-compatible SDKs) expect
+ * `delta.reasoning_content` whenever the model thinks. The internal Responses
+ * parser hides thinking unless `reasoning.summary` is set and is not `"none"`.
+ * Map the common Chat Completions knobs onto that field. When the client only
+ * sent an effort, default the summary to `"auto"` so traces are not swallowed.
+ */
+function resolveReasoningSummary(raw: Rec): string | undefined {
+  if (isRec(raw.reasoning) && typeof raw.reasoning.summary === "string" && OUTPUT_CONFIG_SUMMARIES.has(raw.reasoning.summary)) {
+    return raw.reasoning.summary;
+  }
+  if (raw.include_reasoning === false) return "none";
+  if (raw.include_reasoning === true) return "auto";
+  return undefined;
+}
+
+/**
  * Translate an OpenAI Chat Completions request body into a /v1/responses request body.
  * Throws ChatCompletionsRequestError (-> 400) on malformed input.
  */
 export function chatCompletionsToResponsesBody(raw: unknown): Rec {
-  if (!isRec(raw)) throw new ChatCompletionsRequestError("request body must be a JSON object");
-  if (typeof raw.model !== "string" || raw.model.length === 0) {
-    throw new ChatCompletionsRequestError("model is required");
-  }
-  if (!Array.isArray(raw.messages) || raw.messages.length === 0) {
-    throw new ChatCompletionsRequestError("messages must be a non-empty array");
-  }
+  assertChatCompletionsRoutingBody(raw);
 
   const systemParts: string[] = [];
   const input: Rec[] = [];
@@ -286,7 +309,13 @@ export function chatCompletionsToResponsesBody(raw: unknown): Rec {
   if (raw.metadata !== undefined) body.metadata = raw.metadata;
 
   const effort = resolveReasoningEffort(raw);
-  if (effort) body.reasoning = { effort };
+  const summary = resolveReasoningSummary(raw);
+  if (effort || summary !== undefined) {
+    body.reasoning = {
+      ...(effort ? { effort } : {}),
+      summary: summary ?? "auto",
+    };
+  }
 
   const text = responseFormatToText(raw.response_format);
   if (text) body.text = text;

@@ -1,18 +1,6 @@
-import {
-  chmodSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  opendirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  truncateSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, opendirSync, readFileSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { atomicWriteFileAsync, getConfigDir } from "../config";
+import { atomicWriteFileAsync, getConfigDir, resolveWriteTarget } from "../config";
 import { enforceAppOwnedMemoryBudget, type RetainedStoreSnapshot } from "../lib/app-owned-memory";
 import type { OcxProviderContinuationState } from "../types";
 import {
@@ -21,6 +9,7 @@ import {
   readResponseSpill,
   recoverOrphanedResponseSpills,
   responseSpillDirectory,
+  responseSpillPayloadCap,
   type ResponseSpillRef,
   writeResponseSpillDurably,
 } from "./spill-store";
@@ -35,6 +24,10 @@ export const MAX_STORED_RESPONSE_BYTES = 64 * 1024 * 1024;
 /** Legacy snapshot selection only. Spill demotion is governed solely by the RAM cap above. */
 const SNAPSHOT_ENTRY_MAX_BYTES = 2 * 1024 * 1024;
 const SNAPSHOT_TOTAL_MAX_BYTES = 24 * 1024 * 1024;
+/** Refuse-to-parse ceiling for an existing snapshot file (above the 24 MiB write
+ * bound, so anything we wrote ourselves always loads; guards against externally
+ * planted or pre-cap unbounded files being parsed whole). */
+const SNAPSHOT_FILE_MAX_BYTES = 32 * 1024 * 1024;
 const STALE_TEMP_GRACE_MS = 15 * 60 * 1_000;
 const STALE_TEMP_MAX_ENTRIES = 4_096;
 const STALE_TEMP_MAX_CLEANUPS = 512;
@@ -44,7 +37,10 @@ const MAX_SNAPSHOT_REWRITE_ATTEMPTS = 4;
 interface ResidentResponseState {
   kind: "resident";
   createdAt: number;
+  clientThreadId?: string;
   items: unknown[];
+  /** Index in `items` where provider output begins; see clientCarriedPrefixLength. */
+  providerOutputStart?: number;
   providers?: OcxProviderContinuationState;
   sizeBytes: number;
 }
@@ -52,6 +48,9 @@ interface ResidentResponseState {
 interface SpilledResponseState {
   kind: "spill";
   createdAt: number;
+  clientThreadId?: string;
+  /** Mirrors the spilled payload boundary so a spilled entry keeps its anchor. */
+  providerOutputStart?: number;
   providers?: OcxProviderContinuationState;
   spill: ResponseSpillRef;
   sizeBytes: number;
@@ -68,10 +67,11 @@ type ResidentInput = Omit<ResidentResponseState, "kind" | "sizeBytes">;
 
 export type PreviousResponseReplayFailure = {
   code: "previous_response_not_found";
-  reason: "spill_missing" | "spill_corrupt" | "spill_failed";
+  reason: "spill_missing" | "spill_corrupt" | "spill_failed" | "spill_too_large";
 };
 
 const states = new Map<string, StoredResponseState>();
+const replayScopeMismatches = new WeakSet<object>();
 let storedResponseBytes = 0;
 let residentResponseBytes = 0;
 let oldestResidentId: string | undefined;
@@ -79,6 +79,20 @@ let oldestResidentAt: number | null = null;
 let byteCapOverride: number | null = null;
 let stateRevision = 0;
 const spillCounters = { writes: 0, writeFailures: 0, readFailures: 0 };
+/**
+ * Admission-boundary observability (test-visible). directSpills: oversized
+ * candidates routed straight to durable spill without a resident stay or
+ * unrelated demotion. oversizedDrops: candidates above the single-spill
+ * payload ceiling, tombstoned instead of retained. snapshotOversizedRefusals:
+ * snapshot files refused before parse.
+ */
+const admissionCounters = { directSpills: 0, oversizedDrops: 0, snapshotOversizedRefusals: 0 };
+let replayScopeMismatchDrops = 0;
+
+/** Test-only: admission-boundary counters (proves the new paths fire). */
+export function responseAdmissionCountersForTests(): Readonly<typeof admissionCounters> {
+  return admissionCounters;
+}
 // Superseded spill generations awaiting a durable snapshot before unlink
 // (review C1-1: unlinking at swap time races a crash against the debounced
 // snapshot — the reloaded OLD stub would point at a deleted file).
@@ -118,7 +132,9 @@ function measureResidentEntry(id: string, entry: ResidentInput): ResidentRespons
   const sizeBytes = serializedBytes({
     responseId: id,
     createdAt: entry.createdAt,
+    ...(entry.clientThreadId ? { clientThreadId: entry.clientThreadId } : {}),
     items: entry.items,
+    ...(entry.providerOutputStart !== undefined ? { providerOutputStart: entry.providerOutputStart } : {}),
     ...(entry.providers ? { providers: entry.providers } : {}),
   });
   return sizeBytes === null ? null : { kind: "resident", ...entry, sizeBytes };
@@ -189,12 +205,28 @@ function deleteEntry(id: string, options: { deleteSpill?: boolean } = {}): void 
   if (options.deleteSpill !== false) deleteOwnedSpills(existing);
 }
 
-function replaceWithSpillFailure(id: string, expected?: StoredResponseState): void {
+function replaceWithSpillFailure(
+  id: string,
+  expected?: StoredResponseState,
+  options: { deferSpillUnlink?: boolean } = {},
+): void {
   const existing = states.get(id);
   if (expected && existing !== expected) return;
   const failed = tombstone(id, expected?.createdAt ?? existing?.createdAt ?? now());
   if (replaceMapEntry(id, failed, expected)) {
-    if (existing) deleteOwnedSpills(existing);
+    if (existing) {
+      if (options.deferSpillUnlink && existing.kind === "spill") {
+        // Crash consistency (same rule as replaceSpillEntryAtomically): the old
+        // durable snapshot still references this generation until the tombstone
+        // itself is durable — queue the unlink for the next stable persist.
+        pendingSpillUnlinks.push(existing.spill);
+        while (pendingSpillUnlinks.length > PENDING_SPILL_UNLINKS_MAX) {
+          deleteResponseSpill(pendingSpillUnlinks.shift()!);
+        }
+      } else {
+        deleteOwnedSpills(existing);
+      }
+    }
   }
 }
 
@@ -202,6 +234,7 @@ function swapResidentForSpill(id: string, expected: ResidentResponseState, ref: 
   const base: Omit<SpilledResponseState, "sizeBytes"> = {
     kind: "spill",
     createdAt: expected.createdAt,
+    ...(expected.clientThreadId ? { clientThreadId: expected.clientThreadId } : {}),
     ...(expected.providers ? { providers: expected.providers } : {}),
     spill: ref,
   };
@@ -222,12 +255,16 @@ function replaceSpillEntryAtomically(
   try {
     const ref = writeResponseSpillDurably(id, {
       createdAt: candidate.createdAt,
+      ...(candidate.clientThreadId ? { clientThreadId: candidate.clientThreadId } : {}),
       items: candidate.items,
+      ...(candidate.providerOutputStart !== undefined ? { providerOutputStart: candidate.providerOutputStart } : {}),
       ...(candidate.providers ? { providers: candidate.providers } : {}),
     });
     const base: Omit<SpilledResponseState, "sizeBytes"> = {
       kind: "spill",
       createdAt: candidate.createdAt,
+      ...(candidate.clientThreadId ? { clientThreadId: candidate.clientThreadId } : {}),
+      ...(candidate.providerOutputStart !== undefined ? { providerOutputStart: candidate.providerOutputStart } : {}),
       ...(candidate.providers ? { providers: candidate.providers } : {}),
       spill: ref,
     };
@@ -248,7 +285,9 @@ function replaceSpillEntryAtomically(
     }
   } catch {
     spillCounters.writeFailures += 1;
-    replaceWithSpillFailure(id, expected);
+    // deferSpillUnlink: the durable snapshot may still reference the old
+    // generation; deleting it now would strand the old stub after a crash.
+    replaceWithSpillFailure(id, expected, { deferSpillUnlink: true });
   }
 }
 
@@ -263,6 +302,11 @@ function setResidentEntry(id: string, entry: ResidentInput): void {
     pruneResponses();
     return;
   }
+  if (candidate.sizeBytes > byteCap()) {
+    admitOversizedCandidate(id, candidate, expected);
+    pruneResponses();
+    return;
+  }
   if (expected?.kind === "spill") {
     replaceSpillEntryAtomically(id, expected, candidate);
     pruneResponses();
@@ -272,9 +316,76 @@ function setResidentEntry(id: string, entry: ResidentInput): void {
   pruneResponses();
 }
 
-// Expansion provenance must stay proxy-private: a WeakMap distinguishes replayed history from the
+/**
+ * Admission boundary for candidates that can never fit as resident (larger
+ * than the whole resident-map cap). Writes them DIRECTLY to durable spill and
+ * installs only the stub — the oversized candidate never becomes resident and
+ * no unrelated resident is demoted to make room for it. Candidates above the
+ * single-spill payload ceiling are tombstoned instead: retaining a spill the
+ * replay ceiling would refuse to read is write-only waste.
+ */
+function admitOversizedCandidate(
+  id: string,
+  candidate: ResidentResponseState,
+  expected?: StoredResponseState,
+): void {
+  if (candidate.sizeBytes > responseSpillPayloadCap()) {
+    admissionCounters.oversizedDrops += 1;
+    replaceWithSpillFailure(id, expected, { deferSpillUnlink: true });
+    return;
+  }
+  try {
+    const ref = writeResponseSpillDurably(id, {
+      createdAt: candidate.createdAt,
+      ...(candidate.clientThreadId ? { clientThreadId: candidate.clientThreadId } : {}),
+      items: candidate.items,
+      ...(candidate.providerOutputStart !== undefined ? { providerOutputStart: candidate.providerOutputStart } : {}),
+      ...(candidate.providers ? { providers: candidate.providers } : {}),
+    });
+    // Enforce the ceiling against the REAL envelope: the spill payload adds
+    // the {version, responseId, ...} wrapper, so a candidate within the
+    // wrapper's size of the cap would otherwise be retained unreadably.
+    if (ref.payloadBytes > responseSpillPayloadCap()) {
+      deleteResponseSpill(ref);
+      admissionCounters.oversizedDrops += 1;
+      replaceWithSpillFailure(id, expected, { deferSpillUnlink: true });
+      return;
+    }
+    const base: Omit<SpilledResponseState, "sizeBytes"> = {
+      kind: "spill",
+      createdAt: candidate.createdAt,
+      ...(candidate.clientThreadId ? { clientThreadId: candidate.clientThreadId } : {}),
+      ...(candidate.providers ? { providers: candidate.providers } : {}),
+      spill: ref,
+    };
+    const next: SpilledResponseState = { ...base, sizeBytes: stubSize(id, base) };
+    if (!replaceMapEntry(id, next, expected)) {
+      deleteResponseSpill(ref);
+      return;
+    }
+    spillCounters.writes += 1;
+    admissionCounters.directSpills += 1;
+    noteStubSwapForTest();
+    if (expected?.kind === "spill") {
+      // Same deferred-unlink rule as replaceSpillEntryAtomically: the new stub
+      // is durable only after the debounced snapshot, so the old generation
+      // stays until a stable persist drains the queue.
+      pendingSpillUnlinks.push(expected.spill);
+      while (pendingSpillUnlinks.length > PENDING_SPILL_UNLINKS_MAX) {
+        deleteResponseSpill(pendingSpillUnlinks.shift()!);
+      }
+    }
+  } catch {
+    spillCounters.writeFailures += 1;
+    replaceWithSpillFailure(id, expected, { deferSpillUnlink: true });
+  }
+}
+
+// Replay provenance must stay proxy-private: a WeakMap distinguishes replayed history from the
 // newly appended input suffix without adding an unknown field that native passthrough could send
-// upstream. The parser uses this boundary to acknowledge historical compaction markers exactly once.
+// upstream. The parser uses this boundary to acknowledge historical compaction markers exactly
+// once. It records the boundary whether the proxy prepended the history or the client already
+// carried it — the boundary is the same either way, and only its provenance differs.
 const replayedInputPrefixLengths = new WeakMap<object, number>();
 const replayFailures = new WeakMap<object, PreviousResponseReplayFailure>();
 let loaded = false;
@@ -292,18 +403,9 @@ function snapshotPath(): string {
   return join(getConfigDir(), "responses-state.json");
 }
 
-const RESPONSE_STATE_SNAPSHOT_IO = {
-  write: (path: string, content: string) => writeFileSync(path, content, { encoding: "utf-8", mode: 0o600 }),
-  harden: (path: string) => {
-    try { chmodSync(path, 0o600); } catch { /* best effort */ }
-  },
-  rename: (source: string, destination: string) => renameSync(source, destination),
-  truncate: (path: string) => truncateSync(path, 0),
-  unlink: (path: string) => unlinkSync(path),
-};
-
 interface LegacySnapshotState {
   createdAt?: unknown;
+  clientThreadId?: unknown;
   items?: unknown;
   providers?: OcxProviderContinuationState;
   conversationId?: unknown;
@@ -324,11 +426,26 @@ function loadSnapshotEntry(id: string, value: unknown): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) return;
   const rec = value as LegacySnapshotState & { kind?: unknown; spill?: unknown };
   if (typeof rec.createdAt !== "number" || !Number.isFinite(rec.createdAt)) return;
+  const clientThreadId = typeof rec.clientThreadId === "string" && rec.clientThreadId.trim().length > 0
+    ? rec.clientThreadId.trim()
+    : undefined;
+  // A malformed boundary degrades to "never skip" rather than to a bad index: an untrusted
+  // snapshot must not be able to authorize dropping conversation history.
+  const anchorFor = (itemCount: number): number | undefined => {
+    const raw = (rec as { providerOutputStart?: unknown }).providerOutputStart;
+    return Number.isSafeInteger(raw) && (raw as number) >= 0 && (raw as number) <= itemCount
+      ? raw as number
+      : undefined;
+  };
   if (rec.kind === "spill") {
     if (!isSpillRef(rec.spill)) return;
     const base: Omit<SpilledResponseState, "sizeBytes"> = {
       kind: "spill",
       createdAt: rec.createdAt,
+      ...(clientThreadId ? { clientThreadId } : {}),
+      // Item count is unknown until materialization, so accept any non-negative integer
+      // here; the spill payload validator re-checks it against the real array.
+      ...(anchorFor(Number.MAX_SAFE_INTEGER) !== undefined ? { providerOutputStart: anchorFor(Number.MAX_SAFE_INTEGER) } : {}),
       ...(rec.providers ? { providers: rec.providers } : {}),
       spill: rec.spill,
     };
@@ -353,11 +470,23 @@ function loadSnapshotEntry(id: string, value: unknown): void {
     : undefined);
   const resident = measureResidentEntry(id, {
     createdAt: rec.createdAt,
+    ...(clientThreadId ? { clientThreadId } : {}),
     items: rec.items,
+    ...(anchorFor(rec.items.length) !== undefined ? { providerOutputStart: anchorFor(rec.items.length) } : {}),
     ...(providers ? { providers } : {}),
   });
-  if (resident) replaceMapEntry(id, resident);
-  else replaceMapEntry(id, tombstone(id, rec.createdAt));
+  if (!resident) {
+    replaceMapEntry(id, tombstone(id, rec.createdAt));
+    return;
+  }
+  // Same admission boundary as live writes: an oversized snapshot row goes
+  // straight to spill (or tombstone above the payload ceiling) instead of
+  // entering the resident map and demoting unrelated rows on the first prune.
+  if (resident.sizeBytes > byteCap()) {
+    admitOversizedCandidate(id, resident, undefined);
+    return;
+  }
+  replaceMapEntry(id, resident);
 }
 
 export interface ResponseStateTempRecoveryResult {
@@ -476,18 +605,43 @@ function ensureLoaded(): void {
   if (loaded) return;
   loaded = true;
   const path = snapshotPath();
+  // Atomic writes place their temp beside the RESOLVED target, so a symlinked
+  // snapshot (dotfiles-managed config dir) strands temps in the link's real
+  // directory where a scan of the literal config dir would never see them.
+  // Both locations are swept; they collapse to one when nothing is symlinked.
+  // resolveWriteTarget refuses a dangling link; snapshot loading stays independent.
+  let resolvedDir = dirname(path);
   try {
-    recoverStaleResponseStateTemps(dirname(path));
+    resolvedDir = dirname(resolveWriteTarget(path));
   } catch {
-    /* best-effort cleanup only; snapshot loading must remain independent */
+    /* unresolvable link: sweep the literal dir only */
+  }
+  for (const dir of new Set([dirname(path), resolvedDir])) {
+    try {
+      recoverStaleResponseStateTemps(dir);
+    } catch {
+      /* best-effort cleanup only; snapshot loading must remain independent */
+    }
   }
   try {
     if (existsSync(path)) {
-      const raw = JSON.parse(readFileSync(path, "utf-8")) as { version?: unknown; states?: unknown };
-      if ((raw.version === 1 || raw.version === 2) && Array.isArray(raw.states)) {
-        for (const entry of raw.states) {
-          if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string") continue;
-          loadSnapshotEntry(entry[0], entry[1]);
+      // Bound the read BEFORE parse: the 24 MiB write cap constrains snapshots
+      // this process wrote, not a pre-existing oversized file. statSync follows
+      // symlinks deliberately — readFileSync below follows them too, so the
+      // size gate must measure the same target the read would.
+      const stat = statSync(path);
+      if (!stat.isFile()) {
+        // Symlink to a FIFO/device (e.g. /dev/zero): reading would block or
+        // return unbounded input. Only regular files are ever parsed.
+      } else if (stat.size > SNAPSHOT_FILE_MAX_BYTES) {
+        admissionCounters.snapshotOversizedRefusals += 1;
+      } else {
+        const raw = JSON.parse(readFileSync(path, "utf-8")) as { version?: unknown; states?: unknown };
+        if ((raw.version === 1 || raw.version === 2) && Array.isArray(raw.states)) {
+          for (const entry of raw.states) {
+            if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string") continue;
+            loadSnapshotEntry(entry[0], entry[1]);
+          }
         }
       }
     }
@@ -526,7 +680,9 @@ async function writeBoundedSnapshot(path: string): Promise<SnapshotWriteOutcome>
           persistable = smallState;
         }
         const persistEntry: [string, unknown] = [id, persistable];
-        const size = JSON.stringify(persistEntry).length;
+        // UTF-8 bytes, not UTF-16 code units: multibyte items otherwise slip
+        // past both snapshot caps at up to 2x the intended size.
+        const size = Buffer.byteLength(JSON.stringify(persistEntry), "utf8");
         if (state.kind === "resident" && size > SNAPSHOT_ENTRY_MAX_BYTES) continue;
         if (total + size > SNAPSHOT_TOTAL_MAX_BYTES) break;
         total += size;
@@ -535,7 +691,7 @@ async function writeBoundedSnapshot(path: string): Promise<SnapshotWriteOutcome>
       entries.reverse();
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
       try { chmodSync(dirname(path), 0o700); } catch { /* best-effort (e.g. Windows) */ }
-      await atomicWriteFileAsync(path, JSON.stringify({ version: 2, states: entries }), RESPONSE_STATE_SNAPSHOT_IO);
+      await atomicWriteFileAsync(path, JSON.stringify({ version: 2, states: entries }));
       persistAttemptHookForTests?.();
       if (revision === stateRevision) return "stable";
     }
@@ -606,6 +762,94 @@ function inputItems(input: unknown): unknown[] {
   return [input];
 }
 
+/** Hard cap for canonicalizing ANY item. Past it, the item is not comparable. */
+const REPLAY_FINGERPRINT_MAX_BYTES = 8 * 1024;
+/** Depth ceiling so a pathologically nested item cannot blow the canonicalizer. */
+const REPLAY_FINGERPRINT_MAX_DEPTH = 64;
+
+let replayOverlapSkips = 0;
+
+/**
+ * Canonical, order-stable fingerprint for one input item, or null when the item cannot be
+ * compared safely.
+ *
+ * Byte-counted DURING the walk rather than serialize-then-measure: a tool result can be
+ * megabytes and this runs on the request path, so the point of the cap is to stop early,
+ * not to discover afterwards that we should have. Object keys are sorted so two
+ * semantically identical items cannot differ by key order alone.
+ *
+ * The cap applies to EVERY item. An `id`/`call_id` is additional occurrence evidence, never
+ * a substitute for content equality, so an over-cap identified tool item is non-comparable
+ * exactly like an over-cap message.
+ */
+function replayItemFingerprint(item: unknown): string | null {
+  const out: string[] = [];
+  let bytes = 0;
+  const push = (text: string): boolean => {
+    bytes += Buffer.byteLength(text, "utf8");
+    if (bytes > REPLAY_FINGERPRINT_MAX_BYTES) return false;
+    out.push(text);
+    return true;
+  };
+  const walk = (value: unknown, depth: number): boolean => {
+    if (depth > REPLAY_FINGERPRINT_MAX_DEPTH) return false;
+    if (value === null || typeof value !== "object") return push(JSON.stringify(value) ?? "null");
+    if (Array.isArray(value)) {
+      if (!push("[")) return false;
+      for (const element of value) {
+        if (!walk(element, depth + 1)) return false;
+        if (!push(",")) return false;
+      }
+      return push("]");
+    }
+    if (!push("{")) return false;
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      if (!push(JSON.stringify(key))) return false;
+      if (!walk((value as Record<string, unknown>)[key], depth + 1)) return false;
+      if (!push(",")) return false;
+    }
+    return push("}");
+  };
+  return walk(item, 0) ? out.join("") : null;
+}
+
+/** Non-empty provider-issued `id`/`call_id` on an item, else null. */
+function providerIssuedIdentity(item: unknown): string | null {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+  const record = item as { id?: unknown; call_id?: unknown };
+  for (const candidate of [record.id, record.call_id]) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Number of leading stored items the client already carries verbatim, or 0.
+ *
+ * Requires an exact ordered run: every stored item must match the client input item at the
+ * same index. Any not-comparable item aborts to 0 — skipping just that item could align two
+ * different occurrences and manufacture a false positive, and a false positive here deletes
+ * real conversation history.
+ *
+ * Known gap (FU-2): stored input can contain proxy-injected guidance the client never saw,
+ * and ids repaired after recording. Those sessions do not match here and expand as before.
+ */
+function clientCarriedPrefixLength(stored: readonly unknown[], clientInput: readonly unknown[]): number {
+  if (stored.length === 0 || clientInput.length < stored.length) return 0;
+  for (let index = 0; index < stored.length; index += 1) {
+    const storedPrint = replayItemFingerprint(stored[index]);
+    if (storedPrint === null) return 0;
+    const clientPrint = replayItemFingerprint(clientInput[index]);
+    if (clientPrint === null || storedPrint !== clientPrint) return 0;
+  }
+  return stored.length;
+}
+
+/** Test-only: replay prepends skipped because the client already carried the history. */
+export function replayOverlapSkipsForTests(): number {
+  return replayOverlapSkips;
+}
+
 function pruneResponses(at = now()): void {
   for (const [id, state] of states) {
     if (at - state.createdAt > RESPONSE_TTL_MS) deleteEntry(id);
@@ -629,7 +873,9 @@ function pruneResponses(at = now()): void {
     try {
       const ref = writeResponseSpillDurably(oldestId, {
         createdAt: entry.createdAt,
+        ...(entry.clientThreadId ? { clientThreadId: entry.clientThreadId } : {}),
         items: entry.items,
+        ...(entry.providerOutputStart !== undefined ? { providerOutputStart: entry.providerOutputStart } : {}),
         ...(entry.providers ? { providers: entry.providers } : {}),
       });
       if (swapResidentForSpill(oldestId, entry, ref)) spillCounters.writes += 1;
@@ -670,7 +916,9 @@ export function evictOldestResponseContinuationForBudget(): number {
   try {
     const ref = writeResponseSpillDurably(id, {
       createdAt: entry.createdAt,
+      ...(entry.clientThreadId ? { clientThreadId: entry.clientThreadId } : {}),
       items: entry.items,
+      ...(entry.providerOutputStart !== undefined ? { providerOutputStart: entry.providerOutputStart } : {}),
       ...(entry.providers ? { providers: entry.providers } : {}),
     });
     if (swapResidentForSpill(id, entry, ref)) spillCounters.writes += 1;
@@ -698,7 +946,11 @@ function materializeEntry(
     spillCounters.readFailures += 1;
     const failure: PreviousResponseReplayFailure = {
       code: "previous_response_not_found",
-      reason: result.reason === "missing" ? "spill_missing" : "spill_corrupt",
+      reason: result.reason === "missing"
+        ? "spill_missing"
+        : result.reason === "too_large"
+          ? "spill_too_large"
+          : "spill_corrupt",
     };
     replaceWithSpillFailure(id, entry);
     schedulePersist();
@@ -706,7 +958,11 @@ function materializeEntry(
   }
   const state = measureResidentEntry(id, {
     createdAt: result.payload.createdAt,
+    ...(result.payload.clientThreadId ? { clientThreadId: result.payload.clientThreadId } : {}),
     items: result.payload.items,
+    ...(result.payload.providerOutputStart !== undefined
+      ? { providerOutputStart: result.payload.providerOutputStart }
+      : {}),
     ...(result.payload.providers ? { providers: result.payload.providers } : {}),
   });
   if (!state) {
@@ -718,7 +974,16 @@ function materializeEntry(
   return { ok: true, state };
 }
 
-export function expandPreviousResponseInput(body: unknown): unknown {
+function normalizedClientThreadId(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function withoutPreviousResponseId(request: Record<string, unknown>): Record<string, unknown> {
+  const { previous_response_id: _previousResponseId, ...freshRequest } = request;
+  return freshRequest;
+}
+
+export function expandPreviousResponseInput(body: unknown, clientThreadId?: string): unknown {
   if (!body || typeof body !== "object" || Array.isArray(body)) return body;
   const request = body as Record<string, unknown>;
   const previousId = typeof request.previous_response_id === "string" ? request.previous_response_id : undefined;
@@ -731,6 +996,49 @@ export function expandPreviousResponseInput(body: unknown): unknown {
   if (!materialized.ok) {
     replayFailures.set(request, materialized.failure);
     return body;
+  }
+  const requestThreadId = normalizedClientThreadId(clientThreadId);
+  const storedThreadId = normalizedClientThreadId(materialized.state.clientThreadId);
+  // A Codex task must never inherit another task's continuation, nor a legacy unscoped entry.
+  // Unscoped callers retain backward-compatible replay only with other unscoped entries.
+  if (requestThreadId !== storedThreadId) {
+    const freshRequest = withoutPreviousResponseId(request);
+    replayScopeMismatches.add(freshRequest);
+    replayScopeMismatchDrops += 1;
+    return freshRequest;
+  }
+  // The client already replayed this history verbatim. Prepending the stored copy would
+  // double it, and the doubled turn is stored again, so the next turn triples (#1412 saw
+  // 127k of real context reach 1.3M tokens this way).
+  //
+  // Three conditions, all required. The run must cover the whole stored entry; it must reach
+  // the provider-output region; and some matched item in that region must carry a
+  // provider-issued id. The last one is the load-bearing part: content equality alone proves
+  // two items look alike, not that they are the same occurrence, so a client that merely
+  // repeats its own message would otherwise authorize a skip that deletes real history.
+  // There is no invariant that provider output always carries ids, so an entry whose output
+  // has none simply never skips.
+  {
+    const clientInput = inputItems(request.input);
+    const stored = materialized.state.items;
+    const anchor = materialized.state.providerOutputStart;
+    const carried = clientCarriedPrefixLength(stored, clientInput);
+    if (
+      carried === stored.length
+      && anchor !== undefined
+      && carried > anchor
+      && stored.slice(anchor, carried).some(item => providerIssuedIdentity(item) !== null)
+    ) {
+      replayOverlapSkips += 1;
+      // Keep previous_response_id: Kiro and Cursor recover their conversation ids from it
+      // (kiro-wire.ts, cursor/request-builder.ts). Only the concatenation is skipped.
+      const unchanged = { ...request };
+      // Same provenance boundary a real expansion would record, so the replayed prefix does
+      // not re-acknowledge historical compaction markers (parser.ts) and stays visible to
+      // guidance de-duplication (collaboration.ts).
+      replayedInputPrefixLengths.set(unchanged, carried);
+      return unchanged;
+    }
   }
   const expanded = {
     ...request,
@@ -749,6 +1057,11 @@ export function previousResponseReplayFailure(body: unknown): PreviousResponseRe
 export function previousResponseReplayPrefixLength(body: unknown): number {
   if (!body || typeof body !== "object" || Array.isArray(body)) return 0;
   return replayedInputPrefixLengths.get(body) ?? 0;
+}
+
+/** True when a stale or foreign previous_response_id was removed from this exact request body. */
+export function previousResponseScopeMismatch(body: unknown): boolean {
+  return !!body && typeof body === "object" && replayScopeMismatches.has(body as object);
 }
 
 export function previousResponseConversationId(responseId: string | undefined): string | undefined {
@@ -776,6 +1089,7 @@ export interface ResponseStateMetrics {
   spillWrites: number;
   spillWriteFailures: number;
   spillReadFailures: number;
+  replayScopeMismatchDrops: number;
 }
 
 /**
@@ -818,6 +1132,7 @@ export function responseStateMetrics(): ResponseStateMetrics {
     spillWrites: spillCounters.writes,
     spillWriteFailures: spillCounters.writeFailures,
     spillReadFailures: spillCounters.readFailures,
+    replayScopeMismatchDrops,
   };
 }
 
@@ -825,14 +1140,36 @@ export function responseStateMetrics(): ResponseStateMetrics {
  * Cache completed output and max_output_tokens partial output for previous_response_id replay.
  * Content-filtered incomplete and failed output are not authoritative replay history.
  */
+/**
+ * Request bodies that must never enter the continuation cache.
+ *
+ * The cache is persisted to `responses-state.json`, so anything recorded here reaches disk.
+ * Encrypted-agent-task recovery decrypts task text into the request body and promises
+ * in-memory, TTL-bounded retention; recording that body would put the plaintext on disk with
+ * no TTL and break the promise.
+ *
+ * A WeakSet rather than a body field on purpose: `_rawBody` is serialized verbatim by the
+ * native passthrough, so any marker written into the body itself would be sent upstream.
+ * Marking is enforced once here rather than at each call site, because every recording path
+ * (streaming, non-streaming, passthrough, forced) funnels through `rememberResponseState` —
+ * a new call site cannot reintroduce the leak by forgetting a guard.
+ */
+const nonPersistableBodies = new WeakSet<object>();
+
+/** Bar this exact request body from the continuation cache, and therefore from disk. */
+export function markBodyNonPersistable(body: unknown): void {
+  if (body && typeof body === "object") nonPersistableBodies.add(body as object);
+}
+
 export function rememberResponseState(
   requestBody: unknown,
   response: { id?: unknown; output?: unknown; status?: unknown; incomplete_details?: unknown },
   providerState?: OcxProviderContinuationState | string,
-  opts?: { force?: boolean },
+  opts?: { force?: boolean; clientThreadId?: string },
 ): void {
   if (!requestBody || typeof requestBody !== "object" || Array.isArray(requestBody)) return;
   const request = requestBody as Record<string, unknown>;
+  if (nonPersistableBodies.has(request)) return;
   // `force` bypasses only the store:false skip: Codex sends `store:false` on every non-Azure
   // HTTP request (and WS inherits it), yet its WS turns still chain with previous_response_id.
   // The passthrough branch records with force so those chains can be expanded locally; the
@@ -854,9 +1191,18 @@ export function rememberResponseState(
       return !!item && typeof item === "object" && (item as { type?: unknown }).type === "function_call";
     });
   }
+  const clientThreadId = normalizedClientThreadId(opts?.clientThreadId);
+  // Compute the normalized array once and reuse it for both fields, so the recorded
+  // boundary can never disagree with the items it indexes.
+  const requestItems = inputItems(request.input);
   setResidentEntry(response.id, {
     createdAt: now(),
-    items: [...inputItems(request.input), ...response.output],
+    ...(clientThreadId ? { clientThreadId } : {}),
+    items: [...requestItems, ...response.output],
+    // Where response.output begins. A replay skip requires a matched item at or past this
+    // index that also carries a provider-issued id — position alone proves only that an item
+    // sits on the provider side, not that the provider authored it.
+    providerOutputStart: requestItems.length,
     // Always preserve the Cursor conversation id so the next tool-result turn can continue the SAME
     // Cursor conversation (multi-turn continuation). Separately track whether Cursor's own
     // checkpoint/cache is safe to reuse: a turn that ended with a pending client tool call produced an
@@ -901,6 +1247,8 @@ export function clearResponseStateMemoryForTests(): void {
   spillCounters.writes = 0;
   spillCounters.writeFailures = 0;
   spillCounters.readFailures = 0;
+  replayScopeMismatchDrops = 0;
+  replayOverlapSkips = 0;
   persistAttemptHookForTests = null;
   loaded = false;
 }

@@ -14,17 +14,33 @@
  * it is not a standalone leak discriminator. `responseState` attributes growth
  * further: it is the proxy's previous_response_id continuation store, so a
  * growing responseState.totalBytes under rising observed memory points at
- * conversation retention rather than the runtime allocator.
+ * conversation retention rather than the runtime allocator. Spill counts,
+ * payload-byte totals, tombstones, and failure counters remain finite scalars;
+ * response ids, filenames, digests, paths, and payload content never leave the owner.
  *
  * `activeTurnCount` / `isDraining` are scalar lifecycle counters for the
  * dashboard drain-and-restart confirm UX — never request bodies or IDs.
  */
-import { decideEagerRelay } from "../../lib/bun-stream-caps";
-import { getActiveTurnCount, getActiveTurnMetrics, isDraining } from "../lifecycle";
+import { selectEagerPath } from "../../lib/bun-stream-caps";
+import { reportedBunRuntimeSource } from "../../lib/bun-runtime";
+import { getActiveTurnCount, isDraining } from "../lifecycle";
 import { getActiveMemoryWatchdog, observedMemoryCounter } from "../memory-watchdog";
 import { responseStateMetrics } from "../../responses/state";
 import { appOwnedBytesSnapshot } from "../../lib/app-owned-memory";
+import {
+  SYSTEM_RESTART_EXPECTED_PID_HEADER,
+  parseExpectedSystemRestartPid,
+} from "../../lib/system-restart-contract";
+import {
+  CODEX_APP_SERVER_STATE_PATH,
+  CODEX_RESTART_PATH,
+} from "../../lib/codex-restart-contract";
 import { jsonResponse } from "../auth-cors";
+import { getInspectionCounters } from "../relay";
+import type {
+  performCodexRestart,
+  readCodexAppServerState,
+} from "../../codex/app-server-restart-service";
 import type { ManagementContext } from "./context";
 import { acceptSystemRestart } from "./system-restart";
 
@@ -65,10 +81,19 @@ export async function handleSystemRoutes(ctx: ManagementContext): Promise<Respon
       })()
       : null;
     const streamMode = config.streamMode ?? "auto";
+    /**
+     * No request-specific rewrite context exists on this route, so report the
+     * effective no-client-rewrite baseline. Individual rewrite requests still
+     * stay on tee even when this baseline says eager.
+     */
+    const eagerRelay = selectEagerPath(process.platform, false, streamMode);
     return jsonResponse({
       pid: process.pid,
       bunVersion: Bun.version,
       bunRevision: Bun.revision,
+      // Recorded at launch, not resolved now: absent means "this service predates the
+      // marker", which callers must report as unknown rather than guess.
+      bunRuntimeSource: reportedBunRuntimeSource(),
       platform: process.platform,
       uptimeSeconds: process.uptime(),
       rss: usage.rss,
@@ -78,19 +103,35 @@ export async function handleSystemRoutes(ctx: ManagementContext): Promise<Respon
 	      arrayBuffers: usage.arrayBuffers,
 	      observedBytes: observed.observedBytes,
 	      observedMetric: observed.observedMetric,
-      jscHeap,
+	      jscHeap,
       responseState: responseStateMetrics(),
       appOwnedBytes: appOwnedBytesSnapshot(),
+      inspectionCounters: getInspectionCounters(),
       streamMode,
-      eagerRelay: process.platform === "win32" ? decideEagerRelay(streamMode) : null,
+      eagerRelay,
       watchdog,
       activeTurnCount: getActiveTurnCount(),
-      activeTurns: getActiveTurnMetrics(),
       isDraining: isDraining(),
     });
   }
 
   if (url.pathname === "/api/system/restart" && req.method === "POST") {
+    const expectedPid = parseExpectedSystemRestartPid(
+      req.headers.get(SYSTEM_RESTART_EXPECTED_PID_HEADER),
+    );
+    if (expectedPid.kind === "invalid") {
+      return jsonResponse({
+        success: false,
+        error: "Invalid restart target identity.",
+      }, 400, req, config);
+    }
+    if (expectedPid.kind === "present" && expectedPid.pid !== process.pid) {
+      return jsonResponse({
+        success: false,
+        error: "Restart target identity changed.",
+      }, 409, req, config);
+    }
+
     // Longer informed drain than /api/stop; does not tear down Codex/Grok injection.
     const result = acceptSystemRestart();
     return jsonResponse({
@@ -102,6 +143,36 @@ export async function handleSystemRoutes(ctx: ManagementContext): Promise<Respon
       drainTimeoutMs: result.drainTimeoutMs,
       alreadyDraining: result.alreadyDraining,
     }, 202, req, config);
+  }
+
+  if (
+    (url.pathname === CODEX_APP_SERVER_STATE_PATH && req.method === "GET")
+    || (url.pathname === CODEX_RESTART_PATH && req.method === "POST")
+  ) {
+    // Resolved inside the path check, not at the top of this function: every
+    // /api/system/* request runs through here, and an unconditional import would
+    // pull the platform process-enumeration helpers into requests that never
+    // touch them.
+    // An explicit branch rather than `??`: the seam is an optional property, and
+    // narrowing through a nullish default keeps its `undefined` in the union.
+    let service: {
+      readState: typeof readCodexAppServerState;
+      performRestart: typeof performCodexRestart;
+    };
+    const injected = ctx.deps.codexRestartService;
+    if (injected) {
+      service = injected;
+    } else {
+      const module = await import("../../codex/app-server-restart-service");
+      service = {
+        readState: module.readCodexAppServerState,
+        performRestart: module.performCodexRestart,
+      };
+    }
+    if (req.method === "GET") {
+      return jsonResponse(service.readState(), 200, req, config);
+    }
+    return jsonResponse(await service.performRestart(), 200, req, config);
   }
 
   return null;

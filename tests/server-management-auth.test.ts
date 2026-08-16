@@ -1,16 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { SERVER_BUDGET_MS } from "./helpers/test-budget";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
-import { serveGuiFile } from "../src/server/gui-static";
+import { serveGuiFile, serveSessionBootstrap } from "../src/server/gui-static";
 import { isProxyAdmissionSecret } from "../src/server/auth-cors";
 import {
   initializeManagementAuthState,
   issueGuiSession,
+  managementPrincipal,
   removeManagementTokenPathBestEffort,
   requireManagementAuth,
 } from "../src/server/management-auth";
@@ -20,8 +21,48 @@ import {
   resetHardenedStateForTests,
   setIcaclsRunnerForTests,
   setPlatformForTests,
+  timedOutSecretPathCountForTests,
   hardenSecretDir,
 } from "../src/lib/windows-secret-acl";
+import {
+  LOCAL_ATTESTATION_CHALLENGE_HEADER,
+  LOCAL_ATTESTATION_PROOF_HEADER,
+  verifyLocalAttestationProof,
+} from "../src/lib/local-management-attestation";
+import {
+  LOCAL_MANAGEMENT_CAPABILITY_HEADER,
+  LOCAL_MANAGEMENT_CAPABILITY_EXPIRES_AT_HEADER,
+  LOCAL_MANAGEMENT_CAPABILITY_TTL_MS,
+  LOCAL_MANAGEMENT_EXPECTED_PID_HEADER,
+  LOCAL_MANAGEMENT_NONCE_HEADER,
+  LOCAL_MANAGEMENT_READ_PATHS,
+  createLocalManagementReadCapability,
+} from "../src/lib/local-management-capability";
+import {
+  CODEX_APP_SERVER_STATE_PATH,
+  CODEX_RESTART_PATH,
+} from "../src/lib/codex-restart-contract";
+import {
+  SYSTEM_RESTART_CAPABILITY_HEADER,
+  SYSTEM_RESTART_EXPECTED_PID_HEADER,
+  SYSTEM_RESTART_METHOD,
+  SYSTEM_RESTART_NONCE_HEADER,
+  SYSTEM_RESTART_PATH,
+  createSystemRestartCapability,
+} from "../src/lib/system-restart-contract";
+import {
+  LOCAL_PROVIDER_RELOAD_CAPABILITY_HEADER,
+  LOCAL_PROVIDER_RELOAD_CAPABILITY_TTL_MS,
+  LOCAL_PROVIDER_RELOAD_EXPECTED_PID_HEADER,
+  LOCAL_PROVIDER_RELOAD_EXPIRES_AT_HEADER,
+  LOCAL_PROVIDER_RELOAD_METHOD,
+  LOCAL_PROVIDER_RELOAD_NAME_HEADER,
+  LOCAL_PROVIDER_RELOAD_NONCE_HEADER,
+  LOCAL_PROVIDER_RELOAD_PATH,
+  createLocalProviderReloadCapability,
+  verifyLocalProviderReloadCapability,
+} from "../src/lib/local-provider-reload-contract";
+import { setSystemRestartIoForTests } from "../src/server/management/system-restart";
 
 const previousHome = process.env.OPENCODEX_HOME;
 const previousDataToken = process.env.OPENCODEX_API_AUTH_TOKEN;
@@ -74,6 +115,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setSystemRestartIoForTests();
   setIcaclsRunnerForTests(null);
   setPlatformForTests(null);
   resetHardenedStateForTests();
@@ -88,6 +130,347 @@ afterEach(() => {
 });
 
 describe("management and data-plane credential separation", () => {
+  test("healthz proves the listener owns the protected runtime secret", async () => {
+    const secret = "A".repeat(43);
+    const challenge = "B".repeat(43);
+    const server = startServer(0, { localAttestationSecret: secret });
+    try {
+      const health = await fetch(new URL("/healthz", server.url), {
+        headers: { [LOCAL_ATTESTATION_CHALLENGE_HEADER]: challenge },
+      });
+      const proof = health.headers.get(LOCAL_ATTESTATION_PROOF_HEADER);
+      expect(verifyLocalAttestationProof(secret, challenge, process.pid, server.port, proof)).toBe(true);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("a process-scoped capability authorizes only the exact restart operation", async () => {
+    const secret = "A".repeat(43);
+    const nonce = "B".repeat(43);
+    let scheduled = 0;
+    // The capability contract is platform-independent. Avoid making this HTTP
+    // integration assertion depend on the host's live icacls policy; dedicated
+    // Windows ACL tests cover that boundary separately.
+    setPlatformForTests("linux");
+    setSystemRestartIoForTests({
+      isDraining: () => false,
+      schedule: () => { scheduled += 1; },
+      setDraining: () => {},
+    });
+    const unavailable = { available: false, reason: "injected unavailable state" } as const;
+    const server = startServer(0, {
+      localAttestationSecret: secret,
+      managementAuthState: unavailable,
+    });
+    try {
+      const capability = createSystemRestartCapability(
+        secret,
+        nonce,
+        SYSTEM_RESTART_METHOD,
+        SYSTEM_RESTART_PATH,
+        process.pid,
+        server.port,
+      );
+      const headers = {
+        [SYSTEM_RESTART_EXPECTED_PID_HEADER]: String(process.pid),
+        [SYSTEM_RESTART_NONCE_HEADER]: nonce,
+        [SYSTEM_RESTART_CAPABILITY_HEADER]: capability!,
+      };
+
+      const restart = await fetch(new URL(SYSTEM_RESTART_PATH, server.url), {
+        method: SYSTEM_RESTART_METHOD,
+        headers,
+      });
+      expect(restart.status).toBe(202);
+      expect(scheduled).toBe(1);
+
+      const foreignRoute = await fetch(new URL("/api/config", server.url), {
+        method: "POST",
+        headers,
+      });
+      expect(foreignRoute.status).toBe(503);
+
+      const tampered = await fetch(new URL(SYSTEM_RESTART_PATH, server.url), {
+        method: SYSTEM_RESTART_METHOD,
+        headers: { ...headers, [SYSTEM_RESTART_CAPABILITY_HEADER]: "C".repeat(43) },
+      });
+      expect(tampered.status).toBe(503);
+
+      const wrongMethod = await fetch(new URL(SYSTEM_RESTART_PATH, server.url), {
+        method: "DELETE",
+        headers,
+      });
+      expect(wrongMethod.status).toBe(503);
+
+      const wrongPortCapability = createSystemRestartCapability(
+        secret,
+        nonce,
+        SYSTEM_RESTART_METHOD,
+        SYSTEM_RESTART_PATH,
+        process.pid,
+        server.port + 1,
+      );
+      const wrongPort = await fetch(new URL(SYSTEM_RESTART_PATH, server.url), {
+        method: SYSTEM_RESTART_METHOD,
+        headers: {
+          ...headers,
+          [SYSTEM_RESTART_CAPABILITY_HEADER]: wrongPortCapability!,
+        },
+      });
+      expect(wrongPort.status).toBe(503);
+      expect(scheduled).toBe(1);
+
+      const request = new Request(new URL(SYSTEM_RESTART_PATH, server.url), {
+        method: SYSTEM_RESTART_METHOD,
+        headers,
+      });
+      const local = { attestationSecret: secret, pid: process.pid, port: server.port };
+      expect(requireManagementAuth(request, unavailable, remoteConfig(), local)).toBeNull();
+      expect(managementPrincipal(request, unavailable, remoteConfig(), local))
+        .toBe("system-restart-capability");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("a local-read capability authorizes only its exact GET path", async () => {
+    const secret = "A".repeat(43);
+    const nonce = "B".repeat(43);
+    const unavailable = { available: false, reason: "injected unavailable state" } as const;
+    const server = startServer(0, {
+      localAttestationSecret: secret,
+      managementAuthState: unavailable,
+    });
+    const headersFor = (path: string, port = server.port, requestNonce = nonce) => {
+      const expiresAt = Date.now() + LOCAL_MANAGEMENT_CAPABILITY_TTL_MS;
+      return {
+        [LOCAL_MANAGEMENT_EXPECTED_PID_HEADER]: String(process.pid),
+        [LOCAL_MANAGEMENT_NONCE_HEADER]: requestNonce,
+        [LOCAL_MANAGEMENT_CAPABILITY_EXPIRES_AT_HEADER]: String(expiresAt),
+        [LOCAL_MANAGEMENT_CAPABILITY_HEADER]: createLocalManagementReadCapability(
+          secret,
+          requestNonce,
+          "GET",
+          path,
+          process.pid,
+          port,
+          expiresAt,
+        )!,
+      };
+    };
+    try {
+      const memoryHeaders = headersFor(LOCAL_MANAGEMENT_READ_PATHS.systemMemory);
+      const memory = await fetch(new URL(LOCAL_MANAGEMENT_READ_PATHS.systemMemory, server.url), {
+        headers: memoryHeaders,
+      });
+      expect(memory.status).toBe(200);
+      const memoryBody = await memory.json() as { pid?: number; bunVersion?: string };
+      expect(memoryBody.pid).toBe(process.pid);
+      expect(memoryBody.bunVersion).toBe(Bun.version);
+
+      const replay = await fetch(new URL(LOCAL_MANAGEMENT_READ_PATHS.systemMemory, server.url), {
+        headers: memoryHeaders,
+      });
+      expect(replay.status).toBe(503);
+
+      const memoryCapabilityOnAccounts = await fetch(
+        new URL(LOCAL_MANAGEMENT_READ_PATHS.codexAccounts, server.url),
+        {
+          headers: headersFor(
+            LOCAL_MANAGEMENT_READ_PATHS.systemMemory,
+            server.port,
+            "C".repeat(43),
+          ),
+        },
+      );
+      expect(memoryCapabilityOnAccounts.status).toBe(503);
+
+      const accountHeaders = headersFor(LOCAL_MANAGEMENT_READ_PATHS.codexAccounts);
+      const accounts = await fetch(new URL(LOCAL_MANAGEMENT_READ_PATHS.codexAccounts, server.url), {
+        headers: accountHeaders,
+      });
+      expect(accounts.status).toBe(200);
+
+      const query = await fetch(
+        new URL(`${LOCAL_MANAGEMENT_READ_PATHS.codexAccounts}?include=all`, server.url),
+        {
+          headers: headersFor(
+            LOCAL_MANAGEMENT_READ_PATHS.codexAccounts,
+            server.port,
+            "E".repeat(43),
+          ),
+        },
+      );
+      expect(query.status).toBe(503);
+
+      const mutation = await fetch(new URL(LOCAL_MANAGEMENT_READ_PATHS.codexAccounts, server.url), {
+        method: "POST",
+        headers: {
+          ...headersFor(
+            LOCAL_MANAGEMENT_READ_PATHS.codexAccounts,
+            server.port,
+            "F".repeat(43),
+          ),
+          "content-type": "application/json",
+        },
+        body: "{}",
+      });
+      expect(mutation.status).toBe(503);
+
+      const foreignRoute = await fetch(new URL("/api/config", server.url), {
+        headers: headersFor(
+          LOCAL_MANAGEMENT_READ_PATHS.codexAccounts,
+          server.port,
+          "G".repeat(43),
+        ),
+      });
+      expect(foreignRoute.status).toBe(503);
+
+      const wrongPort = await fetch(new URL(LOCAL_MANAGEMENT_READ_PATHS.systemMemory, server.url), {
+        headers: headersFor(
+          LOCAL_MANAGEMENT_READ_PATHS.systemMemory,
+          server.port + 1,
+          "H".repeat(43),
+        ),
+      });
+      expect(wrongPort.status).toBe(503);
+
+      const principalHeaders = headersFor(
+        LOCAL_MANAGEMENT_READ_PATHS.systemMemory,
+        server.port,
+        "I".repeat(43),
+      );
+      const request = new Request(new URL(LOCAL_MANAGEMENT_READ_PATHS.systemMemory, server.url), {
+        headers: principalHeaders,
+      });
+      const local = { attestationSecret: secret, pid: process.pid, port: server.port };
+      expect(requireManagementAuth(request, unavailable, remoteConfig(), local)).toBeNull();
+      expect(managementPrincipal(request, unavailable, remoteConfig(), local))
+        .toBe("local-read-capability");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("a provider-reload capability is one-shot and exact to its operation", () => {
+    const secret = "A".repeat(43);
+    const nonce = "J".repeat(43);
+    const expiresAt = Date.now() + LOCAL_PROVIDER_RELOAD_CAPABILITY_TTL_MS;
+    const unavailable = { available: false, reason: "injected unavailable state" } as const;
+    const local = { attestationSecret: secret, pid: process.pid, port: 10100 };
+    const headers = {
+      [LOCAL_PROVIDER_RELOAD_EXPECTED_PID_HEADER]: String(process.pid),
+      [LOCAL_PROVIDER_RELOAD_NONCE_HEADER]: nonce,
+      [LOCAL_PROVIDER_RELOAD_EXPIRES_AT_HEADER]: String(expiresAt),
+      [LOCAL_PROVIDER_RELOAD_NAME_HEADER]: "xai",
+      "content-length": "0",
+      [LOCAL_PROVIDER_RELOAD_CAPABILITY_HEADER]: createLocalProviderReloadCapability(
+        secret,
+        nonce,
+        LOCAL_PROVIDER_RELOAD_METHOD,
+        LOCAL_PROVIDER_RELOAD_PATH,
+        "xai",
+        process.pid,
+        local.port,
+        expiresAt,
+      )!,
+    };
+
+    const request = new Request(`http://127.0.0.1:${local.port}${LOCAL_PROVIDER_RELOAD_PATH}`, {
+      method: LOCAL_PROVIDER_RELOAD_METHOD,
+      headers,
+    });
+    expect(requireManagementAuth(request, unavailable, remoteConfig(), local)).toBeNull();
+    expect(managementPrincipal(request, unavailable, remoteConfig(), local))
+      .toBe("local-provider-reload-capability");
+
+    const replay = new Request(request.url, { method: LOCAL_PROVIDER_RELOAD_METHOD, headers });
+    expect(requireManagementAuth(replay, unavailable, remoteConfig(), local)?.status).toBe(503);
+    const wrongName = new Request(request.url, {
+      method: LOCAL_PROVIDER_RELOAD_METHOD,
+      headers: { ...headers, [LOCAL_PROVIDER_RELOAD_NAME_HEADER]: "openai" },
+    });
+    expect(requireManagementAuth(wrongName, unavailable, remoteConfig(), local)?.status).toBe(503);
+    const query = new Request(`${request.url}?name=xai`, { method: LOCAL_PROVIDER_RELOAD_METHOD, headers });
+    expect(requireManagementAuth(query, unavailable, remoteConfig(), local)?.status).toBe(503);
+    const body = new Request(request.url, {
+      method: LOCAL_PROVIDER_RELOAD_METHOD,
+      headers: { ...headers, "content-length": "2" },
+      body: "{}",
+    });
+    expect(requireManagementAuth(body, unavailable, remoteConfig(), local)?.status).toBe(503);
+  });
+
+  test("provider-reload capability binds method path process endpoint and TTL", () => {
+    const secret = "A".repeat(43);
+    const nonce = "K".repeat(43);
+    const now = 1_800_000_000_000;
+    const pid = 4242;
+    const port = 10100;
+    const name = "xai";
+    const validExpiry = now + LOCAL_PROVIDER_RELOAD_CAPABILITY_TTL_MS;
+    const capability = createLocalProviderReloadCapability(
+      secret,
+      nonce,
+      LOCAL_PROVIDER_RELOAD_METHOD,
+      LOCAL_PROVIDER_RELOAD_PATH,
+      name,
+      pid,
+      port,
+      validExpiry,
+    )!;
+    const verify = (
+      method = LOCAL_PROVIDER_RELOAD_METHOD,
+      path = LOCAL_PROVIDER_RELOAD_PATH,
+      selectedName = name,
+      selectedPid = pid,
+      selectedPort = port,
+      expiresAt = validExpiry,
+      candidate = capability,
+    ) => verifyLocalProviderReloadCapability(
+      secret,
+      nonce,
+      method,
+      path,
+      selectedName,
+      selectedPid,
+      selectedPort,
+      expiresAt,
+      candidate,
+      now,
+    );
+
+    expect(verify()).toBe(true);
+    expect(verify("GET")).toBe(false);
+    expect(verify(LOCAL_PROVIDER_RELOAD_METHOD, "/api/providers")).toBe(false);
+    expect(verify(LOCAL_PROVIDER_RELOAD_METHOD, LOCAL_PROVIDER_RELOAD_PATH, "openai")).toBe(false);
+    expect(verify(LOCAL_PROVIDER_RELOAD_METHOD, LOCAL_PROVIDER_RELOAD_PATH, name, pid + 1)).toBe(false);
+    expect(verify(LOCAL_PROVIDER_RELOAD_METHOD, LOCAL_PROVIDER_RELOAD_PATH, name, pid, port + 1)).toBe(false);
+    expect(verify(LOCAL_PROVIDER_RELOAD_METHOD, LOCAL_PROVIDER_RELOAD_PATH, name, pid, port, now, capability)).toBe(false);
+
+    const tooLate = now + LOCAL_PROVIDER_RELOAD_CAPABILITY_TTL_MS + 1;
+    const tooLateCapability = createLocalProviderReloadCapability(
+      secret,
+      nonce,
+      LOCAL_PROVIDER_RELOAD_METHOD,
+      LOCAL_PROVIDER_RELOAD_PATH,
+      name,
+      pid,
+      port,
+      tooLate,
+    )!;
+    expect(verify(
+      LOCAL_PROVIDER_RELOAD_METHOD,
+      LOCAL_PROVIDER_RELOAD_PATH,
+      name,
+      pid,
+      port,
+      tooLate,
+      tooLateCapability,
+    )).toBe(false);
+  });
+
   test("management-token temp cleanup forgets successful ACL memos and retains failed removals", () => {
     const temporary = join(testHome, ".admin-token.tmp");
     const previousUsername = process.env.USERNAME;
@@ -107,6 +490,65 @@ describe("management and data-plane credential separation", () => {
         throw Object.assign(new Error("injected unlink failure"), { code: "EPERM" });
       });
       expect(hardenedSecretPathCountForTests()).toBe(1);
+    } finally {
+      setIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      resetHardenedStateForTests();
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+    }
+  });
+
+  test("stable-path cleanup drops only the success memo; temp cleanup releases all", () => {
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    resetHardenedStateForTests();
+    setPlatformForTests("win32");
+    setIcaclsRunnerForTests(() => ({ success: false, exitCode: null, timedOut: true, stdout: "" }));
+    const stable = join(testHome, "admin-api-token");
+    const temp = join(testHome, ".admin-token.tmp");
+    writeFileSync(stable, "x", { mode: 0o600 });
+    writeFileSync(temp, "y", { mode: 0o600 });
+    try {
+      // Optional timeouts memoize by path (required:false soft-fails).
+      expect(hardenSecretPath(stable, { required: false }).ok).toBe(false);
+      expect(hardenSecretPath(temp, { required: false }).ok).toBe(false);
+      expect(timedOutSecretPathCountForTests()).toBe(2);
+      // Stable cleanup: success memo gone, timeout memos UNTOUCHED (anti-restall).
+      removeManagementTokenPathBestEffort(stable);
+      expect(timedOutSecretPathCountForTests()).toBe(2);
+      // Temp cleanup with the ephemeral flag: only the temp's memo is released;
+      // the stable destination memo still stands.
+      removeManagementTokenPathBestEffort(temp, unlinkSync, { ephemeral: true });
+      expect(timedOutSecretPathCountForTests()).toBe(1);
+    } finally {
+      setIcaclsRunnerForTests(null);
+      setPlatformForTests(null);
+      resetHardenedStateForTests();
+      if (previousUsername === undefined) delete process.env.USERNAME;
+      else process.env.USERNAME = previousUsername;
+    }
+  });
+
+  test("final-path timeout memo survives stable-path cleanup (anti-restall)", async () => {
+    const previousUsername = process.env.USERNAME;
+    process.env.USERNAME = "ocx-test-user";
+    delete process.env.OPENCODEX_ADMIN_AUTH_TOKEN;
+    resetHardenedStateForTests();
+    setPlatformForTests("win32");
+    // The temp harden succeeds; the FINAL path harden times out.
+    let calls = 0;
+    setIcaclsRunnerForTests(() => {
+      calls += 1;
+      // Production runs 3 icacls per harden: directory (1-3), temp (4-6),
+      // final token path (7-9) — the timeout must land on the FINAL path.
+      return calls <= 6
+        ? { success: true, exitCode: 0, timedOut: false, stdout: "" }
+        : { success: false, exitCode: null, timedOut: true, stdout: "" };
+    });
+    try {
+      initializeManagementAuthState(remoteConfig());
+      expect(timedOutSecretPathCountForTests()).toBe(1);
     } finally {
       setIcaclsRunnerForTests(null);
       setPlatformForTests(null);
@@ -321,6 +763,14 @@ describe("management and data-plane credential separation", () => {
     expect(html).toContain(`name="opencodex-session-token" content="${session?.token}"`);
     expect(html).toContain(`name="opencodex-session-csrf" content="${session?.csrfToken}"`);
 
+    // The dev GUI fetches /opencodex-session through Vite so the app shell stays
+    // Vite-owned. The backend answers that path without requiring gui/dist, so a fresh
+    // source checkout (no packaged build) can still mint an origin-bound session.
+    const bootstrapPage = serveSessionBootstrap(session!);
+    const bootstrapHtml = await bootstrapPage.text();
+    expect(bootstrapHtml).toContain(`name="opencodex-session-origin" content="${session?.origin}"`);
+    expect(bootstrapHtml).toContain(`name="opencodex-session-token" content="${session?.token}"`);
+
     const sameOriginRead = new Request("http://localhost:10100/api/config", {
       headers: {
         Host: "localhost:10100",
@@ -367,6 +817,31 @@ describe("management and data-plane credential separation", () => {
       headers: { Host: "attacker.test" },
     }), config, state)).toBeNull();
     expect(issueGuiSession(new Request("http://localhost:10100/"), config, state)).toBeNull();
+  });
+
+  test("GET /opencodex-session serves the bootstrap document from a live server", async () => {
+    const config = remoteConfig();
+    config.hostname = "127.0.0.1";
+    saveConfig(config);
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/opencodex-session", server.url), {
+        headers: { Host: server.url.host },
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("text/html");
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("pragma")).toBe("no-cache");
+      expect(response.headers.get("x-frame-options")).toBe("DENY");
+      expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+
+      const html = await response.text();
+      expect(html).toContain('name="opencodex-session-token"');
+      expect(html).toContain('name="opencodex-session-csrf"');
+      expect(html).toContain('name="opencodex-session-origin"');
+    } finally {
+      await server.stop(true);
+    }
   });
 
   test("a non-loopback binding never issues a GUI session from a forged loopback Host", () => {
@@ -565,6 +1040,54 @@ describe("management and data-plane credential separation", () => {
         headers: { "x-opencodex-api-key": "env-admin-secret" },
       });
       expect(management.status).toBe(200);
+    } finally {
+      await server.stop(true);
+    }
+  });
+});
+
+describe("codex app-server restart routes ride the management gate", () => {
+  // The service itself is unit-tested with injected seams
+  // (tests/codex-app-server-restart-service.test.ts). These cases exist for one
+  // reason: the route terminates the user's Codex app-servers, so it must be
+  // unreachable without management credentials and from a foreign origin.
+  test("both routes reject an unauthenticated caller and a cross-origin caller", async () => {
+    const server = startServer(0);
+    try {
+      const stateUrl = new URL(CODEX_APP_SERVER_STATE_PATH, server.url);
+      const restartUrl = new URL(CODEX_RESTART_PATH, server.url);
+
+      const anonymousState = await fetch(stateUrl, { method: "GET" });
+      expect(anonymousState.status).toBe(401);
+
+      const anonymousRestart = await fetch(restartUrl, { method: "POST" });
+      expect(anonymousRestart.status).toBe(401);
+
+      // An admin token authenticates, but the shared management-origin gate runs
+      // ahead of every route, so a foreign Origin is refused before dispatch.
+      const foreignOrigin = await fetch(restartUrl, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer admin-secret",
+          Origin: "https://evil.example",
+        },
+      });
+      expect(foreignOrigin.status).toBe(403);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("the data-plane token does not authorize the restart route", async () => {
+    // The data token is handed to Codex itself. It must never be able to restart
+    // the app-servers it belongs to.
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL(CODEX_RESTART_PATH, server.url), {
+        method: "POST",
+        headers: { Authorization: "Bearer data-secret" },
+      });
+      expect(response.status).toBe(401);
     } finally {
       await server.stop(true);
     }

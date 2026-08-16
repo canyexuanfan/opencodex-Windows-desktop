@@ -7,7 +7,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyEffortCap, effortCapAppliesTo, effortCapFor, isThreadSpawnRequest, resolveCappedEffort, supportedLadderFor } from "../src/server/effort-policy";
+import { applyEffortCap, effortCapAppliesTo, effortCapFor, isThreadSpawnRequest, resolveCappedEffort, stripEmptyLadderEffort, supportedLadderFor } from "../src/server/effort-policy";
 import { collabSurface } from "../src/server/responses";
 import { handleManagementAPI } from "../src/server/management-api";
 import { NoEnabledOpenAiProviderError, routeModel } from "../src/router";
@@ -173,6 +173,26 @@ describe("resolveCappedEffort (ladder-aware resolution)", () => {
   });
 });
 
+describe("stripEmptyLadderEffort", () => {
+  test("keeps a summary-only object on an empty ladder", () => {
+    expect(stripEmptyLadderEffort({ summary: "auto" }, [])).toEqual({ summary: "auto" });
+  });
+
+  test("strips effort but keeps summary on an empty ladder", () => {
+    expect(stripEmptyLadderEffort({ effort: "max", summary: "auto" }, [])).toEqual({ summary: "auto" });
+  });
+
+  test("drops an effort-only object on an empty ladder", () => {
+    expect(stripEmptyLadderEffort({ effort: "high" }, [])).toBeUndefined();
+  });
+
+  test("leaves reasoning untouched when the ladder is unknown or non-empty", () => {
+    const reasoning = { effort: "high", summary: "auto" };
+    expect(stripEmptyLadderEffort(reasoning, undefined)).toBe(reasoning);
+    expect(stripEmptyLadderEffort(reasoning, ["high"])).toBe(reasoning);
+  });
+});
+
 describe("applyEffortCap strip paths", () => {
   test("no-effort model strips even a below-cap effort from BOTH shapes, keeping summary", () => {
     const config = makeConfig({ effortCap: "high" });
@@ -219,6 +239,8 @@ describe("supportedLadderFor (real routeModel routes)", () => {
     } as Partial<OcxConfig>);
     const route = routeModel(config, "xai/grok-4.5");
     expect(supportedLadderFor(route)).toEqual(["low", "medium", "high"]);
+    const grok46 = routeModel(config, "xai/grok-4.6");
+    expect(supportedLadderFor(grok46)).toEqual(["low", "medium", "high", "xhigh"]);
     const noReasoning = routeModel(config, "xai/grok-composer-2.5-fast");
     expect(supportedLadderFor(noReasoning)).toEqual([]);
   });

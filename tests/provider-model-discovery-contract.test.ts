@@ -12,8 +12,13 @@ import {
   providerModelDiscoverySpecError,
   readBoundedDiscoveryJson,
   resolveProviderModelDiscovery,
+  resolveProviderModelDiscoveryUrl,
 } from "../src/providers/model-discovery";
-import { PROVIDER_REGISTRY, type ProviderModelDiscoverySpec } from "../src/providers/registry";
+import {
+  PROVIDER_REGISTRY,
+  registryEntryForProviderDestination,
+  type ProviderModelDiscoverySpec,
+} from "../src/providers/registry";
 import { routeModel } from "../src/router";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 import { withStubbedProviderFetch } from "./helpers/catalog-provider-fetch";
@@ -76,6 +81,7 @@ describe("registry-owned provider model discovery", () => {
     ]) {
       expect(providerModelDiscoverySpecError({ path })).toContain("parent-directory");
     }
+    expect(providerModelDiscoverySpecError({ path: "../models/search" })).toBeNull();
     expect(providerModelDiscoverySpecError({ path: String.raw`models\..\internal` }))
       .toContain("forward slashes");
     expect(providerModelDiscoverySpecError({ path: "models/model..variant" })).toBeNull();
@@ -104,6 +110,18 @@ describe("registry-owned provider model discovery", () => {
     }
   });
 
+  test("keeps discovery-bearing fixed key destinations unambiguous for renamed presets", () => {
+    for (const entry of PROVIDER_REGISTRY) {
+      if (!entry.modelDiscovery || entry.authKind !== "key") continue;
+      if (entry.allowBaseUrlOverride || /\{[^}]*\}/.test(entry.baseUrl)) continue;
+      expect(registryEntryForProviderDestination({
+        adapter: entry.adapter,
+        baseUrl: entry.baseUrl,
+        authMode: "key",
+      })?.id).toBe(entry.id);
+    }
+  });
+
   test("derives an alternate path and query only for the canonical destination", async () => {
     await withTogetherDiscovery({
       path: "catalog",
@@ -111,6 +129,14 @@ describe("registry-owned provider model discovery", () => {
     }, () => {
       const canonical = buildModelsRequest(togetherConfig().providers.together!, "secret", "together");
       expect(canonical.url).toBe("https://api.together.xyz/v1/catalog?capability=chat&limit=100");
+
+      const renamedCanonical = buildModelsRequest(
+        togetherConfig().providers.together!,
+        "secret",
+        "together-team",
+      );
+      expect(renamedCanonical.url)
+        .toBe("https://api.together.xyz/v1/catalog?capability=chat&limit=100");
 
       const collidingCustom: OcxProviderConfig = {
         adapter: "openai-chat",
@@ -233,6 +259,30 @@ describe("registry-owned provider model discovery", () => {
     })).toEqual({});
   });
 
+  test("infers Codex-safe input modalities from bounded architecture metadata", () => {
+    expect(catalogHintsFromModelsApiItem("example", {
+      id: "vision-chat",
+      architecture: { modality: "text+image->text" },
+    })).toEqual({ inputModalities: ["text", "image"] });
+
+    expect(catalogHintsFromModelsApiItem("example", {
+      id: "unknown-input",
+      architecture: { modality: "text+video->text" },
+    })).toEqual({ inputModalities: ["text"] });
+
+    expect(catalogHintsFromModelsApiItem("example", {
+      id: "controlled",
+      architecture: { modality: "text+im\u0000age->text" },
+    })).toEqual({});
+  });
+
+  test("preserves nested reasoning_parameters effort ladders from OpenAI-compatible catalogs", () => {
+    expect(catalogHintsFromModelsApiItem("example", {
+      id: "reasoning-model",
+      reasoning_parameters: { efforts: ["low", "high", "max"] },
+    })).toEqual({ reasoningEfforts: ["low", "high", "max"] });
+  });
+
   test("drops untrusted metadata tokens containing control characters", () => {
     expect(catalogHintsFromModelsApiItem("example", {
       id: "controlled",
@@ -325,6 +375,79 @@ describe("registry-owned provider model discovery", () => {
         .toEqual({ ok: false, reason: "invalid_shape" });
     }
   });
+
+  test("cloudflare-workers-ai resolves official search from the /ai/v1 base", () => {
+    const url = resolveProviderModelDiscoveryUrl(
+      "cloudflare-workers-ai",
+      {
+        adapter: "openai-chat",
+        baseUrl: "https://api.cloudflare.com/client/v4/accounts/acct/ai/v1",
+      },
+      "https://api.cloudflare.com/client/v4/accounts/acct/ai/v1",
+      "https://api.cloudflare.com/client/v4/accounts/acct/ai/v1/models",
+    );
+    expect(url).toBe(
+      "https://api.cloudflare.com/client/v4/accounts/acct/ai/models/search?format=openrouter&per_page=1000",
+    );
+  });
+
+  test("strips workers-ai/ openrouter ids and skips empty remainders for cloudflare-workers-ai", () => {
+    const discovery = resolveProviderModelDiscovery("cloudflare-workers-ai", {
+      adapter: "openai-chat",
+      baseUrl: "https://api.cloudflare.com/client/v4/accounts/acct/ai/v1",
+    });
+
+    const stripped = extractProviderModelItems({
+      data: [{ id: "workers-ai/@cf/openai/gpt-oss-120b" }],
+    }, discovery);
+    expect(stripped).toEqual({
+      ok: true,
+      rawCount: 1,
+      items: [{ id: "@cf/openai/gpt-oss-120b" }],
+    });
+
+    const native = extractProviderModelItems({
+      result: [{ id: "uuid", name: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" }],
+    }, discovery);
+    expect(native).toEqual({ ok: false, reason: "invalid_shape" });
+
+    const mixed = extractProviderModelItems({
+      data: [
+        { id: "workers-ai/" },
+        { id: "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast" },
+      ],
+    }, discovery);
+    expect(mixed).toEqual({
+      ok: true,
+      rawCount: 2,
+      items: [{ id: "@cf/meta/llama-3.3-70b-instruct-fp8-fast" }],
+    });
+  });
+
+  test("cloudflare-workers-ai registry owns openrouter search discovery", () => {
+    const workers = PROVIDER_REGISTRY.find(row => row.id === "cloudflare-workers-ai");
+    const gateway = PROVIDER_REGISTRY.find(row => row.id === "cloudflare-ai-gateway");
+    if (!workers || !gateway) throw new Error("missing cloudflare registry entries");
+
+    expect(workers.liveModels).toBe(true);
+    expect(workers.modelDiscovery).toEqual({
+      path: "../models/search",
+      query: { format: "openrouter", per_page: "1000" },
+      stripIdPrefix: "workers-ai/",
+      maxModels: 256,
+    });
+    expect(workers.models).toEqual([
+      "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+      "@cf/qwen/qwq-32b",
+      "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+      "@cf/moonshotai/kimi-k2.7-code",
+      "@cf/zai-org/glm-5.3",
+      "@cf/zai-org/glm-5.2",
+      "@cf/mistralai/mistral-small-3.1-24b-instruct",
+    ]);
+    expect(gateway.modelDiscovery).toBeUndefined();
+    expect(gateway.liveModels).toBeUndefined();
+  });
 });
 
 describe("same-named custom provider preservation", () => {
@@ -369,5 +492,115 @@ describe("same-named custom provider preservation", () => {
 
     expect(routed.provider.baseUrl).toBe("https://api.x.ai/v1");
     expect(routed.provider.authMode).toBe("oauth");
+  });
+
+  // The destination fallback added with the SambaNova/Nebius batch lets a canonical preset saved
+  // under an unknown name recover its registry-owned discovery policy by transport. These tests
+  // pin both halves of that boundary: what it must recover, and what it must refuse. Without the
+  // negative cases a widened matcher would look green while silently handing one provider's
+  // discovery contract to another row.
+  describe("renamed-preset destination fallback", () => {
+    const nebiusEntry = () => {
+      const entry = PROVIDER_REGISTRY.find(row => row.id === "nebius");
+      if (!entry) throw new Error("missing nebius registry entry");
+      return entry;
+    };
+
+    test("recovers path, query AND filter for an unknown-name canonical destination", () => {
+      const entry = nebiusEntry();
+      const resolved = resolveProviderModelDiscovery("nebius-team", {
+        adapter: entry.adapter,
+        baseUrl: entry.baseUrl,
+        authMode: "key",
+      });
+
+      // Literal expectations, not a re-read of the same registry row. Comparing the resolved spec
+      // against `entry.modelDiscovery` would pass even if both sides changed together, which makes
+      // the assertion vacuous: a sabotaged filter stayed green under that formulation.
+      expect(resolved.spec?.path).toBe("models");
+      expect(resolved.spec?.query).toEqual({ verbose: "true" });
+      // The filter is the half the pre-existing renamed-preset test never asserted. A recovered
+      // spec without it would admit embedding and image-generation rows into the Codex catalog.
+      expect(resolved.spec?.filter).toEqual({
+        allOf: [{ path: ["architecture", "modality"], containsAny: ["->text"] }],
+      });
+      expect(resolved.maxResponseBytes).toBe(512 * 1024);
+      expect(resolved.maxModels).toBe(512);
+    });
+
+    test("refuses a name that matches a registry entry whose transport does not", () => {
+      // A named row is resolved by name or not at all; it must never silently fall through to a
+      // destination lookup and acquire some other provider's discovery policy.
+      const resolved = resolveProviderModelDiscovery("nebius", {
+        adapter: "openai-chat",
+        baseUrl: "https://untrusted.example/v9",
+        authMode: "key",
+      });
+
+      expect(resolved.spec).toBeUndefined();
+    });
+
+    test("refuses OAuth destinations reached by an unknown name", () => {
+      const oauthEntry = PROVIDER_REGISTRY.find(row => row.authKind === "oauth" && row.modelDiscovery);
+      expect(oauthEntry).toBeDefined();
+
+      expect(registryEntryForProviderDestination({
+        adapter: oauthEntry!.adapter,
+        baseUrl: oauthEntry!.baseUrl,
+        authMode: "key",
+      })?.id).not.toBe(oauthEntry!.id);
+
+      expect(resolveProviderModelDiscovery("renamed-oauth-row", {
+        adapter: oauthEntry!.adapter,
+        baseUrl: oauthEntry!.baseUrl,
+        authMode: "oauth",
+      }).spec).toBeUndefined();
+    });
+
+    test("refuses non-key auth modes, templated base URLs, and overridable destinations", () => {
+      const entry = nebiusEntry();
+
+      // Non-key auth mode on an otherwise exact destination match.
+      expect(registryEntryForProviderDestination({
+        adapter: entry.adapter,
+        baseUrl: entry.baseUrl,
+        authMode: "oauth",
+      })).toBeUndefined();
+
+      for (const row of PROVIDER_REGISTRY) {
+        const templated = /\{[^}]*\}/.test(row.baseUrl);
+        if (!templated && row.allowBaseUrlOverride !== true) continue;
+        // Neither class identifies a single vendor route, so neither may be recovered by
+        // destination: a templated URL is not a real endpoint, and an overridable one is
+        // whatever the user pointed it at.
+        const match = registryEntryForProviderDestination({
+          adapter: row.adapter,
+          baseUrl: row.baseUrl,
+          authMode: "key",
+        });
+        expect(match?.id).not.toBe(row.id);
+      }
+    });
+
+    test("keeps every fallback-eligible absolute discovery URL same-origin with its own base URL", () => {
+      // An absolute spec.url overrides the configured base URL, so a cross-origin one on a
+      // fallback-eligible row would send a user's key to an origin they never configured.
+      // DeepInfra is the current instance: base /v1/openai, discovery /v1/models, same origin.
+      const checked: string[] = [];
+
+      for (const entry of PROVIDER_REGISTRY) {
+        const url = entry.modelDiscovery?.url;
+        if (!url) continue;
+        const eligible = entry.authKind === "key"
+          && entry.allowBaseUrlOverride !== true
+          && !/\{[^}]*\}/.test(entry.baseUrl);
+        if (!eligible) continue;
+
+        expect(new URL(url).origin).toBe(new URL(entry.baseUrl).origin);
+        checked.push(entry.id);
+      }
+
+      expect(checked).toContain("deepinfra");
+    });
   });
 });

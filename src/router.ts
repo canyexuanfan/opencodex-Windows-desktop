@@ -1,19 +1,69 @@
 import type { CodexAccountMode, OcxConfig, OcxProviderConfig } from "./types";
-import { preservesPhysicalComboProvider, tryPickComboModel, type ComboPick } from "./combos";
+import {
+  getCombo,
+  isComboTargetInCooldown,
+  preservesPhysicalComboProvider,
+  targetKey,
+  tryPickComboModel,
+  type ComboPick,
+} from "./combos";
+import type { NormalizedComboConfig } from "./combos/types";
 import { hasOwnProvider, resolveEnvValue } from "./config";
 import { assertProviderDestinationAllowed } from "./lib/destination-policy";
 import { redactSecretString, redactUrlForLog } from "./lib/redact";
-import { PROVIDER_REGISTRY, providerCodexAccountMode, providerMatchesRegistryTransport } from "./providers/registry";
-import { LEGACY_CHATGPT_PROVIDER_ID, LEGACY_OPENAI_MULTI_PROVIDER_ID, OPENAI_API_PROVIDER_ID, OPENAI_CODEX_PROVIDER_ID } from "./providers/openai-tiers";
-import { decodeRoutedModelId, encodeRoutedModelId } from "./providers/slug-codec";
+import { PROVIDER_REGISTRY, providerCodexAccountMode } from "./providers/registry";
+import { applyDirectReasoningEffortContracts } from "./providers/derive";
+import {
+  providerMatchesRegistryTransportWithStaticGuards,
+  providerSupportsLiveModelDiscovery,
+} from "./providers/static-model-discovery";
+import {
+  isCanonicalOpenAiForwardProvider,
+  LEGACY_CHATGPT_PROVIDER_ID,
+  LEGACY_OPENAI_MULTI_PROVIDER_ID,
+  OPENAI_API_PROVIDER_ID,
+  OPENAI_CODEX_PROVIDER_ID,
+} from "./providers/openai-tiers";
+import { decodeRoutedModelIdOrThrow, encodeRoutedModelId } from "./providers/slug-codec";
 import { getStaleCached } from "./codex/model-cache";
+import { codexAccountNamespaceEntries } from "./codex/account-namespaces";
+import {
+  buildRouteDecisionTrace,
+  type RouteDecisionKind,
+  type RouteDecisionTraceV1,
+  type TraceCandidateInput,
+} from "./routing/trace";
+import { getRoutingProfile, resolvePolicyProfileId } from "./routing/profile";
+import { evaluatePolicyProfile, type PolicyRequestEvidence } from "./routing/evaluator";
+import { assemblePolicyCandidateEvidence } from "./routing/compatibility/assemble";
+
+export class NoEligiblePolicyCandidateError extends Error {
+  /** Evaluation trace (with per-candidate exclusions) when nothing qualified. */
+  readonly trace?: RouteDecisionTraceV1;
+
+  constructor(readonly profileId: string, trace?: RouteDecisionTraceV1) {
+    super(`No eligible candidates for policy profile: ${profileId}`);
+    this.name = "NoEligiblePolicyCandidateError";
+    this.trace = trace;
+  }
+}
 
 export interface RouteResult {
   providerName: string;
   provider: OcxProviderConfig;
   modelId: string;
+  /** Which deterministic routing path produced this route (RI-01). */
+  routeKind: RouteDecisionKind;
+  /** Stable wire reason code for the selected route (RI-01). */
+  routeReason: string;
   codexAccountMode?: CodexAccountMode;
+  /** Exact account selected by an account-qualified native model. */
+  codexAccountId?: string;
+  /** Public namespace used by the account-qualified selector. */
+  codexAccountNamespace?: string;
   combo?: ComboPick;
+  /** Bounded route-decision trace (RI-01); never contains secrets. */
+  routeDecision?: RouteDecisionTraceV1;
 }
 
 const MODEL_PROVIDER_PATTERNS: Array<{ providerNames: string[]; prefixes: string[] }> = [
@@ -37,10 +87,15 @@ const MODEL_PROVIDER_PATTERNS: Array<{ providerNames: string[]; prefixes: string
  * last-known-good live /models cache (may be empty on a cold start; decode then passes
  * unknown ids through unchanged for an honest upstream error).
  */
-export function knownModelIdsForProvider(provName: string, prov: OcxProviderConfig): string[] {
+export function knownModelIdsForProvider(
+  provName: string,
+  prov: OcxProviderConfig,
+  config?: Pick<OcxConfig, "customModels">,
+): string[] {
   const ids = new Set<string>();
   for (const id of prov.models ?? []) ids.add(id);
-  const registry = providerMatchesRegistryTransport(provName, prov)
+  if (prov.defaultModel) ids.add(prov.defaultModel);
+  const registry = providerMatchesRegistryTransportWithStaticGuards(provName, prov)
     ? PROVIDER_REGISTRY.find(entry => entry.id === provName)
     : undefined;
   for (const id of registry?.models ?? []) ids.add(id);
@@ -53,10 +108,14 @@ export function knownModelIdsForProvider(provName: string, prov: OcxProviderConf
     registry?.modelDefaultReasoningEfforts,
     registry?.modelReasoningEffortMap,
     registry?.modelMaxOutputTokens,
+    registry?.modelSupportsServiceTier,
   ]) {
     for (const id of Object.keys(map ?? {})) ids.add(id);
   }
   for (const cached of getStaleCached(provName) ?? []) ids.add(cached.id);
+  for (const model of config?.customModels ?? []) {
+    if (model.provider === provName && model.modelId) ids.add(model.modelId);
+  }
   return [...ids];
 }
 
@@ -201,26 +260,40 @@ function usableResolvedApiKey(apiKey: string | undefined): string | undefined {
   return typeof resolved === "string" && resolved.trim().length > 0 ? resolved : undefined;
 }
 
-function routedProviderConfig(providerName: string, provider: OcxProviderConfig): OcxProviderConfig {
+export function routedProviderConfig(providerName: string, provider: OcxProviderConfig): OcxProviderConfig {
   const registryEntry = PROVIDER_REGISTRY.find(entry => entry.id === providerName);
-  if (!registryEntry || !providerMatchesRegistryTransport(providerName, provider)) {
+  if (!registryEntry || !providerMatchesRegistryTransportWithStaticGuards(providerName, provider)) {
     assertProviderDestinationAllowed(providerName, provider);
     return { ...provider, apiKey: usableResolvedApiKey(provider.apiKey) };
   }
   const resolvedApiKey = usableResolvedApiKey(provider.apiKey);
+  const staticModelCatalog = !providerSupportsLiveModelDiscovery(providerName, provider);
+  const repairLegacyMimoFreeAuth = providerName === "mimo-free"
+    && staticModelCatalog
+    && (provider.authMode === undefined || provider.authMode === "local");
   const explicitKeyOverride = registryEntry.authKind === "oauth"
     && registryEntry.allowKeyAuthOverride === true
     && provider.authMode === "key"
     && resolvedApiKey !== undefined;
   const canonicalAuthMode = explicitKeyOverride
     ? "key"
-    : registryEntry.authKind === "forward" || registryEntry.authKind === "oauth"
-      ? registryEntry.authKind
-    : provider.authMode === "forward" ? undefined : provider.authMode;
+    : repairLegacyMimoFreeAuth
+      ? "key"
+      : registryEntry.authKind === "forward" || registryEntry.authKind === "oauth"
+        ? registryEntry.authKind
+        : provider.authMode === "forward" ? undefined : provider.authMode;
   const reasoningEffortMap = mergeRecord(registryEntry.reasoningEffortMap, provider.reasoningEffortMap);
   const modelReasoningEffortMap = mergeNestedRecord(registryEntry.modelReasoningEffortMap, provider.modelReasoningEffortMap);
   const modelReasoningEfforts = mergeStringArrayRecord(registryEntry.modelReasoningEfforts, provider.modelReasoningEfforts);
   const modelDefaultReasoningEfforts = mergeRecordFill(registryEntry.modelDefaultReasoningEfforts, provider.modelDefaultReasoningEfforts);
+  // Key-login used to persist this exact low-only ClinePass capability seed. Once the gateway's
+  // wider input ladder was live-verified, leaving that generated row untouched would keep old
+  // installs clamped forever. This branch is reached only after canonical transport matching, so
+  // same-named custom destinations and every other explicit ladder still retain user precedence.
+  const repairLegacyClinePassReasoningEfforts = providerName === "cline-pass"
+    && provider.reasoningWireFormat === "gateway-object"
+    && provider.reasoningEfforts?.length === 1
+    && provider.reasoningEfforts[0] === "low";
   const modelContextWindows = providerName === OPENAI_API_PROVIDER_ID
     ? mergePositiveNumberCaps(registryEntry.modelContextWindows, provider.modelContextWindows)
     : mergeRecordFill(registryEntry.modelContextWindows, provider.modelContextWindows);
@@ -229,6 +302,10 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     ? mergePositiveNumberCaps(registryEntry.modelMaxInputTokens, provider.modelMaxInputTokens)
     : mergeRecordFill(registryEntry.modelMaxInputTokens, provider.modelMaxInputTokens);
   const modelMaxOutputTokens = mergeRecordFill(registryEntry.modelMaxOutputTokens, provider.modelMaxOutputTokens);
+  const modelSupportsServiceTier = mergeRecordFill(
+    registryEntry.modelSupportsServiceTier,
+    provider.modelSupportsServiceTier,
+  );
   const noVisionModels = mergeStringArray(registryEntry.noVisionModels, provider.noVisionModels);
   const noReasoningModels = mergeStringArray(registryEntry.noReasoningModels, provider.noReasoningModels);
   const noTemperatureModels = mergeStringArray(registryEntry.noTemperatureModels, provider.noTemperatureModels);
@@ -236,6 +313,7 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
   const noPenaltyModels = mergeStringArray(registryEntry.noPenaltyModels, provider.noPenaltyModels);
   const autoToolChoiceOnlyModels = mergeStringArray(registryEntry.autoToolChoiceOnlyModels, provider.autoToolChoiceOnlyModels);
   const preserveReasoningContentModels = mergeStringArray(registryEntry.preserveReasoningContentModels, provider.preserveReasoningContentModels);
+  const requiresReasoningPlaceholderModels = mergeStringArray(registryEntry.requiresReasoningPlaceholderModels, provider.requiresReasoningPlaceholderModels);
   const reasoningSplitModels = mergeStringArray(registryEntry.reasoningSplitModels, provider.reasoningSplitModels);
   const thinkingToggleModels = mergeStringArray(registryEntry.thinkingToggleModels, provider.thinkingToggleModels);
   const thinkingBudgetModels = mergeStringArray(registryEntry.thinkingBudgetModels, provider.thinkingBudgetModels);
@@ -252,15 +330,43 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
   if (userBaseUrlIsResolved) warnIfBaseUrlDiscarded(providerName, userBaseUrl, baseUrl);
   assertProviderDestinationAllowed(providerName, { baseUrl, allowPrivateNetwork: provider.allowPrivateNetwork });
 
-  return {
+  const resolved: OcxProviderConfig = {
     ...provider,
     adapter: registryEntry.adapter,
     baseUrl,
     ...(provider.responsesPath === undefined && registryEntry.responsesPath !== undefined
       ? { responsesPath: registryEntry.responsesPath }
       : {}),
+    ...(provider.requiresAdjacentResponsesToolResults === undefined
+      && registryEntry.requiresAdjacentResponsesToolResults !== undefined
+      ? { requiresAdjacentResponsesToolResults: registryEntry.requiresAdjacentResponsesToolResults }
+      : {}),
+    ...(provider.supportsServiceTier === undefined && registryEntry.supportsServiceTier !== undefined
+      ? { supportsServiceTier: registryEntry.supportsServiceTier }
+      : {}),
+    ...(provider.preserveResponsesReasoningContent === undefined && registryEntry.preserveResponsesReasoningContent !== undefined
+      ? { preserveResponsesReasoningContent: registryEntry.preserveResponsesReasoningContent }
+      : {}),
+    // Registry-only client-facing repair policy (#938): fill only when the
+    // saved provider has no explicit policy; clone so runtime never aliases
+    // the registry constant.
+    ...(provider.responsesItemIdRepair === undefined && registryEntry.responsesItemIdRepair
+      ? {
+        responsesItemIdRepair: {
+          ...(registryEntry.responsesItemIdRepair.message ? { message: [...registryEntry.responsesItemIdRepair.message] } : {}),
+          ...(registryEntry.responsesItemIdRepair.reasoning ? { reasoning: [...registryEntry.responsesItemIdRepair.reasoning] } : {}),
+          ...(registryEntry.responsesItemIdRepair.repairMissingTerminalIds !== undefined
+            ? { repairMissingTerminalIds: registryEntry.responsesItemIdRepair.repairMissingTerminalIds }
+            : {}),
+          ...(registryEntry.responsesItemIdRepair.repairInvalidIds !== undefined
+            ? { repairInvalidIds: registryEntry.responsesItemIdRepair.repairInvalidIds }
+            : {}),
+        },
+      }
+      : {}),
     authMode: canonicalAuthMode,
     apiKey: resolvedApiKey,
+    ...(staticModelCatalog ? { liveModels: false } : {}),
     // Backfill the Google wire mode + Vertex project/location from the registry when the user
     // config omits them, so a minimal `google-vertex`/`google-antigravity` entry still routes
     // through the correct branch (CCA/Vertex) instead of falling back to AI Studio.
@@ -268,7 +374,10 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     ...(provider.project === undefined && registryEntry.project !== undefined ? { project: registryEntry.project } : {}),
     ...(provider.location === undefined && registryEntry.location !== undefined ? { location: registryEntry.location } : {}),
     ...(provider.contextWindow === undefined && registryEntry.contextWindow !== undefined ? { contextWindow: registryEntry.contextWindow } : {}),
-    ...(provider.reasoningEfforts === undefined && registryEntry.reasoningEfforts !== undefined ? { reasoningEfforts: registryEntry.reasoningEfforts } : {}),
+    ...((provider.reasoningEfforts === undefined || repairLegacyClinePassReasoningEfforts)
+      && registryEntry.reasoningEfforts !== undefined
+      ? { reasoningEfforts: [...registryEntry.reasoningEfforts] }
+      : {}),
     ...(provider.escapeBuiltinToolNames === undefined && registryEntry.escapeBuiltinToolNames !== undefined ? { escapeBuiltinToolNames: registryEntry.escapeBuiltinToolNames } : {}),
     ...(provider.keyOptional === undefined && registryEntry.keyOptional !== undefined ? { keyOptional: registryEntry.keyOptional } : {}),
     ...(provider.modelSuffixBracketStrip === undefined && registryEntry.modelSuffixBracketStrip !== undefined ? { modelSuffixBracketStrip: registryEntry.modelSuffixBracketStrip } : {}),
@@ -276,6 +385,10 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     // opt-in, while an explicit user `false` keeps overriding registry `true`.
     ...(provider.parallelToolCalls === undefined && registryEntry.parallelToolCalls !== undefined ? { parallelToolCalls: registryEntry.parallelToolCalls } : {}),
     ...(provider.promptCacheKey === undefined && registryEntry.promptCacheKey !== undefined ? { promptCacheKey: registryEntry.promptCacheKey } : {}),
+    ...(provider.chatServiceTier === undefined && registryEntry.chatServiceTier !== undefined ? { chatServiceTier: registryEntry.chatServiceTier } : {}),
+    ...(provider.reasoningWireFormat === undefined && registryEntry.reasoningWireFormat !== undefined
+      ? { reasoningWireFormat: registryEntry.reasoningWireFormat }
+      : {}),
     ...(provider.defaultMaxOutputTokens === undefined && registryEntry.defaultMaxOutputTokens !== undefined
       ? { defaultMaxOutputTokens: registryEntry.defaultMaxOutputTokens }
       : {}),
@@ -283,6 +396,7 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     ...(modelInputModalities ? { modelInputModalities } : {}),
     ...(modelMaxInputTokens ? { modelMaxInputTokens } : {}),
     ...(modelMaxOutputTokens ? { modelMaxOutputTokens } : {}),
+    ...(modelSupportsServiceTier ? { modelSupportsServiceTier } : {}),
     ...(modelReasoningEfforts ? { modelReasoningEfforts } : {}),
     ...(modelDefaultReasoningEfforts ? { modelDefaultReasoningEfforts } : {}),
     ...(reasoningEffortMap ? { reasoningEffortMap } : {}),
@@ -294,10 +408,13 @@ function routedProviderConfig(providerName: string, provider: OcxProviderConfig)
     ...(noPenaltyModels ? { noPenaltyModels } : {}),
     ...(autoToolChoiceOnlyModels ? { autoToolChoiceOnlyModels } : {}),
     ...(preserveReasoningContentModels ? { preserveReasoningContentModels } : {}),
+    ...(requiresReasoningPlaceholderModels ? { requiresReasoningPlaceholderModels } : {}),
     ...(reasoningSplitModels ? { reasoningSplitModels } : {}),
     ...(thinkingToggleModels ? { thinkingToggleModels } : {}),
     ...(thinkingBudgetModels ? { thinkingBudgetModels } : {}),
   };
+  applyDirectReasoningEffortContracts(registryEntry, resolved, provider);
+  return resolved;
 }
 
 function activeProviderEntries(config: OcxConfig): [string, OcxProviderConfig][] {
@@ -315,6 +432,34 @@ export class NoEnabledOpenAiProviderError extends Error {
   }
 }
 
+/**
+ * One immutable selection trace for a combo request: built once from the
+ * initial pick, before any child dispatch. Fallback execution stays in the
+ * usage entry's `attempts[]`; the trace never changes after selection.
+ */
+export function comboRouteDecisionTrace(
+  config: OcxConfig,
+  comboId: string,
+  pick: ComboPick,
+  requestedModel: string,
+): RouteDecisionTraceV1 {
+  const combo = getCombo(config, comboId);
+  return buildRouteDecisionTrace({
+    requestedModel,
+    routeKind: "combo",
+    selected: {
+      provider: pick.target.provider,
+      model: pick.target.model,
+      reason: "combo-pick",
+      candidateIndex: pick.targetIndex,
+      ...(combo
+        ? { tieBreak: combo.strategy === "round-robin" ? "round-robin" : "failover" }
+        : {}),
+    },
+    candidates: combo ? comboRouteCandidates(config, pick, combo) : undefined,
+  });
+}
+
 // Codex uses a small number of control-plane model ids that are not part of the public GPT/o
 // naming families. Keep this exact: a broad `codex-*` rule could capture a third-party model.
 const CODEX_INTERNAL_OPENAI_MODELS = new Set(["codex-auto-review"]);
@@ -324,25 +469,140 @@ function isBareOpenAiFamilyModel(modelId: string): boolean {
     && (/^(?:gpt-|o1-|o3-|o4-)/.test(modelId) || CODEX_INTERNAL_OPENAI_MODELS.has(modelId));
 }
 
-function routeResult(providerName: string, provider: OcxProviderConfig, modelId: string): RouteResult {
+function routeResult(
+  providerName: string,
+  provider: OcxProviderConfig,
+  modelId: string,
+  routeKind: RouteDecisionKind,
+  routeReason: string,
+): RouteResult {
   const codexAccountMode = providerCodexAccountMode(providerName, provider);
   return {
     providerName,
     provider: routedProviderConfig(providerName, provider),
     modelId,
+    routeKind,
+    routeReason,
     ...(codexAccountMode ? { codexAccountMode } : {}),
   };
 }
 
-function routeModelInternal(config: OcxConfig, modelId: string, bypassCombos: boolean): RouteResult {
+/**
+ * Candidate evidence for a combo route: every configured target with its
+ * selection-time eligibility and exclusion reasons. Purely observational; the
+ * pick already happened and this never re-selects.
+ */
+function comboRouteCandidates(
+  config: OcxConfig,
+  pick: NonNullable<RouteResult["combo"]>,
+  combo: NormalizedComboConfig,
+): TraceCandidateInput[] {
+  const now = Date.now();
+  return combo.targets.map((target, index) => {
+    const key = targetKey(target);
+    const provider = config.providers[target.provider];
+    const configured = provider !== undefined;
+    const enabled = configured && provider.disabled !== true;
+    const inCooldown = isComboTargetInCooldown(pick.comboId, target, now);
+    const isSelected = index === pick.targetIndex;
+    // The pick's `attempted` list includes the winner itself; only non-selected
+    // targets can be "already-attempted" (fallback picks exclude earlier tries).
+    const alreadyAttempted = !isSelected && pick.attempted.includes(key);
+    const exclusions: TraceCandidateInput["exclusions"] = [];
+    if (!configured) exclusions.push({ code: "unconfigured" });
+    if (configured && !enabled) exclusions.push({ code: "disabled" });
+    if (inCooldown) exclusions.push({ code: "cooldown" });
+    if (isSelected && inCooldown) exclusions.push({ code: "selected-despite-cooldown" });
+    if (!isSelected && alreadyAttempted && exclusions.length === 0) {
+      exclusions.push({ code: "already-attempted" });
+    }
+    if (!isSelected && exclusions.length === 0) exclusions.push({ code: "not-selected" });
+    return {
+      provider: target.provider,
+      model: target.model,
+      eligible: enabled && !inCooldown && !alreadyAttempted,
+      exclusions,
+    };
+  });
+}
+
+function routeModelInternal(
+  config: OcxConfig,
+  modelId: string,
+  bypassCombos: boolean,
+  policyEvidence?: PolicyRequestEvidence,
+): RouteResult {
+  const slash = modelId.indexOf("/");
+  // Policy namespace is system-reserved: an explicit `policy/<id>` or a
+  // configured profile alias executes the policy evaluator and routes the
+  // selected candidate. Only explicit requests reach this branch; concrete
+  // recursive targets skip policy resolution entirely (bypassCombos) so an
+  // alias matching a selected candidate can never recurse, and a
+  // `policy/<id>` without a configured profile falls through to normal
+  // provider/default resolution instead of failing.
+  const policyId = !bypassCombos ? resolvePolicyProfileId(config, modelId) : null;
+  const profile = policyId ? getRoutingProfile(config, policyId) : undefined;
+  if (profile && policyId) {
+    // One clock read per decision keeps candidate evidence, exclusions, and
+    // scores mutually consistent and reproducible.
+    const now = Date.now();
+    const candidateEvidence = assemblePolicyCandidateEvidence(config, profile, now, {
+      routedProviderConfig,
+    });
+    const evaluation = evaluatePolicyProfile(config, policyId, policyEvidence ?? {}, candidateEvidence, now);
+    if (evaluation.selectedIndex === null) {
+      throw new NoEligiblePolicyCandidateError(policyId, evaluation.trace);
+    }
+    const selected = evaluation.candidates[evaluation.selectedIndex]!;
+    const concrete = `${selected.provider}/${selected.model}`;
+    const routed = routeModelInternal(config, concrete, true);
+    return {
+      ...routed,
+      routeKind: "policy" as const,
+      routeReason: "policy-selected",
+      routeDecision: evaluation.trace,
+    };
+  }
+  if (slash > 0) {
+    const namespace = modelId.slice(0, slash);
+    const binding = codexAccountNamespaceEntries(config)
+      .find(([candidate]) => candidate === namespace);
+    if (binding) {
+      const nativeModelId = modelId.slice(slash + 1);
+      if (!isBareOpenAiFamilyModel(nativeModelId)) {
+        throw new Error(`Codex account namespace ${namespace} only supports native OpenAI model ids`);
+      }
+      const provider = config.providers[OPENAI_CODEX_PROVIDER_ID];
+      if (!provider || provider.disabled === true) {
+        throw new NoEnabledOpenAiProviderError(nativeModelId);
+      }
+      // Registry routing backfills an omitted authMode on the built-in OpenAI row to forward.
+      // Mirror only that default here; explicit non-forward modes still fail closed.
+      const providerForCanonicalCheck = provider.authMode === undefined
+        ? { ...provider, authMode: "forward" as const }
+        : provider;
+      if (!isCanonicalOpenAiForwardProvider(providerForCanonicalCheck)) {
+        throw new NoEnabledOpenAiProviderError(nativeModelId);
+      }
+      return {
+        ...routeResult(OPENAI_CODEX_PROVIDER_ID, provider, nativeModelId, "explicit-account", "account-namespace"),
+        // Exact account injection uses the pool credential machinery even when the canonical
+        // provider is globally Direct. The fixed id bypasses pool selection entirely.
+        codexAccountMode: "pool",
+        codexAccountId: binding[1],
+        codexAccountNamespace: namespace,
+      };
+    }
+  }
+
   if (!bypassCombos && !preservesPhysicalComboProvider(config)) {
     const combo = tryPickComboModel(config, modelId);
     if (combo) {
       const concrete = `${combo.target.provider}/${combo.target.model}`;
       // The selected target is already a concrete provider/model reference. Resolve it without
       // consulting combo aliases again, otherwise an alias that shadows the target can recurse.
-      const routed = routeModelInternal(config, concrete, true);
-      return { ...routed, combo };
+      const routed = routeModelInternal(config, concrete, true, undefined);
+      return { ...routed, combo, routeKind: "combo" as const, routeReason: "combo-pick" };
     }
   }
 
@@ -350,7 +610,6 @@ function routeModelInternal(config: OcxConfig, modelId: string, bypassCombos: bo
   //    Only triggers when the prefix matches a CONFIGURED provider, so genuine
   //    slash-containing model ids (e.g. "anthropic/claude-...") fall through when
   //    no such provider exists.
-  const slash = modelId.indexOf("/");
   if (slash > 0) {
     const provName = modelId.slice(0, slash);
     if (provName === LEGACY_CHATGPT_PROVIDER_ID || provName === LEGACY_OPENAI_MULTI_PROVIDER_ID) {
@@ -359,27 +618,37 @@ function routeModelInternal(config: OcxConfig, modelId: string, bypassCombos: bo
     if (hasOwnProvider(config.providers, provName)) {
       const prov = config.providers[provName];
       if (prov.disabled === true) throw new Error(`Provider is disabled: ${provName}`);
-      const known = knownModelIdsForProvider(provName, prov);
+      const known = knownModelIdsForProvider(provName, prov, config);
       // Self-namespaced native id — the vendor segment equals the provider id, so the FULL ref is
       // itself a known model (e.g. orcarouter/auto). Route it whole instead of stripping to the
       // remainder, which would send a bare `auto` the upstream cannot resolve.
-      if (known.includes(modelId)) return routeResult(provName, prov, modelId);
+      if (known.includes(modelId)) {
+        return routeResult(provName, prov, modelId, "explicit-provider", "explicit-provider-namespace");
+      }
       // Codex-facing alias ids (`provider/vendor-model`) decode back to the native
       // slash id via an exact known-id lookup; raw full-slash selectors keep working.
-      return routeResult(provName, prov, decodeRoutedModelId(modelId.slice(slash + 1), known));
+      return routeResult(
+        provName,
+        prov,
+        decodeRoutedModelIdOrThrow(modelId.slice(slash + 1), known),
+        "explicit-provider",
+        "explicit-provider-namespace",
+      );
     }
   }
 
   if (isBareOpenAiFamilyModel(modelId)) {
     const provider = config.providers[OPENAI_CODEX_PROVIDER_ID];
-    if (provider && provider.disabled !== true) return routeResult(OPENAI_CODEX_PROVIDER_ID, provider, modelId);
+    if (provider && provider.disabled !== true) {
+      return routeResult(OPENAI_CODEX_PROVIDER_ID, provider, modelId, "native", "native-family");
+    }
     throw new NoEnabledOpenAiProviderError(modelId);
   }
 
   for (const [provName, prov] of activeProviderEntries(config)) {
     if (prov.defaultModel === modelId
       || (typeof prov.defaultModel === "string" && encodeRoutedModelId(prov.defaultModel) === modelId)) {
-      return routeResult(provName, prov, prov.defaultModel as string);
+      return routeResult(provName, prov, prov.defaultModel as string, "explicit-provider", "configured-default-model");
     }
   }
 
@@ -389,7 +658,9 @@ function routeModelInternal(config: OcxConfig, modelId: string, bypassCombos: bo
   for (const [provName, prov] of activeProviderEntries(config)) {
     if (prov.models && Array.isArray(prov.models)) {
       const hit = (prov.models as string[]).find(id => id === modelId || encodeRoutedModelId(id) === modelId);
-      if (hit !== undefined) return routeResult(provName, prov, hit);
+      if (hit !== undefined) {
+        return routeResult(provName, prov, hit, "explicit-provider", "configured-model-list");
+      }
     }
   }
 
@@ -399,14 +670,45 @@ function routeModelInternal(config: OcxConfig, modelId: string, bypassCombos: bo
   if (hasOwnProvider(config.providers, config.defaultProvider)) {
     const defaultProv = config.providers[config.defaultProvider];
     if (defaultProv.disabled === true) throw new Error(`Default provider is disabled: ${config.defaultProvider}`);
-    return routeResult(config.defaultProvider, defaultProv, modelId);
+    return routeResult(config.defaultProvider, defaultProv, modelId, "default-provider", "default-provider");
   }
 
   throw new Error(`No provider configured for model: ${modelId}`);
 }
 
-export function routeModel(config: OcxConfig, modelId: string): RouteResult {
-  return routeModelInternal(config, modelId, false);
+export function routeModel(
+  config: OcxConfig,
+  modelId: string,
+  policyEvidence?: PolicyRequestEvidence,
+): RouteResult {
+  const route = routeModelInternal(config, modelId, false, policyEvidence);
+  // Policy routes carry a full evaluation trace already; never rebuild it.
+  if (route.routeDecision) return route;
+  const accountRef = route.codexAccountNamespace;
+  const combo = route.combo ? getCombo(config, route.combo.comboId) : undefined;
+  route.routeDecision = buildRouteDecisionTrace({
+    requestedModel: modelId,
+    routeKind: route.routeKind,
+    selected: {
+      provider: route.providerName,
+      model: route.modelId,
+      ...(accountRef ? { accountRef } : {}),
+      reason: route.routeReason,
+      ...(route.combo ? { candidateIndex: route.combo.targetIndex } : {}),
+      ...(combo
+        ? { tieBreak: combo.strategy === "round-robin" ? "round-robin" : "failover" }
+        : {}),
+    },
+    candidates: route.routeKind === "combo" && route.combo && combo
+      ? comboRouteCandidates(config, route.combo, combo)
+      : undefined,
+  });
+  return route;
+}
+
+/** Resolve a combo-selected provider/model target without consulting public combo aliases again. */
+export function routeConcreteModel(config: OcxConfig, modelId: string): RouteResult {
+  return routeModelInternal(config, modelId, true, undefined);
 }
 
 function routeByKnownModelPattern(config: OcxConfig, modelId: string): RouteResult | undefined {
@@ -417,7 +719,7 @@ function routeByKnownModelPattern(config: OcxConfig, modelId: string): RouteResu
       );
       if (matchingProvider) {
         const [provName, prov] = matchingProvider;
-        return routeResult(provName, prov, modelId);
+        return routeResult(provName, prov, modelId, "explicit-provider", "model-pattern");
       }
     }
   }

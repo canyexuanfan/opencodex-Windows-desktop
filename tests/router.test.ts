@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mapReasoningEffort } from "../src/reasoning-effort";
 import { NoEnabledOpenAiProviderError, routeModel } from "../src/router";
-import type { OcxConfig } from "../src/types";
+import type { OcxConfig, OcxProviderConfig } from "../src/types";
 
 describe("routeModel registry effort defaults", () => {
   test("allows only opted-in OAuth presets to use explicit API-key billing", () => {
@@ -94,6 +94,81 @@ describe("routeModel registry effort defaults", () => {
     });
   });
 
+  test("routes account-qualified native models to one exact Codex account", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "openai",
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          codexAccountMode: "direct",
+        },
+      },
+      codexAccountNamespaces: { desktop: "@main", side: "side-account-id" },
+    };
+
+    expect(routeModel(config, "desktop/gpt-5.6-sol")).toMatchObject({
+      providerName: "openai",
+      modelId: "gpt-5.6-sol",
+      codexAccountMode: "pool",
+      codexAccountId: "__main__",
+      codexAccountNamespace: "desktop",
+    });
+    expect(routeModel(config, "side/gpt-5.5")).toMatchObject({
+      providerName: "openai",
+      modelId: "gpt-5.5",
+      codexAccountMode: "pool",
+      codexAccountId: "side-account-id",
+      codexAccountNamespace: "side",
+      provider: { authMode: "forward" },
+    });
+    expect(routeModel(config, "gpt-5.5")).toMatchObject({
+      providerName: "openai",
+      modelId: "gpt-5.5",
+      codexAccountMode: "direct",
+    });
+    expect(() => routeModel(config, "side/claude-opus-4-6"))
+      .toThrow("only supports native OpenAI model ids");
+
+    config.codexAccountPickerEnabled = false;
+    expect(routeModel(config, "side/gpt-5.5")).toMatchObject({
+      providerName: "openai",
+      modelId: "gpt-5.5",
+      codexAccountMode: "pool",
+      codexAccountId: "side-account-id",
+      codexAccountNamespace: "side",
+      provider: { authMode: "forward" },
+    });
+  });
+
+  test("requires an enabled canonical OpenAI forward provider before exact credential injection", () => {
+    const providers: OcxProviderConfig[] = [
+      { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "key" },
+      { adapter: "openai-chat", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" },
+      { adapter: "openai-responses", baseUrl: "https://proxy.example.test/v1", authMode: "forward" },
+      { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward", disabled: true },
+    ];
+
+    for (const openai of providers) {
+      const config: OcxConfig = {
+        port: 10100,
+        defaultProvider: "openai",
+        providers: { openai },
+        codexAccountNamespaces: { side: "side-account-id" },
+      };
+      expect(() => routeModel(config, "side/gpt-5.5")).toThrow(NoEnabledOpenAiProviderError);
+    }
+
+    const withoutOpenAi: OcxConfig = {
+      port: 10100,
+      defaultProvider: "openai",
+      providers: {},
+      codexAccountNamespaces: { side: "side-account-id" },
+    };
+    expect(() => routeModel(withoutOpenAi, "side/gpt-5.5")).toThrow(NoEnabledOpenAiProviderError);
+  });
+
   test("routes a self-namespaced native id whole instead of stripping to the remainder", () => {
     const config: OcxConfig = {
       port: 10100,
@@ -139,12 +214,42 @@ describe("routeModel registry effort defaults", () => {
       },
     };
     expect(routeModel(base, "gpt-5.5")).toMatchObject({ providerName: "openai", codexAccountMode: "pool" });
+    expect(routeModel(base, "codex-auto-review")).toMatchObject({
+      providerName: "openai",
+      modelId: "codex-auto-review",
+      codexAccountMode: "pool",
+    });
+    expect(routeModel(base, "codex-third-party-model")).toMatchObject({
+      providerName: "openai-apikey",
+      modelId: "codex-third-party-model",
+    });
+    const withDeepSeekDefault: OcxConfig = {
+      ...base,
+      defaultProvider: "deepseek",
+      providers: {
+        ...base.providers,
+        deepseek: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.deepseek.com/v1",
+          defaultModel: "deepseek-chat",
+        },
+      },
+    };
+    expect(routeModel(withDeepSeekDefault, "codex-auto-review")).toMatchObject({
+      providerName: "openai",
+      modelId: "codex-auto-review",
+    });
+    expect(routeModel(withDeepSeekDefault, "codex-third-party-model")).toMatchObject({
+      providerName: "deepseek",
+      modelId: "codex-third-party-model",
+    });
     expect(routeModel({ ...base, providers: { ...base.providers, openai: { ...forward, codexAccountMode: "direct" } } }, "gpt-5.5"))
       .toMatchObject({ providerName: "openai", codexAccountMode: "direct" });
     expect(() => routeModel({ ...base, providers: { ...base.providers, openai: { ...forward, disabled: true } } }, "gpt-5.5"))
       .toThrow(/requires the canonical openai provider/);
     const unavailable = { ...base, providers: { "openai-proxy": base.providers["openai-proxy"] } };
     expect(() => routeModel(unavailable, "gpt-5.5")).toThrow(/ocx provider add openai/);
+    expect(() => routeModel(unavailable, "codex-auto-review")).toThrow(NoEnabledOpenAiProviderError);
   });
 
   test("rejects legacy chatgpt namespaces even when configured", () => {

@@ -1,26 +1,41 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SPAWN_BUDGET_MS } from "./helpers/test-budget";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(repoRoot, "src", "cli", "index.ts");
 const binPath = join(repoRoot, "bin", "ocx.mjs");
+
+// Every case below spawns the real CLI. A hung child without a spawnSync timeout can
+// pin the whole shard for the full 15-minute CI budget (observed on Linux test 3/4
+// after an unrelated Bun epoll_ctl load fault). Keep the child deadline under the
+// test budget so a stuck help/status process fails fast instead of cancelling CI.
+setDefaultTimeout(SPAWN_BUDGET_MS);
+const SPAWN_TIMEOUT_MS = SPAWN_BUDGET_MS - 5_000;
 
 function runCli(args: string[], env: NodeJS.ProcessEnv = {}) {
   return spawnSync(process.execPath, [cliPath, ...args], {
     cwd: repoRoot,
     env: { ...process.env, ...env },
     encoding: "utf8",
+    timeout: SPAWN_TIMEOUT_MS,
   });
+}
+
+function expectSpawnFinished(result: ReturnType<typeof spawnSync>, label: string) {
+  expect(result.error, `${label} should not hang: ${result.error?.message ?? "unknown spawn error"}`).toBeUndefined();
+  expect(result.signal, `${label} should not be killed by signal ${result.signal}`).toBeNull();
 }
 
 describe("CLI subcommand help", () => {
   test("version commands print a single script-friendly line", () => {
     for (const args of [["--version"], ["-v"], ["version"]]) {
       const result = runCli(args);
+      expectSpawnFinished(result, `ocx ${args.join(" ")}`);
       expect(result.status).toBe(0);
       expect(result.stderr).toBe("");
       expect(result.stdout.trim()).toMatch(/^opencodex \d+\.\d+\.\d+/);
@@ -31,7 +46,9 @@ describe("CLI subcommand help", () => {
       cwd: repoRoot,
       env: process.env,
       encoding: "utf8",
+      timeout: SPAWN_TIMEOUT_MS,
     });
+    expectSpawnFinished(binResult, "bin/ocx.mjs --version");
     expect(binResult.status).toBe(0);
     expect(binResult.stdout.trim()).toMatch(/^opencodex \d+\.\d+\.\d+/);
     expect(binResult.stdout.trim().split("\n")).toHaveLength(1);
@@ -39,10 +56,24 @@ describe("CLI subcommand help", () => {
 
   test("help command routes to subcommand help", () => {
     const result = runCli(["help", "start"]);
+    expectSpawnFinished(result, "ocx help start");
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("Usage: ocx start [--port <port>]");
     expect(result.stdout).toContain("Start the proxy server and sync models to Codex.");
+  });
+
+  test("top-level and export help advertise all eight clients including DSH", () => {
+    const topLevel = runCli([]);
+    expectSpawnFinished(topLevel, "ocx help");
+    expect(topLevel.status).toBe(0);
+    expect(topLevel.stdout).toContain("(8 clients)");
+
+    const exportHelp = runCli(["help", "export"]);
+    expectSpawnFinished(exportHelp, "ocx help export");
+    expect(exportHelp.status).toBe(0);
+    expect(exportHelp.stdout).toContain("opencode|pi|omp|hermes|openclaw|kimi|gajae|dsh");
+    expect(exportHelp.stdout).toContain("DeepSeek Harness");
   });
 
   test("top-level help forms exit before Codex shim auto-restore can mutate launchers", () => {
@@ -68,6 +99,7 @@ describe("CLI subcommand help", () => {
 
       for (const args of [[], ["help"], ["--help"], ["-h"]]) {
         const result = runCli(args, { OPENCODEX_HOME: opencodexHome, PATH: binDir });
+        expectSpawnFinished(result, `ocx ${args.join(" ") || "(no args)"}`);
         expect(result.status).toBe(0);
         expect(result.stdout).toContain("opencodex (ocx)");
         expect(readFileSync(wrapper, "utf8")).toBe(replacement);
@@ -82,6 +114,7 @@ describe("CLI subcommand help", () => {
 
   test("tray help documents the install-only no-start flag", () => {
     const result = runCli(["help", "tray"]);
+    expectSpawnFinished(result, "ocx help tray");
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("--no-start");
@@ -89,6 +122,7 @@ describe("CLI subcommand help", () => {
 
   test("unknown command with help flag remains an error", () => {
     const result = runCli(["foobar", "--help"]);
+    expectSpawnFinished(result, "ocx foobar --help");
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("Unknown command: foobar");
     expect(result.stdout).toContain("opencodex (ocx)");
@@ -115,8 +149,10 @@ describe("CLI subcommand help", () => {
         cwd: repoRoot,
         env: { ...process.env, OPENCODEX_HOME: opencodexHome },
         encoding: "utf8",
+        timeout: SPAWN_TIMEOUT_MS,
       });
 
+      expectSpawnFinished(result, "ocx status");
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("Proxy:");
       expect(result.stdout).toContain("Health: http://127.0.0.1:9/healthz");
@@ -153,8 +189,10 @@ describe("CLI subcommand help", () => {
         cwd: repoRoot,
         env: { ...process.env, CODEX_HOME: codexHome },
         encoding: "utf8",
+        timeout: SPAWN_TIMEOUT_MS,
       });
 
+      expectSpawnFinished(result, "ocx restore --help");
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("Usage: ocx restore");
       expect(result.stdout).not.toContain("Plain `codex` now runs natively");
@@ -186,6 +224,7 @@ describe("CLI subcommand help", () => {
           CODEX_HOME: codexHome,
           OPENCODEX_HOME: opencodexHome,
         });
+        expectSpawnFinished(result, `ocx ${testCase.args.join(" ")}`);
         expect(result.status).toBe(0);
         expect(result.stdout).toContain(testCase.expected);
         expect(readFileSync(configPath, "utf8")).toBe(before);
@@ -206,8 +245,10 @@ describe("CLI subcommand help", () => {
         cwd: repoRoot,
         env: { ...process.env, CODEX_HOME: codexHome },
         encoding: "utf8",
+        timeout: SPAWN_TIMEOUT_MS,
       });
 
+      expectSpawnFinished(result, "ocx recover-history --help");
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("Usage: ocx recover-history --legacy-openai");
       expect(result.stdout).toContain("Explicitly recover pre-backup syncResumeHistory rows.");
@@ -228,6 +269,7 @@ describe("CLI subcommand help", () => {
 
     for (const testCase of cases) {
       const result = runCli(testCase.args);
+      expectSpawnFinished(result, `ocx ${testCase.args.join(" ")}`);
       expect(result.status).toBe(1);
       expect(result.stderr).toContain(testCase.expected);
       expect(result.stdout).not.toContain("Plain `codex`");
@@ -236,6 +278,7 @@ describe("CLI subcommand help", () => {
 
   test("start help wins before port validation", () => {
     const result = runCli(["start", "--port", "123abc", "--help"]);
+    expectSpawnFinished(result, "ocx start --port 123abc --help");
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("Usage: ocx start [--port <port>]");
@@ -249,6 +292,7 @@ describe("CLI subcommand help", () => {
 
     for (const testCase of cases) {
       const result = runCli(testCase.args);
+      expectSpawnFinished(result, `ocx ${testCase.args.join(" ")}`);
       expect(result.status).toBe(1);
       expect(result.stderr).toContain(testCase.expected);
       expect(result.stdout).toBe("");

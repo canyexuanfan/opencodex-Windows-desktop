@@ -28,6 +28,7 @@ import {
 } from "../src/codex/routing";
 import { startServer } from "../src/server";
 import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
+import { catalogConvergenceFactory } from "./helpers/catalog-convergence";
 
 // Full-suite Windows load: startServer + combo rename/delete management flows exceed the
 // default 5s per-test budget (same flake class as 810fa115 / claude-management-api).
@@ -343,7 +344,7 @@ async function management(
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return handleManagementAPI(request, new URL(request.url), config, {
-    refreshCodexCatalog: async () => {},
+    createManagementConvergeCodex: catalogConvergenceFactory(),
   });
 }
 
@@ -368,6 +369,35 @@ async function within<T>(promise: Promise<T>, ms = 2_000): Promise<T> {
 }
 
 describe("server combo failover 030 activation matrix", () => {
+  test("dispatches a selected concrete target despite a shadowing combo alias", async () => {
+    const hits: string[] = [];
+    const a = serve(async request => {
+      const body = await request.json() as { model?: string; messages?: Array<{ content?: string }> };
+      hits.push(`a:${body.model}:${body.messages?.[0]?.content}`);
+      return chatSuccess("intended", "m1");
+    });
+    const b = serve(async request => {
+      const body = await request.json() as { model?: string; messages?: Array<{ content?: string }> };
+      hits.push(`b:${body.model}:${body.messages?.[0]?.content}`);
+      return chatSuccess("shadow", "m2");
+    });
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(a), "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    }, [{ provider: "a", model: "m1" }]);
+    config.defaultProvider = "b";
+    config.combos!.shadow = {
+      alias: "a/m1",
+      targets: [{ provider: "b", model: "m2" }],
+    };
+
+    const response = await post(config, { input: "SECRET_PROMPT_X" });
+
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(await response.json())).toContain("intended");
+    expect(hits).toEqual(["a:m1:SECRET_PROMPT_X"]);
+  });
+
   test("ordinary openai-chat 503 hops to backup for non-stream and stream", async () => {
     const hits: string[] = [];
     const a = serve(async request => {
@@ -421,6 +451,57 @@ describe("server combo failover 030 activation matrix", () => {
           { ordinal: 2, provider: "b", model: "m2", status: 200, usage: { inputTokens: 2, outputTokens: 1 } },
         ],
       });
+    }
+  });
+
+  test("persists one immutable combo route trace, not the child route trace", async () => {
+    const a = serve(() => chatSuccess("winner", "m1"));
+    const b = serve(() => chatSuccess("backup", "m2"));
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(a), "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    });
+    const response = await postLogged(config);
+    expect(response.status).toBe(200);
+    await response.text();
+    const { log, usage } = await latestAttemptReceipts(config);
+    for (const receipt of [log, usage]) {
+      expect(receipt.routeDecision).toBeDefined();
+      expect(receipt.routeDecision.routeKind).toBe("combo");
+      expect(receipt.routeDecision.requestedModel).toBe("combo/free");
+      expect(receipt.routeDecision.candidates).toHaveLength(2);
+      expect(receipt.routeDecision.selected).toMatchObject({
+        provider: "a",
+        model: "m1",
+        reason: "combo-pick",
+      });
+      // Selection trace stays immutable: exactly one physical attempt happened
+      // and the trace still describes the combo decision, not the child route.
+      expect(receipt.attempts).toHaveLength(1);
+      expect(receipt.attempts![0]).toMatchObject({ provider: "a", model: "m1" });
+    }
+  });
+
+  test("terminal combo failure keeps the combo trace through child adoption", async () => {
+    const a = serve(() => Response.json({ error: { message: "overloaded" } }, { status: 503 }));
+    const b = serve(() => Response.json({ error: { message: "overloaded" } }, { status: 503 }));
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(a), "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    });
+    const response = await postLogged(config);
+    expect(response.status).toBeGreaterThanOrEqual(500);
+    await response.text();
+    const { log, usage } = await latestAttemptReceipts(config);
+    for (const receipt of [log, usage]) {
+      expect(receipt.routeDecision).toBeDefined();
+      expect(receipt.routeDecision.routeKind).toBe("combo");
+      expect(receipt.routeDecision.selected).toMatchObject({
+        provider: "a",
+        model: "m1",
+        reason: "combo-pick",
+      });
+      expect(receipt.attempts).toHaveLength(2);
     }
   });
 
@@ -1221,6 +1302,139 @@ describe("server combo failover 030 activation matrix", () => {
     expect((await post(config)).status).toBe(200);
     expect(aHits).toBe(2);
     expect(bHits).toBe(2);
+  });
+
+  test("disabled image input rejects the request before any combo target is called", async () => {
+    let hits = 0;
+    const a = serve(() => {
+      hits += 1;
+      return chatSuccess("unexpected", "m1");
+    });
+    const config = comboConfig({ a: provider("openai-chat", baseUrl(a), "key-a") }, undefined, {
+      imageInput: "disabled",
+    });
+    const response = await post(config, {
+      input: [{ role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,aGVsbG8=" }] }],
+    });
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("does not accept image input");
+    expect(hits).toBe(0);
+  });
+
+  test("disabled image input ignores tool schemas that only mention input_image", async () => {
+    let hits = 0;
+    const bodies: Array<Record<string, unknown>> = [];
+    const a = serve(async request => {
+      hits += 1;
+      bodies.push(await request.json() as Record<string, unknown>);
+      return chatSuccess("text only", "m1");
+    });
+    const config = comboConfig({ a: provider("openai-chat", baseUrl(a), "key-a") }, undefined, {
+      imageInput: "disabled",
+    });
+    const response = await post(config, {
+      input: [{ role: "user", content: "describe without images" }],
+      tools: [{
+        type: "function",
+        name: "classify",
+        parameters: {
+          type: "object",
+          properties: {
+            part: { type: "string", enum: ["input_image", "input_text"] },
+            example: { type: "input_image" },
+          },
+        },
+      }],
+      metadata: { sample: { type: "input_image" } },
+    });
+    expect(response.status).toBe(200);
+    expect(hits).toBe(1);
+    // openai-chat upstream receives the bare model id after concrete routing.
+    expect(bodies[0]?.model).toBe("m1");
+  });
+
+  test("disabled image input rejects unavailable previous_response_id before dispatch", async () => {
+    let hits = 0;
+    const a = serve(() => {
+      hits += 1;
+      return chatSuccess("unexpected", "m1");
+    });
+    const config = comboConfig({ a: provider("openai-chat", baseUrl(a), "key-a") }, undefined, {
+      imageInput: "disabled",
+    });
+    const response = await post(config, {
+      previous_response_id: "resp_missing_local_state",
+      input: [{ role: "user", content: "continue" }],
+    });
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("Continuation state is unavailable");
+    expect(hits).toBe(0);
+  });
+
+  test("disabled image input expands text-only previous_response_id exactly once before child dispatch", async () => {
+    const { rememberResponseState } = await import("../src/responses/state");
+    rememberResponseState(
+      { model: "combo/free", input: [{ role: "user", content: "earlier text" }] },
+      {
+        id: "resp_combo_text_prev",
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: "ack" }],
+      },
+    );
+    const bodies: Array<Record<string, unknown>> = [];
+    const a = serve(async request => {
+      bodies.push(await request.json() as Record<string, unknown>);
+      return chatSuccess("continued", "m1");
+    });
+    const config = comboConfig({ a: provider("openai-chat", baseUrl(a), "key-a") }, undefined, {
+      imageInput: "disabled",
+    });
+    const response = await post(config, {
+      previous_response_id: "resp_combo_text_prev",
+      input: [{ role: "user", content: "next turn" }],
+    });
+    expect(response.status).toBe(200);
+    expect(bodies).toHaveLength(1);
+    const child = bodies[0]!;
+    // Parent already expanded; child must not keep previous_response_id (would double-prepend).
+    expect(child.previous_response_id).toBeUndefined();
+    const inputText = JSON.stringify(child.input ?? child.messages ?? child);
+    expect(inputText.split("earlier text")).toHaveLength(2);
+    expect(inputText.split("next turn")).toHaveLength(2);
+  });
+
+  test("disabled image input rejects an image restored from previous_response_id before dispatch", async () => {
+    const { rememberResponseState } = await import("../src/responses/state");
+    rememberResponseState(
+      {
+        model: "combo/free",
+        input: [{
+          role: "user",
+          content: [{ type: "input_image", image_url: "data:image/png;base64,aGVsbG8=" }],
+        }],
+      },
+      {
+        id: "resp_combo_image_prev",
+        status: "completed",
+        output: [{ type: "message", role: "assistant", content: "image received" }],
+      },
+    );
+    let hits = 0;
+    const a = serve(() => {
+      hits += 1;
+      return chatSuccess("unexpected", "m1");
+    });
+    const config = comboConfig({ a: provider("openai-chat", baseUrl(a), "key-a") }, undefined, {
+      imageInput: "disabled",
+    });
+    const response = await post(config, {
+      previous_response_id: "resp_combo_image_prev",
+      input: [{ role: "user", content: "continue" }],
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("does not accept image input");
+    expect(hits).toBe(0);
   });
 
   test("fresh child reparsing recomputes vision and effort per target", async () => {

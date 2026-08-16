@@ -1,13 +1,19 @@
 /**
- * `ocx export --client <opencode|pi>` — print a client config for the live proxy.
+ * `ocx export --client <id>` — print a client config for the live proxy.
+ *
+ * Eight clients, four formats: OpenCode and Pi are JSON; OMP, Hermes, Gajae and
+ * MiniMax Code are YAML; OpenClaw is JSON5; Kimi is TOML.
  *
  * Two consumers, one payload (devlog 260731_client_config_export/020):
  *
- * - **Agent** (`--json`): stdout is exactly the client config JSON and nothing else, so
- *   `ocx export --client pi --json > models.json` is safe to pipe. Every diagnostic —
- *   including the `--out` write note — goes to stderr.
- * - **Human** (no flag): the JSON leads, then the destination path, the merge warning,
- *   the env export line, and the model/degraded counts.
+ * - **Agent** (`--json`): stdout is exactly the client config as JSON and nothing else,
+ *   so `ocx export --client pi --json > models.json` is safe to pipe. This is JSON for
+ *   every client, including the YAML/JSON5/TOML ones — the flag is about machine
+ *   readability, not the client's native format. Every diagnostic — including the
+ *   `--out` write note — goes to stderr.
+ * - **Human** (no flag) and `--out`: the client's NATIVE serialization leads, then the
+ *   destination path, the merge warning, the env export line, and the model/degraded
+ *   counts.
  *
  * The command never writes the user's real config path. `--out` is an explicit target and
  * refuses to clobber an existing file without `--force`, because the common mistake
@@ -15,14 +21,15 @@
  *
  * Serialization itself belongs to src/clients/config-export.ts; this module only resolves
  * the base URL, filters the catalog, and renders. No secret is ever serialized: the config
- * carries the client's documented env reference and the real key stays in the environment.
+ * carries the client's documented env reference — or, for Kimi, which cannot hold one, a
+ * loopback placeholder — and the real key stays in the environment.
  */
 import { writeFileSync } from "node:fs";
 import { loadConfig } from "../config";
 import {
   EXPORT_CLIENTS,
   EXPORT_CLIENT_IDS,
-  buildClientConfig,
+  buildClientConfigText,
   isExportClientId,
   opencodeProxyBaseUrl,
   type ExportClientId,
@@ -55,7 +62,11 @@ export interface ExportCommandDeps extends RuntimeApiDeps {
  * `/api/models` row plus the modality list Pi consumes. The launcher's row type predates
  * the Pi exporter and stops at the fields OpenCode needs.
  */
-type ExportProxyModelRow = OpencodeProxyModelRow & { inputModalities?: string[] };
+type ExportProxyModelRow = OpencodeProxyModelRow & {
+  inputModalities?: string[];
+  reasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
+};
 
 /** Same authoritativeness rule the serializers apply, for the degraded-count line. */
 function hasContextLimit(model: ExportModel): boolean {
@@ -76,12 +87,21 @@ export function exportModelsFromProxyRows(
   rows: readonly ExportProxyModelRow[],
   config: OcxConfig,
 ): ExportModel[] {
-  const modalities = new Map<string, string[]>();
+  const metadata = new Map<string, Pick<ExportModel, "inputModalities" | "reasoningEfforts" | "defaultReasoningEffort">>();
   for (const row of rows) {
     const namespaced = row.namespaced?.trim();
-    if (namespaced && Array.isArray(row.inputModalities) && row.inputModalities.length > 0) {
-      if (!modalities.has(namespaced)) modalities.set(namespaced, [...row.inputModalities]);
-    }
+    if (!namespaced || metadata.has(namespaced)) continue;
+    metadata.set(namespaced, {
+      ...(Array.isArray(row.inputModalities) && row.inputModalities.length > 0
+        ? { inputModalities: [...row.inputModalities] }
+        : {}),
+      ...(Array.isArray(row.reasoningEfforts) && row.reasoningEfforts.length > 0
+        ? { reasoningEfforts: [...row.reasoningEfforts] }
+        : {}),
+      ...(typeof row.defaultReasoningEffort === "string" && row.defaultReasoningEffort.length > 0
+        ? { defaultReasoningEffort: row.defaultReasoningEffort }
+        : {}),
+    });
   }
   return opencodeCatalogFromProxyRows(rows, config).map(entry => {
     const model: ExportModel = {
@@ -92,8 +112,7 @@ export function exportModelsFromProxyRows(
     if (entry.native) model.native = true;
     if (entry.displayName) model.displayName = entry.displayName;
     if (entry.contextWindow !== undefined) model.contextWindow = entry.contextWindow;
-    const input = modalities.get(entry.namespaced);
-    if (input) model.inputModalities = input;
+    Object.assign(model, metadata.get(entry.namespaced));
     return model;
   });
 }
@@ -164,16 +183,23 @@ export async function handleExportCommand(argv: string[], deps: ExportCommandDep
       throw new RuntimeApiError("Management API returned an unexpected /api/models payload.", 502, rows);
     }
     const models = exportModelsFromProxyRows(rows, config);
-    const clientConfig = buildClientConfig(client, { baseUrl: proxyV1BaseUrl(root), models, config });
-    const text = JSON.stringify(clientConfig, null, 2);
+    // The text is the client's OWN format — YAML, TOML and JSON5 clients would
+    // otherwise receive a JSON rendering their parser reads differently.
+    const built = buildClientConfigText(client, { baseUrl: proxyV1BaseUrl(root), models, config });
+    const clientConfig = built.document;
+    const text = built.text;
 
-    if (out !== undefined) writeExport(out, `${text}\n`, force);
-    // stderr, so `--json` stdout stays byte-exact for a redirect.
+    // Every serializer already ends with exactly one newline.
+    if (out !== undefined) writeExport(out, text, force);
+    // stderr, so `--json` stdout stays a standalone JSON document.
     if (out !== undefined && wantsJson) console.error(`Wrote ${out}`);
 
     const degraded = models.filter(model => !hasContextLimit(model)).length;
+    // `--json` keeps emitting the DOCUMENT at the top level as JSON for scripts;
+    // `--out` is the path that writes the selected client's native format.
+    // Format metadata rides in the human lines below.
     printData(clientConfig, wantsJson, [
-      text,
+      text.trimEnd(),
       "",
       ...(out !== undefined ? [`Wrote ${out}`] : []),
       `Destination: ${spec.destination(process.env)}`,

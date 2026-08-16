@@ -10,10 +10,13 @@ import {
   comboConfigError,
   comboConfigIssues,
   comboDefaultEffort,
+  comboDisabledModelId,
+  comboDisabledModelSelectors,
   comboFailureDecision,
   comboIdFromRawBody,
   comboModelId,
   comboPublicModelId,
+  comboRequestHasImageInput,
   concreteComboRequestBody,
   coolComboTarget,
   getCombo,
@@ -42,6 +45,7 @@ import type { OcxConfig } from "../src/types";
 import { syncCatalogModels } from "../src/codex/catalog";
 import { injectClaudeAgentDefs } from "../src/claude/agents-inject";
 import { reconcileComboRotationState } from "../src/combos/resolve";
+import { catalogConvergenceFactory } from "./helpers/catalog-convergence";
 
 const VALID_COMBO = { targets: [{ provider: "a", model: "m1" }] };
 
@@ -129,7 +133,7 @@ async function comboApi(
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return handleManagementAPI(req, new URL(req.url), config, {
-    refreshCodexCatalog,
+    createManagementConvergeCodex: catalogConvergenceFactory(refreshCodexCatalog),
   });
 }
 
@@ -140,7 +144,7 @@ async function comboApiRaw(config: OcxConfig, method: string, path: string, body
     body,
   });
   return handleManagementAPI(req, new URL(req.url), config, {
-    refreshCodexCatalog: async () => {},
+    createManagementConvergeCodex: catalogConvergenceFactory(),
   });
 }
 
@@ -167,6 +171,18 @@ describe("combo namespace primitives", () => {
     expect(isValidComboId("free.v1_2-x")).toBe(true);
     expect(isValidComboId("-free")).toBe(false);
     expect(targetKey({ provider: "a", model: "m1" })).toBe("a/m1");
+  });
+
+  test("keeps native-alias discovery disables separate from the bare native key", () => {
+    const nativeAlias = {
+      alias: "gpt-5.6-sol",
+      nativeAlias: true,
+      displayName: "Nova1 - Sol",
+    };
+    expect(comboDisabledModelId("nova-sol", nativeAlias)).toBe("combo/nova-sol");
+    expect(comboDisabledModelSelectors("nova-sol", nativeAlias)).toEqual(["combo/nova-sol"]);
+    expect(comboDisabledModelSelectors("regular", { alias: "daily-fast" }))
+      .toEqual(["combo/regular", "daily-fast"]);
   });
 
   test("resolves canonical ids before exact aliases and ignores unknown bare ids", () => {
@@ -197,6 +213,48 @@ describe("combo request cloning", () => {
     expect(comboIdFromRawBody({ model: "a/m1" }, config)).toBeNull();
     expect(comboIdFromRawBody({ model: 1 }, config)).toBeNull();
     expect(comboIdFromRawBody(null, config)).toBeNull();
+  });
+
+  test("comboRequestHasImageInput scans Responses input only, not tools or metadata", () => {
+    expect(comboRequestHasImageInput({
+      model: "combo/free",
+      input: [{ role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64,aGVsbG8=" }] }],
+    })).toBe(true);
+    expect(comboRequestHasImageInput({
+      model: "combo/free",
+      input: [{ type: "input_image", image_url: "https://example.test/i.png" }],
+    })).toBe(true);
+    expect(comboRequestHasImageInput({
+      model: "combo/free",
+      input: [{
+        type: "function_call_output",
+        call_id: "call_1",
+        output: [{ type: "input_image", image_url: "https://example.test/tool.png" }],
+      }],
+    })).toBe(true);
+    // Tool schemas / metadata may legally mention the same type string without
+    // carrying image content for the model.
+    expect(comboRequestHasImageInput({
+      model: "combo/free",
+      input: [{ role: "user", content: "text only" }],
+      tools: [{
+        type: "function",
+        name: "describe",
+        parameters: {
+          type: "object",
+          properties: {
+            kind: { type: "string", enum: ["input_image", "input_text"] },
+            example: { type: "input_image" },
+          },
+        },
+      }],
+      metadata: { note: { type: "input_image" } },
+    })).toBe(false);
+    expect(comboRequestHasImageInput({
+      model: "combo/free",
+      input: "plain text",
+      tools: [{ type: "function", function: { name: "x", parameters: { type: "input_image" } } }],
+    })).toBe(false);
   });
 
   test("clones the untouched body and injects an omitted combo default", () => {
@@ -234,7 +292,7 @@ describe("combo request cloning", () => {
     expect(concreteComboRequestBody({ model: "combo/x" }, target, "high", ["low", "medium"]).reasoning).toBeUndefined();
   });
 
-  test("debug-warns once per unsupported combo default", () => {
+  test("debug-warns once per unsupported or unknown combo default", () => {
     const debug = spyOn(console, "debug").mockImplementation(() => {});
     concreteComboRequestBody({ model: "combo/x" }, target, "high", []);
     concreteComboRequestBody({ model: "combo/x" }, target, "high", []);
@@ -244,6 +302,13 @@ describe("combo request cloning", () => {
       model: "m1",
       requestedEffort: "high",
       capability: "unsupported",
+    });
+    concreteComboRequestBody({ model: "combo/x" }, target, "medium", undefined);
+    concreteComboRequestBody({ model: "combo/x" }, target, "medium", undefined);
+    expect(debug).toHaveBeenCalledTimes(2);
+    expect(debug.mock.calls[1]?.[1]).toMatchObject({
+      requestedEffort: "medium",
+      capability: "unknown",
     });
     debug.mockRestore();
   });
@@ -388,6 +453,41 @@ describe("deterministic combo selection", () => {
     });
   });
 
+  test("an explicitly configured native alias resolves before canonical OpenAI routing", () => {
+    const config = baseConfig({
+      codexAccountNamespaces: { main: "@main" },
+      combos: {
+        nova: {
+          alias: "gpt-5.6-sol",
+          nativeAlias: true,
+          displayName: "Nova1 - Sol",
+          targets: [{ provider: "a", model: "m1" }],
+        },
+      },
+    });
+    config.providers.openai = {
+      adapter: "openai-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      codexAccountMode: "direct",
+    };
+
+    expect(routeModel(config, "gpt-5.6-sol")).toMatchObject({
+      providerName: "a",
+      modelId: "m1",
+      combo: { comboId: "nova", target: { provider: "a", model: "m1" } },
+    });
+    expect(routeModel(config, "combo/nova")).toMatchObject({
+      providerName: "a",
+      modelId: "m1",
+    });
+    const accountQualified = routeModel(config, "main/gpt-5.6-sol");
+    expect(accountQualified).toMatchObject({
+      providerName: "openai",
+      modelId: "gpt-5.6-sol",
+    });
+    expect(accountQualified.combo).toBeUndefined();
+  });
+
   test("eligibility, exclusions, and state reset are deterministic", () => {
     const config = rrConfig(1, [1, 1]);
     expect(pickComboTarget(config, "free", { exclude: ["a/m1"] })?.target.provider).toBe("b");
@@ -423,10 +523,42 @@ describe("combo validation and normalization", () => {
     expect(comboAliasIssues("new", "vendor/model", combos)).toEqual([]);
     expect(comboAliasIssues("new", "combo/model", combos)[0]?.message).toContain("reserved");
     expect(comboAliasIssues("new", "gpt-5", combos)[0]?.message).toContain("OpenAI native family");
+    expect(comboAliasIssues("new", "gpt-5.6-sol", combos, { allowNativeAlias: true })).toEqual([]);
     expect(comboAliasIssues("new", "deepseek-v4-flash", combos)[0]?.message).toContain("already used");
     expect(comboAliasIssues("renamed", "deepseek-v4-flash", combos, {
       excludeComboId: "free",
     })).toEqual([]);
+  });
+
+  test("requires an explicit labeled opt-in before a combo can own a native alias", () => {
+    const providers = baseConfig().providers;
+    expect(comboConfigError("nova", {
+      ...VALID_COMBO,
+      alias: "gpt-5.6-sol",
+    }, providers)).toContain("nativeAlias=true");
+    expect(comboConfigError("nova", {
+      ...VALID_COMBO,
+      alias: "gpt-5.6-sol",
+      nativeAlias: true,
+    }, providers)).toContain("displayName is required");
+    expect(comboConfigError("nova", {
+      ...VALID_COMBO,
+      alias: "deepseek-v4-flash",
+      nativeAlias: true,
+      displayName: "Not native",
+    }, providers)).toContain("requires a currently supported bare OpenAI-native");
+    expect(comboConfigError("nova", {
+      ...VALID_COMBO,
+      alias: "gpt-future-preview",
+      nativeAlias: true,
+      displayName: "Future model",
+    }, providers)).toContain("requires a currently supported bare OpenAI-native");
+    expect(comboConfigError("nova", {
+      ...VALID_COMBO,
+      alias: "gpt-5.6-sol",
+      nativeAlias: true,
+      displayName: "Nova1 - Sol",
+    }, providers)).toBeNull();
   });
 
   test("reports every validation row with a stable path and message", () => {
@@ -500,7 +632,10 @@ describe("combo validation and normalization", () => {
       strategy: "failover",
       stickyLimit: 1,
       defaultEffort: "high",
+      imageInput: "auto",
       alias: null,
+      nativeAlias: false,
+      displayName: null,
       targets: [{ provider: "a", model: "m1", weight: 2 }],
     });
     expect(normalizeComboConfig({ targets: [{ provider: "a", model: "m1" }] }).defaultEffort).toBeNull();
