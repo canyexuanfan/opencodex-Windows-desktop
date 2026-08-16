@@ -611,7 +611,7 @@ export function bridgeToResponsesSSE(
         }
         // Freeform tools serialize as custom_tool_call without extra_content; remember the
         // signature server-side regardless so the replayed call can be re-signed (#1735).
-        rememberExtraContentForReplay(currentToolCall.callId, currentToolCall.providerMetadata);
+        void rememberExtraContentForReplay(currentToolCall.callId, currentToolCall.providerMetadata, replayCacheScope);
         const item = currentToolCall.toolSearch
           ? {
               type: "tool_search_call", id: currentToolCall.itemId,
@@ -632,7 +632,7 @@ export function bridgeToResponsesSSE(
               // Provider-opaque metadata (issue #1735) rides the item so a client that replays
               // this history can hand the signature back on the part it belongs to. The proxy
               // also remembers it server-side for clients that never echo extra_content.
-              ...(rememberAndSerializeExtraContent(currentToolCall.callId, currentToolCall.providerMetadata) ?? {}),
+              ...(rememberAndSerializeExtraContent(currentToolCall.callId, currentToolCall.providerMetadata, replayCacheScope).extra ?? {}),
             };
         emit("response.output_item.done", { output_index: currentToolCall.outputIndex, item });
         retainFinishedItem(item as OutputItem);
@@ -650,7 +650,7 @@ export function bridgeToResponsesSSE(
       const failCurrentToolCall = () => {
         if (!currentToolCall) return;
         const argsStr = currentToolCall.args || "{}";
-        rememberExtraContentForReplay(currentToolCall.callId, currentToolCall.providerMetadata);
+        void rememberExtraContentForReplay(currentToolCall.callId, currentToolCall.providerMetadata, replayCacheScope);
         const item = currentToolCall.toolSearch
           ? {
               type: "tool_search_call", id: currentToolCall.itemId,
@@ -671,7 +671,7 @@ export function bridgeToResponsesSSE(
               // An incomplete call can still be persisted and replayed (max_output_tokens), so it
               // carries the same metadata as the completed item — otherwise SSE and buffered JSON
               // would disagree about whether the signature survives.
-              ...(rememberAndSerializeExtraContent(currentToolCall.callId, currentToolCall.providerMetadata) ?? {}),
+              ...(rememberAndSerializeExtraContent(currentToolCall.callId, currentToolCall.providerMetadata, replayCacheScope).extra ?? {}),
             };
         emit("response.output_item.done", { output_index: currentToolCall.outputIndex, item });
         retainFinishedItem(item as OutputItem);
@@ -1586,7 +1586,7 @@ function buildResponseJSONWithBudget(
     );
     // Freeform tools serialize as custom_tool_call without extra_content; remember the
     // signature server-side regardless so the replayed call can be re-signed (#1735).
-    rememberExtraContentForReplay(currentToolCallId, currentToolCallProviderMetadata);
+    void rememberExtraContentForReplay(currentToolCallId, currentToolCallProviderMetadata, replayCacheScope);
     if (toolSearch) {
       pushOutput({
         type: "tool_search_call", id: `tsc_${uuid()}`,
@@ -1605,7 +1605,7 @@ function buildResponseJSONWithBudget(
         call_id: currentToolCallId, name: realName,
         arguments: coercedArgs || "{}", status,
         ...(ns ? { namespace: ns } : {}),
-        ...(rememberAndSerializeExtraContent(currentToolCallId, currentToolCallProviderMetadata) ?? {}),
+        ...(rememberAndSerializeExtraContent(currentToolCallId, currentToolCallProviderMetadata, replayCacheScope).extra ?? {}),
       });
     }
     budget?.closeCall(currentToolCallId);
