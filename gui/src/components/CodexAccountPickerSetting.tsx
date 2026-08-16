@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { readJsonOrThrow } from "../fetch-json";
+import { startVisibilityPoll } from "../visibility-poll";
 import { useT } from "../i18n/shared";
 import type { NoticeTone } from "../ui";
 
@@ -39,10 +40,10 @@ export default function CodexAccountPickerSetting({ apiBase }: { apiBase: string
 
   useEffect(() => {
     const timeout = window.setTimeout(() => { void load(); }, 0);
-    const interval = window.setInterval(() => { void load(); }, 30_000);
+    const stop = startVisibilityPoll(() => { void load(); }, 30_000);
     return () => {
       window.clearTimeout(timeout);
-      window.clearInterval(interval);
+      stop();
     };
   }, [load]);
 

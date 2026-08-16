@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useT } from "../i18n/shared";
 import { readJsonOrThrow } from "../fetch-json";
+import { startVisibilityPoll } from "../visibility-poll";
 
 const FEATURE_ENDPOINT = "/api/codex-auth/features/default-mode-request-user-input";
 
@@ -44,10 +45,10 @@ export default function DefaultModeRequestUserInputSetting({ apiBase }: { apiBas
 
   useEffect(() => {
     const timeout = window.setTimeout(() => { void load(); }, 0);
-    const interval = window.setInterval(() => { void load(); }, 30_000);
+    const stop = startVisibilityPoll(() => { void load(); }, 30_000);
     return () => {
       window.clearTimeout(timeout);
-      window.clearInterval(interval);
+      stop();
     };
   }, [load]);
 

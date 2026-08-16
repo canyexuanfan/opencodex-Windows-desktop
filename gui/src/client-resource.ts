@@ -36,6 +36,12 @@ type Store<T> = {
   pollTimer: ReturnType<typeof setInterval> | null;
   /** Currently scheduled poll interval; avoids resetting the countdown on churn. */
   pollIntervalMs: number | undefined;
+  /**
+   * Hidden with no opt-out subscriber: the timer is GONE (not just skipped) and only
+   * a visibility transition back to visible re-arms it. pollIntervalMs survives
+   * suspension so churn cannot re-arm through the changed-interval path.
+   */
+  pollSuspended: boolean;
   inflight: AbortController | null;
   /** Subscriber that started the current in-flight request (if any). */
   inflightOwner: (() => void) | null;
@@ -94,6 +100,7 @@ function getStore<T>(key: string): Store<T> {
       subscriberCount: 0,
       pollTimer: null,
       pollIntervalMs: undefined,
+      pollSuspended: false,
       inflight: null,
       inflightOwner: null,
       visibilityListener: null,
@@ -115,6 +122,30 @@ function clearPollTimer<T>(store: Store<T>) {
     store.pollTimer = null;
   }
   store.pollIntervalMs = undefined;
+}
+
+/**
+ * Clear only the timer and mark the store suspended. Unlike clearPollTimer this
+ * KEEPS pollIntervalMs — clearing it would let hidden-phase subscriber churn
+ * (StrictMode, tab mounts) re-arm a fresh interval through recomputePoll's
+ * changed-interval path.
+ */
+function suspendPollTimer<T>(store: Store<T>) {
+  if (store.pollTimer !== null) {
+    clearInterval(store.pollTimer);
+    store.pollTimer = null;
+  }
+  store.pollSuspended = true;
+}
+
+/** True when any polling subscriber opted out of hidden pausing (e.g. restart watch). */
+function anyOptOut<T>(store: Store<T>): boolean {
+  for (const [listener, ms] of store.pollByListener) {
+    if (typeof ms === "number" && ms > 0 && store.pauseWhenHiddenByListener.get(listener) === false) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** True when the document is currently hidden. Safe on non-browser runtimes. */
@@ -167,15 +198,31 @@ function recomputePoll<T>(store: Store<T>) {
       pollMs = pollMs === undefined ? ms : Math.min(pollMs, ms);
     }
   }
+  if (pollMs === undefined) {
+    // No subscriber polls any more: full teardown. A suspended store resets here so
+    // the next polling subscriber starts clean even while the tab is still hidden —
+    // otherwise the flag would outlive the listener that resumes it.
+    clearPollTimer(store);
+    store.pollSuspended = false;
+    removeVisibilityListener(store);
+    return;
+  }
   // Keep the existing countdown when the effective interval is unchanged.
-  if (pollMs === store.pollIntervalMs && (pollMs === undefined || store.pollTimer !== null)) {
+  if (pollMs === store.pollIntervalMs && store.pollTimer !== null) {
+    return;
+  }
+  if (store.pollSuspended) {
+    // Hidden: update bookkeeping only. Arming is the visibility handler's job.
+    store.pollIntervalMs = pollMs;
     return;
   }
   clearPollTimer(store);
   store.pollIntervalMs = pollMs;
-  if (pollMs === undefined) {
-    // No subscriber polls any more, so there is no skipped tick to make up on return.
-    removeVisibilityListener(store);
+  if (documentIsHidden() && !anyOptOut(store)) {
+    // First subscribed (or re-armed) while already hidden: hold no timer at all.
+    // The listener still installs so the resume + make-up path stays live.
+    store.pollSuspended = true;
+    ensureVisibilityListener(store);
     return;
   }
   store.pollTimer = setInterval(() => {
@@ -188,23 +235,34 @@ function recomputePoll<T>(store: Store<T>) {
 }
 
 /**
- * One listener per polling store: when the tab comes back, the skipped ticks are made up
- * with a single quiet revalidation instead of waiting out the remaining interval.
+ * One listener per polling store, installed whenever a polling subscriber exists —
+ * regardless of whether a timer is currently armed (a mount-while-hidden store has
+ * no timer but MUST still resume). On hidden the timer is suspended outright (zero
+ * wakeups, unless an opt-out subscriber keeps it); on visible the skipped ticks are
+ * made up with a single quiet revalidation and the cadence re-arms.
  *
  * `replaceInflight: false` keeps this from cancelling work a visible-again mount just
  * started; if something is already loading, that request is the fresh answer.
  */
 function ensureVisibilityListener<T>(store: Store<T>) {
   if (typeof document === "undefined" || store.visibilityListener) return;
-  const onVisible = () => {
-    if (documentIsHidden()) return;
+  const onVisibility = () => {
     if (store.pollIntervalMs === undefined) return;
+    if (documentIsHidden()) {
+      if (anyOptOut(store)) return; // opt-out polls keep their timer running
+      suspendPollTimer(store);
+      return;
+    }
+    if (store.pollSuspended) {
+      store.pollSuspended = false;
+      recomputePoll(store); // re-arms: pollIntervalMs survived the suspension
+    }
     const entry = pickFetcherEntry(store);
     if (!entry) return;
     void runFetch(store, entry.fetcher, { replaceInflight: false, owner: entry.owner, deadlineMs: entry.deadlineMs });
   };
-  document.addEventListener("visibilitychange", onVisible);
-  store.visibilityListener = onVisible;
+  document.addEventListener("visibilitychange", onVisibility);
+  store.visibilityListener = onVisibility;
 }
 
 function removeVisibilityListener<T>(store: Store<T>) {
@@ -322,6 +380,7 @@ function abortInflightOwnedBy<T>(store: Store<T>, owner: () => void): boolean {
  */
 function scheduleStoreEviction(key: string, store: Store<unknown>) {
   clearPollTimer(store);
+  store.pollSuspended = false;
   // The visibility listener exists to wake a poll; with no poll left there is nothing to
   // wake, and leaving it attached would leak one handler per evicted store.
   removeVisibilityListener(store);
@@ -552,4 +611,14 @@ export function clearClientResourceStoresForTests(): void {
     store.inflightOwner = null;
   }
   stores.clear();
+}
+
+/**
+ * Test-only: whether a live poll timer exists for the key. Suspension (hidden with no
+ * opt-out subscriber) means NO timer — that absence is the whole hidden-tab guarantee,
+ * and fetch counts alone cannot see it (skipped ticks look identical).
+ */
+export function hasPollTimerForTests(key: string): boolean {
+  const store = stores.get(key);
+  return store ? store.pollTimer !== null : false;
 }
