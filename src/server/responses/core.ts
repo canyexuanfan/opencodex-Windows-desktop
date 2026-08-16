@@ -241,6 +241,7 @@ import {
   collectDeclaredWireToolNames,
   createUndeclaredToolCallGuardBlockRewrite,
   undeclaredToolCallMessage,
+  undeclaredToolCallName,
   undeclaredToolCallNameInResponse,
 } from "../responses-undeclared-tool-guard";
 import { createGithubCopilotResponsesBlockRewrite } from "../github-copilot-responses-repair";
@@ -2308,8 +2309,25 @@ async function handleResponsesInner(
     // untouched upstream stream, so it can still observe a `response.completed` the client never
     // received; checking the payload itself rather than a flag shared with the client relay keeps
     // this free of tee ordering races.
+    //
+    // Checking only the terminal snapshot is not enough. An upstream can announce the undeclared
+    // call in `response.output_item.added`, which trips the client guard, and then close with a
+    // `response.completed` whose `output` is empty. The client gets `response.failed`, the terminal
+    // check sees nothing undeclared, and the refused turn enters continuation state anyway. So the
+    // rejection is sticky for the whole turn, set from every parsed payload on the inspection side.
+    let inspectionSawUndeclaredTool = false;
+    const noteInspectedPayload = (payload: unknown) => {
+      // Gated on the same flag as the guard itself: with no readable catalog (or a forward-auth
+      // provider) every name looks undeclared, and flipping this would stop recording continuation
+      // state for exactly the passthrough traffic the guard deliberately stands down for.
+      if (!undeclaredToolGuardActive || inspectionSawUndeclaredTool) return;
+      if (undeclaredToolCallName(payload, declaredWireToolNames) !== undefined) {
+        inspectionSawUndeclaredTool = true;
+      }
+    };
     const rememberPassthroughResponseChecked = rememberPassthroughResponse
       ? (response: { id?: unknown; output?: unknown; status?: unknown }) => {
+        if (inspectionSawUndeclaredTool) return;
         if (
           undeclaredToolGuardActive
           && undeclaredToolCallNameInResponse(response, declaredWireToolNames) !== undefined
@@ -2775,6 +2793,7 @@ async function handleResponsesInner(
           onTerminal: reportNativeTerminal,
           logCtx,
           onCompletedResponse: rememberPassthroughResponseChecked,
+          onParsedPayload: noteInspectedPayload,
           onFirstOutput: options.onFirstOutput,
           pinCompletedResponseIdToFirstSeen: githubCopilotRepairEnabled,
         });
@@ -2825,6 +2844,7 @@ async function handleResponsesInner(
         drainBounds: { ms: 15_000, bytes: 32 * 1024 * 1024 },
         upstream,
         pinCompletedResponseIdToFirstSeen: githubCopilotRepairEnabled,
+        onParsedPayload: noteInspectedPayload,
       };
       if (recordTerminalOutcomes) {
         // A real terminal was parsed from the (teed) inspection stream — record it as the outcome

@@ -414,6 +414,52 @@ describe("a refused turn does not become continuation state", () => {
     // Nothing to inherit: the follow-up keeps only its own single input item.
     expect(expandedInputLength("resp_refused")).toBe(1);
   });
+
+  test("a streamed turn refused mid-stream is not remembered, even when the terminal snapshot is empty", async () => {
+    // The terminal-snapshot check alone misses this shape: the undeclared call is announced in
+    // `response.output_item.added` (which trips the client guard) and the stream then closes with
+    // a `response.completed` carrying an EMPTY output. The client sees `response.failed`, the
+    // terminal check sees nothing undeclared, and the refused turn would enter continuation state.
+    const responseId = "resp_stream_refused";
+    const sse = [
+      `data: ${JSON.stringify({ type: "response.created", response: { id: responseId, status: "in_progress" } })}\n\n`,
+      `data: ${JSON.stringify({
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { type: "function_call", id: "fc_bad", call_id: "call_bad", name: "apply_patch", arguments: "{}" },
+      })}\n\n`,
+      `data: ${JSON.stringify({ type: "response.completed", response: { id: responseId, status: "completed", output: [] } })}\n\n`,
+      "data: [DONE]\n\n",
+    ].join("");
+
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(sse, {
+      headers: { "content-type": "text/event-stream" },
+    })) as typeof fetch;
+    let response: Response;
+    try {
+      response = await handleResponses(new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "fixture/deepseek-v4-flash",
+          stream: true,
+          input: [{ role: "user", content: [{ type: "input_text", text: "edit the file" }] }],
+          tools: declaredTools,
+        }),
+      }), config, { model: "", provider: "" });
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+
+    // Drain so the inspection side observes the whole stream before we assert on its effect.
+    const clientStream = await response.text();
+    expect(clientStream).toContain("response.failed");
+    await Bun.sleep(50);
+
+    // Nothing to inherit: the follow-up keeps only its own single input item.
+    expect(expandedInputLength(responseId)).toBe(1);
+  });
 });
 
 describe("a request that declares no tools has no catalog to police", () => {
