@@ -336,7 +336,7 @@ test("Codex discovery restores account rows for supported natives hidden on disk
   }
 });
 
-test("Codex discovery preserves an observed account-only native id exactly", async () => {
+test("Codex discovery exposes the observed native as a selector row plus one global bare row", async () => {
   const config = configWithStaticModels();
   config.providers.openai = {
     adapter: "openai-responses",
@@ -378,7 +378,9 @@ test("Codex discovery preserves an observed account-only native id exactly", asy
     const plain = await fetch(new URL("/v1/models", server.url))
       .then(response => response.json()) as { data: Array<{ id: string }> };
     expect(plain.data).toContainEqual(expect.objectContaining({ id: "team/gpt-daybreak-blue-latest" }));
-    expect(plain.data.some(model => model.id === "gpt-daybreak-blue-latest")).toBe(false);
+    // Daybreak is globally allowlisted (owner decision, devlog 260816_.../011), so the bare
+    // id is now discoverable too, exactly once.
+    expect(plain.data.filter(model => model.id === "gpt-daybreak-blue-latest")).toHaveLength(1);
 
     const managementUrl = new URL("http://localhost/api/models");
     const managementResponse = await handleManagementAPI(
@@ -387,11 +389,15 @@ test("Codex discovery preserves an observed account-only native id exactly", asy
       config,
     );
     const management = await managementResponse!.json() as Array<{ id: string; native?: boolean }>;
+    // Once Daybreak is globally allowlisted the management surface reports it under its
+    // GLOBAL bare identity rather than as an account-qualified discovery row
+    // (model-rows.ts:59 / metadata.ts:243). Exactly one row, and no selector duplicate.
     expect(management).toContainEqual(expect.objectContaining({
-      id: "team/gpt-daybreak-blue-latest",
+      id: "gpt-daybreak-blue-latest",
       native: true,
     }));
-    expect(management.some(model => model.id === "gpt-daybreak-blue-latest")).toBe(false);
+    expect(management.filter(model => model.id === "gpt-daybreak-blue-latest")).toHaveLength(1);
+    expect(management.some(model => model.id === "team/gpt-daybreak-blue-latest")).toBe(false);
 
     const catalog = await fetch(new URL("/v1/models?client_version=1.0.0", server.url))
       .then(response => response.json()) as { models: Array<{ slug: string; visibility?: string }> };
@@ -403,8 +409,13 @@ test("Codex discovery preserves an observed account-only native id exactly", asy
     const anthropic = await fetch(new URL("/v1/models?flavor=anthropic&ids=cli", server.url), {
       headers: { "anthropic-version": "2023-06-01" },
     }).then(response => response.json()) as { data: Array<{ id: string }> };
-    expect(anthropic.data.some(model => model.id === claudeCodeNativeAlias("team/gpt-daybreak-blue-latest"))).toBe(true);
+    // Claude discovery advertises only rows visible in the Codex catalog. The global bare
+    // Daybreak row is synthesized as visibility "hide" (asserted above), and the
+    // account-qualified projection is no longer produced now that the slug is globally
+    // allowlisted, so neither identity reaches the Anthropic surface. Verified empirically:
+    // the filtered id list contained gpt-5.5 only.
     expect(anthropic.data.some(model => model.id === claudeCodeNativeAlias("gpt-daybreak-blue-latest"))).toBe(false);
+    expect(anthropic.data.some(model => model.id === claudeCodeNativeAlias("team/gpt-daybreak-blue-latest"))).toBe(false);
   } finally {
     await server.stop(true);
   }

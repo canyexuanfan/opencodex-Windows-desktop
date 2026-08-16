@@ -427,7 +427,9 @@ describe("Codex catalog sync hardening", () => {
       use_responses_lite: true,
       supports_parallel_tool_calls: true,
     });
-    expect(rows.some(row => row.slug === "gpt-daybreak-blue-latest")).toBe(false);
+    // Daybreak is globally allowlisted now (owner decision, devlog 260816_.../011),
+    // so the bare row IS expected — exactly once — alongside the account-qualified row.
+    expect(rows.filter(row => row.slug === "gpt-daybreak-blue-latest")).toHaveLength(1);
   });
 
   test("explicit Codex-forward Daybreak survives sync with Sol metadata while account picker is off", () => {
@@ -477,8 +479,11 @@ describe("Codex catalog sync hardening", () => {
       opencodex_catalog_kind: "custom-model-v1",
     });
     expect(daybreak?.base_instructions).toContain("powered by the gpt-daybreak-blue-latest");
-    expect(rows.some(row => row.slug === "gpt-daybreak-blue-latest")).toBe(false);
+    // The global native row exists (owner decision); the explicit Codex-forward custom row
+    // above is a separate identity and must not collapse into it.
+    expect(rows.filter(row => row.slug === "gpt-daybreak-blue-latest")).toHaveLength(1);
     expect(rows.some(row => row.slug === "main/gpt-daybreak-blue-latest")).toBe(false);
+    // The separately billed API-key alias must still never reach the Codex surface.
     expect(rows.some(row => row.slug === "openai-apikey/daybreak-blue-latest")).toBe(false);
   });
 
