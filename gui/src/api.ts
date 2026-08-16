@@ -39,6 +39,12 @@ let rebootstrapTimeoutMs = SESSION_REBOOTSTRAP_TIMEOUT_MS;
  * pends without settling, any surprise inside the shared body. Without it one stuck
  * resolution pins every /api/* waiter for the page lifetime, which is the exact
  * failure this module exists to kill.
+ *
+ * Scope note: the watchdog races the BOOTSTRAP CALL ONLY, never the admin-token
+ * prompt. The prompt is user-controlled and unbounded by design; while its body
+ * pends, later waves join the same resolution, which is what keeps a single dialog
+ * on screen (promptForAdminToken has no singleton guard — a watchdog that fired
+ * during the prompt would stack a fresh modal every cycle).
  */
 const RESOLUTION_WATCHDOG_MS = 15_000;
 let resolutionWatchdogMs = RESOLUTION_WATCHDOG_MS;
@@ -208,12 +214,23 @@ async function resolveTokenAfter401(failedToken: string | null, callerSignal?: A
       const current = readToken();
       if (current && current !== failedToken) return current;
 
-      const renewed = await reBootstrapSessionToken();
+      // The watchdog races the bootstrap call only — never the prompt below. When
+      // it wins, the wave fails and the conditional clear lets the NEXT 401 start
+      // a fresh resolution instead of joining the zombie.
+      let watchdog: ReturnType<typeof setTimeout> | undefined;
+      const renewed = await Promise.race([
+        reBootstrapSessionToken(),
+        new Promise<RebootstrapResult>((resolve) => {
+          watchdog = setTimeout(() => resolve({ kind: "failed" }), resolutionWatchdogMs);
+        }),
+      ]).finally(() => clearTimeout(watchdog));
       if (renewed.kind === "minted") return renewed.token;
       // Transient bootstrap failure: this wave fails and the next 401 re-arms a
       // fresh resolution (the finally clears resolutionInFlight). No prompt.
       if (renewed.kind === "failed") return null;
 
+      // User-controlled and unbounded: later waves join this pending body, which
+      // is what keeps exactly one prompt dialog on screen.
       const prompted = await requestAdminToken(verifyAdminToken);
       if (prompted) {
         storeToken(prompted);
@@ -222,21 +239,10 @@ async function resolveTokenAfter401(failedToken: string | null, callerSignal?: A
       promptCancelled = true;
       return null;
     })();
-    // The watchdog loses the race to a healthy resolution by seconds; when it wins,
-    // waiters unwrap as a failed wave and the conditional clear lets the NEXT 401
-    // start a fresh resolution instead of joining the zombie.
-    let watchdog: ReturnType<typeof setTimeout> | undefined;
-    const watched = Promise.race([
-      body,
-      new Promise<null>((resolve) => {
-        watchdog = setTimeout(() => resolve(null), resolutionWatchdogMs);
-      }),
-    ]);
-    const tracked = watched.finally(() => {
-      clearTimeout(watchdog);
-      // Only clear if nobody replaced us — a zombie body settle late must not
-      // wipe a newer in-flight resolution. (Async callback: tracked is assigned
-      // long before this can run.)
+    const tracked = body.finally(() => {
+      // Only clear if nobody replaced us — a late settle must not wipe a newer
+      // in-flight resolution. (Async callback: tracked is assigned long before
+      // this can run.)
       if (resolutionInFlight === tracked) resolutionInFlight = null;
     });
     resolutionInFlight = tracked;

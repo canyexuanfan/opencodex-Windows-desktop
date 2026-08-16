@@ -85,6 +85,24 @@ After — signature `resolveTokenAfter401(failedToken: string | null, callerSign
 Note the shared async body takes NO caller signal (a dead caller must not kill the
 join for the others); only the re-bootstrap's own timeout bounds it.
 
+### 3b. Bootstrap watchdog (added in B after live verification; scoped in A re-audit)
+
+Live fault injection found a residual the 10s fetch bound misses: a bootstrap fetch
+that never honors the client abort leaves the shared body pending forever and
+re-wedges every waiter. A 15s watchdog (`resolutionWatchdogMs`) therefore races
+THE BOOTSTRAP CALL inside the body and resolves `{ kind: "failed" }` on a win.
+
+Scope discipline (round-3 audit): the watchdog must NEVER race the admin-token
+prompt. The prompt is user-controlled and unbounded; while its body pends, later
+waves join the same `resolutionInFlight`, which is what keeps exactly one dialog
+on screen (promptForAdminToken has no singleton guard). A whole-body watchdog
+fires at 15s mid-prompt and stacks a fresh modal every cycle on non-loopback
+dashboards — the exact configuration the prompt exists for. Regression test:
+api-auth-deadline "the watchdog never bounds the prompt".
+
+The conditional clear (`resolutionInFlight === tracked`) stays: a late settle of
+an abandoned body must not wipe a newer in-flight resolution.
+
 ### 4. Thread the caller signal through installApiAuthFetch (~line 191-226)
 
 - Extract `const callerSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined)`

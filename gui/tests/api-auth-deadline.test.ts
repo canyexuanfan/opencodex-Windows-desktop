@@ -224,3 +224,43 @@ test("a signal-dropping hung bootstrap is bounded by the whole-resolution watchd
   expect(second.status).toBe(200);
   expect(bootstrapCalls).toBe(2);
 });
+test("the watchdog never bounds the prompt: slow user input stacks no dialogs and waves join", async () => {
+  // Non-loopback shape: the bootstrap definitively refuses (401 -> unavailable), so
+  // resolution escalates to the prompt. The prompt is user-controlled: the watchdog
+  // must NOT fire around it, and later 401 waves must join the pending body instead
+  // of opening another dialog (promptForAdminToken has no singleton guard).
+  setRebootstrapTimeoutForTests(50);
+  setResolutionWatchdogForTests(120);
+  let bootstrapCalls = 0;
+  let releasePrompt: ((token: string) => void) | null = null;
+  resetApiAuthFetchForTests(async () => {
+    promptCalls += 1;
+    return new Promise<string>((resolve) => {
+      releasePrompt = resolve;
+    });
+  });
+  const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (pathnameOf(input) === "/opencodex-session") {
+      bootstrapCalls += 1;
+      return new Response("unauthorized", { status: 401 });
+    }
+    const key = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get("X-OpenCodex-API-Key");
+    if (key === "manual-admin-token") return new Response("{}", { status: 200 });
+    return new Response("unauthorized", { status: 401 });
+  }) as typeof fetch;
+  await installMockAuthFetch(mockFetch);
+
+  const a = fetch("/api/config");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const b = fetch("/api/providers");
+  // Sit past the watchdog window: the pending prompt must hold both waves.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(promptCalls).toBe(1);
+  expect(bootstrapCalls).toBe(1);
+
+  releasePrompt!("manual-admin-token");
+  const [resA, resB] = await Promise.all([a, b]);
+  expect(resA.status).toBe(200);
+  expect(resB.status).toBe(200);
+  expect(promptCalls).toBe(1);
+});
