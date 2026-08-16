@@ -1237,6 +1237,39 @@ describe("codex routing", () => {
     });
   });
 
+
+  test("a sub-day primary window does not masquerade as the weekly quota (#1791)", () => {
+    // K12 and similar plans send a 5-hour primary plus a 7-day secondary. Folding the primary
+    // into weeklyPercent reported the 5-hour bar as weekly and discarded the real weekly
+    // reading, so the dashboard showed a window resetting every few hours and routing never
+    // saw the limit that actually gates the account.
+    expect(parseUsageQuota({
+      rate_limit: {
+        primary_window: { used_percent: 90, reset_at: 1, limit_window_seconds: 5 * 60 * 60 },
+        secondary_window: { used_percent: 20, reset_at: 2, limit_window_seconds: 7 * 24 * 60 * 60 },
+      },
+    })).toMatchObject({ weeklyPercent: 20, weeklyResetAt: 2 });
+  });
+
+  test("a primary window with no declared duration is still treated as weekly (#1791)", () => {
+    // Older payloads omit limit_window_seconds entirely. Guessing there would reclassify
+    // every legacy account, so an undeclared duration keeps the historical behavior.
+    expect(parseUsageQuota({
+      rate_limit: {
+        primary_window: { used_percent: 40, reset_at: 1 },
+        secondary_window: { used_percent: 20, reset_at: 2 },
+      },
+    })).toMatchObject({ weeklyPercent: 40, weeklyResetAt: 1 });
+  });
+
+  test("a declared 7-day primary window remains the weekly quota (#1791)", () => {
+    expect(parseUsageQuota({
+      rate_limit: {
+        primary_window: { used_percent: 40, reset_at: 1, limit_window_seconds: 7 * 24 * 60 * 60 },
+        secondary_window: { used_percent: 20, reset_at: 2 },
+      },
+    })).toMatchObject({ weeklyPercent: 40, weeklyResetAt: 1 });
+  });
   test("WHAM primary window uses its explicit duration to distinguish weekly and monthly quotas", () => {
     expect(parseUsageQuota({
       plan_type: "team",
