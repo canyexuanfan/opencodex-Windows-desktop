@@ -12,7 +12,10 @@ describe("non-OpenAI tool catalog nudge", () => {
 
     expect(note).toContain("current tool catalog as ground truth");
     expect(note).toContain("Valid tool names for this turn are exactly `exec_command`, `mcp__fs__read_file`");
+    expect(note).toContain("These listed names are the complete top-level tool-call surface for this turn");
     expect(note).toContain("do not invent, translate, or rename tools");
+    expect(note).toContain("Names mentioned only in instructions, tool descriptions, argument descriptions, or nested helper APIs are not additional top-level tools");
+    expect(note).toContain("call the listed parent tool and use those helpers only inside that tool's input");
     expect(note).toContain("Count a tool call only after its tool result returns");
   });
 
@@ -44,6 +47,16 @@ describe("non-OpenAI tool catalog nudge", () => {
     ];
 
     expect(buildNonOpenAIToolCatalogNudgeForTools(tools)).not.toContain("apply_patch");
+  });
+
+  test("defines nested helper names as non-callable unless separately listed", () => {
+    const note = buildNonOpenAIToolCatalogNudgeFromNames(["exec", "wait", "request_user_input"]);
+
+    expect(note).toContain("Valid tool names for this turn are exactly `exec`, `wait`, `request_user_input`");
+    expect(note).toContain("complete top-level tool-call surface");
+    expect(note).toContain("nested helper APIs are not additional top-level tools");
+    expect(note).toContain("call the listed parent tool");
+    expect(note).not.toContain("apply_patch");
   });
 
   // `advertised` holds WIRE names. A provider that rewrites them (Claude OAuth `custom_`,
