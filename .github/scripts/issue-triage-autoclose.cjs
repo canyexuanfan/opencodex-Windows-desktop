@@ -66,7 +66,11 @@ function normalizeSignatureLine(raw) {
   // case-bearing discriminators; the "exact signature" promise is only true
   // if the comparison keeps them distinct.
   return String(raw || "")
-    .replace(/<!--[\s\S]*?-->/g, " ")
+    // An UNCLOSED comment hides everything after it through EOF, exactly as the
+    // quality parser treats it. Matching only `<!-- ... -->` let hidden text
+    // become the "exact shared signature" that closes an issue: two reports
+    // whose visible bodies differ could match on text GitHub never renders.
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, " ")
     .replace(/^\s*(?:>|[-*+]\s+|\d+[.)]\s+)/, "")
     .replace(/^[`~]{3,}[^\n]*$/, "")
     // Backticks are unambiguous Markdown code delimiters. Preserve `_`, `~`,

@@ -118,14 +118,25 @@ export function categoryForPull(pr: AssociatedPullRequest): string {
  * Prerelease: newest prior release of either channel, so previews stay incremental.
  * Stable: newest prior stable only, so the final changelog always reconstructs
  * the complete stable-to-stable range and cannot lose prerelease changes.
+ *
+ * `isAncestor` filters to tags actually reachable from the target. Without it a
+ * preview could select the newest STABLE tag, which lives on `main` and is not
+ * reachable from `preview` — the ancestry guard then threw and no preview could
+ * be released at all once the stable lineage advanced. Selecting the newest
+ * REACHABLE release keeps previews incremental and keeps the range honest.
  */
-export function selectReleaseBaseline(version: string, tags: string[]): string | null {
+export function selectReleaseBaseline(
+  version: string,
+  tags: string[],
+  isAncestor?: (tag: string) => boolean,
+): string | null {
   const releaseTag = version.startsWith("v") ? version : `v${version}`;
   const targetIsPrerelease = isPrereleaseVersion(version);
   const candidates = tags
     .map(tag => tag.trim())
     .filter(tag => /^v\d/.test(tag) && compareReleaseTags(tag, releaseTag) < 0)
     .filter(tag => targetIsPrerelease || !isPrereleaseVersion(tag))
+    .filter(tag => isAncestor === undefined || isAncestor(tag))
     .sort(compareReleaseTags);
   return candidates.length > 0 ? candidates[candidates.length - 1]! : null;
 }
@@ -530,16 +541,23 @@ async function main(argv: string[]): Promise<void> {
   const tags = (await commandText(["git", "tag", "--list", "v[0-9]*"]))
     .split(/\r?\n/)
     .filter(Boolean);
-  const baseline = selectReleaseBaseline(version, tags);
+  // Resolve reachability once per tag, then let selection skip anything not in
+  // this target's history. Previously selection ignored ancestry and the guard
+  // below threw, so a preview became unreleasable the moment the stable lineage
+  // moved ahead of it.
+  const ancestryCache = new Map<string, boolean>();
+  for (const tag of tags) {
+    const probe = await runCommand(["git", "merge-base", "--is-ancestor", tag, target]);
+    ancestryCache.set(tag, probe.exitCode === 0);
+  }
+  const baseline = selectReleaseBaseline(version, tags, tag => ancestryCache.get(tag) === true);
   const releaseTag = version.startsWith("v") ? version : `v${version}`;
 
-  // Ancestry is required for BOTH channels. It used to be checked only for
-  // stable releases, which let a preview pick the newest tag from a diverged
-  // lineage: `git log baseline..target` then emitted the handful of commits
-  // unique to that unrelated branch and reported "commits=0" coverage, so a
-  // preview shipped notes that omitted its own history and named someone
-  // else's. Fail closed instead — a non-ancestral baseline cannot describe a
-  // range at all, whichever channel asked for it.
+  // Selection above already filters to reachable tags, so this is now a
+  // belt-and-braces assertion rather than the primary gate. It stays because a
+  // non-ancestral baseline cannot describe a range at all, and a future caller
+  // that skips the filter must still fail closed rather than emit notes drawn
+  // from an unrelated lineage.
   if (baseline) {
     const ancestry = await runCommand(["git", "merge-base", "--is-ancestor", baseline, target]);
     if (ancestry.exitCode !== 0) {

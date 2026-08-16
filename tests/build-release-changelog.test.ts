@@ -38,6 +38,29 @@ const generatedBugFix = [
 ].join("\n");
 
 describe("selectReleaseBaseline", () => {
+  test("skips a newer release that is not reachable from the target", () => {
+    // A preview lives on its own lineage. Selecting the newest tag regardless of
+    // reachability picked a stable tag on main, the ancestry guard then threw,
+    // and no preview could be released once the stable lineage moved ahead.
+    // Reproduced against the real repository: without the filter the preview
+    // range selected v2.21.0, which is an ancestor of neither preview nor dev.
+    const tags = ["v2.17.0", "v2.19.0", "v2.21.0"];
+    const reachable = new Set(["v2.17.0", "v2.19.0"]);
+
+    expect(selectReleaseBaseline("2.22.0-preview.1", tags)).toBe("v2.21.0");
+    expect(selectReleaseBaseline("2.22.0-preview.1", tags, tag => reachable.has(tag))).toBe("v2.19.0");
+  });
+
+  test("the reachability filter applies to stable releases too", () => {
+    const tags = ["v2.17.0", "v2.19.0", "v2.21.0"];
+    const reachable = new Set(["v2.17.0"]);
+    expect(selectReleaseBaseline("2.22.0", tags, tag => reachable.has(tag))).toBe("v2.17.0");
+  });
+
+  test("an absent filter preserves the previous selection behavior", () => {
+    const tags = ["v2.17.0", "v2.19.0"];
+    expect(selectReleaseBaseline("2.20.0", tags)).toBe("v2.19.0");
+  });
   test("preview releases are incremental from the previous release", () => {
     expect(selectReleaseBaseline("2.0.0-preview.2", [
       "v1.0.0",
