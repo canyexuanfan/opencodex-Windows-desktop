@@ -25,9 +25,11 @@ With that fixture, parse it the way a real turn does, build the request through 
 1. serialized size `<= CURSOR_TOOL_BYTES_LIMIT`;
 2. a Responses-owned execution tool survives the budget — `exec` (or the bridge equivalent) is still present;
 3. `wait` is still present;
-4. the search flag this PR sets is on the entry that actually reaches the wire.
+4. (separately) the catalog projection carries the search flag.
 
-Assert against the SERIALIZED form, not the pre-budget array, or the test proves nothing about what the child receives.
+Assert (1)-(3) against the SERIALIZED form, not the pre-budget array, or the test proves nothing about what the child receives.
+
+Assertion (4) belongs to a DIFFERENT test. `supports_search_tool` is routed catalog/model metadata; it is not serialized into a Cursor turn request, so looking for it in the protobuf would either fail or silently pass on an unrelated substring. Keep two assertions in two places: a catalog-projection test for the flag (which #1832 already has), and a request/tool-budget test for size and tool survival.
 
 The live Cursor child check stays a SEPARATE functional acceptance gate. The byte test proves the catalog survives the budget; only a real child performing a read-only task proves the execution path works.
 

@@ -20,28 +20,37 @@ The real contract is narrower than a naive patch callback. `PersistedConfigMutat
 
 So `set`/`unset` become:
 
-```diff
--  const config = loadConfig();
--  setPath(candidate, path, parsed, action === "unset");
--  // ... validate ...
--  saveConfig(config);
-+  const outcome = mutatePersistedConfig(config => {
-+    const candidate = structuredClone(config) as Record<string, unknown>;
-+    setPath(candidate, path, parsed, action === "unset");
-+    // Same validation the command already performs, on the FRESH candidate.
-+    const validated = validateConfigCandidate(candidate);
-+    if (!validated.ok) throw new Error(validated.error);
-+    // The pin clear is part of the same transaction, not a follow-up write.
-+    if (pathSegments(path)[0] === "codexAccountPriorities") clearCodexAccountPin(validated.config);
-+    Object.assign(config, validated.config);
-+    return { changed: JSON.stringify(config) !== JSON.stringify(validated.config) ? true : true, value: undefined };
-+  });
-+  if (outcome.status === "unavailable") { /* report missing/invalid/conflict, exit non-zero */ }
+```ts
+const outcome = mutatePersistedConfig(config => {
+  // Snapshot BEFORE mutating, so `changed` is an honest comparison.
+  const before = JSON.stringify(config);
+
+  const candidate = structuredClone(config) as Record<string, unknown>;
+  setPath(candidate, path, parsed, action === "unset");
+
+  // Same validation the command already performs, but on the FRESH candidate.
+  const validated = validateConfigCandidate(candidate);
+  if (!validated.ok) throw new Error(validated.error);
+
+  // The pin clear belongs to this transaction, not a follow-up write.
+  if (pathSegments(path)[0] === "codexAccountPriorities") clearCodexAccountPin(validated.config);
+
+  // REPLACE, do not merge: Object.assign cannot remove a key that `unset` deleted,
+  // so an unset would appear to succeed while changing nothing.
+  for (const key of Object.keys(config)) {
+    if (!(key in validated.config)) delete (config as Record<string, unknown>)[key];
+  }
+  Object.assign(config, validated.config);
+
+  return { changed: JSON.stringify(config) !== before, value: undefined };
+});
+if (outcome.status === "unavailable") { /* report missing | invalid | conflict, exit non-zero */ }
 ```
 
 Three things the callback must get right, all of which the current code does outside the lock:
 
-- `changed` must be computed honestly — a byte-identical write must report `false` so the config generation is not bumped.
+- `changed` must compare a snapshot taken BEFORE the mutation against the object after it. Comparing after `Object.assign` compares a value with itself and always reports `true`, which bumps the config generation on a no-op write.
+- The callback mutates `config` in place because that is the object the primitive commits, but it must REPLACE its contents: delete every key the validated candidate dropped before assigning. A plain `Object.assign` merge cannot remove a key, so `unset` would silently become a no-op.
 - Validation runs on the candidate built from the FRESH config, not the one read before the lock.
 - `clearCodexAccountPin` (`src/cli/config-command.ts:144`) must stay inside the transaction; leaving it outside reintroduces the same race for the pin.
 

@@ -8,7 +8,23 @@
 
 So a K12 workspace 403 tells the user to re-authenticate a credential that is perfectly valid. `tests/codex-routing.test.ts:377` currently PINS that mapping.
 
-A richer-looking classifier exists on a different path (`src/codex/quota-rejection.ts:11`, distinguishing `authentication-error` from `permission-error`), but it splits on STATUS alone — it does not inspect the body for a workspace shape. So it cannot be reused as-is to tell the two kinds of 403 apart.
+A richer-looking classifier exists on a different path (`src/codex/quota-rejection.ts:11`, distinguishing `authentication-error` from `permission-error`), but at `7c348a032` its 403 branch returns immediately WITHOUT reading the body. Nothing anywhere parses the denial today, so the evidence has to be produced, not merely threaded.
+
+### The denial parser
+
+Add it beside the existing exhaustion-code reader, reusing the same bounded, duplicate-key-safe machinery:
+
+```ts
+const WORKSPACE_DENIAL_CODES = new Set(["codex_workspace_access_denied", "workspace_access_denied"]);
+const ENTITLEMENT_DENIAL_CODES = new Set(["codex_entitlement_missing", "entitlement_missing"]);
+
+async function denialFromResponse(r: Response, signal?: AbortSignal):
+  Promise<"workspace" | "entitlement" | undefined>;
+```
+
+It reads through `readBoundedResponseBody`, refuses a truncated / non-display-safe / duplicate-key document exactly as `resetEligibleCodeFromResponse` does, then looks for an OWN-property `code` at the top level or under `error` — no coercion, no accessors. An allowlisted code maps to a denial; anything else returns `undefined`.
+
+Fail-closed is the point: an unreadable or unknown body keeps the historical credential handling, or a genuinely revoked credential would stop prompting for reauthentication.
 
 ## Fix
 
@@ -27,9 +43,9 @@ classifyCodexUpstreamOutcome(evidence: CodexUpstreamEvidence): CodexUpstreamOutc
 
    401 stays `credential`. A 403 with `denial: "workspace"` becomes `workspace`; a 403 with no denial evidence stays `credential`, so the change fails safe toward today's behavior.
 
-3. **Thread it through every call site.** `recordCodexUpstreamOutcome` is called from multiple paths; each must pass the evidence it already has instead of a bare status, or the split silently never fires. Enumerate and update them all — a partially-threaded change is worse than none, because it makes the classification depend on which path happened to report.
+3. **Carry it on the existing meta rather than changing every signature.** `CodexUpstreamOutcomeMeta` already reaches `recordCodexUpstreamOutcome` from every call site, so adding `denial?: "workspace" | "entitlement"` there means only the sites that can actually observe a 403 body need to populate it — in the Responses path, the two `quotaMeta` construction points.
 
-4. In the outcome handler, a `workspace` result must NOT call `markAccountNeedsReauth`. Store it keyed by (account, workspace-scoped route) so the account stays usable elsewhere, and surface a workspace-denial diagnostic. Define that key explicitly — an account-wide flag would quarantine the account for every route, which is the same over-reaction in a new place.
+4. In the outcome handler, a `workspace` result must NOT call `markAccountNeedsReauth`. Record the failure in `upstreamHealth` so routing can prefer a healthier account, then return — deliberately NOT clearing thread affinity. Credential quarantine sweeps affinity because reauthentication is account-wide; a workspace denial is not, so existing bindings stay valid. No new per-route store is introduced: the health entry plus the preserved affinity IS the behavior change, which keeps the blast radius to the one wrong remedy.
 
 ## Tests
 

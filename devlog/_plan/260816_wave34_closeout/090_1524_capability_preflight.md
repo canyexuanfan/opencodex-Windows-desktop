@@ -24,7 +24,11 @@ Also note what already works: policy routing DOES evaluate image requirements fo
 
 ### (a) Policy fallback
 
-1. Populate request context size in `PolicyRequestEvidence` (`src/routing/request-evidence.ts:36` leaves it unknown). Use the estimate the request log already computes rather than inventing a second estimator.
+1. Populate request context size in `PolicyRequestEvidence` (`src/routing/request-evidence.ts:36` leaves it unknown).
+
+   **Measurement point matters.** `estimateInputTokens(parsed, modelId)` (`src/server/responses/input-admission.ts:89`) needs a model id, and routing runs BEFORE a model is chosen — so it cannot be called as-is at evaluation time. Compute a model-independent estimate once from the parsed request and store it on the evidence; each candidate then compares that figure against its own ceiling.
+
+   **Use the same threshold as admission.** `checkInputAdmission` refuses only past `ceiling * ADMISSION_TOLERANCE` where `ADMISSION_TOLERANCE = 2.5` (`input-admission.ts:32`, `:168`). If the evaluator excluded on exact fit while admission tolerates 2.5x, routing would refuse candidates that would actually have worked, which is a new outage in the name of a fix. Apply the same tolerance, and state it in the exclusion reason so the trace explains itself.
 2. In `policy-fallback.ts:153`, re-evaluate each candidate against the CURRENT evidence instead of reusing the frozen verdict, using the evaluator's existing context/modality rejection.
 
 ### (b) Combo fallback

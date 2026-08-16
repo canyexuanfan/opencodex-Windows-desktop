@@ -22,7 +22,7 @@ Extend the disposition rather than inventing the roadmap's `CatalogConvergenceEr
    ...
    reason: "provider-auth" | "provider-network" | "disk"
 +        | "request-invalid" | "admission" | "internal";
-+  /** Non-sensitive cause summary: error name + redacted message. Never the raw body. */
++  /** Allowlisted cause summary. Closed vocabularies only -- never message text. */
 +  cause?: { name: string; detail: string };
  };
 ```
@@ -44,8 +44,10 @@ Passing `Error.message` through `redactSecretString` is NOT sufficient. That hel
 
 Build `cause` from bounded, non-sensitive parts instead:
 
-- `name`: the error constructor name, which is a fixed vocabulary.
-- `detail`: a short allowlisted summary — an errno/code when present, otherwise a fixed phrase per branch. Never the raw message.
+Both fields are allowlists, because neither is a fixed vocabulary in practice:
+
+- `name`: map onto a closed set — `"invalid-request" | "lock-busy" | "io" | "unknown"`. An arbitrary `Error.constructor.name` is dependency- or input-influenced (any thrown custom class names itself), so it is not safe to echo.
+- `detail`: only a recognized `errno`/`code` token from a closed set (`ENOSPC`, `EACCES`, `EPERM`, `SQLITE_BUSY`, ...), or a fixed per-branch phrase. Never `Error.message`, never a path, never an interpolated identifier.
 
 If a branch cannot produce a safe summary, omit `cause` entirely. The point of the change is that `request-invalid` is distinguishable from `disk`; the free-text message is not required for that.
 
