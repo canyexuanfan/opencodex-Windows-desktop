@@ -1580,6 +1580,121 @@ describe("opencodex config defaults", () => {
     }
   });
 
+  describe("one bad entry in an independent section does not discard the config (#1785)", () => {
+    /** Two usable providers, a disabled one, prices, and a profile worth keeping. */
+    function configWith(extra: Record<string, unknown>): void {
+      writeConfig({
+        port: 10100,
+        providers: {
+          TR:    { adapter: "openai-chat", baseUrl: "https://tr.example/v1", disabled: true },
+          keep1: { adapter: "openai-chat", baseUrl: "https://keep1.example/v1" },
+          keep2: { adapter: "openai-chat", baseUrl: "https://keep2.example/v1" },
+        },
+        modelCosts: { "keep1/m": { input: 1, output: 2 } },
+        ...extra,
+      });
+    }
+
+    test("a candidate naming a disabled provider drops only its profile", () => {
+      configWith({
+        routingProfiles: {
+          good: { candidates: [{ provider: "keep1", model: "m" }] },
+          bad:  { candidates: [{ provider: "TR", model: "moonshotai/kimi-k3" }] },
+        },
+      });
+      const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const loaded = loadConfig() as Record<string, any>;
+
+        // The reported symptom was 11 providers on disk and 1 served.
+        expect(Object.keys(loaded.providers)).toEqual(expect.arrayContaining(["TR", "keep1", "keep2"]));
+        expect(loaded.modelCosts).toHaveProperty("keep1/m");
+        expect(Object.keys(loaded.routingProfiles)).toEqual(["good"]);
+
+        // Naming both the profile and why, so the operator can act on it.
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("routingProfiles.bad"));
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("is disabled"));
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    test("salvaging is not a fallback, so no invalid-* backup piles up", () => {
+      // The reporter accumulated 10 of these before noticing anything was wrong;
+      // a backup on every load is the signal that the config was discarded.
+      configWith({ routingProfiles: { bad: { candidates: [{ provider: "TR", model: "m" }] } } });
+      const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        loadConfig();
+        expect(backupNames()).toEqual([]);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    test("combos are salvaged the same way", () => {
+      configWith({
+        combos: {
+          good: { members: [{ provider: "keep1", model: "m" }] },
+          bad:  { members: [{ provider: "nope-not-configured", model: "m" }] },
+        },
+      });
+      const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const loaded = loadConfig() as Record<string, any>;
+        expect(Object.keys(loaded.providers)).toEqual(expect.arrayContaining(["keep1", "keep2"]));
+        expect(Object.keys(loaded.combos ?? {})).not.toContain("bad");
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    test("every bad profile is dropped, not just the first", () => {
+      configWith({
+        routingProfiles: {
+          bad1: { candidates: [{ provider: "TR", model: "m" }] },
+          good: { candidates: [{ provider: "keep1", model: "m" }] },
+          bad2: { candidates: [{ provider: "also-not-configured", model: "m" }] },
+        },
+      });
+      const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        expect(Object.keys((loadConfig() as Record<string, any>).routingProfiles)).toEqual(["good"]);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    test("a failure outside those sections still falls back, unchanged", () => {
+      // The salvage path must not become a way to load configs that are broken
+      // somewhere it cannot reason about.
+      writeConfig({
+        port: 10100,
+        providers: {
+          custom: { adapter: "openai-chat", baseUrl: "https://example.test/v1", headers: { Authorization: "Bearer secret" } },
+        },
+        routingProfiles: { bad: { candidates: [{ provider: "nope", model: "m" }] } },
+      });
+      const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        expect(loadConfig()).toEqual(getDefaultConfig());
+        expect(backupNames()).toHaveLength(1);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    test("a malformed container is not an entry, so it is not salvaged", () => {
+      configWith({ routingProfiles: [] });
+      const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        expect(loadConfig()).toEqual(getDefaultConfig());
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+  });
+
   test("provider names reject namespace-breaking and reserved object keys", () => {
     expect(isValidProviderName("openrouter")).toBe(true);
     expect(isValidProviderName("ollama-cloud")).toBe(true);

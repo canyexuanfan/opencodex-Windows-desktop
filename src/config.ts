@@ -2172,6 +2172,27 @@ export function loadConfig(): OcxConfig {
       warnDegradedAgentTaskRecovery(parsed);
       return withRefreshedCostOverlays(normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed));
     }
+    // Still failing, but if every complaint is about one or more named entries
+    // in an independent section, drop exactly those and keep the rest. Falling
+    // back to defaults here would silently retire the operator's providers,
+    // keys and prices over a mistake in one routing profile.
+    const salvaged = dropInvalidConfigSections(merged, retryResult.error);
+    if (salvaged) {
+      const salvagedResult = configSchema.safeParse(salvaged.candidate);
+      if (salvagedResult.success) {
+        warnDroppedConfigSections(configPath, salvaged.dropped, retryResult.error);
+        const config = normalizeApiKeyIds(salvagedResult.data as OcxConfig);
+        warnDegradedHostname(parsed, config);
+        warnDegradedApiKeys(parsed, config);
+        warnDegradedCodexAccountPriorities(parsed, config);
+        warnDegradedClaudeSubagentEffort(parsed);
+        warnDegradedNativeSubagentConfig(parsed, config);
+        warnDegradedCodexAccountPicker(parsed);
+        warnDegradedUpstreamHostCircuitThreshold(parsed);
+        warnDegradedAgentTaskRecovery(parsed);
+        return withRefreshedCostOverlays(normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed));
+      }
+    }
     // Merge couldn't fix it — truly broken config
     warnAndBackupInvalidConfig(configPath, result.error);
     return getDefaultConfig();
@@ -3426,6 +3447,80 @@ function warnConfigRepaired(configPath: string, error: z.ZodError): void {
   warnedConfigFallbacks.add(configPath);
   const fields = error.issues.map(i => i.path.join(".") || "config").join(", ");
   console.error(`opencodex config at ${configPath}: repaired missing field(s) [${fields}] with defaults. Your providers and accounts are preserved.`);
+}
+
+/**
+ * Sections whose entries are independent of one another, so one bad entry is
+ * safe to drop without changing what the rest mean.
+ *
+ * Both are validated entry-by-entry in the `superRefine` above, which raises
+ * every finding as a *document*-level issue. That is what made a single routing
+ * candidate naming a disabled provider discard the operator's whole config —
+ * all eleven providers, every API key, and the entire `modelCosts` table —
+ * while the proxy carried on serving from built-in defaults and reporting
+ * healthy.
+ */
+const SALVAGEABLE_CONFIG_SECTIONS = ["routingProfiles", "combos"] as const;
+
+/**
+ * Drop just the named entries a parse failure blamed, so the rest of the
+ * document survives.
+ *
+ * Returns `null` when the failure was not confined to those sections — the
+ * caller then keeps its existing behaviour rather than guessing.
+ *
+ * The whole entry goes, not the individual offending candidate. A routing
+ * profile that quietly loses one candidate still routes, just not where the
+ * operator said it should, and a policy that silently changed shape is a worse
+ * outcome than one that is plainly absent. Absent is also the loud option: a
+ * dry-run against it answers `unknown_profile`, which — paired with the warning
+ * this emits — points at the real mistake.
+ */
+function dropInvalidConfigSections(
+  parsed: unknown,
+  error: z.ZodError,
+): { candidate: Record<string, unknown>; dropped: string[] } | null {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+
+  const doomed = new Map<string, Set<string>>();
+  for (const issue of error.issues) {
+    const [section, id] = issue.path;
+    if (typeof section !== "string" || typeof id !== "string") return null;
+    if (!(SALVAGEABLE_CONFIG_SECTIONS as readonly string[]).includes(section)) return null;
+    // A complaint about the container itself ("combos must be an object") is
+    // not about one entry, so there is nothing selective to drop.
+    if (issue.path.length < 2) return null;
+    let ids = doomed.get(section);
+    if (!ids) doomed.set(section, ids = new Set());
+    ids.add(id);
+  }
+  if (doomed.size === 0) return null;
+
+  const candidate: Record<string, unknown> = { ...(parsed as Record<string, unknown>) };
+  const dropped: string[] = [];
+  for (const [section, ids] of doomed) {
+    const current = candidate[section];
+    if (!current || typeof current !== "object" || Array.isArray(current)) return null;
+    const kept: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(current as Record<string, unknown>)) {
+      if (ids.has(key)) dropped.push(`${section}.${key}`);
+      else kept[key] = value;
+    }
+    candidate[section] = kept;
+  }
+  return dropped.length > 0 ? { candidate, dropped } : null;
+}
+
+function warnDroppedConfigSections(configPath: string, dropped: string[], error: z.ZodError): void {
+  if (warnedConfigFallbacks.has(configPath)) return;
+  warnedConfigFallbacks.add(configPath);
+  const reasons = error.issues
+    .map(issue => `${issue.path.join(".")}: ${issue.message}`)
+    .join("; ");
+  console.error(
+    `opencodex config at ${configPath}: dropped [${dropped.join(", ")}] and loaded the rest — ${reasons}. `
+    + "Everything else in your config, including providers and modelCosts, is preserved.",
+  );
 }
 
 export function readPidFileValue(): number | null {
