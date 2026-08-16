@@ -3,7 +3,10 @@ import { buildCatalogEntries, normalizeRoutedCatalogEntry } from "../src/codex/c
 
 describe("routed catalog search advertising", () => {
   test("cursor entries enable deferred discovery without advertising hosted web search", () => {
-    const entry = normalizeRoutedCatalogEntry({ slug: "cursor/auto" } as never) as Record<string, unknown>;
+    const entry = normalizeRoutedCatalogEntry({
+      slug: "cursor/auto",
+      web_search_tool_type: "text_and_image",
+    } as never) as Record<string, unknown>;
     expect(entry.tool_mode).toBe("code_mode_only");
     expect(entry.supports_search_tool).toBe(true);
     expect(entry.web_search_tool_type).toBeUndefined();
