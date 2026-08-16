@@ -405,7 +405,7 @@ export interface ClientResourceOptions<T = unknown> {
    * Lives in the store — not a render-time ref — so React Compiler / react-hooks/refs
    * stay quiet while the mount fetch still quiet-revalidates via `seedNeedsRevalidate`.
    */
-   initialData?: T;
+  initialData?: T;
   /**
    * Per-attempt deadline override. Default DEFAULT_REQUEST_DEADLINE_MS (30s). Raise it
    * for endpoints documented as slow; a timed-out attempt settles failed instead of
