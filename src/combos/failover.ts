@@ -129,9 +129,15 @@ export function comboFailureDecision(
   // so checking the stop list first swallowed the signal and ended the chain. An UPSTREAM
   // `context_length_exceeded` carries no admission code and still falls through to stop.
   //
-  // Matched on the STRUCTURED code only. The refusal is ours, so it always carries the code
-  // now that classifyError preserves it; a raw substring test would instead let any upstream
-  // override a terminal verdict by echoing the token in text we do not control.
+  // Matched on the STRUCTURED code only, which classifyError now preserves for our own
+  // refusal. A raw substring test would additionally let any upstream override a terminal
+  // verdict by echoing the token in prose we do not control.
+  //
+  // Precise about what this is NOT: an upstream can still SET this code deliberately, since
+  // both extractors read the upstream error object. That is bounded rather than dangerous --
+  // an upstream already controls other hop signals (429, 5xx), and traversal is finite: policy
+  // tries each candidate once via `tried`, and combo excludes each attempted target. So this is
+  // structured-code-only, not provably local.
   if (options?.code === "input_admission_refused" || error.code === "input_admission_refused") {
     return "hop";
   }
