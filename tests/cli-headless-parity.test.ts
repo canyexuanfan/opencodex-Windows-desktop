@@ -426,6 +426,70 @@ describe("headless GUI parity CLI", () => {
     }
   });
 
+
+  test("config set applies onto the disk state, not a snapshot read before the lock (#1835)", async () => {
+    // The read used to happen outside the mutation lock, so a concurrent edit landing
+    // between it and the whole-snapshot save was silently reverted.
+    const home = mkdtempSync(join(tmpdir(), "ocx-cli-set-race-"));
+    const previous = process.env.OPENCODEX_HOME;
+    process.env.OPENCODEX_HOME = home;
+    const configPath = join(home, "config.json");
+    const base = {
+      port: 10100,
+      providers: { openai: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" } },
+      defaultProvider: "openai",
+    };
+    try {
+      writeFileSync(configPath, JSON.stringify(base));
+      expect(await handleConfigCommand(["set", "autoSwitchThreshold", "50", "--json"])).toBe(0);
+
+      // A competing writer adds a provider the CLI never saw.
+      const onDisk = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, any>;
+      onDisk.providers.competitor = {
+        adapter: "openai-chat",
+        baseUrl: "https://competitor.example/v1",
+        apiKey: "competitor-key",
+      };
+      writeFileSync(configPath, JSON.stringify(onDisk));
+
+      expect(await handleConfigCommand(["set", "autoSwitchThreshold", "70", "--json"])).toBe(0);
+
+      const after = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, any>;
+      expect(after.autoSwitchThreshold).toBe(70);
+      // The competing edit survives: the mutation was applied to the fresh disk state.
+      expect(Object.keys(after.providers)).toEqual(expect.arrayContaining(["openai", "competitor"]));
+      expect(after.providers.competitor).toMatchObject({ apiKey: "competitor-key" });
+    } finally {
+      if (previous === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previous;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("config unset actually removes the key through the mutation primitive (#1835)", async () => {
+    // A merge-only callback cannot delete, so unset would report success and change nothing.
+    const home = mkdtempSync(join(tmpdir(), "ocx-cli-unset-"));
+    const previous = process.env.OPENCODEX_HOME;
+    process.env.OPENCODEX_HOME = home;
+    const configPath = join(home, "config.json");
+    try {
+      writeFileSync(configPath, JSON.stringify({
+        port: 10100,
+        providers: { openai: { adapter: "openai-responses", baseUrl: "https://chatgpt.com/backend-api/codex", authMode: "forward" } },
+        defaultProvider: "openai",
+        autoSwitchThreshold: 50,
+      }));
+      expect(await handleConfigCommand(["unset", "autoSwitchThreshold", "--json"])).toBe(0);
+
+      const after = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, any>;
+      expect(Object.hasOwn(after, "autoSwitchThreshold")).toBe(false);
+      expect(after.providers.openai).toBeDefined();
+    } finally {
+      if (previous === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previous;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
   test("config set releases the manual pin when it writes the selection order", async () => {
     const home = mkdtempSync(join(tmpdir(), "ocx-cli-priority-pin-"));
     const previous = process.env.OPENCODEX_HOME;

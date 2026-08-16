@@ -56,6 +56,19 @@ type WhamUsageWindow = {
 };
 
 const MONTHLY_WINDOW_MIN_SECONDS = 28 * 24 * 60 * 60;
+/**
+ * Shortest window still plausibly the WEEKLY quota (#1791).
+ *
+ * K12 and similar plans send a 5-hour primary window plus a 7-day secondary. Folding the
+ * primary into `weeklyPercent` reported the 5-hour bar as the weekly one and discarded the
+ * real weekly reading entirely, so the dashboard showed a window that reset every few hours
+ * and routing never saw the limit that actually gates the account.
+ *
+ * 24h is the discriminator: anything shorter is a burst window, not a weekly one. A window
+ * with no declared duration is unchanged, because older payloads omit `limit_window_seconds`
+ * and guessing there would break every legacy account.
+ */
+const WEEKLY_WINDOW_MIN_SECONDS = 24 * 60 * 60;
 const MONTHLY_WINDOW_MIN_MINUTES = MONTHLY_WINDOW_MIN_SECONDS / 60;
 
 const accountQuota = new Map<string, StoredAccountQuota>();
@@ -158,6 +171,15 @@ function normalizeResetAt(value: unknown): number | undefined {
 function hasKnownQuotaValue(quota: Omit<StoredAccountQuota, "updatedAt">): boolean {
   return [quota.weeklyPercent, quota.monthlyPercent]
     .some(value => typeof value === "number" && Number.isFinite(value));
+}
+
+/** True only for a window that DECLARES a duration shorter than a day. */
+function isExplicitShortWindow(window: WhamUsageWindow | null | undefined): boolean {
+  const seconds = window?.limit_window_seconds;
+  return typeof seconds === "number"
+    && Number.isFinite(seconds)
+    && seconds > 0
+    && seconds < WEEKLY_WINDOW_MIN_SECONDS;
 }
 
 function isExplicitMonthlyWindow(window: WhamUsageWindow | null | undefined): boolean {
@@ -465,10 +487,17 @@ export function parseUsageQuota(data: WhamUsageResponse): Omit<StoredAccountQuot
   // - 선택한 방식: only an explicit primary duration of at least 28 days changes it to monthly.
   // - 다른 대안 대신 이 방식을 선택한 이유: it accepts calendar-month variance and preserves legacy payloads.
   // - 장점, 단점 및 영향: Team monthly quotas classify correctly; unknown durations remain weekly by design.
-  const weeklyPercent = primaryIsMonthly ? secondaryPercent : primaryPercent ?? secondaryPercent;
+  // #1791: a primary window that declares a sub-day duration is a burst window, not the
+  // weekly one. Skip it so the secondary (the real 7-day window) is what lands in
+  // `weeklyPercent`; without this the 5-hour bar was reported as weekly and the actual
+  // weekly reading was dropped on the floor.
+  const primaryIsShort = isExplicitShortWindow(primaryWindow);
+  const weeklyCandidatePercent = primaryIsShort ? undefined : primaryPercent;
+  const weeklyCandidateResetAt = primaryIsShort ? undefined : primaryResetAt;
+  const weeklyPercent = primaryIsMonthly ? secondaryPercent : weeklyCandidatePercent ?? secondaryPercent;
   const weeklyResetAt = primaryIsMonthly
     ? secondaryResetAt
-    : primaryPercent !== undefined ? primaryResetAt : secondaryResetAt;
+    : weeklyCandidatePercent !== undefined ? weeklyCandidateResetAt : secondaryResetAt;
   const monthlyPercent = primaryIsMonthly ? primaryPercent ?? tertiaryPercent : tertiaryPercent;
   const monthlyResetAt = primaryIsMonthly && primaryPercent !== undefined ? primaryResetAt : tertiaryResetAt;
   if (thirtyDayOnly) {

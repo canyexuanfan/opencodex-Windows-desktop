@@ -464,6 +464,20 @@ type CodexPoolAccountRetryResult =
     authCtx: Extract<CodexAuthContext, { kind: "pool" | "main-pool" }>;
   };
 
+/**
+ * Workspace-denial evidence for a 403, read from the upstream body.
+ *
+ * #1789: a valid K12 credential gets 403 `codex_workspace_access_denied` on a routed prompt.
+ * Without this the account is quarantined for reauthentication, which cannot fix a workspace
+ * grant and loops forever. Fails closed: an unreadable body keeps the historical handling.
+ */
+async function codexDenialOutcomeMeta(response: Response): Promise<{ denial?: "workspace" | "entitlement" }> {
+  if (response.status !== 403) return {};
+  const { classifyCodexPreStreamRejection } = await import("../../codex/quota-rejection");
+  const rejection = await classifyCodexPreStreamRejection(response);
+  return rejection.denial ? { denial: rejection.denial } : {};
+}
+
 function codexQuotaOutcomeMeta(response: Response): {
   retryAfter: string | null;
   resetAt: string[];
@@ -528,7 +542,7 @@ async function retryCodexPoolOnAlternateAccount(
     return { kind: "no-alternate" };
   }
 
-  const quotaMeta = codexQuotaOutcomeMeta(firstResponse);
+  const quotaMeta = { ...codexQuotaOutcomeMeta(firstResponse), ...(await codexDenialOutcomeMeta(firstResponse)) };
   if (outcomeStatus === 429 || outcomeStatus === 402) {
     const { applyAccountQuotaFromUpstreamHeaders } = await import("../../codex/auth-api");
     applyAccountQuotaFromUpstreamHeaders(
@@ -2606,7 +2620,7 @@ async function handleResponsesInner(
    if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
       // primary was the 5h window; it now carries weekly data for GPT plans.
       // Prefer primary when present, fall back to secondary for compatibility.
-      const quotaMeta = codexQuotaOutcomeMeta(upstreamResponse);
+      const quotaMeta = { ...codexQuotaOutcomeMeta(upstreamResponse), ...(await codexDenialOutcomeMeta(upstreamResponse)) };
       const { applyAccountQuotaFromUpstreamHeaders } = await import("../../codex/auth-api");
       applyAccountQuotaFromUpstreamHeaders(
         authCtx.accountId,
