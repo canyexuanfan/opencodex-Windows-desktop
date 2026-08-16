@@ -289,6 +289,19 @@ describe("google adapter — direct -tiered wire renames", () => {
     } as unknown as OcxParsedRequest;
   }
 
+  function identityParsed(modelId: string): OcxParsedRequest {
+    return {
+      modelId,
+      stream: false,
+      options: {},
+      context: {
+        systemPrompt: ["You are Codex, a coding agent based on GPT-5."],
+        messages: [{ role: "user", content: "hi" }],
+        tools: [],
+      },
+    } as unknown as OcxParsedRequest;
+  }
+
   test("default maps the picker id to the -tiered wire id", async () => {
     for (const modelId of ["gemini-3.7-flash", "gemini-3.6-flash"]) {
       const { url } = await createGoogleAdapter(provider).buildRequest(renamedParsed(modelId));
@@ -307,8 +320,15 @@ describe("google adapter — direct -tiered wire renames", () => {
   test("directGeminiWireRenames: true still maps to the -tiered wire id", async () => {
     const adapter = createGoogleAdapter({ ...provider, directGeminiWireRenames: true });
     for (const modelId of ["gemini-3.7-flash", "gemini-3.6-flash"]) {
-      const { url } = await adapter.buildRequest(renamedParsed(modelId));
+      const request = await adapter.buildRequest(identityParsed(modelId));
+      const { url } = request;
       expect(url).toContain(`/v1beta/models/${modelId}-tiered:generateContent`);
+      const body = JSON.parse(request.body) as {
+        systemInstruction?: { parts?: Array<{ text?: string }> };
+      };
+      const systemText = body.systemInstruction?.parts?.[0]?.text ?? "";
+      expect(systemText).toContain(`powered by the ${modelId}`);
+      expect(systemText).not.toContain(`${modelId}-tiered`);
     }
   });
 
