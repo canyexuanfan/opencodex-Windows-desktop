@@ -414,3 +414,186 @@ describe("custom-model API validates reasoning-effort ladders", () => {
     expect(persistCalls).toBe(1);
   });
 });
+
+describe("custom-model API allows slash model ids", () => {
+  let persistCalls = 0;
+
+  async function callCustomModels(
+    method: "POST" | "PUT",
+    body: unknown,
+    pathname = "/api/custom-models",
+  ): Promise<Response | null> {
+    const { handleModelRoutes } = await import("../src/server/management/model-routes");
+    const url = new URL(`http://127.0.0.1:10199${pathname}`);
+    const req = new Request(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return handleModelRoutes({
+      req,
+      url,
+      config: {
+        providers: { deepseek: { adapter: "openai-chat", baseUrl: "https://example.invalid/v1" } },
+        customModels: [
+          { id: "existing-uuid", provider: "deepseek", modelId: "deepseek-v4", inputModalities: ["text", "image"] },
+        ],
+      } as unknown as Parameters<typeof handleModelRoutes>[0]["config"],
+      deps: {
+        saveConfigPreservingClaudeCode: () => { persistCalls++; },
+      } as Parameters<typeof handleModelRoutes>[0]["deps"],
+      convergeCodexCatalog: async () => ({
+        status: "committed",
+        changed: false,
+        degraded: false,
+        notices: [],
+      }),
+      syncClaudeAgentDefsBestEffort: async () => {},
+    });
+  }
+
+  test("POST accepts slash model ids", async () => {
+    persistCalls = 0;
+    const res = await callCustomModels("POST", {
+      provider: "deepseek",
+      modelId: "openai/gpt-5.5",
+    });
+    expect(res?.status).toBe(201);
+    const payload = await res!.json() as { modelId?: string };
+    expect(payload.modelId).toBe("openai/gpt-5.5");
+    expect(persistCalls).toBe(1);
+  });
+
+  test("PUT accepts slash model ids", async () => {
+    persistCalls = 0;
+    const res = await callCustomModels("PUT", { modelId: "openai/gpt-5.5" }, "/api/custom-models/existing-uuid");
+    expect(res?.status).toBe(200);
+    const payload = await res!.json() as { modelId?: string };
+    expect(payload.modelId).toBe("openai/gpt-5.5");
+    expect(persistCalls).toBe(1);
+  });
+
+  test("PUT still rejects displayName with slash", async () => {
+    persistCalls = 0;
+    const res = await callCustomModels("PUT", { displayName: "foo/bar" }, "/api/custom-models/existing-uuid");
+    expect(res?.status).toBe(400);
+    expect(persistCalls).toBe(0);
+  });
+
+  test("POST rejects a slash id that encodes to an existing native id", async () => {
+    persistCalls = 0;
+    const { handleModelRoutes } = await import("../src/server/management/model-routes");
+    const url = new URL("http://127.0.0.1:10199/api/custom-models");
+    const req = new Request(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "deepseek", modelId: "openai/gpt-5.5" }),
+    });
+    const res = await handleModelRoutes({
+      req,
+      url,
+      config: {
+        providers: {
+          deepseek: {
+            adapter: "openai-chat",
+            baseUrl: "https://example.invalid/v1",
+            models: ["openai-gpt-5.5"],
+          },
+        },
+      } as unknown as Parameters<typeof handleModelRoutes>[0]["config"],
+      deps: {
+        saveConfigPreservingClaudeCode: () => { persistCalls++; },
+      } as Parameters<typeof handleModelRoutes>[0]["deps"],
+      convergeCodexCatalog: async () => ({
+        status: "committed",
+        changed: false,
+        degraded: false,
+        notices: [],
+      }),
+      syncClaudeAgentDefsBestEffort: async () => {},
+    });
+    expect(res?.status).toBe(409);
+    const payload = await res!.json() as { error?: string };
+    expect(payload.error).toContain("ambiguous");
+    expect(persistCalls).toBe(0);
+  });
+
+  test("PUT rejects renaming onto a colliding native id", async () => {
+    persistCalls = 0;
+    const { handleModelRoutes } = await import("../src/server/management/model-routes");
+    const url = new URL("http://127.0.0.1:10199/api/custom-models/existing-uuid");
+    const req = new Request(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ modelId: "a/b-c" }),
+    });
+    const res = await handleModelRoutes({
+      req,
+      url,
+      config: {
+        providers: {
+          deepseek: {
+            adapter: "openai-chat",
+            baseUrl: "https://example.invalid/v1",
+            models: ["a-b/c"],
+          },
+        },
+        customModels: [
+          { id: "existing-uuid", provider: "deepseek", modelId: "deepseek-v4" },
+        ],
+      } as unknown as Parameters<typeof handleModelRoutes>[0]["config"],
+      deps: {
+        saveConfigPreservingClaudeCode: () => { persistCalls++; },
+      } as Parameters<typeof handleModelRoutes>[0]["deps"],
+      convergeCodexCatalog: async () => ({
+        status: "committed",
+        changed: false,
+        degraded: false,
+        notices: [],
+      }),
+      syncClaudeAgentDefsBestEffort: async () => {},
+    });
+    expect(res?.status).toBe(409);
+    const payload = await res!.json() as { error?: string };
+    expect(payload.error).toContain("ambiguous");
+    expect(persistCalls).toBe(0);
+  });
+
+  test("POST rejects a slash id that encodes to defaultModel only", async () => {
+    persistCalls = 0;
+    const { handleModelRoutes } = await import("../src/server/management/model-routes");
+    const url = new URL("http://127.0.0.1:10199/api/custom-models");
+    const req = new Request(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "deepseek", modelId: "openai/gpt-5.5" }),
+    });
+    const res = await handleModelRoutes({
+      req,
+      url,
+      config: {
+        providers: {
+          deepseek: {
+            adapter: "openai-chat",
+            baseUrl: "https://example.invalid/v1",
+            defaultModel: "openai-gpt-5.5",
+          },
+        },
+      } as unknown as Parameters<typeof handleModelRoutes>[0]["config"],
+      deps: {
+        saveConfigPreservingClaudeCode: () => { persistCalls++; },
+      } as Parameters<typeof handleModelRoutes>[0]["deps"],
+      convergeCodexCatalog: async () => ({
+        status: "committed",
+        changed: false,
+        degraded: false,
+        notices: [],
+      }),
+      syncClaudeAgentDefsBestEffort: async () => {},
+    });
+    expect(res?.status).toBe(409);
+    const payload = await res!.json() as { error?: string };
+    expect(payload.error).toContain("ambiguous");
+    expect(persistCalls).toBe(0);
+  });
+});
