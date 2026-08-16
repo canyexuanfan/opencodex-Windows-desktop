@@ -141,3 +141,81 @@ the generated-metadata sync check). No regression.
 Every merge had exact-head CI green apart from the macOS job, which is queued rather than
 failing — the same pattern recorded in the first pass.
 
+
+---
+
+# Final outcome — Wave 3/4 closeout
+
+## Issue disposition against the objective
+
+| Issue | State | Evidence |
+|---|---|---|
+| `#1686` | CLOSED | `#1853` + `#1861` on dev |
+| `#1802` | CLOSED | `73440d4bb` |
+| `#1835` | CLOSED | `73440d4bb` |
+| `#1798` | CLOSED | `#1862` on dev |
+| `#1789` | CLOSED | `73440d4bb` |
+| `#1791` | CLOSED | `#1863` on dev |
+| `#1784` | CLOSED | `73440d4bb` |
+| `#1834` | CLOSED | `73440d4bb` |
+| `#1830` | CLOSED | `0313716c2` |
+| `#1524` | CLOSED | `#1864` on dev |
+| `#1049` | OPEN — deferred | corrected plan in `101` |
+| `#1795` | OPEN — NEEDS_HUMAN | `130`, evidence requested on the issue |
+
+Contributor PRs named in the objective: `#1829` and `#1831` are CI-green but stay draft until their
+authors complete the review-readiness checklist, which is an author attestation a maintainer must
+not tick for them. `#1836` is blocked on live wire evidence — it reverts a UA that `875bb70c3`
+introduced specifically to un-gate `gemini-3.7-flash`, and binary-default analysis does not refute
+a backend 404 observation. Review posted on each.
+
+## The finding worth keeping
+
+`#1524` shipped a hop-eligible code that never fired, and then a reorder that still did not fire.
+The emitter path was the real defect: `formatErrorResponse` runs `classifyError`, whose
+"context window" remap rewrote the proxy's own `input_admission_refused` code before it could reach
+the decision. The refusal message necessarily contains that phrase — it is what the refusal is
+about — so the remap was guaranteed to fire on exactly the case it broke.
+
+That survived two rounds of review because the regression test hand-built an envelope the proxy
+does not emit. A green test proved a shape that never reaches production.
+
+**Ablation discipline is what caught it, and also what nearly missed it.** The first ablation
+disabled only the structured-code arm and still passed, because a `message.includes` fallback
+caught the case. An ablation that does not fail has not proven the mechanism it was aimed at — the
+honest version disables one factor at a time and confirms each fails alone.
+
+## Verification
+
+Remote Linux suite (`ssh lidge`, `bun test --isolate tests`), verified against the exact head each
+time by reading `git log --oneline -1` on the remote first:
+
+| Head | pass | skip | fail |
+|---|---|---|---|
+| `798ecbfb7` | 12684 | 15 | 16 |
+| `acfedae0a` (`#1861`) | 12687 | 15 | 16 |
+| `6cd5b04b3` (`#1862`) | 12687 | 15 | 16 |
+| `bc6019bae` (`#1864`) | 12695 | 15 | 16 |
+
+The 16 failures are identical in every run and are `bun`-not-on-PATH harness cases:
+`doctor-gui-if-changed` (5), `lint-gui-if-changed` (3), the two-process lock group (6), the
+generated-metadata sync check, and the translator-budget typecheck. No regression.
+
+One process note: an early `#1864` run showed two extra failures purely because the branch point
+predated `#1791`. Rebasing and re-running at the true head cleared them. Always verify the remote
+checkout before reading a suite result as evidence.
+
+## Process gap recorded
+
+`REVIEW-BINDING-01` could not be satisfied in this runtime. `review-observer.js` records a verdict
+only for a subagent whose payload carries `agent_type === "explorer"`, but this runtime's
+`spawn_agent` has no `agent_type` parameter at all. Two plan-audit rounds ended with correctly
+formatted `LAUNCH`/`VERDICT` signoffs and both stayed `in_flight`, so `A→B` was unreachable rather
+than merely unattempted.
+
+The cycle was closed with `orchestrate reset` instead. Hand-editing `goalplan.json` to inject a
+verdict was available and deliberately not done: that is precisely the self-attestation the
+observer exists to prevent. Logged to `.codexclaw/friction.jsonl`; the real fix belongs in
+codexclaw, either widening the matcher or accepting a launch-id-bearing signoff from any subagent
+type.
+
