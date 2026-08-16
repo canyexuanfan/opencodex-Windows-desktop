@@ -16,6 +16,8 @@ import {
   cooldownErrorMessage,
   cooldownErrorResponse,
   headersForCodexAuthContext,
+  materializeCodexUpstreamAuth,
+  CodexMainSubstitutionUnavailableError,
   isCodexAuthContextUsable,
   resolveCodexAuthContext,
   shouldMarkAccountNeedsReauthForCodexAuthFailure,
@@ -185,6 +187,12 @@ const forwardProvider: OcxProviderConfig = {
   authMode: "forward",
 };
 
+
+/** A JWT whose `exp` is far in the future, so isMainAccountTokenLive() accepts it. */
+function liveJwt(): string {
+  const payload = Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 86_400 })).toString("base64url");
+  return `header.${payload}.signature`;
+}
 describe("Codex auth context", () => {
   test("main-profile drain routes a non-main pool account without native reads or quota priming", async () => {
     saveCodexAccountCredential("pool-a", {
@@ -617,6 +625,49 @@ describe("Codex auth context", () => {
     }
   });
 
+
+  test("an admission bearer on main substitutes the stored credential, never forwards it (#1686)", () => {
+    // The caller proved admission with one of OUR secrets. That secret must never leave the
+    // process, so the only acceptable outcome is the stored main credential in its place.
+    const admissionSecret = "ocx_data_localsecret";
+    writeFileSync(join(testDir, "auth.json"), JSON.stringify({
+      tokens: { access_token: liveJwt(), account_id: "stored_main_acc" },
+    }));
+
+    const headers = materializeCodexUpstreamAuth(
+      new Headers({ authorization: `Bearer ${admissionSecret}`, "openai-beta": "responses=experimental" }),
+      { kind: "main", accountId: null },
+      { substituteMainCredential: true },
+    );
+
+    expect(headers.get("authorization")).not.toContain(admissionSecret);
+    expect(headers.get("authorization")).toBe(`Bearer ${liveJwt()}`);
+    expect(headers.get("chatgpt-account-id")).toBe("stored_main_acc");
+    // Unrelated forwarded headers still ride along.
+    expect(headers.get("openai-beta")).toBe("responses=experimental");
+  });
+
+  test("substitution fails closed when no usable main credential exists (#1686)", () => {
+    // Falling through here would forward the admission secret upstream, which is exactly
+    // the leak the forward guard exists to prevent. Throw before any I/O instead.
+    writeFileSync(join(testDir, "auth.json"), JSON.stringify({ tokens: {} }));
+
+    expect(() => materializeCodexUpstreamAuth(
+      new Headers({ authorization: "Bearer ocx_data_localsecret" }),
+      { kind: "main", accountId: null },
+      { substituteMainCredential: true },
+    )).toThrow(CodexMainSubstitutionUnavailableError);
+  });
+
+  test("a dedicated-header main caller keeps its own bearer as passthrough (#1686)", () => {
+    // Without the substitution flag this is the user's own ChatGPT credential on the
+    // canonical forward provider, and rewriting it would break Direct.
+    const headers = materializeCodexUpstreamAuth(
+      new Headers({ authorization: "Bearer user_chatgpt_token" }),
+      { kind: "main", accountId: null },
+    );
+    expect(headers.get("authorization")).toBe("Bearer user_chatgpt_token");
+  });
   test("selected pool headers replace inbound main auth", () => {
     const headers = headersForCodexAuthContext(
       new Headers({ authorization: "Bearer main_token", "chatgpt-account-id": "main_acc", "openai-beta": "responses=experimental" }),

@@ -311,10 +311,20 @@ function secretEquals(actual: string, expected: string | undefined): boolean {
  * point at, and a sentinel string in the id would collide with a hand-edited
  * entry that happens to be named `loopback`.
  */
+/**
+ * HOW an admission credential was presented.
+ *
+ * The credential IDENTITY (which key matched) and its PRESENTATION (which header carried it)
+ * are different facts, and #1686 needs both: a proxy secret arriving as a bearer on the
+ * Responses transport is admissible, but only if the upstream credential is then guaranteed to
+ * be substituted. Collapsing the two is what made that flow unexpressible.
+ */
+export type DataPlaneAdmissionSource = "loopback" | "dedicated" | "bearer" | "x-api-key";
+
 export type DataPlaneAdmission =
-  | { kind: "configured"; keyId: string }
-  | { kind: "environment" }
-  | { kind: "loopback" };
+  | { kind: "configured"; keyId: string; source: DataPlaneAdmissionSource }
+  | { kind: "environment"; source: DataPlaneAdmissionSource }
+  | { kind: "loopback"; source: "loopback" };
 
 /**
  * Which admission secret `token` is, or null when it is none of them.
@@ -325,12 +335,16 @@ export type DataPlaneAdmission =
  * discarded, which is what makes per-key attribution possible without touching
  * the admission decision itself.
  */
-export function resolveDataPlaneAdmissionSecret(token: string, config: Pick<OcxConfig, "apiKeys">): DataPlaneAdmission | null {
+export function resolveDataPlaneAdmissionSecret(
+  token: string,
+  config: Pick<OcxConfig, "apiKeys">,
+  source: DataPlaneAdmissionSource = "dedicated",
+): DataPlaneAdmission | null {
   const actual = token.trim();
   if (!actual) return null;
-  if (secretEquals(actual, configuredApiAuthToken(config))) return { kind: "environment" };
+  if (secretEquals(actual, configuredApiAuthToken(config))) return { kind: "environment", source };
   for (const k of config.apiKeys ?? []) {
-    if (secretEquals(actual, k.key)) return { kind: "configured", keyId: k.id };
+    if (secretEquals(actual, k.key)) return { kind: "configured", keyId: k.id, source };
   }
   return null;
 }
@@ -377,8 +391,12 @@ export interface ApiAuthMatrixRow {
  * against every cell rather than reading the table back to itself.
  */
 export const AUTH_MATRIX: readonly ApiAuthMatrixRow[] = [
-  { endpoint: "/v1/responses", bearer: "rejected", dedicated: "required", xApiKey: "rejected" },
-  { endpoint: "/v1/chat/completions", bearer: "rejected", dedicated: "required", xApiKey: "rejected" },
+  // #1686: a bearer that is one of OUR admission secrets is now accepted here. It is safe
+  // because materializeCodexUpstreamAuth substitutes the stored main credential rather than
+  // forwarding it; a bearer that is NOT our secret stays unadmitted and remains Codex Direct
+  // passthrough, so the two bearer domains still never mix. `x-api-key` is still rejected.
+  { endpoint: "/v1/responses", bearer: "accepted", dedicated: "accepted", xApiKey: "rejected" },
+  { endpoint: "/v1/chat/completions", bearer: "accepted", dedicated: "accepted", xApiKey: "rejected" },
   { endpoint: "/v1/messages", bearer: "accepted", dedicated: "accepted", xApiKey: "accepted" },
   { endpoint: "/v1/models", bearer: "accepted", dedicated: "accepted", xApiKey: "accepted" },
 ];
@@ -415,13 +433,15 @@ export function validateForwardAdmissionCredential(headers: Headers, config: Ocx
  */
 export function resolveApiAuth(req: Request, config: RequestPolicyView): DataPlaneAdmission | null {
   // A loopback bind never reads a token at all, so there is no key to name.
-  if (!isApiAuthRequired(config)) return { kind: "loopback" };
-  const actual = req.headers.get("x-opencodex-api-key")?.trim()
-    || req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim()
-    // Anthropic-SDK clients (Claude Code with ANTHROPIC_API_KEY) authenticate via x-api-key.
-    || req.headers.get("x-api-key")?.trim();
-  if (!actual) return null;
-  return resolveDataPlaneAdmissionSecret(actual, config);
+  if (!isApiAuthRequired(config)) return { kind: "loopback", source: "loopback" };
+  const dedicated = req.headers.get("x-opencodex-api-key")?.trim();
+  if (dedicated) return resolveDataPlaneAdmissionSecret(dedicated, config, "dedicated");
+  const bearer = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+  if (bearer) return resolveDataPlaneAdmissionSecret(bearer, config, "bearer");
+  // Anthropic-SDK clients (Claude Code with ANTHROPIC_API_KEY) authenticate via x-api-key.
+  const apiKey = req.headers.get("x-api-key")?.trim();
+  if (apiKey) return resolveDataPlaneAdmissionSecret(apiKey, config, "x-api-key");
+  return null;
 }
 
 export function hasValidApiAuth(req: Request, config: RequestPolicyView): boolean {
@@ -439,13 +459,22 @@ export function requireApiAuth(req: Request, config: RequestPolicyView, _kind: "
  * domains can never be confused.
  */
 export function resolveResponsesApiAuth(req: Request, config: RequestPolicyView): DataPlaneAdmission | null {
-  if (!isApiAuthRequired(config)) return { kind: "loopback" };
-  // Dedicated header ONLY. `Authorization` on these transports may belong to
-  // Codex Direct passthrough, and the two bearer domains must stay unconfusable.
-  const actual = req.headers.get("x-opencodex-api-key")?.trim();
-  if (!actual) return null;
-  return resolveDataPlaneAdmissionSecret(actual, config);
+  if (!isApiAuthRequired(config)) return { kind: "loopback", source: "loopback" };
+  // The dedicated header still WINS, because it is unambiguous.
+  const dedicated = req.headers.get("x-opencodex-api-key")?.trim();
+  if (dedicated) return resolveDataPlaneAdmissionSecret(dedicated, config, "dedicated");
+  // #1686: a bearer may also be one of OUR admission secrets. Rejecting it outright meant a
+  // Codex client configured with `env_key` could not reach Direct at all. Admitting it is only
+  // safe because the upstream credential is then SUBSTITUTED rather than forwarded -- see
+  // materializeCodexUpstreamAuth. A bearer that is NOT our secret stays unadmitted here and
+  // remains Codex Direct passthrough, so the two bearer domains still never mix.
+  const bearer = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+  if (bearer) return resolveDataPlaneAdmissionSecret(bearer, config, "bearer");
+  // `x-api-key` is deliberately NOT accepted on this transport.
+  return null;
 }
+
+
 
 export function requireResponsesApiAuth(req: Request, config: RequestPolicyView): Response | null {
   if (resolveResponsesApiAuth(req, config)) return null;
