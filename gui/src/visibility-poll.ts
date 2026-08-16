@@ -25,6 +25,27 @@ function hiddenNow(): boolean {
 }
 
 /**
+ * Schedule through `window` when it exists. Every migrated poller used
+ * `window.setInterval`, and their tests intercept it there — the bare global binds
+ * to a different timer scope than the code this helper replaced, which both hides
+ * the poll from that instrumentation and changes its lifetime semantics.
+ */
+function scheduleInterval(fn: () => void, ms: number): ReturnType<typeof setInterval> {
+  if (typeof window !== "undefined" && typeof window.setInterval === "function") {
+    return window.setInterval(fn, ms) as unknown as ReturnType<typeof setInterval>;
+  }
+  return setInterval(fn, ms);
+}
+
+function cancelInterval(handle: ReturnType<typeof setInterval>): void {
+  if (typeof window !== "undefined" && typeof window.clearInterval === "function") {
+    window.clearInterval(handle as unknown as number);
+    return;
+  }
+  clearInterval(handle);
+}
+
+/**
  * Start an interval that exists only while the tab is visible (unless opted out).
  * Returns stop(), which removes the timer and the visibility listener in any state.
  */
@@ -49,11 +70,11 @@ export function startVisibilityPoll(
 
   const arm = () => {
     if (timer !== null || stopped) return;
-    timer = setInterval(tick, intervalMs);
+    timer = scheduleInterval(tick, intervalMs);
   };
   const disarm = () => {
     if (timer === null) return;
-    clearInterval(timer);
+    cancelInterval(timer);
     timer = null;
   };
 
