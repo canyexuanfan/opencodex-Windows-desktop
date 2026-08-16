@@ -136,10 +136,10 @@ describe("commit helpers", () => {
 describe("release metadata parsers", () => {
   test("parses multiline git-log records and trailing separators", () => {
     const raw = [
-      `${sha("a")}\x1ffix(core): first change\x1ffix(core): first change\n\nline one\nline two\x1e`,
-      `${sha("b")}\x1ffeat(api): second change\x1ffeat(api): second change\x1e`,
+      sha("a"), "fix(core): first change", "fix(core): first change\n\nline one\nline two",
+      sha("b"), "feat(api): second change", "feat(api): second change",
       "",
-    ].join("\n");
+    ].join("\0");
 
     expect(parseGitLog(raw)).toEqual([
       {
@@ -156,12 +156,26 @@ describe("release metadata parsers", () => {
   });
 
   test("fails closed on malformed git-log records", () => {
-    expect(() => parseGitLog(`\x1ffix(core): missing sha\x1fbody\x1e`)).toThrow(
+    expect(() => parseGitLog(`\0fix(core): missing sha\0body\0`)).toThrow(
       "malformed release commit record",
     );
-    expect(() => parseGitLog(`${sha("a")}\x1f\x1fbody\x1e`)).toThrow(
+    expect(() => parseGitLog(`${sha("a")}\0\0body\0`)).toThrow(
       "malformed release commit record",
     );
+    expect(() => parseGitLog(`${sha("a")}\0fix(core): missing body\0`)).toThrow(
+      "malformed release commit record",
+    );
+  });
+
+  test("preserves control bytes in commit subjects and bodies", () => {
+    const subject = "release: v1.2.3\x1ffix: visible change";
+    const body = `${subject}\n\nrecord separator: \x1e`;
+
+    expect(parseGitLog(`${sha("a")}\0${subject}\0${body}\0`)).toEqual([{
+      sha: sha("a"),
+      subject,
+      body,
+    }]);
   });
 
   test("normalizes associated pull metadata safely", () => {
