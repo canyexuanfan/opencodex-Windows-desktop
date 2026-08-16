@@ -560,9 +560,11 @@ export function parseRequest(body: unknown): OcxParsedRequest {
         const callId = call.call_id ?? call.id;
         if (callId) {
           const command = Array.isArray(call.action?.command) ? call.action.command : [];
+          const remembered = replayThoughtSignatureMetadata(callId);
           assistantHolderWithReasoning().content.push({
             type: "toolCall", id: callId, name: "shell",
             arguments: command.length > 0 ? { command } : {},
+            ...(remembered ? { providerMetadata: remembered } : {}),
           });
         }
         continue;
@@ -581,9 +583,11 @@ export function parseRequest(body: unknown): OcxParsedRequest {
         // history stays complete (otherwise the model re-issues tool_search forever).
         const call = item as { id?: string; call_id?: string; arguments?: unknown };
         const callId = call.call_id ?? call.id ?? "";
+        const remembered = callId ? replayThoughtSignatureMetadata(callId) : undefined;
         assistantHolderWithReasoning().content.push({
           type: "toolCall", id: callId, name: "tool_search",
           arguments: isObj(call.arguments) ? call.arguments : {},
+          ...(remembered ? { providerMetadata: remembered } : {}),
         });
         continue;
       }

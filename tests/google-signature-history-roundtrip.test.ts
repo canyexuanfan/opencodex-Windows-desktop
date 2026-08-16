@@ -172,6 +172,38 @@ describe("#1735 thought signature survives history replay", () => {
     expect(part?.thoughtSignature).toBe(SIGNATURE_B);
   });
 
+  test("a tool_search_call replay is re-signed from the proxy-side store", async () => {
+    rememberThoughtSignatureForReplay("call_ts_1", SIGNATURE);
+    const parsed = parseRequest({
+      model: MODEL,
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "search tool" }] },
+        { type: "tool_search_call", call_id: "call_ts_1", arguments: { query: "grep" } },
+        { type: "tool_search_output", call_id: "call_ts_1", tools: [] },
+      ],
+      tools: [{ type: "function", name: "tool_search", description: "search", parameters: { type: "object" } }],
+    });
+    const request = await createGoogleAdapter(provider).buildRequest(parsed);
+    const part = modelParts(request.body as string).find(candidate => "functionCall" in candidate);
+    expect(part?.thoughtSignature).toBe(SIGNATURE);
+  });
+
+  test("a local_shell_call replay is re-signed from the proxy-side store", async () => {
+    rememberThoughtSignatureForReplay("call_lsh_1", SIGNATURE);
+    const parsed = parseRequest({
+      model: MODEL,
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "shell command" }] },
+        { type: "local_shell_call", call_id: "call_lsh_1", action: { type: "exec", command: ["ls"] } },
+        { type: "function_call_output", call_id: "call_lsh_1", output: "file.txt" },
+      ],
+      tools: [{ type: "function", name: "shell", description: "run", parameters: { type: "object" } }],
+    });
+    const request = await createGoogleAdapter(provider).buildRequest(parsed);
+    const part = modelParts(request.body as string).find(candidate => "functionCall" in candidate);
+    expect(part?.thoughtSignature).toBe(SIGNATURE);
+  });
+
   test("an unknown call_id stays unsigned", async () => {
     const parsed = parseRequest({
       model: MODEL,
