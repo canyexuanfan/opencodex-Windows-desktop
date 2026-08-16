@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import { existsSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -35,7 +35,8 @@ import {
   updateCommand,
   updateCommandStr,
 } from "./index";
-import { isNewer } from "./notify";
+import { isNewer, isNewerRelease } from "./notify";
+import { DESKTOP_RELEASE_NOTES_URL, fetchDesktopInstallerRelease, type DesktopInstallerRelease } from "./desktop-release";
 import { isRealBunBinary } from "../lib/bun-binary-validator.mjs";
 import { handoffWindowsTrayForUpdate, planWindowsTrayUpdate } from "./tray-update-plan.mjs";
 import {
@@ -67,6 +68,12 @@ export interface UpdateCheckResult {
   command: string;
   releaseNotesUrl: string;
   reason?: string;
+  /** Desktop-installer runtime only: build-revision identity for same-version builds. */
+  currentBuildRevision?: number;
+  latestBuildRevision?: number;
+  /** Desktop-installer runtime only: trusted GitHub asset pointers. */
+  downloadUrl?: string;
+  assetName?: string;
 }
 
 export interface UpdateJobState {
@@ -508,6 +515,138 @@ export function checkForUpdate(
 
 function newJobId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Windows desktop-installer runtime: same-version build updates are delivered
+// as GitHub Release installers rather than npm/bun package swaps.
+// ---------------------------------------------------------------------------
+
+function desktopInstallerCommand(release: Pick<DesktopInstallerRelease, "assetName" | "downloadUrl" | "releaseNotesUrl">): string {
+  if (release.assetName && release.downloadUrl) return `Install ${release.assetName} from GitHub Releases`;
+  return `Open ${release.releaseNotesUrl}`;
+}
+
+export function isDesktopRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.OPENCODEX_DESKTOP === "1" || env.OPENCODEX_DESKTOP_MODE === "1";
+}
+
+export function desktopCurrentVersion(env: NodeJS.ProcessEnv = process.env): string {
+  const desktopVersion = env.OPENCODEX_DESKTOP_VERSION?.trim();
+  return desktopVersion || currentVersion();
+}
+
+export function desktopCurrentBuildRevision(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number.parseInt(env.OPENCODEX_DESKTOP_BUILD_REVISION?.trim() ?? "0", 10);
+  return Number.isSafeInteger(raw) && raw >= 0 ? raw : 0;
+}
+
+function isAllowedDesktopInstallerUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" && (url.hostname === "github.com" || url.hostname.endsWith(".githubusercontent.com"));
+  } catch {
+    return false;
+  }
+}
+
+async function downloadDesktopInstaller(job: UpdateJobState, check: UpdateCheckResult): Promise<string> {
+  if (process.platform !== "win32") throw new Error("Desktop installer updates are only supported on Windows.");
+  if (!check.downloadUrl || !check.assetName || !isAllowedDesktopInstallerUrl(check.downloadUrl)) {
+    throw new Error("Desktop installer URL is missing or is not a trusted GitHub download URL.");
+  }
+  const safeAssetName = check.assetName.replace(/[^A-Za-z0-9._-]/g, "_");
+  const suffix = `${check.latestVersion ?? "unknown"}-build-${check.latestBuildRevision ?? 0}-${Date.now()}`;
+  const target = join(getConfigDir(), `OpenCodex-update-${suffix}-${safeAssetName}`);
+  const partial = `${target}.partial`;
+  updateJob(job, {}, `Downloading ${check.assetName} from the trusted GitHub Release...`);
+  const response = await fetch(check.downloadUrl, { redirect: "follow" });
+  if (!response.ok || !response.body) throw new Error(`Desktop installer download failed with HTTP ${response.status}.`);
+  const contentLength = Number(response.headers.get("content-length") ?? "0");
+  if (contentLength > 512 * 1024 * 1024) throw new Error("Desktop installer exceeds the 512 MiB update limit.");
+  const bytes = await response.arrayBuffer();
+  if (bytes.byteLength === 0 || bytes.byteLength > 512 * 1024 * 1024) throw new Error("Desktop installer has an invalid size.");
+  mkdirSync(getConfigDir(), { recursive: true, mode: 0o700 });
+  await Bun.write(partial, bytes);
+  renameSync(partial, target);
+  return target;
+}
+
+function launchDesktopInstaller(job: UpdateJobState, installerPath: string): void {
+  const child = spawn(installerPath, [], { detached: true, stdio: "ignore", windowsHide: false });
+  child.once("error", error => {
+    const current = readUpdateJob(job.id);
+    if (!current || current.status !== "running") return;
+    updateJob(current, { status: "failed", error: `Could not launch desktop installer: ${error.message}` });
+  });
+  child.unref();
+}
+
+export interface DesktopRuntimeCheckDeps {
+  isDesktopRuntime: () => boolean;
+  desktopCurrentVersion: () => string;
+  desktopCurrentBuildRevision: () => number;
+  fetchDesktopInstallerRelease: (channel: Channel) => Promise<DesktopInstallerRelease | null>;
+  checkForUpdate: (requestedChannel?: Channel) => UpdateCheckResult;
+}
+
+const defaultDesktopRuntimeCheckDeps: DesktopRuntimeCheckDeps = {
+  isDesktopRuntime,
+  desktopCurrentVersion,
+  desktopCurrentBuildRevision,
+  fetchDesktopInstallerRelease,
+  checkForUpdate: (requestedChannel?: Channel) => checkForUpdate(requestedChannel),
+};
+
+/**
+ * Update check for the running runtime: the Windows desktop host resolves its own
+ * GitHub Release (version + build revision); every other install takes the package
+ * registry path.
+ */
+export async function checkForUpdateForRuntime(
+  requestedChannel?: Channel,
+  deps: DesktopRuntimeCheckDeps = defaultDesktopRuntimeCheckDeps,
+): Promise<UpdateCheckResult> {
+  if (!deps.isDesktopRuntime()) {
+    return deps.checkForUpdate(requestedChannel);
+  }
+  const current = deps.desktopCurrentVersion();
+  const channel = requestedChannel ?? normalizeUpdateChannel(null, current);
+  const release = await deps.fetchDesktopInstallerRelease(channel).catch(() => null);
+  if (!release) {
+    return {
+      currentVersion: current,
+      latestVersion: null,
+      currentBuildRevision: deps.desktopCurrentBuildRevision(),
+      channel,
+      installer: "desktop",
+      updateAvailable: false,
+      canUpdate: false,
+      command: desktopInstallerCommand({ assetName: null, downloadUrl: null, releaseNotesUrl: DESKTOP_RELEASE_NOTES_URL }),
+      releaseNotesUrl: DESKTOP_RELEASE_NOTES_URL,
+      reason: "desktop_release_unavailable",
+    };
+  }
+  const currentBuildRevision = deps.desktopCurrentBuildRevision();
+  const updateAvailable = isNewerRelease(release.latestVersion, current, release.buildRevision, currentBuildRevision, channel);
+  let reason: string | undefined;
+  if (!updateAvailable) reason = "already_latest";
+  else if (!release.downloadUrl || !release.assetName) reason = "desktop_asset_missing";
+  else reason = "desktop_installer_ready";
+  return {
+    currentVersion: current,
+    latestVersion: release.latestVersion,
+    currentBuildRevision,
+    latestBuildRevision: release.buildRevision,
+    channel,
+    installer: "desktop",
+    updateAvailable,
+    canUpdate: updateAvailable && !!release.downloadUrl && !!release.assetName,
+    command: desktopInstallerCommand(release),
+    releaseNotesUrl: release.releaseNotesUrl,
+    ...(release.downloadUrl && release.assetName ? { downloadUrl: release.downloadUrl, assetName: release.assetName } : {}),
+    ...(reason ? { reason } : {}),
+  };
 }
 
 /**
@@ -1729,7 +1868,7 @@ async function confirmNpmExplicitRestart(
 export interface GuiUpdateWorkerIo {
   cachePreflightFn?: () => { ok: boolean; reason: string };
   /** Force the resolved update target. A source checkout otherwise aborts before the npm branch. */
-  checkForUpdateFn?: (channel: Channel) => ReturnType<typeof checkForUpdate>;
+  checkForUpdateFn?: (channel: Channel) => UpdateCheckResult | Promise<UpdateCheckResult>;
   /** Bypass the registry integrity probe, which runs before the cache gate and needs network. */
   integrityFn?: (version: string | null) => ReturnType<typeof checkUpdatePackageIntegrity>;
   runCommandFn?: (
@@ -1747,7 +1886,9 @@ export async function runGuiUpdateWorker(
   io: GuiUpdateWorkerIo = {},
 ): Promise<void> {
   let job = readUpdateJob(jobId);
-  const check = (io.checkForUpdateFn ?? checkForUpdate)(channel);
+  const check = io.checkForUpdateFn
+    ? await io.checkForUpdateFn(channel)
+    : await checkForUpdateForRuntime(channel);
   const now = new Date().toISOString();
   // Capture the live listen target BEFORE the update command runs: the stop-first update
   // flow clears pid/runtime state, so this is the last moment the real port is knowable.
@@ -1787,6 +1928,16 @@ export async function runGuiUpdateWorker(
   try {
     if (!check.canUpdate) {
       throw new Error(check.reason ?? "No update is available");
+    }
+
+    // Desktop runtime: the update payload is a signed installer from this fork's
+    // GitHub Release, not an npm/bun package swap. Download it and hand off to
+    // the installer; the package-integrity and restart lanes do not apply.
+    if (check.installer === "desktop") {
+      const installerPath = await downloadDesktopInstaller(job, check);
+      launchDesktopInstaller(job, installerPath);
+      updateJob(job, { status: "succeeded", restarted: false }, `Desktop installer launched. Close OpenCodex when the installer requests it, then finish the upgrade.`);
+      return;
     }
 
     // Pre-flight integrity metadata check (same lanes as the CLI): anomalous registry

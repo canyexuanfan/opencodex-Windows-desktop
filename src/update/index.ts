@@ -29,7 +29,7 @@ export function historyRestoreIncomplete(configDir = getConfigDir()): boolean {
 export const PKG = "@bitkyc08/opencodex";
 const HERE = dirname(fileURLToPath(import.meta.url)); // .../opencodex/src/update
 
-export type Installer = "bun" | "npm" | "source";
+export type Installer = "bun" | "npm" | "source" | "desktop";
 export type Channel = "latest" | "preview";
 
 /** Infer how opencodex is installed from the running module's path. */
