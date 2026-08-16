@@ -1,0 +1,107 @@
+name: temporary apply invalid tool-call fix
+
+on:
+  push:
+    branches:
+      - fix/deepseek-invalid-tool-call-diagnostics
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.head_commit.message != 'fix(openai-chat): classify malformed upstream tool calls'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Apply focused source patch
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          path = Path('src/adapters/openai-chat.ts')
+          text = path.read_text()
+
+          old = '''function invalidToolCallsEvent(usage?: OcxUsage): Extract<AdapterEvent, { type: "error" }> {
+            return {
+              type: "error",
+              message: "upstream response contained invalid tool calls",
+              ...(usage !== undefined ? { usage } : {}),
+            };
+          }'''
+          new = '''function invalidToolCallsEvent(
+            usage?: OcxUsage,
+            diagnostic?: { reason: string; callIndex?: number; valueType: string },
+          ): Extract<AdapterEvent, { type: "error" }> {
+            const detail = diagnostic
+              ? ` (${diagnostic.reason}${diagnostic.callIndex !== undefined ? `; callIndex=${diagnostic.callIndex}` : ""}; valueType=${diagnostic.valueType})`
+              : "";
+            return {
+              type: "error",
+              status: 502,
+              errorType: "upstream_error",
+              message: `upstream response contained invalid tool calls${detail}`,
+              ...(usage !== undefined ? { usage } : {}),
+            };
+          }'''
+          if old not in text:
+            raise SystemExit('invalidToolCallsEvent source shape changed')
+          text = text.replace(old, new, 1)
+
+          old = '''function logInvalidToolCalls(mode: "stream" | "response", rawToolCalls: unknown): void {
+            const diagnostic = diagnoseInvalidToolCalls(rawToolCalls, mode);
+            if (diagnostic) debugProviderDiagnostic("openai-chat", "invalid-tool-calls", { mode, ...diagnostic });
+          }'''
+          new = '''function logInvalidToolCalls(
+            mode: "stream" | "response",
+            rawToolCalls: unknown,
+          ): ReturnType<typeof diagnoseInvalidToolCalls> {
+            const diagnostic = diagnoseInvalidToolCalls(rawToolCalls, mode);
+            if (diagnostic) debugProviderDiagnostic("openai-chat", "invalid-tool-calls", { mode, ...diagnostic });
+            return diagnostic;
+          }'''
+          if old not in text:
+            raise SystemExit('logInvalidToolCalls source shape changed')
+          text = text.replace(old, new, 1)
+
+          stream_pattern = re.compile(
+            r'(?P<indent>[ \t]*)logInvalidToolCalls\("stream", rawToolCalls\);\n'
+            r'(?P=indent)return yield\* terminateWithError\(invalidToolCallsEvent\(pendingUsage\)\);'
+          )
+          text, stream_count = stream_pattern.subn(
+            lambda m: f'{m.group("indent")}return yield* terminateWithError(\n'
+                      f'{m.group("indent")}  invalidToolCallsEvent(pendingUsage, logInvalidToolCalls("stream", rawToolCalls)),\n'
+                      f'{m.group("indent")});',
+            text,
+          )
+          if stream_count < 1:
+            raise SystemExit('no streamed invalid-tool-call sites patched')
+
+          response_pattern = re.compile(
+            r'(?P<indent>[ \t]*)logInvalidToolCalls\("response", rawToolCalls\);\n'
+            r'(?P=indent)return \[invalidToolCallsEvent\(usage\)\];'
+          )
+          text, response_count = response_pattern.subn(
+            lambda m: f'{m.group("indent")}return [invalidToolCallsEvent(\n'
+                      f'{m.group("indent")}  usage,\n'
+                      f'{m.group("indent")}  logInvalidToolCalls("response", rawToolCalls),\n'
+                      f'{m.group("indent")})];',
+            text,
+          )
+          if response_count < 1:
+            raise SystemExit('no buffered invalid-tool-call sites patched')
+
+          path.write_text(text)
+          print(f'patched stream sites={stream_count}, response sites={response_count}')
+      - name: Remove temporary workflow from branch
+        run: rm .github/workflows/ocx-temp-apply-invalid-tool-call-fix.yml
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/adapters/openai-chat.ts .github/workflows/ocx-temp-apply-invalid-tool-call-fix.yml
+          git commit -m "fix(openai-chat): classify malformed upstream tool calls"
+          git push origin HEAD:fix/deepseek-invalid-tool-call-diagnostics
