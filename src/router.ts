@@ -721,15 +721,11 @@ function routeByKnownModelPattern(config: OcxConfig, modelId: string): RouteResu
         const [provName, prov] = matchingProvider;
         return routeResult(provName, prov, modelId, "explicit-provider", "model-pattern");
       }
-      if (providerNames.includes("anthropic")) {
-        const anthropicAdapterProvider = Object.entries(config.providers).find(
-          ([_, prov]) => prov.disabled !== true && (prov.adapter === "anthropic" || prov.adapter === "anthropic-messages")
-        );
-        if (anthropicAdapterProvider) {
-          const [provName, prov] = anthropicAdapterProvider;
-          return routeResult(provName, prov, modelId, "explicit-provider", "model-pattern");
-        }
-      }
+      // Deliberately no "first provider with an Anthropic adapter" fallback here. Picking by
+      // object insertion order, without checking `models`, `selectedModels`, `disabledModels` or
+      // discovery state, silently moves a request onto a provider the operator never chose, with
+      // its own privacy and billing consequences (#1697). A classifier turn that needs a specific
+      // target gets it from operator-declared `claudeCode.classifierModel` / `classifierFallbacks`.
     }
   }
   return undefined;

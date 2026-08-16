@@ -564,7 +564,12 @@ describe("routeModel backfills google wire mode from the registry", () => {
     expect(routeModel(config, "gemini-3-pro").provider.googleMode).toBe("vertex");
   });
 
-  test("routes bare claude-* models to active Anthropic adapter providers instead of incompatible defaultProvider (#1697)", () => {
+  test("a bare claude-* model is not silently rerouted to an unrelated Anthropic provider (#1697)", () => {
+    // The draft fix picked the first enabled provider whose adapter is anthropic, by object
+    // insertion order, checking neither `models`, `selectedModels`, `disabledModels` nor discovery.
+    // That crosses a provider/privacy/billing boundary the operator never asked for, so it is gone.
+    // Routing a classifier turn to a specific provider is an operator decision, expressed through
+    // `claudeCode.classifierModel` / `classifierFallbacks`.
     const config: OcxConfig = {
       port: 10100,
       defaultProvider: "deepseek",
@@ -581,9 +586,30 @@ describe("routeModel backfills google wire mode from the registry", () => {
     };
 
     const routed = routeModel(config, "claude-opus-5");
-    expect(routed.providerName).toBe("RelayA");
-    expect(routed.modelId).toBe("claude-opus-5");
-    expect(routed.routeKind).toBe("explicit-provider");
-    expect(routed.routeReason).toBe("model-pattern");
+    expect(routed.providerName).toBe("deepseek");
+    expect(routed.routeKind).toBe("default-provider");
+  });
+
+  test("a disabled provider is not selected by the known-model pattern (#1697)", () => {
+    // This half of the draft is kept: matching a pattern provider that is disabled and routing to
+    // it anyway was a real defect.
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "fallbackProvider",
+      providers: {
+        anthropic: {
+          adapter: "anthropic",
+          baseUrl: "https://api.anthropic.com",
+          disabled: true,
+        },
+        fallbackProvider: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.example.test/v1",
+        },
+      },
+    };
+
+    const routed = routeModel(config, "claude-opus-5");
+    expect(routed.providerName).toBe("fallbackProvider");
   });
 });

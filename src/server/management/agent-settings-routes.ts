@@ -1005,6 +1005,8 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       smallFastModel: config.claudeCode?.smallFastModel ?? "",
       tierModels: config.claudeCode?.tierModels ?? {},
       modelMap: config.claudeCode?.modelMap ?? {},
+      classifierModel: config.claudeCode?.classifierModel ?? "",
+      classifierFallbacks: config.claudeCode?.classifierFallbacks ?? [],
       systemEnv: config.claudeCode?.systemEnv === true,
       autoConnectSupported: process.platform === "darwin",
       maxContextTokens: config.claudeCode?.maxContextTokens ?? null,
@@ -1042,7 +1044,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       return prototype === Object.prototype || prototype === null;
     };
     if (!isPlainObject(parsedBody)) return jsonResponse({ error: "body must be an object" }, 400);
-    const body = parsedBody as { enabled?: unknown; authMode?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; systemEnv?: unknown; fastMode?: unknown; maxContextTokens?: unknown; alwaysEnableEffort?: unknown; tierModels?: unknown; autoContext?: unknown; autoCompactWindow?: unknown; blockedSkills?: unknown; injectAgents?: unknown; webSearchSidecar?: unknown; visionSidecar?: unknown };
+    const body = parsedBody as { enabled?: unknown; authMode?: unknown; model?: unknown; smallFastModel?: unknown; modelMap?: unknown; classifierModel?: unknown; classifierFallbacks?: unknown; systemEnv?: unknown; fastMode?: unknown; maxContextTokens?: unknown; alwaysEnableEffort?: unknown; tierModels?: unknown; autoContext?: unknown; autoCompactWindow?: unknown; blockedSkills?: unknown; injectAgents?: unknown; webSearchSidecar?: unknown; visionSidecar?: unknown };
     for (const field of ["webSearchSidecar", "visionSidecar"] as const) {
       const section = body[field];
       if (section === undefined || section === null) continue;
@@ -1182,12 +1184,30 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       }
       nextFastMode = body.fastMode === null ? undefined : body.fastMode;
     }
-    for (const field of ["model", "smallFastModel"] as const) {
+    for (const field of ["model", "smallFastModel", "classifierModel"] as const) {
       const value = body[field];
       if (value === undefined) continue;
       if (typeof value !== "string") return jsonResponse({ error: `${field} must be a string` }, 400);
       if (value.trim() === "") delete next[field];
       else next[field] = value.trim();
+    }
+    if (body.classifierFallbacks !== undefined) {
+      if (body.classifierFallbacks === null) {
+        delete next.classifierFallbacks;
+      } else {
+        if (!Array.isArray(body.classifierFallbacks)) {
+          return jsonResponse({ error: "classifierFallbacks must be an array of strings, or null" }, 400);
+        }
+        const list: string[] = [];
+        for (const entry of body.classifierFallbacks) {
+          if (typeof entry !== "string" || entry.trim() === "") {
+            return jsonResponse({ error: "classifierFallbacks entries must be non-empty strings" }, 400);
+          }
+          list.push(entry.trim());
+        }
+        if (list.length > 0) next.classifierFallbacks = list;
+        else delete next.classifierFallbacks;
+      }
     }
     if (body.modelMap !== undefined) {
       if (body.modelMap === null) {

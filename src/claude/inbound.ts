@@ -27,18 +27,32 @@ function isRec(v: unknown): v is Rec {
 
 function isClaudeClassifierModel(model: string): boolean {
   const stripped = model.replace(/-\d{8}$/, "");
-  return stripped === "claude-opus-5" || stripped === "claude-opus-4" || /^claude-opus-[45]/.test(stripped);
+  return /^claude-opus-[45]/.test(stripped);
 }
 
-function getClassifierAffinityProvider(mainModel: string | undefined): string | null {
-  if (!mainModel) return null;
-  const resolvedMain = resolveAlias(mainModel) ?? mainModel;
-  const sep = resolvedMain.indexOf("/");
-  if (sep > 0) {
-    const provider = resolvedMain.slice(0, sep);
-    if (provider !== "native" && provider !== "policy") return provider;
+/**
+ * Explicitly configured classifier route for Claude Code Auto Mode safety checks (#1697).
+ *
+ * Only OPERATOR-DECLARED targets are used: `classifierModel`, then the ordered
+ * `classifierFallbacks`. Both are qualified `provider/model` strings the operator chose, so
+ * routing them crosses no boundary the operator did not ask for.
+ *
+ * Deliberately NOT here: inferring a provider from `claudeCode.model`. That value is the
+ * injected/default config slot, not the provider the live session actually selected, so it goes
+ * stale the moment the user changes the model picker -- and acting on it would silently move a
+ * classifier turn onto a provider with its own privacy and billing consequences. Live session
+ * affinity needs the request/session state this function does not have; it is tracked as
+ * follow-up work rather than approximated from static config.
+ */
+function configuredClassifierRoute(cc?: OcxClaudeCodeConfig): string | undefined {
+  const explicit = typeof cc?.classifierModel === "string" ? cc.classifierModel.trim() : "";
+  if (explicit.length > 0) return explicit;
+  if (Array.isArray(cc?.classifierFallbacks)) {
+    for (const candidate of cc.classifierFallbacks) {
+      if (typeof candidate === "string" && candidate.trim().length > 0) return candidate.trim();
+    }
   }
-  return null;
+  return undefined;
 }
 
 /** Alias first, then modelMap: exact id, then date-suffix-stripped (`-\d{8}$`), then classifier affinity/config, else passthrough. */
@@ -64,24 +78,13 @@ export function resolveInboundModel(model: string, cc?: OcxClaudeCodeConfig): st
   const dateless = map[stripped];
   if (typeof dateless === "string" && dateless.length > 0) return dateless;
 
-  // Claude Code Auto Mode classifier routing (issue #1697):
-  // When Claude Code sends internal bare safety checks (e.g. claude-opus-5),
-  // preserve session provider affinity or configured classifierModel so requests
-  // do not fall through to an incompatible defaultProvider.
+  // Claude Code Auto Mode classifier routing (#1697). Bare classifier checks such as
+  // `claude-opus-5` carry no provider, so without this they fall through to defaultProvider --
+  // which may not speak Anthropic at all. Only an operator-declared target is used.
   if (isClaudeClassifierModel(model)) {
-    if (typeof cc?.classifierModel === "string" && cc.classifierModel.trim().length > 0) {
-      return cc.classifierModel.trim();
-    }
-    const affinityProvider = getClassifierAffinityProvider(cc?.model);
-    if (affinityProvider) {
-      return `${affinityProvider}/${model}`;
-    }
-    if (Array.isArray(cc?.classifierFallbacks) && cc.classifierFallbacks.length > 0) {
-      const firstValid = cc.classifierFallbacks.find(fb => typeof fb === "string" && fb.trim().length > 0);
-      if (firstValid) return firstValid.trim();
-    }
+    const configured = configuredClassifierRoute(cc);
+    if (configured) return configured;
   }
-
   return model;
 }
 
