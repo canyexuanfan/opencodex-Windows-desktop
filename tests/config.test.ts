@@ -93,6 +93,31 @@ function writeAccountNamespaceConfig(
 }
 
 describe("opencodex config defaults", () => {
+  test("malformed classifier config is normalized at load, even with subagentEffort absent (#1697)", () => {
+    // normalizePersistedClaudeCode used to be reached only through a subagentEffort short-circuit,
+    // so a config whose ONLY defect was elsewhere in claudeCode was never normalized. These
+    // fixtures deliberately omit subagentEffort, which is what the old path skipped on.
+    writeConfig({
+      port: 10100,
+      providers: { p1: { adapter: "openai-chat", baseUrl: "https://p1.example/v1" } },
+      claudeCode: { classifierFallbacks: "RelayC/claude-opus-5", classifierModel: "   " },
+    });
+    const loaded = loadConfig() as Record<string, any>;
+    expect(loaded.claudeCode?.classifierFallbacks).toBeUndefined();
+    expect(loaded.claudeCode?.classifierModel).toBeUndefined();
+    expect(loaded.providers.p1).toBeDefined();
+  });
+
+  test("classifier fallback entries are filtered rather than trusted (#1697)", () => {
+    writeConfig({
+      port: 10100,
+      providers: { p1: { adapter: "openai-chat", baseUrl: "https://p1.example/v1" } },
+      claudeCode: { classifierFallbacks: [1, "  RelayC/claude-opus-5  ", "", null] },
+    });
+    const loaded = loadConfig() as Record<string, any>;
+    expect(loaded.claudeCode?.classifierFallbacks).toEqual(["RelayC/claude-opus-5"]);
+  });
+
   test("empty-completion retry is an explicit top-level opt-in", () => {
     const defaults = getDefaultConfig();
     expect(defaults.emptyCompletionRetry).toBe(false);

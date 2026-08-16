@@ -2018,12 +2018,30 @@ function normalizePersistedClaudeCode(claudeCode: unknown): OcxConfig["claudeCod
   if (Object.hasOwn(normalized, "subagentEffort") && !isClaudeSubagentEffort(normalized.subagentEffort)) {
     delete normalized.subagentEffort;
   }
+  // A hand-authored config never passes through the management validator, so coerce here too.
+  // A malformed classifierFallbacks (a bare string, or an array with non-string entries) would
+  // otherwise reach the resolver unchecked.
+  if (Object.hasOwn(normalized, "classifierModel")) {
+    const value = typeof normalized.classifierModel === "string" ? normalized.classifierModel.trim() : "";
+    if (value.length > 0) normalized.classifierModel = value;
+    else delete normalized.classifierModel;
+  }
+  if (Object.hasOwn(normalized, "classifierFallbacks")) {
+    const raw = normalized.classifierFallbacks;
+    const kept = Array.isArray(raw)
+      ? raw.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map(entry => entry.trim())
+      : [];
+    if (kept.length > 0) normalized.classifierFallbacks = kept;
+    else delete normalized.classifierFallbacks;
+  }
   return normalized as OcxConfig["claudeCode"];
 }
 
-function normalizeClaudeSubagentEffort(config: OcxConfig, rawParsed: unknown): OcxConfig {
-  const rawEffort = rawClaudeSubagentEffort(rawParsed);
-  if (rawEffort === undefined || isClaudeSubagentEffort(rawEffort)) return config;
+function normalizeClaudeSubagentEffort(config: OcxConfig, _rawParsed: unknown): OcxConfig {
+  // Unconditional. This used to short-circuit when `subagentEffort` was absent or already valid,
+  // which meant a config whose ONLY defect was elsewhere in `claudeCode` was never normalized.
+  // The specialized subagentEffort WARNING is a separate concern and stays exactly as it is.
+  if (!config.claudeCode) return config;
   return { ...config, claudeCode: normalizePersistedClaudeCode(config.claudeCode) };
 }
 
