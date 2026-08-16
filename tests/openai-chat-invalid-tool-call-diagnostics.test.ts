@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { createOpenAIChatAdapter as createOpenAIChatAdapterProduction } from "../src/adapters/openai-chat";
 import { getDebugLogEntries, resetDebugLogBufferForTests } from "../src/lib/debug-log-buffer";
 import { resetDebugSettingsForTests } from "../src/lib/debug-settings";
@@ -17,6 +17,12 @@ const provider: OcxProviderConfig = {
 
 const previousDebug = process.env.OCX_DEBUG;
 
+beforeEach(() => {
+  resetDebugSettingsForTests();
+  resetDebugLogBufferForTests();
+  delete process.env.OCX_DEBUG;
+});
+
 afterEach(() => {
   resetDebugSettingsForTests();
   resetDebugLogBufferForTests();
@@ -28,6 +34,13 @@ async function collect(stream: AsyncGenerator<AdapterEvent>): Promise<AdapterEve
   const events: AdapterEvent[] = [];
   for await (const event of stream) events.push(event);
   return events;
+}
+
+function requireErrorEvent(events: AdapterEvent[]): Extract<AdapterEvent, { type: "error" }> {
+  const event = events.find((candidate): candidate is Extract<AdapterEvent, { type: "error" }> =>
+    candidate.type === "error");
+  if (!event) throw new Error("expected an error event");
+  return event;
 }
 
 function malformedNameResponse(name: unknown, args = "{}"): Response {
@@ -66,6 +79,7 @@ test("object-valued streamed function.name is a 502 with value-free compatibilit
   expect(serialized).not.toContain(privateNameValue);
   expect(serialized).not.toContain(privateArguments);
   expect(serialized).not.toContain("call_1");
+  expect(getDebugLogEntries()).toEqual([]);
 });
 
 test("provider debug fingerprints only allowlisted object structure for an invalid field", async () => {
@@ -81,7 +95,7 @@ test("provider debug fingerprints only allowlisted object structure for an inval
     [privateUnknownKey]: privateUnknownValue,
   }, JSON.stringify({ privateArguments }))));
 
-  expect(events[0]?.message).not.toContain("fieldShape");
+  expect(requireErrorEvent(events).message).not.toContain("fieldShape");
   const lines = getDebugLogEntries().map(entry => entry.line).join("\n");
   expect(lines).toContain('[ocx:openai-chat:invalid-tool-calls]');
   expect(lines).toContain('"reason":"tool_call_function_name_invalid"');
@@ -103,7 +117,7 @@ test("provider debug fingerprints invalid arrays by length without retaining ele
 
   const events = await collect(adapter.parseStream(malformedNameResponse([privateElement, { privateElement }])));
 
-  expect(events[0]?.message).not.toContain("fieldShape");
+  expect(requireErrorEvent(events).message).not.toContain("fieldShape");
   const lines = getDebugLogEntries().map(entry => entry.line).join("\n");
   expect(lines).toContain('"fieldShape":{"kind":"array","length":2}');
   expect(lines).not.toContain(privateElement);
@@ -136,7 +150,7 @@ test("provider debug fingerprints buffered invalid fields with the same privacy 
     }],
   })));
 
-  expect(events[0]?.message).not.toContain("fieldShape");
+  expect(requireErrorEvent(events).message).not.toContain("fieldShape");
   const lines = getDebugLogEntries().map(entry => entry.line).join("\n");
   expect(lines).toContain('"mode":"response"');
   expect(lines).toContain('"reason":"tool_call_function_name_invalid"');
