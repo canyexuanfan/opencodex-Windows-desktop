@@ -30,6 +30,7 @@ import {
 } from "./user-identity";
 import {
   markJournalInjectedState,
+  journaledInjectedOpenaiBaseUrl,
   removeJournal,
   restoreJournalState,
   writeJournal,
@@ -52,6 +53,7 @@ import {
   providerTableStart,
   providerTableString,
   rootTomlString,
+  stripJournaledOpenaiBaseUrl,
   tomlStringPattern,
 } from "./injected-marker";
 import {
@@ -1138,12 +1140,18 @@ interface StripOpencodexConfigResult {
  */
 function stripOpencodexConfigResult(
   content: string,
+  journaledBaseUrl: string | null = null,
 ): StripOpencodexConfigResult {
   let out = content;
   const hadRootOcxProvider =
     readRootTomlString(out, "model_provider") === "opencodex";
-  const hadInjectedBaseUrl = hasInjectedOpenaiBaseUrl(out);
+  // #1798: marker adjacency is FORMATTING evidence, and a Codex app rewrite keeps values
+  // while dropping comments. Fall back to VALUE evidence -- the exact URL we recorded
+  // writing -- so an app-rewritten config is still recognized as ours.
+  const hadInjectedBaseUrl = hasInjectedOpenaiBaseUrl(out)
+    || (journaledBaseUrl !== null && rootTomlString(out, "openai_base_url") === journaledBaseUrl);
   out = stripInjectedOpenaiBaseUrl(out); // before removeOcxSection — it keys on the marker line too
+  out = stripJournaledOpenaiBaseUrl(out, journaledBaseUrl);
   if (out.includes("[model_providers.opencodex]")) {
     out = removeOcxSection(out);
   }
@@ -1195,8 +1203,12 @@ export function removeCodexConfig(
   // The unchanged fast path compares in LF space so an untouched file is never rewritten.
   const eol = dominantEol(rawContent);
   const content = applyEol(rawContent, "\n");
-  const had = hasOpencodexRouting(content);
-  const stripped = stripOpencodexConfigResult(content);
+  // Read the recorded injection once: the strip below consumes it, and so does the
+  // ownership verdict, which must agree with what was actually removed.
+  const journaledBaseUrl = journaledInjectedOpenaiBaseUrl();
+  const had = hasOpencodexRouting(content)
+    || (journaledBaseUrl !== null && rootTomlString(content, "openai_base_url") === journaledBaseUrl);
+  const stripped = stripOpencodexConfigResult(content, journaledBaseUrl);
   if (had || stripped.content !== content) {
     atomicWriteFile(CODEX_CONFIG_PATH, applyEol(stripped.content, eol));
   }
