@@ -45,6 +45,8 @@ export type DataSurfaceOptions<T> = {
   pauseWhenHidden?: boolean;
   /** Forwarded to the resource layer; see ClientResourceOptions.initialData. */
   initialData?: T;
+  /** Forwarded to the resource layer; see ClientResourceOptions.deadlineMs. */
+  deadlineMs?: number;
 };
 
 /**

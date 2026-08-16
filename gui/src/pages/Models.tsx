@@ -376,7 +376,9 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
     },
     // Gated on the catalog tab: a 10-second poll that keeps running while the user
     // reads Combos or Routing is exactly the hidden work this workspace avoids.
-    { isEmpty: () => false, pollMs: 10_000, initialData: cached ?? undefined, enabled: catalogActive },
+    // Live model discovery is slow; the catalog gets a raised deadline so a slow
+    // response is never misread as a hung one.
+    { isEmpty: () => false, pollMs: 10_000, initialData: cached ?? undefined, enabled: catalogActive, deadlineMs: 60_000 },
   );
   const catalogState = catalogResource.state;
 
