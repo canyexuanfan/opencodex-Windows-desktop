@@ -1,4 +1,10 @@
 import type { Server } from "bun";
+import {
+  codexWsUpstreamFetch,
+  currentBunRuntimeIdentity,
+  shouldUseCodexWsUpstream,
+  type BunRuntimeGateInput,
+} from "./ws-upstream";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse, type ResponsesTerminalStatus } from "../../bridge";
 import {
   getConfigPath,
@@ -96,6 +102,7 @@ import {
 } from "../relay";
 import { hasResponsesItemIdRepair, relaySseWithResponsesItemIdRepair } from "../responses-item-id-repair";
 import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/catalog";
+import { waitForProviderRequestSlot } from "../../providers/request-pacing";
 
 
 export function disableResponsesRequestTimeout(req: Request, server: Pick<Server<WsData>, "timeout"> | undefined): boolean {
@@ -118,10 +125,60 @@ export function safeHostLabel(url: string): string {
   }
 }
 
+/** Canonical origin (scheme + host) for failure-attribution keys: http and
+ * https for the same host must not share one ledger entry (#914 review). */
+export function safeOriginLabel(url: string): string {
+  try {
+    return new URL(url).origin.toLowerCase();
+  } catch {
+    return "upstream";
+  }
+}
 
 
-export function providerFetch(provider: OcxProviderConfig): typeof globalThis.fetch {
-  return (provider as OcxProviderConfig & { fetch?: typeof globalThis.fetch }).fetch ?? globalThis.fetch;
+
+export interface PaceAwareFetch {
+  waitForPacing?: (signal?: AbortSignal) => Promise<void>;
+  unpacedFetch?: typeof globalThis.fetch;
+}
+
+export type ProviderFetch = typeof globalThis.fetch & PaceAwareFetch;
+
+export interface ProviderFetchOptions {
+  providerName?: string;
+  modelId?: string;
+}
+
+export function providerFetch(
+  provider: OcxProviderConfig,
+  runtime: BunRuntimeGateInput = currentBunRuntimeIdentity(),
+  options: ProviderFetchOptions = {},
+): ProviderFetch {
+  const base = (provider as OcxProviderConfig & { fetch?: typeof globalThis.fetch }).fetch ?? globalThis.fetch;
+  // ChatGPT Codex backend: streaming turns ride the responses_websockets
+  // transport (measured ~3s faster TTFT than the SSE POST queue); everything
+  // else keeps the provider's HTTP fetch. See ws-upstream.ts for the details.
+  const unpaced = async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+    if (typeof input === "string" && init && shouldUseCodexWsUpstream(input, init, runtime)) {
+      return codexWsUpstreamFetch(input, init, base, runtime);
+    }
+    return base(input, init);
+  };
+  const waitForPacing = (signal?: AbortSignal) => options.providerName
+    ? waitForProviderRequestSlot(options.providerName, provider, options.modelId, signal)
+    : Promise.resolve();
+  const wrapped = async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+    await waitForPacing(init?.signal ?? undefined);
+    return unpaced(input, init);
+  };
+  const preconnect = (...args: Parameters<typeof globalThis.fetch.preconnect>): void => {
+    base.preconnect?.(...args);
+  };
+  return Object.assign(wrapped, {
+    preconnect,
+    waitForPacing,
+    unpacedFetch: Object.assign(unpaced, { preconnect }),
+  });
 }
 
 
@@ -133,7 +190,11 @@ export async function fetchWithHeaderTimeout(
   timeoutMs: number,
   preferIdentityEncoding = false,
   executor: typeof globalThis.fetch = globalThis.fetch,
+  manualRedirect = false,
 ): Promise<Response> {
+  const pacing = executor as ProviderFetch;
+  await pacing.waitForPacing?.(abortSignal);
+  const fetchExecutor = pacing.unpacedFetch ?? executor;
   const timeout = new AbortController();
   const timer = setTimeout(() => {
     if (!timeout.signal.aborted) timeout.abort(new DOMException("Timeout elapsed", "TimeoutError"));
@@ -145,13 +206,16 @@ export async function fetchWithHeaderTimeout(
     headers.set("accept-encoding", "identity");
   }
   try {
-    return await executor(url, {
+    return await fetchExecutor(url, {
       ...init,
       headers,
+      // Credential-bearing sends opt into manual redirects so a 3xx is relayed
+      // as a Response instead of being followed into a rejection that is
+      // indistinguishable from a pre-connection failure (#914).
+      ...(manualRedirect ? { redirect: "manual" as const } : {}),
       signal: AbortSignal.any([abortSignal, timeout.signal]),
     });
   } finally {
     clearTimeout(timer);
   }
 }
-

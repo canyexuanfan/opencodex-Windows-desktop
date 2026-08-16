@@ -19,6 +19,52 @@ export function isCodexReasoningEffort(effort: string): boolean {
   return CODEX_REASONING_SET.has(effort);
 }
 
+/**
+ * True for ladder members plus the `none`/`minimal` sentinels. Both are valid declared
+ * efforts (OpenAI accepts `minimal`; Codex validates `none` against
+ * `supported_reasoning_levels` for no-reasoning subagent spawns, #883/#962) but are NOT
+ * part of the low..ultra ladder: they never appear in default ladders, ranks, or clamps
+ * (`minimal` is mapped to `low` on the wire by requestToCodexEffort).
+ */
+export function isDeclaredReasoningEffort(effort: string): boolean {
+  return effort === "none" || effort === "minimal" || CODEX_REASONING_SET.has(effort);
+}
+
+/**
+ * Reorder any declared subset (low..ultra, plus the optional `none`/`minimal` sentinels
+ * first, in that order) into canonical order and drop duplicates. Catalog
+ * `supported_reasoning_levels` follow the input order and the fallback default picks the
+ * first entry, so a caller-chosen order would otherwise leak into the catalog.
+ */
+export function canonicalizeReasoningEfforts(values: readonly string[]): string[] {
+  const seen = new Set(values);
+  const ordered = CODEX_REASONING_ORDER.filter(effort => seen.has(effort));
+  const sentinels = ["none", "minimal"].filter(effort => seen.has(effort));
+  return [...sentinels, ...ordered];
+}
+
+/**
+ * Reasoning ladder accepted for the OpenAI vision sidecar. `ultra` is deliberately excluded:
+ * the vision describer is a single helper call, and `ultra` would be collapsed to `max` by the
+ * upstream client boundary anyway.
+ */
+export const VISION_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type VisionReasoningEffort = typeof VISION_REASONING_EFFORTS[number];
+
+/** True when `effort` is one of the vision sidecar's supported Responses reasoning levels. */
+export function isVisionReasoningEffort(effort: unknown): effort is VisionReasoningEffort {
+  return typeof effort === "string" && (VISION_REASONING_EFFORTS as readonly string[]).includes(effort);
+}
+
+/**
+ * Normalize a persisted/configured vision reasoning value. Invalid values (hand-edited config,
+ * stale files) degrade to `undefined` so the caller falls back to the documented default instead
+ * of forwarding an upstream-rejected effort.
+ */
+export function sanitizeVisionReasoning(effort: unknown): VisionReasoningEffort | undefined {
+  return isVisionReasoningEffort(effort) ? effort : undefined;
+}
+
 /** Position of `effort` in the Codex ladder (low=0 .. ultra=5), or -1 when not a ladder member. */
 export function codexEffortRank(effort: string): number {
   return CODEX_REASONING_ORDER.indexOf(effort);
@@ -44,7 +90,9 @@ export function sanitizeCodexReasoningEfforts(efforts: readonly string[] | undef
   const seen = new Set<string>();
   const out: string[] = [];
   for (const effort of efforts) {
-    if (!CODEX_REASONING_SET.has(effort) || seen.has(effort)) continue;
+    // `none`/`minimal` are valid declared sentinels, kept and sorted first (rank -1); they
+    // never appear in the default ladder.
+    if ((effort !== "none" && effort !== "minimal" && !CODEX_REASONING_SET.has(effort)) || seen.has(effort)) continue;
     seen.add(effort);
     out.push(effort);
   }

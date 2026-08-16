@@ -10,6 +10,10 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isProcessAlive, waitForExit } from "../lib/process-control";
+import {
+  resolveTrustedWindowsPowerShellExe,
+  resolveTrustedWindowsTaskkillExe,
+} from "../lib/windows-elevation";
 import { readCodexCatalogPath } from "./catalog/parsing";
 
 export const STALE_CODEX_APP_SERVER_HINT =
@@ -71,6 +75,7 @@ export interface CodexAppServerProcess {
 export interface ProcessSnapshot {
   pid: number;
   commandLine: string;
+  executable?: string;
   uid?: number;
   owner?: string;
   startedAtMs?: number;
@@ -82,6 +87,14 @@ export interface CodexAppServerProcessIo {
   listSnapshots?: () => ProcessSnapshot[];
   isAlive?: (pid: number) => boolean;
   kill?: (pid: number, signal: NodeJS.Signals) => void;
+  /** Windows termination seam: drives the taskkill branch without a real exec. */
+  execFile?: (file: string, args: readonly string[]) => void;
+  /**
+   * Signal seam for the Unix branch and the taskkill fallback. Without it,
+   * injecting `kill` bypasses defaultKillCodexAppServer entirely, so the
+   * fallback could never be observed.
+   */
+  processKill?: (pid: number, signal: NodeJS.Signals) => void;
   waitExit?: (pid: number, timeoutMs: number) => boolean;
   now?: () => number;
   readStartMs?: (pid: number) => number | null;
@@ -211,13 +224,20 @@ export function codexAppServerProcessIdentity(proc: Pick<CodexAppServerProcess, 
 }
 
 /** True when the command line is a Codex app-server (or code-mode host) worth restarting. */
-export function isCodexAppServerCommandLine(commandLine: string): boolean {
-  const tokens = tokenizeCommandLine(commandLine.trim());
+export function isCodexAppServerCommandLine(commandLine: string, executable?: string): boolean {
+  const trimmed = commandLine.trim();
+  let tokens = tokenizeCommandLine(trimmed);
+  if (executable) {
+    if (isCodeModeHostToken(executable)) return true;
+    if (isCodexExecutableToken(executable)) {
+      let remainder = trimmed;
+      if (remainder.startsWith(executable)) remainder = remainder.slice(executable.length).trimStart();
+      else if (remainder.startsWith(`"${executable}"`)) remainder = remainder.slice(executable.length + 2).trimStart();
+      tokens = [executable, ...tokenizeCommandLine(remainder)];
+    }
+  }
   if (tokens.length === 0) return false;
   if (isCodeModeHostProcess(tokens)) return true;
-
-  // Require Codex as argv0 so later-argument occurrences stay unmatched
-  // (e.g. `node worker.js codex app-server`).
   if (!isCodexExecutableToken(tokens[0]!)) return false;
 
   let i = 1;
@@ -227,7 +247,6 @@ export function isCodexAppServerCommandLine(commandLine: string): boolean {
       i = advancePastCodexGlobalOption(tokens, i);
       continue;
     }
-    // First non-option after globals is the Codex subcommand.
     return token.toLowerCase() === "app-server";
   }
   return false;
@@ -253,12 +272,13 @@ function listUnixProcSnapshots(uid: number | undefined): ProcessSnapshot[] {
       const status = readFileSync(`/proc/${pid}/status`, "utf8");
       const processUid = parseUnixProcStatusUid(status);
       if (uid !== undefined && processUid !== undefined && processUid !== uid) continue;
-      const commandLine = readFileSync(`/proc/${pid}/cmdline`)
+      const argv = readFileSync(`/proc/${pid}/cmdline`)
         .toString("utf8")
-        .replace(/\0/g, " ")
-        .trim();
+        .split("\0")
+        .filter(Boolean);
+      const commandLine = argv.join(" ").trim();
       if (!commandLine) continue;
-      out.push({ pid, commandLine, uid: processUid });
+      out.push({ pid, commandLine, executable: argv[0], uid: processUid });
     } catch {
       /* process exited mid-scan */
     }
@@ -268,20 +288,29 @@ function listUnixProcSnapshots(uid: number | undefined): ProcessSnapshot[] {
 
 function listDarwinSnapshots(uid: number | undefined): ProcessSnapshot[] {
   const out: ProcessSnapshot[] = [];
-  // Top-level exec failure propagates: callers decide their own safe default
-  // (restart flow → treat as none; staleness check → unknown, never "fresh").
-  const output = uid !== undefined
-    ? execFileSync("ps", ["-u", String(uid), "-o", "pid=,command="], {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5_000,
+  const commandOutput = uid !== undefined
+    ? execFileSync("/bin/ps", ["-u", String(uid), "-o", "pid=,command="], {
+      encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000,
     })
-    : execFileSync("ps", ["-axo", "pid=,uid=,command="], {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5_000,
+    : execFileSync("/bin/ps", ["-axo", "pid=,uid=,command="], {
+      encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000,
     });
-  for (const raw of output.split(/\r?\n/)) {
+  const executableOutput = uid !== undefined
+    ? execFileSync("/bin/ps", ["-u", String(uid), "-o", "pid=,comm="], {
+      encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000,
+    })
+    : execFileSync("/bin/ps", ["-axo", "pid=,comm="], {
+      encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000,
+    });
+  const executableByPid = new Map<number, string>();
+  for (const raw of executableOutput.split(/\r?\n/)) {
+    const match = /^\s*(\d+)\s+(.+)$/.exec(raw);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    const executable = match[2]?.trim() ?? "";
+    if (Number.isSafeInteger(pid) && pid > 0 && executable) executableByPid.set(pid, executable);
+  }
+  for (const raw of commandOutput.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
     if (uid !== undefined) {
@@ -289,8 +318,8 @@ function listDarwinSnapshots(uid: number | undefined): ProcessSnapshot[] {
       if (!match) continue;
       const pid = Number(match[1]);
       const commandLine = match[2]?.trim() ?? "";
-      if (!Number.isSafeInteger(pid) || pid <= 1 || !commandLine) continue;
-      out.push({ pid, commandLine, uid });
+      if (!Number.isSafeInteger(pid) || pid <= 0 || !commandLine) continue;
+      out.push({ pid, commandLine, executable: executableByPid.get(pid), uid });
       continue;
     }
     const match = /^(\d+)\s+(\d+)\s+(.*)$/.exec(line);
@@ -298,8 +327,11 @@ function listDarwinSnapshots(uid: number | undefined): ProcessSnapshot[] {
     const pid = Number(match[1]);
     const processUid = Number(match[2]);
     const commandLine = match[3]?.trim() ?? "";
-    if (!Number.isSafeInteger(pid) || pid <= 1 || !commandLine) continue;
-    out.push({ pid, commandLine, uid: Number.isSafeInteger(processUid) ? processUid : undefined });
+    if (!Number.isSafeInteger(pid) || pid <= 0 || !commandLine) continue;
+    out.push({
+      pid, commandLine, executable: executableByPid.get(pid),
+      uid: Number.isSafeInteger(processUid) ? processUid : undefined,
+    });
   }
   return out;
 }
@@ -345,9 +377,11 @@ export function listWindowsSnapshots(): ProcessSnapshot[] {
     "  } catch { \"__OCX_ENUM_INCOMPLETE__\" }",
     "}",
   ].join("\n");
-  // Top-level exec failure propagates (see listDarwinSnapshots note).
-  const output = execFileSync("powershell.exe", [
-    "-NoProfile", "-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden",
+  // Top-level exec failure propagates (see listDarwinSnapshots note). The
+  // executable resolves from the trusted System32 directory (never PATH), and
+  // windowsHide keeps the enumeration console-less on desktop sessions (#1278).
+  const output = execFileSync(resolveTrustedWindowsPowerShellExe(), [
+    "-NoProfile", "-NoLogo", "-NonInteractive",
     "-Command",
     psCommand,
   ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 8_000, windowsHide: true });
@@ -400,14 +434,16 @@ export function listCodexAppServerProcesses(io: CodexAppServerProcessIo = {}): C
   const matched: CodexAppServerProcess[] = [];
   for (const snapshot of snapshots) {
     if (seen.has(snapshot.pid)) continue;
-    if (!isCodexAppServerCommandLine(snapshot.commandLine)) continue;
+    if (!isCodexAppServerCommandLine(snapshot.commandLine, snapshot.executable)) continue;
     seen.add(snapshot.pid);
     matched.push({ pid: snapshot.pid, commandLine: snapshot.commandLine });
   }
   return matched;
 }
 
-export function formatStaleCodexAppServerWarning(processes: readonly CodexAppServerProcess[]): string {
+export function formatStaleCodexAppServerWarning(
+  processes: readonly { pid: number }[],
+): string {
   const pids = processes.map(process => process.pid).join(", ");
   return (
     `WARNING: ${processes.length} Codex app-server process(es) still running (PID${processes.length === 1 ? "" : "s"}: ${pids}). `
@@ -439,7 +475,7 @@ function readLinuxProcStartMs(pid: number): number | null {
 /** `ps` lstart → epoch ms, or null (macOS). */
 function readDarwinProcStartMs(pid: number): number | null {
   try {
-    const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+    const out = execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 4_000,
@@ -455,8 +491,8 @@ function readDarwinProcStartMs(pid: number): number | null {
 /** Win32_Process.CreationDate → epoch ms, or null (Windows). */
 function readWindowsProcStartMs(pid: number): number | null {
   try {
-    const out = execFileSync("powershell.exe", [
-      "-NoProfile", "-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden",
+    const out = execFileSync(resolveTrustedWindowsPowerShellExe(), [
+      "-NoProfile", "-NoLogo", "-NonInteractive",
       "-Command",
       `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CreationDate.ToUniversalTime().ToString("o")`,
     ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 8_000, windowsHide: true }).trim();
@@ -488,7 +524,7 @@ export function readProcessStartMsBatch(
   if (pids.length === 0) return out;
   if (platform === "darwin") {
     try {
-      const stdout = execFileSync("ps", ["-o", "pid=,lstart=", "-p", pids.join(",")], {
+      const stdout = execFileSync("/bin/ps", ["-o", "pid=,lstart=", "-p", pids.join(",")], {
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 3_000,
@@ -511,8 +547,8 @@ export function readProcessStartMsBatch(
   if (platform === "win32") {
     try {
       const filter = pids.map(pid => `ProcessId=${pid}`).join(" OR ");
-      const stdout = execFileSync("powershell.exe", [
-        "-NoProfile", "-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden",
+      const stdout = execFileSync(resolveTrustedWindowsPowerShellExe(), [
+        "-NoProfile", "-NoLogo", "-NonInteractive",
         "-Command",
         `Get-CimInstance Win32_Process -Filter "${filter}" | ForEach-Object { "$($_.ProcessId)\t$($_.CreationDate.ToUniversalTime().ToString("o"))" }`,
       ], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000, windowsHide: true });
@@ -610,7 +646,7 @@ export function collectCodexAppServerCatalogState(
     const seen = new Set<number>();
     for (const snapshot of snapshots) {
       if (seen.has(snapshot.pid)) continue;
-      if (!isCodexAppServerCommandLine(snapshot.commandLine)) continue;
+      if (!isCodexAppServerCommandLine(snapshot.commandLine, snapshot.executable)) continue;
       seen.add(snapshot.pid);
       processes.push({ pid: snapshot.pid, commandLine: snapshot.commandLine });
     }
@@ -653,13 +689,57 @@ export interface RestartCodexAppServersResult {
   failed: Array<{ pid: number; error: string }>;
 }
 
+/**
+ * Platform-appropriate termination for a matched app-server.
+ *
+ * On Windows `process.kill(pid, "SIGTERM")` is not a graceful signal — it is an
+ * unconditional terminate of that one process, and it leaves the process tree
+ * behind. `taskkill /T /F` is therefore not an escalation there: the kill was
+ * hard either way, and `/T` adds the child cleanup that keeps an app-server's
+ * children from being orphaned when the window is closed without a quit
+ * affordance. That matters most on Windows precisely because there is no Ctrl+Q.
+ *
+ * The asymmetry with Unix is deliberate and must not be "fixed" into symmetry:
+ * on Unix, SIGTERM really is graceful, and following it with SIGKILL would ask a
+ * harsher consent than a restart click gives. Survivors are reported instead.
+ *
+ * The executable is resolved from a trusted system directory rather than PATH,
+ * matching how this file already resolves PowerShell — an unqualified
+ * `taskkill` is a hijack surface.
+ */
+function defaultKillCodexAppServer(
+  pid: number,
+  signal: NodeJS.Signals,
+  io: CodexAppServerProcessIo = {},
+): void {
+  const platform = io.platform ?? process.platform;
+  const signalProcess = io.processKill ?? ((target: number, sig: NodeJS.Signals) => {
+    process.kill(target, sig);
+  });
+  if (platform !== "win32") {
+    signalProcess(pid, signal);
+    return;
+  }
+  const exec = io.execFile ?? ((file: string, args: readonly string[]) => {
+    execFileSync(file, [...args], { stdio: "ignore", timeout: 5_000, windowsHide: true });
+  });
+  try {
+    exec(resolveTrustedWindowsTaskkillExe(), ["/PID", String(pid), "/T", "/F"]);
+  } catch {
+    // Fall back to the previous behavior rather than reporting a failure the old
+    // code would not have reported.
+    signalProcess(pid, signal);
+  }
+}
+
+
 /** Send SIGTERM to matched processes and wait briefly; never escalates to SIGKILL. */
 export function restartCodexAppServers(
   processes: readonly CodexAppServerProcess[] = listCodexAppServerProcesses(),
   io: CodexAppServerProcessIo = {},
 ): RestartCodexAppServersResult {
   const isAlive = io.isAlive ?? isProcessAlive;
-  const kill = io.kill ?? ((pid, signal) => { process.kill(pid, signal); });
+  const kill = io.kill ?? ((pid, signal) => { defaultKillCodexAppServer(pid, signal, io); });
   const wait = io.waitExit ?? waitForExit;
   const now = io.now ?? Date.now;
   const requested = processes.map(process => process.pid);
@@ -753,4 +833,45 @@ export function afterCatalogWriteHandleAppServers(
     );
   }
   return { processes, warned: false, restart, hint };
+}
+
+/**
+ * Startup-safe counterpart to {@link afterCatalogWriteHandleAppServers} (#1046).
+ *
+ * Service startup rewrites the catalog and the models cache, but an app-server
+ * that booted earlier keeps an in-memory model list — Codex builds a static
+ * manager from the catalog once and never rereads the file — so the picker shows
+ * a roster that no longer exists on disk. Every check a user runs reads the file;
+ * the picker renders memory.
+ *
+ * Two things this deliberately does NOT do, both of which the `--restart-codex`
+ * path does:
+ *
+ * - It never signals anything. Killing an app-server on an unattended boot would
+ *   interrupt whatever turn the user has in flight. A human typing
+ *   `ocx sync --restart-codex` is consenting to that; a login is not.
+ * - It never warns about a merely-running app-server. It asks the mtime
+ *   classifier whether one is actually stale, so a boot with Codex open and a
+ *   current catalog stays quiet.
+ *
+ * Failure is swallowed: startup synchronization is best-effort and must not stop
+ * the proxy from coming up.
+ *
+ * The memoized state is dropped first. {@link collectCodexAppServerCatalogState}
+ * caches for 5s when every io field is defaulted, so a `fresh` reading taken
+ * before the write would otherwise be replayed after it and this would stay
+ * silent about the very staleness it exists to report.
+ */
+export function warnIfStaleCodexAppServersAfterStartupWrite(
+  options: { log?: Pick<Console, "error">; io?: CodexAppServerProcessIo } = {},
+): { warned: boolean } {
+  try {
+    resetCodexAppServerCatalogStateCache();
+    const status = collectCodexAppServerCatalogState(options.io ?? {});
+    if (status.state !== "stale") return { warned: false };
+    options.log?.error(formatStaleCodexAppServerWarning(status.processes));
+    return { warned: true };
+  } catch {
+    return { warned: false };
+  }
 }

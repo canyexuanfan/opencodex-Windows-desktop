@@ -5,7 +5,17 @@
    Uses only design tokens from styles.css. No gradients.
    ============================================================================ */
 
-.main-inner:has(.models-workspace-shell) {
+/*
+  The catalog wants a wider column than the 980px default.
+
+  Scoped to a VISIBLE catalog panel, not merely a present one: panels mount lazily and
+  then stay mounted so drafts survive a tab hop, so a bare `:has(.models-workspace-shell)`
+  keeps matching after the catalog has been opened once. Routing would then render at
+  980px on a direct visit and 1200px afterwards — a width that depends on browsing
+  history. No surface renders the shell outside a tabpanel any more, so the old
+  direct-child arm is gone with the standalone pages it served.
+*/
+.main-inner:has(#models-panel-catalog:not([hidden]) .models-workspace-shell) {
   max-width: 1200px;
 }
 
@@ -15,6 +25,14 @@
   container-type: inline-size;
   container-name: models-workspace;
 }
+
+/*
+  Tab panels. Inactive panels carry `hidden`, which the UA stylesheet renders as
+  display:none, so they take no space and leave the focus order — no rule needed for
+  that. `--fill` marks the panel that owns a full-height workspace; the height chain
+  that feeds it lives with the combos rules in styles.css.
+*/
+.models-tab-panel { min-width: 0; }
 
 .models-workspace-root {
   display: grid;
@@ -192,6 +210,50 @@
   align-items: center;
 }
 
+/*
+  "Keep ChatGPT on v1" is a sub-setting of the Sub-agent surface control, not a
+  peer of it. It sits in the right-hand grid column directly under the v1/base/v2
+  chips and stays right-aligned with them, so it reads as a qualifier on the
+  selected mode instead of floating in the empty space beside Shadow Call.
+*/
+.models-v2-keep-native-row {
+  grid-column: 2;
+  justify-self: end;
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+  /* Pull up against the mode row's own min-height so the pair reads as one block. */
+  margin-top: calc(var(--space-1) * -1);
+}
+
+.models-v2-keep-native {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.models-v2-keep-native-label {
+  color: var(--muted);
+  white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Sits in the same 24px gutter as the Sub-agent help button directly above it,
+   so both rows end on one right edge. */
+.models-v2-keep-native-info {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  color: var(--muted);
+  cursor: help;
+}
+
 /* ── Provider group header (Classic + Workspace) ─────── */
 
 .models-provider-head {
@@ -322,6 +384,11 @@
   margin-bottom: var(--space-3);
 }
 
+/* Invisible stand-in for the empty Combos card while /api/combos loads. */
+.models-combos-card--pending {
+  min-height: var(--space-12);
+}
+
 .models-combos-empty-head {
   padding: var(--space-3);
   justify-content: space-between;
@@ -338,6 +405,18 @@
   margin-top: var(--space-3);
 }
 
+.models-context-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.models-field-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
 .models-field {
   display: flex;
   flex-direction: column;
@@ -351,6 +430,18 @@
 .models-modality-option {
   gap: var(--space-2);
   cursor: pointer;
+}
+
+/* Uniform checkbox rendering in the custom-model dialog: native checkbox size is
+   browser-dependent (Chrome ~13px, Safari ~16px) and can even differ between rows in
+   some renderers, so pin an explicit size for every checkbox in the modal. 13px is the
+   size Chrome renders natively here; pinning it keeps the effort-step checkboxes exactly
+   as large as the other dialog checkboxes. */
+.modal-card .models-modality-option input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  flex: none;
 }
 
 /* Beat .row { gap: 10px } (defined later in styles.css). */
@@ -388,6 +479,17 @@
   .models-v2-mode-row {
     flex-wrap: wrap;
     justify-self: start;
+  }
+
+  .models-v2-keep-native-row {
+    grid-column: 1;
+    justify-self: start;
+    justify-content: flex-start;
+    margin-top: 0;
+  }
+
+  .models-v2-keep-native {
+    white-space: normal;
   }
 }
 

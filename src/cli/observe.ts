@@ -14,8 +14,11 @@ import {
 const USAGE = `Usage:
   ocx observe logs [--provider <name>] [--model <id>] [--status <code>]
       [--limit <n>] [--follow] [--json|--jsonl]
+  ocx logs explain <request-id> [--json]
+  ocx logs rebuild-index
+  ocx logs index-status
   ocx observe usage [--range <7d|30d|all>] [--surface <all|codex|claude|grok>] [--json]
-  ocx observe storage [--json]
+  ocx observe storage [codex-logs [status|protect|unprotect|repair|compact] [--mode <compat|quiet>]] [--json]
   ocx observe memory [--json]
   ocx observe debug [--json]
   ocx observe claude-inbound [--limit <n>] [--json]
@@ -79,6 +82,50 @@ async function logs(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   } while (true);
 }
 
+async function explain(argv: string[], deps: RuntimeApiDeps): Promise<void> {
+  const args = [...argv];
+  const requestId = args.shift();
+  const wantsJson = takeFlag(args, "--json");
+  if (!requestId) throw new CliUsageError("request id is required", USAGE);
+  rejectArgs(args, USAGE);
+  const encoded = encodeURIComponent(requestId);
+  const result = await runtimeRequest(`/api/request-history/${encoded}/route-decision`, {}, deps);
+  printData(result, wantsJson, wantsJson ? undefined : [JSON.stringify(result, null, 2)]);
+}
+
+async function rebuildIndex(argv: string[], deps: RuntimeApiDeps): Promise<void> {
+  const args = [...argv];
+  const wantsJson = takeFlag(args, "--json");
+  rejectArgs(args, USAGE);
+  const { rebuildRequestHistoryIndex } = await import("../routing/history/indexer");
+  const meta = await rebuildRequestHistoryIndex();
+  if (wantsJson) printData(meta, true);
+  else {
+    console.log(`Request-history index rebuilt (${meta.dbPath})`);
+    console.log(`  schema version: ${meta.schemaVersion}`);
+    console.log(`  indexed rows:   ${meta.indexedRows}`);
+    console.log(`  source size:    ${meta.sourceSize} bytes`);
+    console.log(`  last error:     ${meta.lastError ?? "none"}`);
+  }
+}
+
+async function indexStatus(argv: string[], deps: RuntimeApiDeps): Promise<void> {
+  const args = [...argv];
+  const wantsJson = takeFlag(args, "--json");
+  rejectArgs(args, USAGE);
+  const { requestHistoryIndexStatus } = await import("../routing/history/indexer");
+  const meta = await requestHistoryIndexStatus();
+  if (wantsJson) printData(meta, true);
+  else {
+    console.log(`Request-history index (${meta.dbPath})`);
+    console.log(`  schema version: ${meta.schemaVersion}`);
+    console.log(`  indexed rows:   ${meta.indexedRows}`);
+    console.log(`  source size:    ${meta.sourceSize} bytes`);
+    console.log(`  indexed offset: ${meta.indexedOffset} bytes`);
+    console.log(`  last error:     ${meta.lastError ?? "none"}`);
+  }
+}
+
 async function usage(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const args = [...argv];
   const wantsJson = takeFlag(args, "--json");
@@ -100,12 +147,54 @@ async function simple(path: string, argv: string[], deps: RuntimeApiDeps): Promi
   printData(result, wantsJson, summaryLines(result));
 }
 
+async function storage(argv: string[], deps: RuntimeApiDeps): Promise<void> {
+  if (argv[0] !== "codex-logs") {
+    await simple("/api/storage", argv, deps);
+    return;
+  }
+
+  const args = argv.slice(1);
+  const action = args[0] && !args[0].startsWith("-") ? args.shift()! : "status";
+  const wantsJson = takeFlag(args, "--json");
+  const mode = takeOption(args, "--mode");
+  rejectArgs(args, USAGE);
+
+  let result: unknown;
+  if (action === "status") {
+    if (mode !== undefined) throw new CliUsageError("--mode is only valid with codex-logs protect", USAGE);
+    result = await runtimeRequest("/api/storage/codex-logs", {}, deps);
+  } else if (action === "protect") {
+    const requestedMode = mode ?? "compat";
+    if (requestedMode !== "compat" && requestedMode !== "quiet") {
+      throw new CliUsageError("--mode must be compat or quiet", USAGE);
+    }
+    result = await runtimeRequest("/api/storage/codex-logs/protect", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode: requestedMode }),
+    }, deps);
+  } else if (action === "unprotect" || action === "repair" || action === "compact") {
+    if (mode !== undefined) throw new CliUsageError("--mode is only valid with codex-logs protect", USAGE);
+    result = await runtimeRequest(`/api/storage/codex-logs/${action}`, { method: "POST" }, deps);
+  } else {
+    throw new CliUsageError(`unknown codex-logs action ${action}`, USAGE);
+  }
+
+  printData(result, wantsJson, summaryLines(result));
+}
+
 export async function handleObserveCommand(argv: string[], deps: RuntimeApiDeps = {}): Promise<number> {
   return runCliAction(async () => {
     const [sub = "logs", ...rest] = argv;
-    if (sub === "logs") await logs(rest, deps);
+    if (sub === "logs") {
+      const action = rest[0];
+      if (action === "explain") await explain(rest.slice(1), deps);
+      else if (action === "rebuild-index") await rebuildIndex(rest.slice(1), deps);
+      else if (action === "index-status") await indexStatus(rest.slice(1), deps);
+      else await logs(rest, deps);
+    }
     else if (sub === "usage") await usage(rest, deps);
-    else if (sub === "storage") await simple("/api/storage", rest, deps);
+    else if (sub === "storage") await storage(rest, deps);
     else if (sub === "memory") await simple("/api/system/memory", rest, deps);
     else if (sub === "debug") await simple("/api/debug", rest, deps);
     else if (sub === "claude-inbound") await simple("/api/claude/inbound-debug", rest, deps);

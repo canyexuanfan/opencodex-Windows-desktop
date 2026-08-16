@@ -29,11 +29,16 @@ import {
   startServer,
 } from "../src/server";
 import { handleManagementAPI } from "../src/server/management-api";
+import { providerManagementConfigError } from "../src/server/auth-cors";
+import { providerServiceTierConfigError, withProviderServiceTierDTO } from "../src/server/management/provider-capability-config";
 import { clearModelCache, markProviderDiscoveryFailed } from "../src/codex/model-cache";
 import type { OcxConfig } from "../src/types";
 import { fakeChatGptJwt } from "./helpers/fake-chatgpt-jwt";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 import * as destinationPolicy from "../src/lib/destination-policy";
+import { catalogConvergenceFactory } from "./helpers/catalog-convergence";
+import { LOCAL_PROVIDER_RELOAD_NAME_HEADER, LOCAL_PROVIDER_RELOAD_PATH } from "../src/lib/local-provider-reload-contract";
+import { getAccountSet, saveCredential } from "../src/oauth/store";
 
 // Full-suite Windows load: startServer + multi-step provider PATCH/GET flows exceed the
 // default 5s per-test budget (same flake class as 810fa115 / claude-management-api).
@@ -123,6 +128,415 @@ afterEach(() => {
 });
 
 describe("provider management validation", () => {
+  test("provider reload adopts only the validated disk row without rewriting config", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "xai",
+      providers: {
+        xai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          apiKey: "old-live-key",
+        },
+        stable: {
+          adapter: "openai-chat",
+          baseUrl: "https://stable.example.test/v1",
+          apiKey: "stable-live-key",
+        },
+      },
+    };
+    saveConfig(liveConfig);
+    const diskConfig = structuredClone(liveConfig);
+    diskConfig.providers.xai = {
+      ...diskConfig.providers.xai!,
+      apiKey: "new-disk-key",
+      headers: { "x-operator-header": "operator-owned" },
+    };
+    saveConfig(diskConfig);
+    const diskBefore = readFileSync(join(TEST_DIR, "config.json"));
+    const stableBefore = structuredClone(liveConfig.providers.stable);
+    const resolvedError = spyOn(destinationPolicy, "providerDestinationResolvedError")
+      .mockResolvedValue(null);
+    try {
+      const request = new Request(`http://127.0.0.1${LOCAL_PROVIDER_RELOAD_PATH}`, {
+        method: "POST",
+        headers: { [LOCAL_PROVIDER_RELOAD_NAME_HEADER]: "xai" },
+      });
+      const response = await handleManagementAPI(
+        request,
+        new URL(request.url),
+        liveConfig,
+        { createManagementConvergeCodex: catalogConvergenceFactory() },
+        "local-provider-reload-capability",
+      );
+      expect(response?.status).toBe(200);
+      expect(liveConfig.providers.xai).toEqual(diskConfig.providers.xai);
+      expect(liveConfig.providers.stable).toEqual(stableBefore);
+      expect(readFileSync(join(TEST_DIR, "config.json"))).toEqual(diskBefore);
+    } finally {
+      resolvedError.mockRestore();
+    }
+  });
+
+  test("provider reload rejects an untrusted principal and a disk rewrite during DNS validation", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "xai",
+      providers: {
+        xai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          apiKey: "old-live-key",
+        },
+      },
+    };
+    saveConfig(liveConfig);
+    const diskConfig = structuredClone(liveConfig);
+    diskConfig.providers.xai = { ...diskConfig.providers.xai!, apiKey: "first-disk-key" };
+    saveConfig(diskConfig);
+
+    const untrusted = new Request(`http://127.0.0.1${LOCAL_PROVIDER_RELOAD_PATH}`, {
+      method: "POST",
+      headers: { [LOCAL_PROVIDER_RELOAD_NAME_HEADER]: "xai" },
+    });
+    expect((await handleManagementAPI(
+      untrusted,
+      new URL(untrusted.url),
+      liveConfig,
+      { createManagementConvergeCodex: catalogConvergenceFactory() },
+      "admin-token",
+    ))?.status).toBe(403);
+
+    const resolvedError = spyOn(destinationPolicy, "providerDestinationResolvedError")
+      .mockImplementation(async () => {
+        const changed = loadConfig();
+        changed.providers.xai = { ...changed.providers.xai!, apiKey: "second-disk-key" };
+        saveConfig(changed);
+        return null;
+      });
+    try {
+      const request = new Request(`http://127.0.0.1${LOCAL_PROVIDER_RELOAD_PATH}`, {
+        method: "POST",
+        headers: { [LOCAL_PROVIDER_RELOAD_NAME_HEADER]: "xai" },
+      });
+      const response = await handleManagementAPI(
+        request,
+        new URL(request.url),
+        liveConfig,
+        { createManagementConvergeCodex: catalogConvergenceFactory() },
+        "local-provider-reload-capability",
+      );
+      expect(response?.status).toBe(409);
+      expect(liveConfig.providers.xai?.apiKey).toBe("old-live-key");
+      expect(loadConfig().providers.xai?.apiKey).toBe("second-disk-key");
+    } finally {
+      resolvedError.mockRestore();
+    }
+  });
+
+  test("service-tier validation and public projection stay in the management boundary", () => {
+    expect(providerServiceTierConfigError("relay", {
+      adapter: "openai-chat",
+      baseUrl: "https://relay.example/v1",
+      modelSupportsServiceTier: { verified: true, blocked: false },
+    })).toBeNull();
+    expect(providerServiceTierConfigError("relay", {
+      adapter: "openai-chat",
+      baseUrl: "https://relay.example/v1",
+      modelSupportsServiceTier: { verified: "yes" },
+    })).toContain("modelSupportsServiceTier.verified must be a boolean");
+
+    const config = {
+      providers: {
+        relay: {
+          adapter: "openai-chat",
+          baseUrl: "https://relay.example/v1",
+          apiKey: "sk-never-project",
+          modelSupportsServiceTier: { verified: true },
+        },
+      },
+    } as unknown as OcxConfig;
+    const dto = withProviderServiceTierDTO(
+      { providers: { relay: { hasApiKey: true } } },
+      config,
+    ) as { providers: { relay: Record<string, unknown> } };
+    expect(dto.providers.relay).toMatchObject({
+      hasApiKey: true,
+      modelSupportsServiceTier: { verified: true },
+    });
+    expect(JSON.stringify(dto)).not.toContain("sk-never-project");
+  });
+
+  test("validates and exposes structured-output model opt-outs", () => {
+    const provider = {
+      adapter: "openai-chat",
+      baseUrl: "https://relay.example/v1",
+      noStructuredOutputModels: ["deepseek-v4-flash"],
+    };
+    expect(providerManagementConfigError("relay", provider)).toBeNull();
+    for (const noStructuredOutputModels of [
+      "deepseek-v4-flash",
+      [""],
+      ["   "],
+      [42],
+    ]) {
+      expect(providerManagementConfigError("relay", {
+        ...provider,
+        noStructuredOutputModels,
+      })).toContain("noStructuredOutputModels");
+    }
+
+    const dto = safeConfigDTO({
+      port: 10100,
+      defaultProvider: "relay",
+      providers: { relay: provider },
+    } as OcxConfig) as { providers: Record<string, { noStructuredOutputModels?: string[] }> };
+    expect(dto.providers.relay?.noStructuredOutputModels).toEqual(["deepseek-v4-flash"]);
+  });
+
+  test("normalizes hand-edited structured-output model opt-outs at load", () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    writeFileSync(join(TEST_DIR, "config.json"), JSON.stringify({
+      ...config("127.0.0.1"),
+      defaultProvider: "relay",
+      providers: {
+        relay: {
+          adapter: "openai-chat",
+          baseUrl: "https://relay.example/v1",
+          noStructuredOutputModels: [" deepseek-v4-flash ", "deepseek-v4-flash", " other-model "],
+        },
+      },
+    }));
+
+    expect(loadConfig().providers.relay?.noStructuredOutputModels)
+      .toEqual(["deepseek-v4-flash", "other-model"]);
+  });
+
+  test("provider management rejects modelCosts rows with extra fields", () => {
+    const error = providerManagementConfigError("blsc", {
+      adapter: "openai-chat",
+      baseUrl: "https://llmapi.blsc.cn",
+      modelCosts: {
+        "deepseek-v4-flash": { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0, apiKey: "sk-leak" },
+      },
+    });
+    expect(error).toContain("unexpected fields");
+    expect(error).not.toContain("sk-leak");
+    expect(providerManagementConfigError("blsc", {
+      adapter: "openai-chat",
+      baseUrl: "https://llmapi.blsc.cn",
+      modelCosts: {
+        "deepseek-v4-flash": { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 },
+      },
+    })).toBeNull();
+  });
+
+  test("provider management validates model hosted-tool preferences", () => {
+    const provider = {
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    };
+    expect(providerManagementConfigError("custom", provider)).toBeNull();
+    expect(providerManagementConfigError("custom", {
+      adapter: "openai-chat",
+      baseUrl: "https://api.openai.com/v1",
+      modelAdapters: { "provider-image-model": "openai-responses" },
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    })).toBeNull();
+    expect(providerManagementConfigError("openai-apikey", {
+      adapter: "openai-chat",
+      baseUrl: "https://api.openai.com/v1",
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    })).toBeNull();
+    expect(providerManagementConfigError("openai-apikey", {
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      modelAdapters: { "gpt-5.6-sol": "openai-chat" },
+      modelPreferHostedTools: { "gpt-5.6-sol-pro": ["image_generation"] },
+    })).toContain("requires the openai-responses wire");
+
+    for (const modelPreferHostedTools of [
+      [],
+      { "": ["image_generation"] },
+      { model: [] },
+      { model: "image_generation" },
+      { model: ["web_search"] },
+    ]) {
+      expect(providerManagementConfigError("custom", {
+        adapter: "openai-responses",
+        baseUrl: "https://api.openai.com/v1",
+        modelPreferHostedTools,
+      })).toContain("modelPreferHostedTools");
+    }
+
+    expect(providerManagementConfigError("custom", {
+      adapter: "openai-chat",
+      baseUrl: "https://api.openai.com/v1",
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    })).toContain("requires the openai-responses wire");
+    expect(providerManagementConfigError("openrouter", {
+      adapter: "openai-responses",
+      baseUrl: "https://openrouter.ai/api/v1",
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    })).toContain("requires the openai-responses wire");
+    expect(providerManagementConfigError("custom", {
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      modelAdapters: { "provider-image-model": "openai-chat" },
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    })).toContain("requires the openai-responses wire");
+    expect(providerManagementConfigError("custom", {
+      adapter: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      modelPreferHostedTools: { "gpt-5.3-codex-spark": ["image_generation"] },
+    })).toContain("does not support");
+    expect(providerManagementConfigError("custom-forward", {
+      adapter: "openai-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      authMode: "forward",
+      modelPreferHostedTools: { "provider-image-model": ["image_generation"] },
+    })).toContain("not supported on forward-auth");
+  });
+
+  test("provider management permits snapshot repair only on canonical OpenAI forward seeds", () => {
+    for (const mode of ["pool", "direct"] as const) {
+      expect(providerManagementConfigError("openai", {
+        ...canonicalDirect,
+        codexAccountMode: mode,
+        responsesSnapshotRepair: true,
+      })).toBeNull();
+    }
+
+    expect(providerManagementConfigError("openai", {
+      ...canonicalDirect,
+      responsesSnapshotRepair: { enabled: true },
+    })).toBe("provider openai responsesSnapshotRepair must be a boolean");
+
+    expect(providerManagementConfigError("openai", {
+      ...canonicalDirect,
+      responsesSnapshotRepair: true,
+      noVisionModels: ["gpt-5.6"],
+    })).toContain("canonical built-in provider seed");
+  });
+
+  test("provider management validates retryOn429 bounds and unknown keys", () => {
+    const base = { adapter: "openai-chat", baseUrl: "https://api.openai.com/v1" };
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { enabled: true, attempts: 3, intervalMs: 1_000, maxIntervalMs: 5_000, respectRetryAfter: false },
+    })).toBeNull();
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { attempts: 0 },
+    })).toContain("retryOn429.attempts is invalid");
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { attempts: 21 },
+    })).toContain("retryOn429.attempts is invalid");
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { intervalMs: "fast" },
+    })).toContain("retryOn429.intervalMs is invalid");
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { attempt: 3 },
+    })).toContain("retryOn429 has unrecognized field");
+    expect(providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: "enabled",
+    })).toContain("retryOn429 is invalid");
+    // A secret-shaped unknown field name must be redacted in the error, never echoed.
+    const secretError = providerManagementConfigError("custom", {
+      ...base,
+      retryOn429: { "sk-super-secret-9876": true },
+    })!;
+    expect(secretError).toContain("retryOn429 has unrecognized field");
+    expect(secretError).not.toContain("sk-super-secret-9876");
+    expect(secretError).toContain("[REDACTED]");
+    // A secret-shaped PROVIDER name must not be echoed by the retryOn429 error path either.
+    const secretNameError = providerManagementConfigError("sk-super-secret-9876", {
+      ...base,
+      retryOn429: { attempts: 0 },
+    })!;
+    expect(secretNameError).toContain("retryOn429.attempts is invalid");
+    expect(secretNameError).not.toContain("sk-super-secret-9876");
+    expect(secretNameError).toContain("[REDACTED]");
+  });
+
+  test("provider request pacing PATCH persists provider and model limits without catalog churn", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "nvidia",
+      providers: {
+        nvidia: {
+          adapter: "openai-chat",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          apiKey: "sk-nvidia",
+        },
+      },
+    };
+    saveConfig(liveConfig);
+    let catalogRefreshes = 0;
+    const request = async (path: string, init?: RequestInit) => {
+      const req = new Request(`http://127.0.0.1${path}`, init);
+      return handleManagementAPI(req, new URL(req.url), liveConfig, {
+        createManagementConvergeCodex: catalogConvergenceFactory(() => { catalogRefreshes += 1; }),
+      });
+    };
+    const policy = {
+      enabled: true,
+      requestsPerMinute: 38,
+      minIntervalMs: 1_600,
+      models: { "deepseek-ai/deepseek-v4-flash-0731": { requestsPerMinute: 10 } },
+    };
+
+    const saved = await request("/api/providers?name=nvidia", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ requestPacing: policy }),
+    });
+    expect(saved?.status).toBe(200);
+    expect(liveConfig.providers.nvidia?.requestPacing).toEqual(policy);
+    expect(loadConfig().providers.nvidia?.requestPacing).toEqual(policy);
+    expect(catalogRefreshes).toBe(0);
+
+    const providers = await request("/api/providers");
+    expect((await providers?.json()).find((row: { name: string }) => row.name === "nvidia").requestPacing).toEqual(policy);
+    const status = await request("/api/provider-request-pacing?name=nvidia");
+    expect(await status?.json()).toMatchObject({ provider: "nvidia", enabled: true, queued: 0, nextSlotInMs: 0 });
+
+    const invalid = await request("/api/providers?name=nvidia", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ requestPacing: { enabled: true, requestsPerMinute: -1 } }),
+    });
+    expect(invalid?.status).toBe(400);
+    expect(liveConfig.providers.nvidia?.requestPacing).toEqual(policy);
+
+    const timerOverflow = await request("/api/providers?name=nvidia", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ requestPacing: { enabled: true, requestsPerMinute: 0.001 } }),
+    });
+    expect(timerOverflow?.status).toBe(400);
+    expect(liveConfig.providers.nvidia?.requestPacing).toEqual(policy);
+  });
+
   test("provider discovery status is additive and omitted before an attempt", async () => {
     markProviderDiscoveryFailed("auth-broken", { reason: "http", httpStatus: 401 });
     try {
@@ -185,6 +599,180 @@ describe("provider management validation", () => {
       expect(await response.json()).toMatchObject({
         error: expect.stringContaining('authMode "forward"'),
       });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("provider POST overwrite preserves modelCosts when the payload omits it", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig(config("127.0.0.1"));
+
+    const server = startServer(0);
+    try {
+      const costs = { "deepseek-v4-flash": { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 } };
+      const create = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "custom-costs",
+          provider: { adapter: "openai-chat", baseUrl: "https://api.example.test/v1", modelCosts: costs },
+        }),
+      });
+      expect(create.status).toBe(200);
+
+      // The dashboard's add/edit form does not send modelCosts; overwriting the
+      // provider must not silently erase the hand-edited price overlay.
+      const overwrite = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "custom-costs",
+          provider: { adapter: "openai-chat", baseUrl: "https://api.example.test/v1" },
+        }),
+      });
+      expect(overwrite.status).toBe(200);
+      expect(loadConfig().providers["custom-costs"]?.modelCosts).toEqual(costs);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  // #1409: the add/edit form's payload type has no member for contextWindow or
+  // modelContextWindows, so an overwrite arrives without them. Registry enrichment then fills
+  // the absent fields from the seed and the stored row loses the user's values — for
+  // opencode-go the seed is exactly {"kimi-k3": 262144}, which is what the reporter found in
+  // place of their deepseek-v4-flash override.
+  describe("provider POST overwrite preserves hand-edited context windows (#1409)", () => {
+    async function seedProvider(url: URL, extra: Record<string, unknown>): Promise<Response> {
+      return fetch(new URL("/api/providers", url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "opencode-go",
+          provider: { adapter: "openai-chat", baseUrl: "https://opencode.ai/zen/go/v1", apiKey: "k", ...extra },
+        }),
+      });
+    }
+
+    function freshHome(): void {
+      if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+      mkdirSync(TEST_DIR, { recursive: true });
+      process.env.OPENCODEX_HOME = TEST_DIR;
+      saveConfig(config("127.0.0.1"));
+    }
+
+    test("an omitted modelContextWindows keeps the user's map, without registry seed keys", async () => {
+      freshHome();
+      const server = startServer(0);
+      try {
+        expect((await seedProvider(server.url, { modelContextWindows: { "deepseek-v4-flash": 900000 } })).status).toBe(200);
+        expect((await seedProvider(server.url, {})).status).toBe(200);
+
+        // The user's key survives, and the registry seed is NOT persisted into user config:
+        // router.ts fills registry values beneath user entries at resolve time, so writing
+        // them here would be a side effect of an unrelated save.
+        expect(loadConfig().providers["opencode-go"]?.modelContextWindows).toEqual({ "deepseek-v4-flash": 900000 });
+      } finally {
+        await server.stop(true);
+      }
+    });
+
+    test("a submitted modelContextWindows updates that key and keeps the others", async () => {
+      freshHome();
+      const server = startServer(0);
+      try {
+        expect((await seedProvider(server.url, { modelContextWindows: { "deepseek-v4-flash": 900000 } })).status).toBe(200);
+        expect((await seedProvider(server.url, { modelContextWindows: { "kimi-k3": 300000 } })).status).toBe(200);
+
+        expect(loadConfig().providers["opencode-go"]?.modelContextWindows)
+          .toEqual({ "deepseek-v4-flash": 900000, "kimi-k3": 300000 });
+      } finally {
+        await server.stop(true);
+      }
+    });
+
+    test("an omitted contextWindow keeps the user's scalar", async () => {
+      freshHome();
+      const server = startServer(0);
+      try {
+        expect((await seedProvider(server.url, { contextWindow: 777000 })).status).toBe(200);
+        expect((await seedProvider(server.url, {})).status).toBe(200);
+
+        expect(loadConfig().providers["opencode-go"]?.contextWindow).toBe(777000);
+      } finally {
+        await server.stop(true);
+      }
+    });
+
+    test("a submitted contextWindow still wins", async () => {
+      freshHome();
+      const server = startServer(0);
+      try {
+        expect((await seedProvider(server.url, { contextWindow: 777000 })).status).toBe(200);
+        expect((await seedProvider(server.url, { contextWindow: 512000 })).status).toBe(200);
+
+        expect(loadConfig().providers["opencode-go"]?.contextWindow).toBe(512000);
+      } finally {
+        await server.stop(true);
+      }
+    });
+
+    test("a brand-new provider still receives the registry seed", async () => {
+      freshHome();
+      const server = startServer(0);
+      try {
+        expect((await seedProvider(server.url, {})).status).toBe(200);
+
+        // No prior row exists, so enrichment is authoritative and the seed must land.
+        expect(loadConfig().providers["opencode-go"]?.modelContextWindows).toBeDefined();
+      } finally {
+        await server.stop(true);
+      }
+    });
+
+    test("PATCH can still delete a key with an explicit null", async () => {
+      freshHome();
+      const server = startServer(0);
+      try {
+        expect((await seedProvider(server.url, { modelContextWindows: { "deepseek-v4-flash": 900000 } })).status).toBe(200);
+
+        const patch = await fetch(new URL("/api/providers?name=opencode-go", server.url), {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ modelContextWindows: { "deepseek-v4-flash": null } }),
+        });
+        expect(patch.status).toBe(200);
+
+        // Deletion is an explicit null through PATCH, which the POST carry-over must not undo.
+        expect(loadConfig().providers["opencode-go"]?.modelContextWindows?.["deepseek-v4-flash"]).toBeUndefined();
+      } finally {
+        await server.stop(true);
+      }
+    });
+  });
+
+  test("provider management accepts modelCosts on the canonical openai provider", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig(config("127.0.0.1"));
+
+    const server = startServer(0);
+    try {
+      const costs = { "gpt-5.6": { input: 1.2, output: 3.2, cacheRead: 0.12, cacheWrite: 0 } };
+      const response = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "openai",
+          provider: { ...canonicalDirect, codexAccountMode: "pool", modelCosts: costs },
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(loadConfig().providers.openai?.modelCosts).toEqual(costs);
     } finally {
       await server.stop(true);
     }
@@ -550,7 +1138,7 @@ describe("provider management validation", () => {
       }),
       requestUrl,
       cfg,
-      { refreshCodexCatalog: async () => {} },
+      { createManagementConvergeCodex: catalogConvergenceFactory() },
     );
 
     expect(response?.status).toBe(409);
@@ -849,6 +1437,68 @@ describe("provider management validation", () => {
     }
   });
 
+  test("provider PATCH persists and clears structured-output model opt-outs", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig(config("127.0.0.1"));
+
+    const server = startServer(0);
+    try {
+      const createRes = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "structured-output-toggle",
+          provider: {
+            adapter: "openai-chat",
+            baseUrl: "https://relay.example/v1",
+            liveModels: false,
+            models: ["deepseek-v4-flash"],
+          },
+        }),
+      });
+      expect(createRes.status).toBe(200);
+
+      const invalid = await fetch(new URL("/api/providers?name=structured-output-toggle", server.url), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ noStructuredOutputModels: "deepseek-v4-flash" }),
+      });
+      expect(invalid.status).toBe(400);
+
+      const patchRes = await fetch(new URL("/api/providers?name=structured-output-toggle", server.url), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          noStructuredOutputModels: [" deepseek-v4-flash ", "deepseek-v4-flash"],
+        }),
+      });
+      expect(patchRes.status).toBe(200);
+
+      const providers = await fetch(new URL("/api/providers", server.url)).then(response => response.json()) as Array<{
+        name: string;
+        noStructuredOutputModels?: string[];
+      }>;
+      expect(providers.find(provider => provider.name === "structured-output-toggle")?.noStructuredOutputModels)
+        .toEqual(["deepseek-v4-flash"]);
+
+      const clearRes = await fetch(new URL("/api/providers?name=structured-output-toggle", server.url), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ noStructuredOutputModels: null }),
+      });
+      expect(clearRes.status).toBe(200);
+
+      const saved = await fetch(new URL("/api/config", server.url)).then(response => response.json()) as {
+        providers: Record<string, { noStructuredOutputModels?: string[] }>;
+      };
+      expect(saved.providers["structured-output-toggle"].noStructuredOutputModels).toBeUndefined();
+    } finally {
+      await server.stop(true);
+    }
+  });
+
  test("provider management rejects sensitive or injectable provider headers", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
@@ -901,6 +1551,51 @@ describe("provider management validation", () => {
     }
   });
 
+  test("provider deletion removes the deleted provider's OAuth credential", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig({
+      port: 0,
+      defaultProvider: "test-openai",
+      providers: {
+        "test-openai": {
+          adapter: "openai-chat",
+          baseUrl: "https://api.example.test/v1",
+          apiKey: "test-key",
+        },
+        removable: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.removable.test/v1",
+          apiKey: "test-key",
+        },
+      },
+    });
+    await saveCredential("removable", {
+      access: "credential-to-delete",
+      refresh: "refresh-to-delete",
+      expires: Date.now() + 60_000,
+    });
+    await saveCredential("retained", {
+      access: "credential-to-keep",
+      refresh: "refresh-to-keep",
+      expires: Date.now() + 60_000,
+    });
+
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/api/providers?name=removable", server.url), {
+        method: "DELETE",
+      });
+      expect(response.status).toBe(200);
+
+      expect(getAccountSet("removable")).toBeNull();
+      expect(getAccountSet("retained")).not.toBeNull();
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("provider deletion removes stale provider context caps", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
@@ -932,6 +1627,69 @@ describe("provider management validation", () => {
 
       const caps = await fetch(new URL("/api/provider-context-caps", server.url));
       expect(await caps.json()).toMatchObject({ caps: {} });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("provider deletion removes that provider's custom models (#1273)", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig({
+      port: 0,
+      defaultProvider: "test-openai",
+      providers: {
+        "test-openai": {
+          adapter: "openai-chat",
+          baseUrl: "https://api.example.test/v1",
+          apiKey: "sk-secret-value",
+        },
+        removable: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.removable.test/v1",
+          apiKey: "sk-removable",
+        },
+      },
+      customModels: [
+        { id: "keep-1", provider: "test-openai", modelId: "kept-model" },
+        { id: "drop-1", provider: "removable", modelId: "ghost-model" },
+      ],
+      // Seeded so the assertion below covers the real persistence path, not just
+      // the helper: `projectCustomModelCatalogMigration` runs inside the save and
+      // must carry this marker through a provider delete unchanged.
+      customModelCatalogMigration: {
+        version: 1,
+        legacyOwnedSlugs: ["removable/ghost-model", "test-openai/kept-model"],
+      },
+    } as unknown as Parameters<typeof saveConfig>[0]);
+
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/api/providers?name=removable", server.url), {
+        method: "DELETE",
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ success: true, droppedCustomModels: 1 });
+
+      // The dashboard model page reads this route; a surviving row here is the
+      // ghost model users see pointing at a provider that no longer exists.
+      const customModels = await fetch(new URL("/api/custom-models", server.url));
+      expect(await customModels.json()).toEqual([
+        { id: "keep-1", provider: "test-openai", modelId: "kept-model" },
+      ]);
+
+      const persisted = JSON.parse(readFileSync(join(TEST_DIR, "config.json"), "utf8")) as {
+        customModels?: unknown;
+        customModelCatalogMigration?: unknown;
+      };
+      expect(persisted.customModels).toEqual([
+        { id: "keep-1", provider: "test-openai", modelId: "kept-model" },
+      ]);
+      expect(persisted.customModelCatalogMigration).toEqual({
+        version: 1,
+        legacyOwnedSlugs: ["removable/ghost-model", "test-openai/kept-model"],
+      });
     } finally {
       await server.stop(true);
     }
@@ -1230,7 +1988,7 @@ describe("provider management validation", () => {
           body: JSON.stringify(body),
         });
         return handleManagementAPI(request, new URL(request.url), liveConfig, {
-          refreshCodexCatalog: async () => undefined,
+          createManagementConvergeCodex: catalogConvergenceFactory(),
         });
       };
       const canonical = await post({ name: "openai", provider: canonicalDirect });
@@ -1285,7 +2043,7 @@ describe("provider management validation", () => {
         body: JSON.stringify({ name: "openai", provider: canonicalDirect }),
       });
       const response = await handleManagementAPI(request, new URL(request.url), liveConfig, {
-        refreshCodexCatalog: async () => undefined,
+        createManagementConvergeCodex: catalogConvergenceFactory(),
       });
       expect(response?.status).toBe(400);
       expect(await response?.json()).toMatchObject({
@@ -1439,7 +2197,7 @@ describe("provider management validation", () => {
         body: JSON.stringify({ disabled: false }),
       });
       const response = await handleManagementAPI(request, new URL(request.url), liveConfig, {
-        refreshCodexCatalog: async () => undefined,
+        createManagementConvergeCodex: catalogConvergenceFactory(),
       });
       expect(response?.status).toBe(200);
       expect(resolvedError).toHaveBeenCalledTimes(1);
@@ -1495,7 +2253,7 @@ describe("provider management validation", () => {
           body: JSON.stringify({ disabled: false }),
         });
         const response = await handleManagementAPI(request, new URL(request.url), liveConfig, {
-          refreshCodexCatalog: async () => undefined,
+          createManagementConvergeCodex: catalogConvergenceFactory(),
         });
         expect(response?.status).toBe(400);
         expect(await response?.json()).toMatchObject({ error });
@@ -1554,7 +2312,7 @@ describe("provider management validation", () => {
         body: JSON.stringify({ disabled: false }),
       });
       const response = await handleManagementAPI(request, new URL(request.url), liveConfig, {
-        refreshCodexCatalog: async () => undefined,
+        createManagementConvergeCodex: catalogConvergenceFactory(),
       });
       expect(response?.status).toBe(400);
       expect(liveConfig.providers.openai).toMatchObject({
@@ -1606,7 +2364,7 @@ describe("provider management validation", () => {
         body: JSON.stringify({ disabled: false }),
       });
       const response = await handleManagementAPI(request, new URL(request.url), liveConfig, {
-        refreshCodexCatalog: async () => undefined,
+        createManagementConvergeCodex: catalogConvergenceFactory(),
       });
       expect(response?.status).toBe(200);
       expect(liveConfig.providers.openai).toEqual({
@@ -1701,7 +2459,7 @@ describe("provider management validation", () => {
     const deps = {
       clearThreadAccountMap: () => { affinityClears += 1; },
       clearProviderQuotaCache: () => { quotaCacheClears += 1; },
-      refreshCodexCatalog: async () => { catalogRefreshes += 1; },
+      createManagementConvergeCodex: catalogConvergenceFactory(() => { catalogRefreshes += 1; }),
       primeCodexPoolQuotas: (_config: OcxConfig, reason: string) => { primes.push(reason); },
     };
     const patch = async (name: string, body: unknown) => {
@@ -1779,7 +2537,7 @@ describe("provider management validation", () => {
         body: JSON.stringify(body),
       });
       return handleManagementAPI(req, new URL(req.url), liveConfig, {
-        refreshCodexCatalog: async () => { catalogRefreshes += 1; },
+        createManagementConvergeCodex: catalogConvergenceFactory(() => { catalogRefreshes += 1; }),
       });
     };
 
@@ -1837,6 +2595,319 @@ describe("provider management validation", () => {
 
     // Unknown-only bodies are rejected.
     expect((await patch("extra", { bogus: 1 }))?.status).toBe(400);
+  });
+
+  test("provider management exposes and persists context-window hints for Models GUI (#1073)", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: { ...canonicalDirect },
+        relay: {
+          adapter: "openai-chat",
+          baseUrl: "https://relay.example.test/v1",
+          apiKey: "sk-existing",
+          allowPrivateNetwork: true,
+          models: ["wide", "narrow"],
+          contextWindow: 256_000,
+          modelContextWindows: { narrow: 64_000 },
+          modelSupportsServiceTier: { narrow: false },
+        },
+      },
+    };
+    saveConfig(liveConfig);
+
+    const request = async (method: "GET" | "PATCH", body?: unknown) => {
+      const req = new Request("http://127.0.0.1/api/providers?name=relay", {
+        method,
+        headers: body === undefined ? undefined : { "content-type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      return handleManagementAPI(req, new URL(req.url), liveConfig, {
+        createManagementConvergeCodex: catalogConvergenceFactory(() => {}),
+      });
+    };
+
+    const listed = await request("GET");
+    expect(listed?.status).toBe(200);
+    const rows = await listed!.json() as Array<{
+      name: string;
+      contextWindow?: number;
+      modelContextWindows?: Record<string, number>;
+    }>;
+    expect(rows.find(row => row.name === "relay")).toMatchObject({
+      contextWindow: 256_000,
+      modelContextWindows: { narrow: 64_000 },
+      modelSupportsServiceTier: { narrow: false },
+    });
+
+    const updated = await request("PATCH", {
+      contextWindow: 350_000,
+      modelContextWindows: { wide: 350_000 },
+      modelSupportsServiceTier: { wide: true },
+    });
+    expect(updated?.status).toBe(200);
+    expect(liveConfig.providers.relay).toMatchObject({
+      contextWindow: 350_000,
+      modelContextWindows: { wide: 350_000, narrow: 64_000 },
+      modelSupportsServiceTier: { wide: true, narrow: false },
+    });
+    expect(loadConfig().providers.relay).toMatchObject({
+      contextWindow: 350_000,
+      modelContextWindows: { wide: 350_000, narrow: 64_000 },
+      modelSupportsServiceTier: { wide: true, narrow: false },
+    });
+
+    for (const invalid of [
+      { contextWindow: 0 },
+      { contextWindow: 1.5 },
+      // `Number.isInteger(1e100)` is true, so an integer check alone lets this through. It
+      // would then serialize into the catalog as an enormous number and can make Codex reject
+      // the whole file — the failure surfaces far from the PATCH that caused it.
+      { contextWindow: 1e100 },
+      { modelContextWindows: { wide: 1e100 } },
+      { modelContextWindows: { "": 100_000 } },
+      { modelContextWindows: { wide: -1 } },
+      { modelSupportsServiceTier: { wide: "yes" } },
+      { modelSupportsServiceTier: { "": true } },
+    ]) {
+      expect((await request("PATCH", invalid))?.status).toBe(400);
+    }
+    expect(liveConfig.providers.relay).toMatchObject({
+      contextWindow: 350_000,
+      modelContextWindows: { wide: 350_000, narrow: 64_000 },
+      modelSupportsServiceTier: { wide: true, narrow: false },
+    });
+
+    expect((await request("PATCH", { modelContextWindows: { wide: null } }))?.status).toBe(200);
+    expect(liveConfig.providers.relay.modelContextWindows).toEqual({ narrow: 64_000 });
+
+    expect((await request("PATCH", { modelSupportsServiceTier: { wide: null } }))?.status).toBe(200);
+    expect(liveConfig.providers.relay.modelSupportsServiceTier).toEqual({ narrow: false });
+
+    const cleared = await request("PATCH", {
+      contextWindow: null,
+      modelContextWindows: null,
+      modelSupportsServiceTier: null,
+    });
+    expect(cleared?.status).toBe(200);
+    expect(liveConfig.providers.relay.contextWindow).toBeUndefined();
+    expect(liveConfig.providers.relay.modelContextWindows).toBeUndefined();
+    expect(liveConfig.providers.relay.modelSupportsServiceTier).toBeUndefined();
+  });
+
+  test("provider PATCH manages custom headers with merge and clear semantics", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: { ...canonicalDirect },
+        agw: { adapter: "openai-chat", baseUrl: "https://agw.example.test/v1", apiKey: "sk-agw" },
+      },
+    };
+    saveConfig(liveConfig);
+    let catalogRefreshes = 0;
+    const patch = async (name: string, body: unknown) => {
+      const req = new Request(`http://127.0.0.1/api/providers?name=${name}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return handleManagementAPI(req, new URL(req.url), liveConfig, {
+        // This branch replaced the best-effort `refreshCodexCatalog` dep with the
+        // convergence entry point; every other test in this file already wires it
+        // that way, and this one arrived from dev still using the old shape.
+        createManagementConvergeCodex: catalogConvergenceFactory(() => { catalogRefreshes += 1; }),
+      });
+    };
+
+    // Set a fresh headers block.
+    const set = await patch("agw", { headers: { "X-Custom": "v1", "anthropic-version": "2023-06-01" } });
+    expect(set?.status).toBe(200);
+    expect(liveConfig.providers.agw.headers).toEqual({ "X-Custom": "v1", "anthropic-version": "2023-06-01" });
+
+    // Later patches merge, so adding one fingerprint header never drops the rest.
+    const merge = await patch("agw", { headers: { "x-app": "cli" } });
+    expect(merge?.status).toBe(200);
+    expect(liveConfig.providers.agw.headers).toEqual({
+      "X-Custom": "v1",
+      "anthropic-version": "2023-06-01",
+      "x-app": "cli",
+    });
+
+    // null and empty object both clear the whole block.
+    expect((await patch("agw", { headers: null }))?.status).toBe(200);
+    expect(liveConfig.providers.agw.headers).toBeUndefined();
+    expect((await patch("agw", { headers: { "X-A": "b" } }))?.status).toBe(200);
+    expect((await patch("agw", { headers: {} }))?.status).toBe(200);
+    expect(liveConfig.providers.agw.headers).toBeUndefined();
+
+    // Invalid shapes, sensitive headers, CRLF values, and non-string values are rejected.
+    for (const invalid of [
+      "nope",
+      [],
+      { Authorization: "Bearer sk" },
+      { "X-Bad": "a\r\nb" },
+      { "bad name": "v" },
+      { "X-N": 42 },
+    ]) {
+      const rejected = await patch("agw", { headers: invalid });
+      expect(rejected?.status).toBe(400);
+    }
+    expect(liveConfig.providers.agw.headers).toBeUndefined();
+    expect(catalogRefreshes).toBeGreaterThan(0);
+  });
+
+  test("GET /api/providers exposes hasHeaders but never header names or values (#959)", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const sentinelName = "x-fingerprint-sentinel";
+    const sentinelValue = "sentinel-secret-header-value";
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: { ...canonicalDirect },
+        hdr: {
+          adapter: "openai-chat",
+          baseUrl: "http://127.0.0.1:9/v1",
+          allowPrivateNetwork: true,
+          headers: { [sentinelName]: sentinelValue },
+        },
+      },
+    };
+    saveConfig(liveConfig);
+    const req = new Request("http://127.0.0.1/api/providers", { method: "GET" });
+    const res = await handleManagementAPI(req, new URL(req.url), liveConfig, {});
+    expect(res?.status).toBe(200);
+    const raw = await res!.text();
+    const rows = JSON.parse(raw) as { name: string; hasHeaders?: boolean }[];
+    expect(rows.find(row => row.name === "hdr")?.hasHeaders).toBe(true);
+    expect(rows.find(row => row.name === "openai")?.hasHeaders).toBe(false);
+    expect(raw).not.toContain(sentinelName);
+    expect(raw).not.toContain(sentinelValue);
+  });
+  test("provider PATCH merges headers case-insensitively", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: { ...canonicalDirect },
+        hdr: { adapter: "openai-chat", baseUrl: "http://127.0.0.1:9/v1", allowPrivateNetwork: true },
+      },
+    };
+    saveConfig(liveConfig);
+    const patch = async (name: string, body: unknown) => {
+      const req = new Request(`http://127.0.0.1/api/providers?name=${name}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return handleManagementAPI(req, new URL(req.url), liveConfig, {
+        refreshCodexCatalog: async () => {},
+      });
+    };
+
+    expect((await patch("hdr", { headers: { "X-Foo": "old" } }))?.status).toBe(200);
+    expect(liveConfig.providers.hdr.headers).toEqual({ "X-Foo": "old" });
+    // A casing-only update must replace the existing key, not leave both behind for
+    // Headers normalization to combine into "x-foo: old, new".
+    expect((await patch("hdr", { headers: { "x-foo": "new" } }))?.status).toBe(200);
+    expect(liveConfig.providers.hdr.headers).toEqual({ "x-foo": "new" });
+    expect(Object.keys(liveConfig.providers.hdr.headers!)).toHaveLength(1);
+  });
+  test("provider PATCH clear keeps registry static headers", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: { ...canonicalDirect },
+        "opencode-free": {
+          adapter: "openai-chat",
+          baseUrl: "https://opencode.ai/zen/v1",
+          authMode: "key",
+          allowPrivateNetwork: true,
+          headers: { "x-opencode-client": "desktop", "X-User": "v1" },
+        },
+      },
+    };
+    saveConfig(liveConfig);
+    const patch = async (name: string, body: unknown) => {
+      const req = new Request(`http://127.0.0.1/api/providers?name=${name}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return handleManagementAPI(req, new URL(req.url), liveConfig, {
+        refreshCodexCatalog: async () => {},
+      });
+    };
+
+    // Clearing user-managed headers must not delete the registry-owned static
+    // metadata (opencode-free's x-opencode-client marker) the transport relies on.
+    expect((await patch("opencode-free", { headers: null }))?.status).toBe(200);
+    expect(liveConfig.providers["opencode-free"].headers).toEqual({ "x-opencode-client": "desktop" });
+    const saved = JSON.parse(readFileSync(join(TEST_DIR, "config.json"), "utf8")) as OcxConfig;
+    expect(saved.providers["opencode-free"]?.headers).toEqual({ "x-opencode-client": "desktop" });
+  });
+  test("concurrent provider PATCHes merge different headers", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "openai",
+      openaiProviderTierVersion: 2,
+      providers: {
+        openai: { ...canonicalDirect },
+        hdr: { adapter: "openai-chat", baseUrl: "http://127.0.0.1:9/v1", allowPrivateNetwork: true },
+      },
+    };
+    saveConfig(liveConfig);
+    const patch = async (name: string, body: unknown) => {
+      const req = new Request(`http://127.0.0.1/api/providers?name=${name}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return handleManagementAPI(req, new URL(req.url), liveConfig, {
+        refreshCodexCatalog: async () => {},
+      });
+    };
+
+    // Both requests snapshot the same provider before either saves; the lock-scoped
+    // re-apply must merge them instead of letting the later save erase the first.
+    const [first, second] = await Promise.all([
+      patch("hdr", { headers: { "X-A": "a" } }),
+      patch("hdr", { headers: { "X-B": "b" } }),
+    ]);
+    expect(first?.status).toBe(200);
+    expect(second?.status).toBe(200);
+    expect(liveConfig.providers.hdr.headers).toEqual({ "X-A": "a", "X-B": "b" });
   });
   test("provider context-cap API persists toggles and annotates model rows", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
@@ -1939,7 +3010,8 @@ describe("provider management validation", () => {
       const initial = await fetch(new URL("/api/provider-context-caps", server.url));
       expect(await initial.json()).toMatchObject({ cap: 350_000, value: 350_000, caps: {} });
 
-      // Enable one provider, then change the global value: the enabled provider re-points.
+      // Enable one provider, then change the global value WITHOUT setAll: the enabled provider
+      // keeps its own value and only the shared default changes.
       await fetch(new URL("/api/provider-context-caps", server.url), {
         method: "PUT",
         headers: { "content-type": "application/json" },
@@ -1951,7 +3023,7 @@ describe("provider management validation", () => {
         body: JSON.stringify({ value: 500_000 }),
       });
       expect(valued.status).toBe(200);
-      expect(await valued.json()).toMatchObject({ ok: true, value: 500_000, caps: { "test-openai": 500_000 } });
+      expect(await valued.json()).toMatchObject({ ok: true, value: 500_000, caps: { "test-openai": 350_000 } });
 
       // Enabling another provider now uses the current global value, not the constant.
       const enabledAfter = await fetch(new URL("/api/provider-context-caps", server.url), {
@@ -1959,12 +3031,20 @@ describe("provider management validation", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ provider: "other", enabled: true }),
       });
-      expect(await enabledAfter.json()).toMatchObject({ caps: { "test-openai": 500_000, other: 500_000 } });
+      expect(await enabledAfter.json()).toMatchObject({ caps: { "test-openai": 350_000, other: 500_000 } });
 
-      // Catalog reflects the global value.
+      // Catalog reflects each provider's own cap, not the shared default.
       const models = await fetch(new URL("/api/models", server.url));
       const body = await models.json() as Array<{ id: string; contextWindow?: number; contextCap?: number }>;
-      expect(body.find(m => m.id === "wide-model")).toMatchObject({ contextWindow: 500_000, contextCap: 500_000 });
+      expect(body.find(m => m.id === "wide-model")).toMatchObject({ contextWindow: 350_000, contextCap: 350_000 });
+
+      // Changing the global value WITH setAll re-points every enabled provider.
+      const valuedAll = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value: 600_000, setAll: true }),
+      });
+      expect(await valuedAll.json()).toMatchObject({ ok: true, value: 600_000, caps: { "test-openai": 600_000, other: 600_000 } });
 
       // Set-all off clears every cap.
       const cleared = await fetch(new URL("/api/provider-context-caps", server.url), {
@@ -1972,7 +3052,7 @@ describe("provider management validation", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ setAll: false }),
       });
-      expect(await cleared.json()).toMatchObject({ ok: true, value: 500_000, caps: {} });
+      expect(await cleared.json()).toMatchObject({ ok: true, value: 600_000, caps: {} });
 
       // Set-all on caps every provider at the current value.
       const all = await fetch(new URL("/api/provider-context-caps", server.url), {
@@ -1980,7 +3060,29 @@ describe("provider management validation", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ setAll: true }),
       });
-      expect(await all.json()).toMatchObject({ ok: true, caps: { "test-openai": 500_000, other: 500_000 } });
+      expect(await all.json()).toMatchObject({ ok: true, caps: { "test-openai": 600_000, other: 600_000 } });
+
+      // Per-provider PUT with an explicit value touches only that provider.
+      const perProvider = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider: "test-openai", enabled: true, value: 250_000 }),
+      });
+      expect(await perProvider.json()).toMatchObject({ ok: true, caps: { "test-openai": 250_000, other: 600_000 } });
+
+      // Enabling a provider with an explicit value uses that value, not the global default.
+      const perProviderDisable = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider: "test-openai", enabled: false }),
+      });
+      expect(await perProviderDisable.json()).toMatchObject({ ok: true, caps: { other: 600_000 } });
+      const perProviderEnableValue = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider: "test-openai", enabled: true, value: 128_000 }),
+      });
+      expect(await perProviderEnableValue.json()).toMatchObject({ ok: true, caps: { "test-openai": 128_000, other: 600_000 } });
 
       // Invalid global value is rejected.
       const bad = await fetch(new URL("/api/provider-context-caps", server.url), {
@@ -1989,6 +3091,80 @@ describe("provider management validation", () => {
         body: JSON.stringify({ value: 0 }),
       });
       expect(bad.status).toBe(400);
+
+      // Invalid per-provider value is rejected before mutating config: the provider cap
+      // must not fall back to the global default.
+      const badPerProvider = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider: "test-openai", enabled: true, value: 0 }),
+      });
+      expect(badPerProvider.status).toBe(400);
+      const afterBadPerProvider = await fetch(new URL("/api/provider-context-caps", server.url));
+      expect(await afterBadPerProvider.json()).toMatchObject({ value: 600_000, caps: { "test-openai": 128_000, other: 600_000 } });
+
+      // A non-boolean setAll accompanying a global value is rejected before mutating config.
+      const badSetAll = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value: 700_000, setAll: "yes" }),
+      });
+      expect(badSetAll.status).toBe(400);
+      const afterBadSetAll = await fetch(new URL("/api/provider-context-caps", server.url));
+      expect(await afterBadSetAll.json()).toMatchObject({ value: 600_000, caps: { "test-openai": 128_000, other: 600_000 } });
+
+      // A provider field with a wrongly-typed enabled must not fall through to the global
+      // value branch and change the global default.
+      const badEnabled = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider: "test-openai", enabled: "yes", value: 700_000 }),
+      });
+      expect(badEnabled.status).toBe(400);
+      const afterBadEnabled = await fetch(new URL("/api/provider-context-caps", server.url));
+      expect(await afterBadEnabled.json()).toMatchObject({ value: 600_000, caps: { "test-openai": 128_000, other: 600_000 } });
+
+      // A provider update combined with setAll is rejected instead of silently ignoring setAll.
+      const mixedPayload = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider: "test-openai", enabled: true, setAll: true }),
+      });
+      expect(mixedPayload.status).toBe(400);
+      const afterMixedPayload = await fetch(new URL("/api/provider-context-caps", server.url));
+      expect(await afterMixedPayload.json()).toMatchObject({ value: 600_000, caps: { "test-openai": 128_000, other: 600_000 } });
+
+      // A per-provider value that floors to zero (0.5) is rejected without mutating config:
+      // it must not silently fall back to the global default.
+      const floorZeroPerProvider = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider: "test-openai", enabled: true, value: 0.5 }),
+      });
+      expect(floorZeroPerProvider.status).toBe(400);
+      const afterFloorZeroPerProvider = await fetch(new URL("/api/provider-context-caps", server.url));
+      expect(await afterFloorZeroPerProvider.json()).toMatchObject({ value: 600_000, caps: { "test-openai": 128_000, other: 600_000 } });
+
+      // A global value that floors to zero is rejected the same way.
+      const floorZeroGlobal = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value: 0.5 }),
+      });
+      expect(floorZeroGlobal.status).toBe(400);
+      const afterFloorZeroGlobal = await fetch(new URL("/api/provider-context-caps", server.url));
+      expect(await afterFloorZeroGlobal.json()).toMatchObject({ value: 600_000, caps: { "test-openai": 128_000, other: 600_000 } });
+
+      // A non-object body (valid JSON) is rejected with 400 instead of crashing on
+      // property access.
+      const nonObject = await fetch(new URL("/api/provider-context-caps", server.url), {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify([1, 2, 3]),
+      });
+      expect(nonObject.status).toBe(400);
+      const afterNonObject = await fetch(new URL("/api/provider-context-caps", server.url));
+      expect(await afterNonObject.json()).toMatchObject({ value: 600_000, caps: { "test-openai": 128_000, other: 600_000 } });
     } finally {
       await server.stop(true);
     }

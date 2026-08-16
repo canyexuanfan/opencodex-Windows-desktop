@@ -7,7 +7,15 @@ import { type AccountQuota, normalizeQuotaForPlan } from "../codex-quota-utils";
 /* Helpers are co-located with QuotaBars for overview sorting / stacked layout. */
 /* eslint-disable react-refresh/only-export-components */
 
-export type QuotaBarRow = { label: string; limitLabel: string; percent: number; resetAt?: number };
+export type QuotaWindowKey = "fiveHour" | "weekly" | "monthly";
+export type QuotaBarRow = {
+  windowKey?: QuotaWindowKey;
+  customLabel?: string;
+  label: string;
+  limitLabel: string;
+  percent: number;
+  resetAt?: number;
+};
 
 /**
  * Window ordering is computed from RAW wire identities BEFORE localization
@@ -43,6 +51,7 @@ export function buildQuotaRows(quota: AccountQuota | null, plan: string | null |
     ranked.push({
       rank: 0,
       row: {
+        windowKey: "fiveHour",
         label: t("codexAuth.fiveHour"),
         limitLabel: t("quota.fiveHourLimit"),
         percent: displayQuota.fiveHourPercent,
@@ -54,6 +63,7 @@ export function buildQuotaRows(quota: AccountQuota | null, plan: string | null |
     ranked.push({
       rank: 1,
       row: {
+        windowKey: "weekly",
         label: t("codexAuth.weekly"),
         limitLabel: t("quota.weeklyLimit"),
         percent: displayQuota.weeklyPercent,
@@ -65,6 +75,7 @@ export function buildQuotaRows(quota: AccountQuota | null, plan: string | null |
     ranked.push({
       rank: 4,
       row: {
+        windowKey: "monthly",
         label: t("codexAuth.monthly"),
         limitLabel: t("quota.monthlyLimit"),
         percent: displayQuota.monthlyPercent,
@@ -76,7 +87,13 @@ export function buildQuotaRows(quota: AccountQuota | null, plan: string | null |
     const localized = localizeCustomQuotaLabel(w.label, t);
     ranked.push({
       rank: rawCustomWindowRank(w.label),
-      row: { label: localized, limitLabel: localized, percent: w.percent, resetAt: w.resetAt },
+      row: {
+        customLabel: w.label,
+        label: localized,
+        limitLabel: localized,
+        percent: w.percent,
+        resetAt: w.resetAt,
+      },
     });
   }
   return ranked.sort((a, b) => a.rank - b.rank).map(entry => entry.row);
@@ -99,14 +116,20 @@ function bcp47(locale: Locale): string {
       return "en-GB";
     case "de":
       return "de-DE";
+    case "fr":
+      return "fr-FR";
     case "ko":
       return "ko-KR";
     case "zh":
       return "zh-CN";
+    case "zh-TW":
+      return "zh-TW";
     case "ru":
       return "ru-RU";
     case "ja":
       return "ja-JP";
+    case "tr":
+      return "tr-TR";
     default: {
       const _exhaustive: never = locale;
       return _exhaustive;
@@ -138,7 +161,17 @@ function barFillStyle(percent: number): CSSProperties {
   return { ["--bar-scale" as string]: String(barWidth(percent) / 100) };
 }
 
-export default function QuotaBars({ quota, plan, threshold, t, className, layout = "compact", pending = false }: {
+export default function QuotaBars({
+  quota,
+  plan,
+  threshold,
+  t,
+  className,
+  layout = "compact",
+  pending = false,
+  incompleteWindowKeys,
+  incompleteCustomWindowLabels,
+}: {
   quota: AccountQuota | null;
   plan?: string | null;
   threshold: number;
@@ -151,6 +184,9 @@ export default function QuotaBars({ quota, plan, threshold, t, className, layout
    * bar slot so deferred fill does not shove the page down.
    */
   pending?: boolean;
+  /** Optional overview-only coverage status. Other quota surfaces remain unchanged when omitted. */
+  incompleteWindowKeys?: ReadonlySet<QuotaWindowKey>;
+  incompleteCustomWindowLabels?: ReadonlySet<string>;
 }) {
   const { locale } = useI18n();
   const rows = buildQuotaRows(quota, plan, t);
@@ -175,24 +211,22 @@ export default function QuotaBars({ quota, plan, threshold, t, className, layout
         </div>
       );
     }
-    // Always reserve two compact rows until real bars paint — plan-based 1-row
-    // skeletons shrink when Plus/Team quotas arrive with weekly+monthly.
+    // Reserve one compact meter row until real bars paint. Extra windows add
+    // height only after WHAM fills them; the default card stays three rows.
     return (
       <div
         className={`codex-account-quota-slot quota-compact quota-compact--pending${className ? ` ${className}` : ""}`}
         aria-busy="true"
         role="status"
       >
-        {Array.from({ length: 2 }, (_, index) => (
-          <div key={index} className="quota-row quota-row--skeleton" aria-hidden="true">
-            <span className="quota-skel quota-skel--label" />
-            <span className="quota-skel quota-skel--reset" />
-            <span className="quota-skel quota-skel--day" />
-            <span className="quota-skel quota-skel--time" />
-            <span className="quota-skel quota-skel--bar" />
-            <span className="quota-skel quota-skel--val" />
-          </div>
-        ))}
+        <div className="quota-row quota-row--skeleton" aria-hidden="true">
+          <span className="quota-skel quota-skel--label" />
+          <span className="quota-skel quota-skel--reset" />
+          <span className="quota-skel quota-skel--day" />
+          <span className="quota-skel quota-skel--time" />
+          <span className="quota-skel quota-skel--bar" />
+          <span className="quota-skel quota-skel--val" />
+        </div>
         <span className="sr-only">{t("common.loading")}</span>
       </div>
     );
@@ -201,7 +235,16 @@ export default function QuotaBars({ quota, plan, threshold, t, className, layout
     return (
       <div className={`quota-stacked${className ? ` ${className}` : ""}`}>
         {rows.map(row => (
-          <StackedQuotaRow key={row.limitLabel} row={row} threshold={threshold} t={t} locale={locale} />
+          <StackedQuotaRow
+            key={row.limitLabel}
+            row={row}
+            threshold={threshold}
+            t={t}
+            locale={locale}
+            incomplete={row.windowKey
+              ? incompleteWindowKeys?.has(row.windowKey) === true
+              : row.customLabel !== undefined && incompleteCustomWindowLabels?.has(row.customLabel) === true}
+          />
         ))}
       </div>
     );
@@ -235,16 +278,21 @@ function QuotaRow({ label, percent, resetAt, threshold, t, locale }: {
   const warn = isQuotaWarn(percent, threshold);
   const color = quotaBarTone(percent, threshold);
   const reset = formatResetAt(resetAt, t, locale);
+  const resetTitle = reset.day || reset.time
+    ? `${t("codexAuth.resets")} ${reset.day} ${reset.time}`.replace(/\s+/g, " ").trim()
+    : undefined;
+  const hasReset = reset.day !== "" || reset.time !== "";
   return (
     <div className={`quota-row${warn ? " quota-row--warn" : ""}${exhausted ? " quota-row--exhausted" : ""}`}>
-      <span className="quota-label">{label}</span>
-      <span className="quota-reset-label">{t("codexAuth.resets")}</span>
+      <span className="quota-label" title={resetTitle}>{label}</span>
+      <span className="quota-reset-label">{hasReset ? t("codexAuth.resets") : ""}</span>
       <span className="quota-reset-day">{reset.day}</span>
       <span className="quota-reset-time">{reset.time}</span>
-      <div className="bar"><div className={`bar-fill ${color}`} style={barFillStyle(percent)} /></div>
+      <div className="bar" title={resetTitle}><div className={`bar-fill ${color}`} style={barFillStyle(percent)} /></div>
       <span
         className={`quota-val${warn ? " quota-val--warn" : ""}`}
-        title={exhausted ? t("quota.limitReached") : undefined}
+        title={exhausted ? t("quota.limitReached") : resetTitle}
+        aria-label={resetTitle}
       >
         {warn && <IconAlert width={12} height={12} aria-hidden="true" />}
         {Math.round(percent)}%
@@ -254,11 +302,12 @@ function QuotaRow({ label, percent, resetAt, threshold, t, locale }: {
   );
 }
 
-function StackedQuotaRow({ row, threshold, t, locale }: {
+function StackedQuotaRow({ row, threshold, t, locale, incomplete }: {
   row: QuotaBarRow;
   threshold: number;
   t: TFn;
   locale: Locale;
+  incomplete: boolean;
 }) {
   const exhausted = isQuotaExhausted(row.percent);
   const warn = isQuotaWarn(row.percent, threshold);
@@ -267,7 +316,19 @@ function StackedQuotaRow({ row, threshold, t, locale }: {
   return (
     <div className={`quota-stacked-row${warn ? " quota-stacked-row--warn" : ""}${exhausted ? " quota-stacked-row--exhausted" : ""}`}>
       <div className="quota-stacked-head">
-        <span className="quota-stacked-limit">{row.limitLabel}</span>
+        <span className="quota-stacked-limit-group">
+          <span className="quota-stacked-limit">{row.limitLabel}</span>
+          {incomplete && (
+            <span
+              className="quota-window-partial"
+              role="note"
+              aria-label={t("pws.capacity.windowPartialA11y", { window: row.limitLabel })}
+              title={t("pws.capacity.windowPartialA11y", { window: row.limitLabel })}
+            >
+              {t("pws.capacity.windowPartial")}
+            </span>
+          )}
+        </span>
         <span className="quota-stacked-reset muted">{resetText}</span>
       </div>
       <div className="quota-stacked-bar-row">

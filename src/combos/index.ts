@@ -4,9 +4,12 @@ export {
   comboConfigError,
   comboConfigIssues,
   comboDefaultEffort,
+  comboDisabledModelId,
+  comboDisabledModelSelectors,
   comboModelId,
   comboPublicModelId,
   getCombo,
+  isNativeAliasCombo,
   isValidComboId,
   listComboIds,
   normalizeComboConfig,
@@ -36,6 +39,7 @@ export {
 } from "./failover";
 export {
   comboIdFromRawBody,
+  comboRequestHasImageInput,
   concreteComboRequestBody,
   resetComboEffortWarningStateForTests,
 } from "./request";

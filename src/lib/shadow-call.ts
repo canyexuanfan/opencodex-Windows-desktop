@@ -1,13 +1,13 @@
 /**
  * Shadow-call intercept source models.
  *
- * Codex's hard-coded helper model is not stable across client versions: it was
- * `gpt-5.4-mini` up to 0.144.x and became `gpt-5.6-luna` in 0.145.0. The
- * intercept therefore matches a prefix SET, and every surface that names the
+ * Codex 0.145.0+ uses `gpt-5.6-luna` for helper calls. Older clients through
+ * 0.144.x used `gpt-5.4-mini`; operators supporting them can restore that
+ * prefix with the `sourceModels` override. Every surface that names the
  * intercepted model (management API, GUI badges/tooltips, CLI) reads it from
  * here instead of hard-coding a slug that goes stale on the next client bump.
  */
-export const DEFAULT_SHADOW_SOURCE_MODELS = ["gpt-5.4-mini", "gpt-5.6-luna"] as const;
+export const DEFAULT_SHADOW_SOURCE_MODELS = ["gpt-5.6-luna"] as const;
 
 /** Normalize a persisted `sourceModels` override; falls back to the defaults. */
 export function shadowSourceModels(configured?: unknown): string[] {
@@ -27,4 +27,20 @@ export function shadowSourceModels(configured?: unknown): string[] {
 export function isShadowSourceModel(modelId: string, configured?: unknown): boolean {
   if (modelId.includes("/")) return false;
   return shadowSourceModels(configured).some(prefix => modelId.startsWith(prefix));
+}
+
+/**
+ * Decide whether a matching source model should use the opt-in intercept.
+ *
+ * Before Codex 0.147.0 this checked x-codex-turn-metadata and exempted
+ * request_kind "turn". Codex 0.147.0 can label background helper calls as
+ * "turn", causing them to bypass the intercept (#1684). The fix is to
+ * intercept every configured shadow source model unconditionally — the model
+ * slug alone is a sufficient signal.
+ */
+export function shouldInterceptShadowCall(
+  modelId: string,
+  configured: unknown,
+): boolean {
+  return isShadowSourceModel(modelId, configured);
 }

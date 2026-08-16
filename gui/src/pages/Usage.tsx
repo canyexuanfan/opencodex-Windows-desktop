@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useI18n, type TFn, type Locale } from "../i18n/shared";
+import { formatProviderDisplayName } from "../provider-icons";
 import { formatTokens } from "../format-tokens";
 import { formatEstimatedUsdValue as formatUsdEstimate } from "../intl-formatters";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
@@ -87,6 +88,11 @@ interface UsageResponse {
   truncatedPrefixBytes: number;
   entriesTruncated: boolean;
   entriesDropped: number;
+  // Bounds of the rows the bounded reader loaded, before any range or surface filtering.
+  // Describes the read, not the query, and is never a completeness claim (#1497).
+  // Optional because a dashboard can talk to a proxy that predates these fields.
+  snapshotWindowStart?: number | null;
+  snapshotWindowEnd?: number | null;
   error?: string;
 }
 
@@ -231,10 +237,10 @@ function UsageFilters({
                 <img className="usage-source-mark" src="/provider-icons/openai.svg" alt="" aria-hidden="true" />
               )}
               {choice === "claude" && (
-                <img className="usage-source-mark" src="/provider-icons/claude.svg" alt="" aria-hidden="true" />
+                <img className="usage-source-mark" src="/provider-icons/claude-color.svg" alt="" aria-hidden="true" />
               )}
               {choice === "grok" && (
-                <img className="usage-source-mark" src="/provider-icons/grok.svg" alt="" aria-hidden="true" />
+                <img className="usage-source-mark usage-source-mark--mono" src="/provider-icons/grok.svg" alt="" aria-hidden="true" />
               )}
               <span className={choice === "all" ? "usage-source-label" : "usage-source-label usage-source-label-collapsible"}>
                 {label}
@@ -512,7 +518,7 @@ function UsageModelsTable({
           {models.map(model => (
             <tr key={`${model.provider}/${model.model}`}>
               <td className="mono">{modelLabel(model.model)}</td>
-              <td className="muted">{model.provider}</td>
+              <td className="muted">{formatProviderDisplayName(model.provider, t)}</td>
               <td className="num">{model.requests}</td>
               <td className="num">{model.measuredRequests}</td>
               <td className="num mono">{formatTokens(model.totalTokens, locale)}</td>
@@ -572,7 +578,7 @@ function UsageProvidersTable({
         <tbody>
           {providers.map(provider => (
             <tr key={provider.provider}>
-              <td className="mono">{provider.provider}</td>
+              <td className="mono">{formatProviderDisplayName(provider.provider, t)}</td>
               <td className="num">{provider.requests}</td>
               <td className="num">{provider.measuredRequests}</td>
               <td className="num mono">{formatTokens(provider.totalTokens, locale)}</td>
@@ -815,7 +821,24 @@ export default function Usage({ apiBase }: { apiBase: string }) {
       ) : (
         <>
           {state.showError && <Notice tone="err">{t("usage.loadError")}</Notice>}
-          {data?.historyTruncated && <Notice tone="ok">{t("usage.historyTruncated")}</Notice>}
+          {data?.historyTruncated && (
+            // Naming the loaded window is the point: without it, `30d` and "Available history"
+            // look identical on a busy installation even though both may cover far less than
+            // they claim (#1497). `warn` rather than `ok` because a total that silently omits
+            // in-range rows is a caveat, not a status update.
+            <Notice tone="warn">
+              {(() => {
+                // Both bounds must be renderable before the detailed wording is used: an older
+                // proxy omits the fields entirely, and a hand-edited row can carry a timestamp
+                // outside Date's range. Either way the generic string is the honest fallback.
+                const start = renderableInstant(data.snapshotWindowStart);
+                const end = renderableInstant(data.snapshotWindowEnd);
+                return start !== null && end !== null
+                  ? t("usage.historyTruncatedWindow", { start, end })
+                  : t("usage.historyTruncated");
+              })()}
+            </Notice>
+          )}
           <UsageWorkspaceBody
             data={data}
             heatmap={heatmap}
@@ -833,4 +856,13 @@ export default function Usage({ apiBase }: { apiBase: string }) {
       )}
     </>
   );
+}
+function renderableInstant(value: number | null | undefined): string | null {
+  // The reader preserves whatever timestamp a row carries, including hand-edited values far
+  // outside Date's supported range. A presence check alone would then render the literal
+  // string "Invalid Date" in a notice whose whole job is to be trustworthy, so the bound is
+  // only used once it round-trips through Date.
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const at = new Date(value);
+  return Number.isFinite(at.getTime()) ? at.toLocaleString() : null;
 }

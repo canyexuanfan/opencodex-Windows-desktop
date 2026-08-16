@@ -1,6 +1,6 @@
 ---
 title: Codex Integration
-description: How opencodex injects itself into Codex, syncs the model catalog, drives the subagent picker, and restores cleanly.
+description: How opencodex injects itself into Codex, syncs the model catalog, installs shims, and restores cleanly.
 ---
 
 opencodex makes Codex route through the proxy by editing two things Codex reads: its config
@@ -23,9 +23,14 @@ model_catalog_json = "/absolute/path/to/opencodex-catalog.json"
 # Auto-injected by opencodex
 openai_base_url = "http://127.0.0.1:10100/v1"
 
+# only when fastMode is set; unset adds no [features] table
 [features]
 fast_mode = true
 ```
+
+The injected `fast_mode` follows the tri-state `fastMode` setting: `true` writes `fast_mode = true`,
+`false` writes `fast_mode = false`, and unset leaves an existing `fast_mode` untouched without
+adding a `[features]` table.
 
 The proxy listens on port `10100` by default and serves `POST /v1/responses`,
 `POST /v1/responses/compact`, `POST /v1/images/generations`, `POST /v1/images/edits`,
@@ -149,6 +154,16 @@ checks for a single Windows Codex Desktop home at `/mnt/c/Users/*/.codex/config.
 one candidate exists, it uses that directory so WSL app-server mode and Windows Codex Desktop share
 the same config and auth files. Set `CODEX_HOME` explicitly to override this detection.
 
+Codex can keep SQLite-backed thread state in a separate directory. OpenCodex history operations use
+the same precedence as Codex: root `sqlite_home` in `config.toml`, then `CODEX_SQLITE_HOME`, then the
+effective `CODEX_HOME`. Relative SQLite homes resolve from the current working directory. When an
+explicit `CODEX_SQLITE_HOME` is present during service installation or repair, the durable launcher
+stores its install-time absolute path so the background proxy continues to address the same database.
+If `config.toml` or its root `sqlite_home` key is absent, OpenCodex continues to the
+environment/home fallback. If the file cannot be read or parsed, or the key is present but blank or
+not a string, SQLite-home resolution stops instead of risking history operations against a different
+database.
+
 On Windows, an Orca shell can set both `CODEX_HOME` and `ORCA_CODEX_HOME` to Orca's bundled runtime
 home while the ChatGPT/Codex app still reads `%USERPROFILE%\\.codex`. `ocx status` and `ocx doctor`
 warn about this exact mismatch and print redacted target paths. If a background service was installed
@@ -188,6 +203,25 @@ Routed catalog entries also get their GPT-5 identity rewritten to the real upstr
 Reasoning controls come from provider/model metadata across Codex's `low | medium | high | xhigh |
 max | ultra` ladder; unsupported values are mapped or clamped before the upstream request.
 
+### Routed local tools
+
+Non-native routed catalog rows use `tool_mode: "code_mode_only"`. This lets Codex expose its official
+`exec` entrypoint and nested MCP tools, including Browser and Computer Use, while opencodex routes
+only the model's ordinary function call. Tool execution, permissions, and confirmations remain
+local to Codex; opencodex does not implement a second browser or desktop-control executor.
+
+For key-auth Responses providers that do not accept Codex's `exec` custom-tool grammar, opencodex
+encodes that declaration and its history as an upstream function tool, then restores the streamed
+function-call lifecycle to `custom_tool_call` before Codex sees it. Native OpenAI forward routing
+and the supported `apply_patch` custom tool stay unchanged.
+
+The selected provider must support function/tool calling. A text-only provider without tool-call
+support cannot use `exec`, Browser, or Computer Use. Native OpenAI rows keep their upstream tool
+mode unchanged.
+
+After `ocx sync` changes this metadata, restart Codex App and open a fresh task. Existing app-server
+processes and tasks may retain the catalog and tool plan they loaded at startup.
+
 ### Custom model display names
 
 A custom model can carry a human-readable **display name** that overrides the label Codex shows in
@@ -200,6 +234,22 @@ Add a display name from the CLI (the proxy syncs the catalog right away when liv
 ```bash
 ocx models add deepseek deepseek-v4 --display-name "DeepSeek V4" --context-window 128000
 ```
+
+Remote Codex clients can fetch the same generated catalog over the management API (same
+admission token as other `/api/*` routes):
+
+```bash
+dest="${CODEX_HOME:-$HOME/.codex}/opencodex-catalog.json"
+tmp="$(mktemp "${dest}.XXXXXX")"
+curl -fsS -H "x-opencodex-api-key: $OPENCODEX_ADMIN_AUTH_TOKEN" \
+  "https://proxy.example.com/api/catalog" > "$tmp" \
+  && mv "$tmp" "$dest"
+ocx sync-cache
+```
+
+The response is the raw `opencodex-catalog.json` document (no provider credentials). When
+available, the `x-opencodex-codex-version` header reports the Codex runtime version on the
+server so clients can spot version skew.
 
 You can also set or edit it through the management API (`POST /api/custom-models`,
 `PUT /api/custom-models/<id>` with a `displayName` string) and the web dashboard. A `/` is rejected
@@ -279,24 +329,7 @@ it is not; `ocx doctor` reports restart safety (service/shim coverage).
 
 ## The subagent picker
 
-Codex's `spawn_agent` advertises the first **5 picker-visible catalog models** after sorting by
-priority. `subagentModels` accepts up to five ids, either bare native GPT slugs or namespaced
-`provider/model` routes, and gives them priorities 0–4 so they sort first:
-
-```json
-{
-  "subagentModels": [
-    "gpt-5.5",
-    "gpt-5.6-sol",
-    "anthropic/claude-opus-5",
-    "xai/grok-4.5",
-    "cursor/gpt-5.6-terra"
-  ]
-}
-```
-
-Priority ranking: featured (0–4) < other routed (5) < native (9). You can also manage this from the
-[web dashboard](/guides/web-dashboard/).
+Catalog sync makes the selected sub-agent models available to Codex; see [Codex App model picker](/guides/codex-app-models/#subagent-selection) for picker ordering and [Sub-agent Surface](/guides/sub-agent-surface/) for v1/base/v2 delegation and fallback behavior.
 
 ## Codex account warmup
 

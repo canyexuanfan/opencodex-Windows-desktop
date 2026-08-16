@@ -16,11 +16,13 @@ import {
 const USAGE = `Usage:
   ocx models live [--provider <name>] [--json]
   ocx models edit <custom-id> [--model-id <id>] [--display-name <name|->]
-      [--context-window <tokens|0>] [--modalities <text,image,audio|->] [--json]
+      [--context-window <tokens|0>] [--modalities <text,image,audio|->]
+      [--reasoning-efforts <none,minimal,low,medium,high,xhigh,max,ultra|->]
+      [--default-reasoning-effort <level|->] [--json]
   ocx models <enable|disable> <provider/model|native-model> [--native] [--json]
   ocx models provider <name> <on|off> [--json]
   ocx models selected <provider> [--set <id,id...>|--clear] [--json]
-  ocx models context <status|value <tokens>|provider <name> <on|off>|all <on|off>> [--json]
+  ocx models context <status|value <tokens> [--set-all]|provider <name> on [--value <tokens>]|provider <name> off|all <on|off>> [--json]
   ocx models shadow <status|set> [model|-] [--enabled <on|off>] [--json]`;
 
 type ModelRow = {
@@ -57,6 +59,8 @@ async function edit(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const displayName = takeOption(args, "--display-name");
   const contextRaw = takeOption(args, "--context-window");
   const modalitiesRaw = takeOption(args, "--modalities");
+  const reasoningEffortsRaw = takeOption(args, "--reasoning-efforts");
+  const defaultEffortRaw = takeOption(args, "--default-reasoning-effort");
   rejectArgs(args, USAGE);
   if (modelId !== undefined) patch.modelId = modelId;
   if (displayName !== undefined) patch.displayName = displayName === "-" ? "" : displayName;
@@ -66,6 +70,23 @@ async function edit(argv: string[], deps: RuntimeApiDeps): Promise<void> {
     patch.contextWindow = value === 0 ? null : value;
   }
   if (modalitiesRaw !== undefined) patch.inputModalities = modalitiesRaw === "-" ? [] : csv(modalitiesRaw);
+  // "-" restores inheritance by clearing the stored ladder (null); "" stores an explicit
+  // empty ladder (the "no reasoning" override, same as the dashboard's uncheck-all).
+  // Embedded blank CSV members (`low,,high`, `,,`) are malformed and must be rejected, not
+  // silently normalized by csv().
+  if (reasoningEffortsRaw !== undefined) {
+    if (reasoningEffortsRaw === "-") {
+      patch.reasoningEfforts = null;
+    } else {
+      const trimmed = reasoningEffortsRaw.trim();
+      const values = trimmed === "" ? [] : trimmed.split(",").map(value => value.trim());
+      if (values.some(value => value === "")) {
+        throw new CliUsageError("--reasoning-efforts must be comma-separated values from none, minimal, low, medium, high, xhigh, max, ultra (\"\" for no reasoning, \"-\" to inherit)", USAGE);
+      }
+      patch.reasoningEfforts = values;
+    }
+  }
+  if (defaultEffortRaw !== undefined) patch.defaultReasoningEffort = defaultEffortRaw === "-" ? null : defaultEffortRaw;
   if (Object.keys(patch).length === 0) throw new CliUsageError("at least one edit option is required", USAGE);
   const result = await runtimeRequest(`/api/custom-models/${encodeURIComponent(id)}`, {
     method: "PUT",
@@ -158,11 +179,23 @@ async function context(argv: string[], deps: RuntimeApiDeps): Promise<void> {
     const value = Number(raw.replace(/[_,]/g, ""));
     if (!Number.isInteger(value) || value <= 0) throw new CliUsageError("context value must be a positive integer", USAGE);
     body = { value };
+    // Explicit apply-to-all switch for headless use: re-points every routed provider to
+    // the new value, mirroring the dashboard's "apply to every routed provider" toggle.
+    // Without it the value only becomes the default for future toggles.
+    if (takeFlag(args, "--set-all")) body.setAll = true;
   } else if (action === "provider") {
     const provider = args.shift()?.trim();
     const state = args.shift()?.toLowerCase();
     if (!provider || (state !== "on" && state !== "off")) throw new CliUsageError("provider and on|off are required", USAGE);
     body = { provider, enabled: state === "on" };
+    // Optional explicit cap value for this provider only (`ocx models context provider
+    // openai on --value 128000`). Mirrors the dashboard's per-provider cap picker; the
+    // value never leaks to other providers.
+    const value = takeIntegerOption(args, "--value", { min: 1 });
+    if (value !== undefined && state !== "on") {
+      throw new CliUsageError("--value can only be used with on", USAGE);
+    }
+    if (value !== undefined) body.value = value;
   } else if (action === "all") {
     const state = args.shift()?.toLowerCase();
     if (state !== "on" && state !== "off") throw new CliUsageError("all requires on|off", USAGE);

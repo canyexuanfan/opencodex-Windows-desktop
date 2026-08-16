@@ -1,20 +1,28 @@
 import type { OcxProviderConfig } from "../types";
 import {
+  isValidModelDiscoveryModelId,
+  MODEL_DISCOVERY_MAX_MODEL_ID_LENGTH,
+  MODEL_DISCOVERY_MAX_MODELS,
+  MODEL_DISCOVERY_MAX_RESPONSE_BYTES,
+} from "./model-discovery-limits";
+export {
+  isValidModelDiscoveryModelId,
+  MODEL_DISCOVERY_MAX_MODEL_ID_LENGTH,
+  MODEL_DISCOVERY_MAX_MODELS,
+  MODEL_DISCOVERY_MAX_RESPONSE_BYTES,
+} from "./model-discovery-limits";
+import {
   getProviderRegistryEntry,
   providerMatchesRegistryTransport,
+  registryEntryForProviderDestination,
   type ProviderModelDiscoveryFilter,
   type ProviderModelDiscoveryPredicate,
   type ProviderModelDiscoveryScalar,
   type ProviderModelDiscoverySpec,
 } from "./registry";
 
-/** Hard process-wide limits. Registry entries may lower, but never raise, these ceilings. */
-export const MODEL_DISCOVERY_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
-export const MODEL_DISCOVERY_MAX_MODELS = 2_000;
-export const MODEL_DISCOVERY_MAX_MODEL_ID_LENGTH = 1_024;
 const MODEL_DISCOVERY_MAX_FILTER_VALUES = 256;
 const MODEL_DISCOVERY_MAX_FILTER_STRING_LENGTH = 1_024;
-const MODEL_DISCOVERY_MODEL_ID_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 
 export interface ResolvedProviderModelDiscovery {
   spec?: ProviderModelDiscoverySpec;
@@ -91,7 +99,12 @@ export function providerModelDiscoverySpecError(spec: ProviderModelDiscoverySpec
       return "discovery path must be a query-free relative/origin path";
     }
     if (path.includes("\\")) return "discovery path must use forward slashes";
-    if (path.split("/").some(segment => segment.replace(/%2e/gi, ".") === "..")) {
+    const segments = path.split("/");
+    if (segments.some((segment, index) => {
+      const decoded = segment.replace(/%2e/gi, ".");
+      if (decoded !== "..") return false;
+      return index !== 0 || segments.filter(s => s.replace(/%2e/gi, ".") === "..").length !== 1;
+    })) {
       return "discovery path must not contain parent-directory segments";
     }
   }
@@ -124,9 +137,14 @@ export function resolveProviderModelDiscovery(
   providerName: string,
   provider: Pick<OcxProviderConfig, "baseUrl" | "adapter"> & Partial<Pick<OcxProviderConfig, "authMode">>,
 ): ResolvedProviderModelDiscovery {
-  const entry = providerMatchesRegistryTransport(providerName, provider)
-    ? getProviderRegistryEntry(providerName)
-    : undefined;
+  // The dashboard permits a canonical preset to be saved under a different name. Recover its
+  // registry-owned discovery policy by transport in that case. The destination helper is limited
+  // to exact fixed-key baseUrl + adapter matches, so custom endpoints, OAuth rows, templates, and
+  // overridable destinations cannot acquire another provider's discovery URL or filter.
+  const namedEntry = getProviderRegistryEntry(providerName);
+  const entry = namedEntry
+    ? (providerMatchesRegistryTransport(providerName, provider) ? namedEntry : undefined)
+    : registryEntryForProviderDestination(provider);
   const spec = entry?.modelDiscovery;
   return {
     ...(spec ? { spec } : {}),
@@ -313,12 +331,83 @@ export function extractModelEnvelopeRows(
 }
 
 /** Validate, bound, deduplicate, and declaratively filter OpenAI `{data:[...]}` or top-level arrays (Together `#617`). */
+/**
+ * Metadata a sibling `models[]` array may contribute to an ALREADY-ADMITTED
+ * `data[]` row (#1797).
+ *
+ * llama.cpp serves a dual-envelope body: an Ollama-style `models[]` array
+ * carrying `capabilities` alongside the OpenAI-style `data[]` array carrying
+ * `meta`, so the two halves of one model's metadata never meet and a server
+ * that truthfully advertises "multimodal" produced an image-blind row.
+ *
+ * Two boundaries make this safe, and both were added after review found the
+ * first attempt unsound:
+ *
+ * 1. It runs AFTER admission filtering. Enriching first let a sibling supply
+ *    the exact field a provider filter requires — reproduced against the real
+ *    Chutes policy, where a row lacking `supported_features: ["tools"]` was
+ *    admitted once a same-id sibling provided it. Enrichment may change what is
+ *    KNOWN about a model, never WHICH models are published.
+ * 2. Only the capability keys #1797 needs are copied. A blanket "fill every
+ *    absent key" made the untrusted `models[]` array a way into any field the
+ *    pipeline consumes.
+ *
+ *    The list deliberately EXCLUDES `supported_features` and `features`, even
+ *    though both are capability-shaped: they are the two keys real provider
+ *    filters test (`registry.ts:1591` requires `supported_features` to contain
+ *    "tools"; `registry.ts:1883` tests `features.tool_use`). Ordering already
+ *    prevents a sibling from flipping an admission verdict, but a key that is
+ *    both enrichable and filter-relevant is one refactor away from becoming a
+ *    bypass again. #1797 does not need them.
+ */
+const SIBLING_ENRICHABLE_KEYS = new Set(["capabilities", "modalities", "input_modalities"]);
+
+type SiblingIndex = Map<string, Record<string, unknown> | null>;
+
+function buildSiblingIndex(value: unknown, limit: number): SiblingIndex | null {
+  const record = plainObject(value);
+  const sibling = record?.models;
+  if (!Array.isArray(sibling) || sibling.length === 0 || sibling.length > limit) return null;
+
+  const byId: SiblingIndex = new Map();
+  for (const raw of sibling) {
+    const entry = plainObject(raw);
+    if (!entry) continue;
+    for (const key of ["id", "model", "name"]) {
+      const id = entry[key];
+      if (typeof id !== "string" || id.length === 0) continue;
+      // `null` marks an ambiguous id: two sibling entries claim it, so neither
+      // can be attributed with confidence and both are ignored.
+      byId.set(id, byId.has(id) && byId.get(id) !== entry ? null : entry);
+    }
+  }
+  return byId.size > 0 ? byId : null;
+}
+
+function enrichAdmittedModel(item: ProviderModelsApiItem, siblings: SiblingIndex): ProviderModelsApiItem {
+  const extra = siblings.get(item.id);
+  if (!extra) return item;
+  let merged: Record<string, unknown> | null = null;
+  for (const key of SIBLING_ENRICHABLE_KEYS) {
+    if (!(key in extra) || key in item) continue;
+    merged ??= { ...(item as Record<string, unknown>) };
+    merged[key] = extra[key];
+  }
+  return (merged ?? item) as ProviderModelsApiItem;
+}
+
+function plainObject(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
 export function extractProviderModelItems(
   value: unknown,
   discovery: ResolvedProviderModelDiscovery,
 ): ProviderModelItemsResult {
   const limit = positiveIntegerAtMost(discovery.maxModels, MODEL_DISCOVERY_MAX_MODELS);
   let data: unknown[];
+  let siblings: SiblingIndex | null = null;
   if (Array.isArray(value)) {
     // Together-style top-level /models arrays. Catalog discovery must not treat a stray
     // `models` key on openai-chat responses as valid — only `data` envelopes or top-level arrays.
@@ -328,6 +417,7 @@ export function extractProviderModelItems(
     const envelope = extractModelEnvelopeRows(value, discovery.maxModels, ["data"]);
     if (!envelope.ok) return envelope;
     data = envelope.rows;
+    siblings = buildSiblingIndex(value, limit);
   }
 
   const items: ProviderModelsApiItem[] = [];
@@ -337,20 +427,23 @@ export function extractProviderModelItems(
       return { ok: false, reason: "invalid_shape" };
     }
     const id = (raw as { id?: unknown }).id;
-    if (typeof id !== "string") return { ok: false, reason: "invalid_shape" };
-    const normalizedId = id.trim();
-    if (
-      !normalizedId
-      || normalizedId !== id
-      || normalizedId.length > MODEL_DISCOVERY_MAX_MODEL_ID_LENGTH
-      || MODEL_DISCOVERY_MODEL_ID_CONTROL_CHARS.test(normalizedId)
-    ) {
-      return { ok: false, reason: "invalid_shape" };
+    if (!isValidModelDiscoveryModelId(id)) return { ok: false, reason: "invalid_shape" };
+    const prefix = discovery.spec?.stripIdPrefix;
+    let finalId = id;
+    if (prefix && finalId.startsWith(prefix)) {
+      finalId = finalId.slice(prefix.length);
+      if (!isValidModelDiscoveryModelId(finalId)) continue;
     }
-    const item = raw as ProviderModelsApiItem;
-    if (!providerModelMatchesDiscoveryFilter(item, discovery.spec?.filter) || seen.has(normalizedId)) continue;
-    seen.add(normalizedId);
-    items.push(item);
+    const item = finalId === id ? raw as ProviderModelsApiItem : { ...(raw as ProviderModelsApiItem), id: finalId };
+    // Admission is decided on the ORIGINAL `data[]` row, before any sibling
+    // enrichment. Merging first let a `models[]` entry supply the very field a
+    // provider filter requires — reproduced against the real Chutes policy,
+    // where a row lacking `supported_features: ["tools"]` was admitted once a
+    // same-id sibling provided it. Enrichment must never change WHICH models
+    // are published, only what is known about an already-admitted one.
+    if (!providerModelMatchesDiscoveryFilter(item, discovery.spec?.filter) || seen.has(finalId)) continue;
+    seen.add(finalId);
+    items.push(siblings ? enrichAdmittedModel(item, siblings) : item);
   }
   return { ok: true, items, rawCount: data.length };
 }

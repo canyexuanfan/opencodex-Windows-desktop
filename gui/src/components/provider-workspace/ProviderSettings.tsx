@@ -13,6 +13,8 @@ import { readJsonIfOk } from "../../fetch-json";
 import { useT } from "../../i18n/shared";
 import { IconLock } from "../../icons";
 import { isCatalogProviderId } from "../../provider-icons";
+import { openAiAccountProviderState } from "../../provider-payload";
+import { providerSupportsLiveModelDiscovery } from "../../provider-workspace/catalog";
 import type { CatalogPreset } from "../provider-catalog/provider-presets";
 import { authModeLabel } from "./ProviderRail";
 import type { WorkspaceItem, ProviderUpdatePatch } from "./types";
@@ -21,6 +23,31 @@ const ADAPTERS = ["openai-responses", "openai-chat", "anthropic", "google", "azu
 const EMPTY_MODELS: string[] = [];
 
 type ChoicesStatus = "idle" | "loading" | "ready" | "error";
+type PacingRule = { requestsPerMinute?: number; minIntervalMs?: number };
+type PacingStatus = { enabled: boolean; queued: number; nextSlotInMs: number; lastStartedAt?: number; lastModelId?: string };
+
+function numberDraft(value: number | undefined): string { return value === undefined ? "" : String(value); }
+function positiveRpm(value: string): number | undefined {
+  if (!value.trim()) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 1 / 60 ? parsed : undefined;
+}
+function positiveInteger(value: string): number | undefined {
+  if (!value.trim()) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+function pacingSignature(value: WorkspaceItem["requestPacing"] | undefined): string {
+  const models = Object.entries(value?.models ?? {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([model, rule]) => [model, rule.requestsPerMinute ?? null, rule.minIntervalMs ?? null]);
+  return JSON.stringify([
+    value?.enabled === true,
+    value?.requestsPerMinute ?? null,
+    value?.minIntervalMs ?? null,
+    models,
+  ]);
+}
 
 export default function ProviderSettings({
   item, availableModels = EMPTY_MODELS, apiBase, onUpdateProvider, onDirtyChange, onRegisterSave,
@@ -36,6 +63,8 @@ export default function ProviderSettings({
 }) {
   const t = useT();
   const initialAuth = String(item.authMode ?? (item.keyOptional ? "local" : "key"));
+  const liveModelDiscoverySupported = providerSupportsLiveModelDiscovery(item.name, item);
+  const savedLiveModels = liveModelDiscoverySupported ? item.liveModels !== false : false;
   const [adapter, setAdapter] = useState(item.adapter);
   const [baseUrl, setBaseUrl] = useState(item.baseUrl);
   const [defaultModel, setDefaultModel] = useState(item.defaultModel ?? "");
@@ -43,12 +72,23 @@ export default function ProviderSettings({
   const [apiKeyTransport, setApiKeyTransport] = useState(item.apiKeyTransport ?? "x-api-key");
   const [note, setNote] = useState(item.note ?? "");
   const [allowPrivateNetwork, setAllowPrivateNetwork] = useState(item.allowPrivateNetwork ?? false);
-  const [liveModels, setLiveModels] = useState(item.liveModels !== false);
+  const [liveModels, setLiveModels] = useState(savedLiveModels);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [accountMode, setAccountMode] = useState<"pool" | "direct">(item.codexAccountMode ?? "pool");
+  const [modeSaving, setModeSaving] = useState(false);
+  const [modeMsg, setModeMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [baseUrlChoices, setBaseUrlChoices] = useState<CatalogPreset["baseUrlChoices"]>();
   const [choicesStatus, setChoicesStatus] = useState<ChoicesStatus>(apiBase ? "loading" : "idle");
   const [endpointChoice, setEndpointChoice] = useState(() => "custom");
+  const [pacingEnabled, setPacingEnabled] = useState(item.requestPacing?.enabled === true);
+  const [pacingRpm, setPacingRpm] = useState(() => numberDraft(item.requestPacing?.requestsPerMinute));
+  const [pacingDelay, setPacingDelay] = useState(() => numberDraft(item.requestPacing?.minIntervalMs));
+  const [pacingModels, setPacingModels] = useState<Record<string, PacingRule>>(() => ({ ...(item.requestPacing?.models ?? {}) }));
+  const [pacingModelId, setPacingModelId] = useState("");
+  const [pacingModelRpm, setPacingModelRpm] = useState("");
+  const [pacingModelDelay, setPacingModelDelay] = useState("");
+  const [pacingStatus, setPacingStatus] = useState<PacingStatus | null>(null);
 
   /* eslint-disable react-hooks/set-state-in-effect -- intentional form reset when saved provider fields change */
   useEffect(() => {
@@ -59,10 +99,23 @@ export default function ProviderSettings({
     setApiKeyTransport(item.apiKeyTransport ?? "x-api-key");
     setNote(item.note ?? "");
     setAllowPrivateNetwork(item.allowPrivateNetwork ?? false);
-    setLiveModels(item.liveModels !== false);
+    setLiveModels(savedLiveModels);
+    setPacingEnabled(item.requestPacing?.enabled === true);
+    setPacingRpm(numberDraft(item.requestPacing?.requestsPerMinute));
+    setPacingDelay(numberDraft(item.requestPacing?.minIntervalMs));
+    setPacingModels({ ...(item.requestPacing?.models ?? {}) });
     setMsg(null);
+    setModeMsg(null);
     queueMicrotask(() => setEndpointChoice(matchChoiceId(baseUrlChoices, item.baseUrl)));
-  }, [item.adapter, item.baseUrl, item.defaultModel, item.authMode, item.apiKeyTransport, item.keyOptional, item.note, item.allowPrivateNetwork, item.liveModels, baseUrlChoices]);
+  }, [item.adapter, item.baseUrl, item.defaultModel, item.authMode, item.apiKeyTransport, item.keyOptional, item.note, item.allowPrivateNetwork, savedLiveModels, item.requestPacing, baseUrlChoices]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  // Account mode syncs on its own: a mode PATCH refresh must not reset an in-progress
+  // draft, so it is deliberately kept out of the form-reset effect above.
+  /* eslint-disable react-hooks/set-state-in-effect -- intentional split from the form reset */
+  useEffect(() => {
+    setAccountMode(item.codexAccountMode ?? "pool");
+  }, [item.codexAccountMode]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
@@ -92,8 +145,30 @@ export default function ProviderSettings({
       });
     return () => { cancelled = true; };
     // Remount via key={item.name}; capture savedBaseUrl once per mount/fetch.
+    // oxlint-disable-next-line react/react-compiler -- existing exhaustive-deps exception is intentional
     // eslint-disable-next-line react-hooks/exhaustive-deps -- item.baseUrl sync is handled by the form-reset effect
   }, [apiBase, item.name]);
+
+  useEffect(() => {
+    if (!apiBase) return;
+    let active = true;
+    const load = () => {
+      fetch(`${apiBase}/api/provider-request-pacing?name=${encodeURIComponent(item.name)}`)
+        .then(r => readJsonIfOk<PacingStatus>(r))
+        .then(status => { if (active && status) setPacingStatus(status); })
+        .catch(() => undefined);
+    };
+    load();
+    const timer = window.setInterval(load, 2_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [apiBase, item.name]);
+
+  const pacingDraft = useMemo(() => ({
+    enabled: pacingEnabled,
+    ...(positiveRpm(pacingRpm) !== undefined ? { requestsPerMinute: positiveRpm(pacingRpm) } : {}),
+    ...(positiveInteger(pacingDelay) !== undefined ? { minIntervalMs: positiveInteger(pacingDelay) } : {}),
+    ...(Object.keys(pacingModels).length > 0 ? { models: pacingModels } : {}),
+  }), [pacingDelay, pacingEnabled, pacingModels, pacingRpm]);
 
   const dirty = adapter.trim() !== item.adapter
     || baseUrl.trim() !== item.baseUrl
@@ -102,9 +177,11 @@ export default function ProviderSettings({
     || (adapter.trim() === "anthropic" && authMode === "key" && apiKeyTransport !== (item.apiKeyTransport ?? "x-api-key"))
     || note.trim() !== (item.note ?? "")
     || allowPrivateNetwork !== (item.allowPrivateNetwork ?? false)
-    || liveModels !== (item.liveModels !== false);
+    || liveModels !== savedLiveModels;
+  const pacingDirty = pacingSignature(pacingDraft) !== pacingSignature(item.requestPacing);
+  const formDirty = dirty || pacingDirty;
 
-  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty, onDirtyChange]);
+  useEffect(() => { onDirtyChange?.(formDirty); return () => onDirtyChange?.(false); }, [formDirty, onDirtyChange]);
 
   const modelOptions = useMemo(() => {
     const set = new Set(availableModels);
@@ -122,12 +199,15 @@ export default function ProviderSettings({
   const isPreset = isCatalogProviderId(item.name);
   const hasEndpointPicker = choicesStatus === "ready" && !!(baseUrlChoices && baseUrlChoices.length > 0);
   const supportsApiKeyTransport = adapter.trim() === "anthropic" && authMode === "key";
+  const openAiState = item.name === "openai" ? openAiAccountProviderState(item) : "invalid";
+  const isCanonicalOpenAi = openAiState === "ready" || openAiState === "disabled";
   // Lock plain baseUrl for presets while loading or when there is no picker.
   // On fetch error, keep it editable so allowBaseUrlOverride providers are not trapped.
   const plainBaseUrlLocked = isPreset && choicesStatus !== "error";
 
   const save = async (): Promise<boolean> => {
     if (!onUpdateProvider) { setMsg({ ok: false, text: t("pws.updatesUnavailable") }); return false; }
+    if (modeSaving) return false;
     const nextBaseUrl = hasEndpointPicker
       ? resolvedBaseUrlForChoice(baseUrlChoices, endpointChoice, baseUrl)
       : baseUrl.trim();
@@ -135,12 +215,28 @@ export default function ProviderSettings({
     setSaving(true);
     setMsg(null);
     try {
-      const patch: ProviderUpdatePatch = { adapter: adapter.trim(), baseUrl: nextBaseUrl, defaultModel: defaultModel.trim(), authMode, note: note.trim(), allowPrivateNetwork };
-      // Keep omitted legacy values omitted unless the user actually changes this toggle.
-      // Otherwise an unrelated settings save manufactures `liveModels: true` provenance.
-      if (liveModels !== (item.liveModels !== false)) patch.liveModels = liveModels;
-      if (supportsApiKeyTransport) patch.apiKeyTransport = apiKeyTransport;
-      else if (item.apiKeyTransport !== undefined) patch.apiKeyTransport = "";
+      if (pacingEnabled && !pacingDraft.requestsPerMinute && !pacingDraft.minIntervalMs && !pacingDraft.models) {
+        setMsg({ ok: false, text: t("pws.pacingRuleRequired") }); return false;
+      }
+      const pacingOnly = pacingDirty && !dirty;
+      const patch: ProviderUpdatePatch = pacingOnly
+        ? { requestPacing: pacingDraft }
+        : {
+            adapter: adapter.trim(),
+            baseUrl: nextBaseUrl,
+            defaultModel: defaultModel.trim(),
+            authMode,
+            note: note.trim(),
+            allowPrivateNetwork,
+            ...(pacingDirty ? { requestPacing: pacingDraft } : {}),
+          };
+      if (!pacingOnly) {
+        // Keep omitted legacy values omitted unless the user actually changes this toggle.
+        // Otherwise an unrelated settings save manufactures `liveModels: true` provenance.
+        if (liveModelDiscoverySupported && liveModels !== (item.liveModels !== false)) patch.liveModels = liveModels;
+        if (supportsApiKeyTransport) patch.apiKeyTransport = apiKeyTransport;
+        else if (item.apiKeyTransport !== undefined) patch.apiKeyTransport = "";
+      }
       const res = await onUpdateProvider(item.name, patch);
       setMsg(res.ok ? { ok: true, text: t("pws.settingsSaved") } : { ok: false, text: res.error || t("prov.saveFailed") });
       return res.ok;
@@ -159,11 +255,33 @@ export default function ProviderSettings({
     return () => onRegisterSave(null);
   }, [onRegisterSave]);
 
+  const applyAccountMode = async (next: "pool" | "direct") => {
+    if (modeSaving || saving || next === accountMode) return;
+    if (!onUpdateProvider) { setModeMsg({ ok: false, text: t("pws.updatesUnavailable") }); return; }
+    setModeSaving(true);
+    setModeMsg(null);
+    try {
+      const res = await onUpdateProvider("openai", { codexAccountMode: next });
+      if (res.ok) {
+        setAccountMode(next);
+        setModeMsg({ ok: true, text: t("pws.accountModeSaved") });
+      } else {
+        setModeMsg({ ok: false, text: res.error || t("pws.accountModeFailed") });
+      }
+    } catch {
+      setModeMsg({ ok: false, text: t("pws.accountModeFailed") });
+    } finally {
+      setModeSaving(false);
+    }
+  };
+
   const discard = () => {
     setAdapter(item.adapter); setBaseUrl(item.baseUrl);
     setDefaultModel(item.defaultModel ?? ""); setAuthMode(initialAuth);
     setApiKeyTransport(item.apiKeyTransport ?? "x-api-key");
-    setNote(item.note ?? ""); setAllowPrivateNetwork(item.allowPrivateNetwork ?? false); setLiveModels(item.liveModels !== false); setMsg(null);
+    setNote(item.note ?? ""); setAllowPrivateNetwork(item.allowPrivateNetwork ?? false); setLiveModels(savedLiveModels); setMsg(null);
+    setPacingEnabled(item.requestPacing?.enabled === true); setPacingRpm(numberDraft(item.requestPacing?.requestsPerMinute));
+    setPacingDelay(numberDraft(item.requestPacing?.minIntervalMs)); setPacingModels({ ...(item.requestPacing?.models ?? {}) });
     setEndpointChoice(matchChoiceId(baseUrlChoices, item.baseUrl));
   };
 
@@ -174,6 +292,15 @@ export default function ProviderSettings({
       case "custom": return t("modal.endpoint.custom");
       default: return fallback;
     }
+  };
+
+  const addPacingModel = () => {
+    const modelId = pacingModelId.trim();
+    const rpm = positiveRpm(pacingModelRpm);
+    const delay = positiveInteger(pacingModelDelay);
+    if (!modelId || (rpm === undefined && delay === undefined)) return;
+    setPacingModels(current => ({ ...current, [modelId]: { ...(rpm !== undefined ? { requestsPerMinute: rpm } : {}), ...(delay !== undefined ? { minIntervalMs: delay } : {}) } }));
+    setPacingModelId(""); setPacingModelRpm(""); setPacingModelDelay("");
   };
 
   return (
@@ -243,6 +370,43 @@ export default function ProviderSettings({
           </select>
         )}
       </label>
+      {isCanonicalOpenAi && (
+        <label className="pwi-settings-field">
+          <span className="pwi-settings-label">{t("codexAuth.accountModeTitle")}</span>
+          <select
+            className="input"
+            value={accountMode}
+            disabled={modeSaving || saving}
+            onChange={e => {
+              const next = e.target.value as "pool" | "direct";
+              if (next === accountMode) return;
+              // Flipping modes rebinds running threads and changes quota accounting,
+              // so the PATCH only fires after an explicit confirmation.
+              if (!window.confirm(t("pws.accountModeConfirm"))) {
+                // Keep the visible choice aligned with the applied mode.
+                e.target.value = accountMode;
+                return;
+              }
+              void applyAccountMode(next);
+            }}
+          >
+            <option value="pool">{t("codexAuth.accountModePool")}</option>
+            <option value="direct">{t("codexAuth.accountModeDirect")}</option>
+          </select>
+          <span className="pwi-settings-hint">
+            {accountMode === "direct" ? t("codexAuth.accountModeDirectDesc") : t("codexAuth.accountModePoolDesc")}
+          </span>
+          {modeSaving && <span className="muted text-label">{t("pws.accountSwitching")}</span>}
+          {modeMsg && (
+            <span
+              role={modeMsg.ok ? "status" : "alert"}
+              className={modeMsg.ok ? "pwi-settings-mode-msg pwi-settings-mode-msg--ok" : "pwi-settings-mode-msg pwi-settings-mode-msg--err"}
+            >
+              {modeMsg.text}
+            </span>
+          )}
+        </label>
+      )}
       {supportsApiKeyTransport && (
         <label className="pwi-settings-field">
           <span className="pwi-settings-label">{t("modal.apiKeyTransport")}</span>
@@ -261,22 +425,55 @@ export default function ProviderSettings({
         <span className="pwi-settings-label">{t("pws.allowPrivateNetwork")}</span>
       </label>
       <label className="pwi-settings-field" style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
-        <input type="checkbox" checked={liveModels} onChange={e => setLiveModels(e.target.checked)} />
+        <input
+          type="checkbox"
+          checked={liveModels}
+          disabled={!liveModelDiscoverySupported}
+          onChange={e => setLiveModels(e.target.checked)}
+        />
         <span>
           <span className="pwi-settings-label">{t("pws.liveModels")}</span>
           <span className="muted text-label" style={{ display: "block", marginTop: 2 }}>{t("pws.liveModelsDesc")}</span>
         </span>
       </label>
-      {dirty && (
+      <section className="pwi-pacing-card" aria-labelledby="pwi-pacing-title">
+        <div className="pwi-pacing-head">
+          <div><h3 id="pwi-pacing-title">{t("pws.pacingTitle")}</h3><p>{t("pws.pacingDesc")}</p></div>
+          <label className="pwi-pacing-toggle"><input type="checkbox" checked={pacingEnabled} onChange={e => setPacingEnabled(e.target.checked)} /> {t("pws.pacingEnabled")}</label>
+        </div>
+        <div className="pwi-pacing-grid">
+          <label className="pwi-settings-field"><span className="pwi-settings-label">{t("pws.pacingRpm")}</span><input className="input" type="number" min="0.016667" step="any" value={pacingRpm} onChange={e => setPacingRpm(e.target.value)} placeholder="38" /></label>
+          <label className="pwi-settings-field"><span className="pwi-settings-label">{t("pws.pacingDelay")}</span><input className="input" type="number" min="1" step="1" value={pacingDelay} onChange={e => setPacingDelay(e.target.value)} placeholder="1600" /></label>
+        </div>
+        <p className="pwi-settings-hint">{t("pws.pacingSlowerWins")}</p>
+        <div className="pwi-pacing-status" aria-live="polite">
+          <span><strong>{pacingStatus?.queued ?? 0}</strong> {t("pws.pacingQueued")}</span>
+          <span><strong>{pacingStatus?.nextSlotInMs ?? 0} ms</strong> {t("pws.pacingNextSlot")}</span>
+          <span><strong>{pacingStatus?.lastModelId ?? t("pws.pacingNone")}</strong> {t("pws.pacingLastModel")}</span>
+        </div>
+        <h4>{t("pws.pacingModelOverrides")}</h4>
+        <div className="pwi-pacing-grid pwi-pacing-grid--model">
+          <label className="pwi-settings-field"><span className="pwi-settings-label">{t("pws.pacingModel")}</span><input className="input" list={`pacing-models-${item.name}`} value={pacingModelId} onChange={e => setPacingModelId(e.target.value)} /><datalist id={`pacing-models-${item.name}`}>{availableModels.map(model => <option key={model} value={model} />)}</datalist></label>
+          <label className="pwi-settings-field"><span className="pwi-settings-label">{t("pws.pacingRpm")}</span><input className="input" type="number" min="0.016667" step="any" value={pacingModelRpm} onChange={e => setPacingModelRpm(e.target.value)} /></label>
+          <label className="pwi-settings-field"><span className="pwi-settings-label">{t("pws.pacingDelay")}</span><input className="input" type="number" min="1" step="1" value={pacingModelDelay} onChange={e => setPacingModelDelay(e.target.value)} /></label>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={addPacingModel}>{t("pws.pacingAdd")}</button>
+        </div>
+        {Object.entries(pacingModels).length > 0 && <div className="pwi-pacing-overrides">{Object.entries(pacingModels).map(([model, rule]) => <div key={model} className="pwi-pacing-row"><code>{model}</code><span>{rule.requestsPerMinute !== undefined ? `${rule.requestsPerMinute} ${t("pws.pacingRpmUnit")}` : ""}{rule.requestsPerMinute !== undefined && rule.minIntervalMs !== undefined ? " · " : ""}{rule.minIntervalMs !== undefined ? `${rule.minIntervalMs} ms` : ""}</span><button type="button" className="btn btn-ghost btn-sm" onClick={() => setPacingModels(current => Object.fromEntries(Object.entries(current).filter(([id]) => id !== model)))} aria-label={t("pws.pacingRemoveModel", { model })}>{t("pws.pacingRemove")}</button></div>)}</div>}
+      </section>
+      {formDirty && (
         <div className="pwi-settings-sticky-bar">
           <span className="muted">{t("pws.settingsUnsavedBar")}</span>
           <div className="pwi-settings-sticky-bar-actions">
             <button type="button" className="btn btn-ghost btn-sm" onClick={discard} disabled={saving}>{t("pws.discardSettings")}</button>
-            <button type="button" className="btn btn-primary btn-sm" onClick={() => void save()} disabled={saving}>{saving ? t("pws.saving") : t("pws.saveSettings")}</button>
+            <button type="button" className="btn btn-primary btn-sm" onClick={() => void save()} disabled={saving || modeSaving}>{saving ? t("pws.saving") : t("pws.saveSettings")}</button>
           </div>
         </div>
       )}
-      {msg && <div className={msg.ok ? "pwi-settings-msg pwi-settings-msg--ok" : "pwi-settings-msg pwi-settings-msg--err"}>{msg.text}</div>}
+      {msg && (
+        <div role={msg.ok ? "status" : "alert"} className={msg.ok ? "pwi-settings-msg pwi-settings-msg--ok" : "pwi-settings-msg pwi-settings-msg--err"}>
+          {msg.text}
+        </div>
+      )}
     </div>
   );
 }

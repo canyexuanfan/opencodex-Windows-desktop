@@ -12,10 +12,12 @@ import {
   validateOpenAiVirtualModelDefinition,
 } from "../src/providers/openai-virtual-models";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
+import { resolveWireProtocolOverride } from "../src/server/adapter-resolve";
 import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
 import { usageLogPath } from "../src/usage/log";
 
+import { watchdogMs } from "./helpers/ci-watchdog";
 const moduleOriginalFetch = globalThis.fetch;
 const moduleOriginalHome = process.env.OPENCODEX_HOME;
 afterEach(() => {
@@ -66,6 +68,17 @@ describe("OpenAI API virtual model resolution", () => {
 });
 
 describe("applyOpenAiVirtualModel", () => {
+  test("resolves a base-model wire override after rewriting a Pro alias", () => {
+    const selectedWire = resolveWireProtocolOverride("openai-apikey", "gpt-5.6-sol-pro", {
+      adapter: "openai-responses",
+      modelAdapters: { "gpt-5.6-sol": "openai-chat" },
+    } as any);
+    const wireModel = resolveWireProtocolOverride("openai-apikey", "gpt-5.6-sol", selectedWire);
+
+    expect(selectedWire.adapter).toBe("openai-responses");
+    expect(wireModel.adapter).toBe("openai-chat");
+  });
+
   test("rewrites Pro request: model to base, merges reasoning.mode=pro, preserves effort", () => {
     const parsed = {
       modelId: "gpt-5.6-sol-pro",
@@ -76,6 +89,7 @@ describe("applyOpenAiVirtualModel", () => {
     const logCtx = { model: "gpt-5.6-sol-pro", provider: "openai-apikey" } as any;
     applyOpenAiVirtualModel(parsed, route, logCtx);
     expect(parsed.modelId).toBe("gpt-5.6-sol");
+    expect(parsed._openAiVirtualSelectedModelId).toBe("gpt-5.6-sol-pro");
     expect(parsed._rawBody.model).toBe("gpt-5.6-sol");
     expect(parsed._rawBody.reasoning).toEqual({ effort: "high", mode: "pro" });
     expect(route.modelId).toBe("gpt-5.6-sol");
@@ -427,7 +441,7 @@ describe("OpenAI API Pro transport identities", () => {
       url.protocol = "ws:";
       const ws = new WebSocket(url);
       return new Promise<string>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("OpenAI API Pro websocket timeout")), 2000);
+        const timer = setTimeout(() => reject(new Error("OpenAI API Pro websocket timeout")), watchdogMs(2000));
         ws.addEventListener("open", () => {
           ws.send(JSON.stringify({ type: "response.create", model, input: "hello", reasoning: { effort: "high" } }));
         }, { once: true });

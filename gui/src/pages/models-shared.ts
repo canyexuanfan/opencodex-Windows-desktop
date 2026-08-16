@@ -1,6 +1,7 @@
 import type { TFn } from "../i18n/shared";
 import type { ProviderDiscoverySummary } from "../models-groups";
 import { modelVisible, type ProviderModelMap } from "../model-visibility";
+import { formatNamespacedModelId } from "../provider-icons";
 
 export type StorageLike = Pick<Storage, "getItem" | "setItem">;
 
@@ -37,7 +38,18 @@ export interface ModelRow {
   contextWindow?: number;
   contextCap?: number;
   contextCapped?: boolean;
+  /** Stored custom-row override (not the inherited ladder); only present on custom rows. */
+  reasoningEfforts?: string[];
 }
+
+/**
+ * Reasoning-effort labels offered in the custom-model dialog. The full set of real
+ * `reasoning_effort` values (none, minimal, low, medium, high, xhigh, max). Deliberately
+ * excludes `ultra`: that is a Codex catalog label for the multi-agent collab surface, not a
+ * real `reasoning_effort` value — codex-rs converts it to `max` before any provider
+ * request, and the catalog writer appends it to every non-empty ladder anyway.
+ */
+export const REASONING_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export interface ProviderContextCapsResponse {
   cap?: number;
@@ -50,6 +62,7 @@ export interface V2Status {
   agentsMaxThreadsConflict: boolean;
   maxConcurrentThreadsPerSession?: number | null;
   multiAgentMode?: "v1" | "default" | "v2";
+  keepNativeChatGptOnV1?: boolean;
 }
 
 export interface ShadowCallData {
@@ -67,8 +80,6 @@ export const THREAD_OPTION_SET = new Set(THREAD_OPTIONS);
 export const PAGE = 60; // rows rendered per provider before a "show more"
 
 export const COLLAPSED_KEY_V2 = "ocx-models-collapsed:v2";
-export const COMBOS_OPEN_KEY_V1 = "ocx-models-combos-open:v1";
-export const COMBOS_OPEN_KEY_LEGACY = "ocx-models-combos-open";
 
 /** Compact token display (350k) — unit is technical, not prose. */
 export function fmtK(n: number): string {
@@ -88,12 +99,14 @@ export function activeModelOptions(
   models: ModelRow[],
   disabled: Set<string>,
   selected: ProviderModelMap,
+  t?: TFn,
 ): { value: string; label: string }[] {
   const options: { value: string; label: string }[] = [];
   for (const m of models) {
     const blocked = disabled.has(m.id) || disabled.has(m.namespaced);
     if (modelVisible(selected, m.provider, m.id, m.native === true, blocked)) {
-      options.push({ value: m.namespaced, label: m.namespaced });
+      // Friendly label (display-name provider prefix) while the raw route stays the value.
+      options.push({ value: m.namespaced, label: t ? formatNamespacedModelId(m.namespaced, t) : m.namespaced });
     }
   }
   return options;
@@ -122,19 +135,4 @@ export function writeCollapsedProviders(collapsed: Set<string>, storage: Storage
   }
 }
 
-export function readCombosOpen(storage: StorageLike = localStorage): boolean {
-  try {
-    const saved = storage.getItem(COMBOS_OPEN_KEY_V1) ?? storage.getItem(COMBOS_OPEN_KEY_LEGACY);
-    return saved === "1";
-  } catch {
-    return false;
-  }
-}
 
-export function writeCombosOpen(open: boolean, storage: StorageLike = localStorage): void {
-  try {
-    storage.setItem(COMBOS_OPEN_KEY_V1, open ? "1" : "0");
-  } catch {
-    /* quota / private-mode */
-  }
-}

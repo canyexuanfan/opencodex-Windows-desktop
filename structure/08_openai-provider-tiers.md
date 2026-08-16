@@ -30,9 +30,48 @@ requests keep their captured credential. An all-paused pool fails closed.
 The dashboard's bulk pause action refreshes all account quotas and mutates only accounts whose
 plan-relevant window is freshly confirmed at exactly 100%; unknown and failed refreshes are skipped.
 
+`codexAccountPriorities` is a persisted Pool *ordering* boundary and never an eligibility one. It maps
+an account id to an integer from -100 to 100, higher used earlier, with absence meaning 0. Selection
+narrows the already-eligible list to the highest tier that still holds an account with quota headroom
+and lets the configured strategy pick within that tier. A tier drains only when every member is over
+the auto-switch threshold, cooling down, soft-avoided, paused, or needs reauth; unknown quota never
+drains a tier, and every tier drained leaves the eligible list untouched. Ordering never admits an
+account that pause, cooldown, health, or reauth already excluded, and never overrides those
+exclusions. It adds no new rebind cause for a bound thread, which still moves only for the reasons it
+already had: a quota-strategy threshold re-evaluation, a failover streak, an account that stopped
+being selectable, or affinity expiry. The stable `__main__` alias carries an order on equal terms with
+added accounts, which is what lets the Desktop login be ordered last. An absent or empty map
+reproduces the prior selection sequence exactly.
+
+Preemption moves unbound requests back up when a higher tier regains headroom, and it holds the
+runtime cursor only. Under an independent quota scope it must never touch the shared active cursor,
+because the scopes track separate native quota groups and a scoped request has no standing to move
+the account every other scope resolves from.
+
+A manual activation pins its account and lowers the tier ceiling to that account's own tier. The pin
+is released by drain, exclusion, deletion, an explicit failover/promotion away, and any write to
+`codexAccountPriorities` — a pin and an order are both the operator naming an account to use, so the
+newer statement wins. Ordinary round-robin movement inside the capped tier does not release it.
+Without that last rule a pin made before any order existed, which is just an ordinary account switch,
+would outrank every order set afterwards for as long as the account kept headroom.
+
+Only an actual selection pins. Clearing the active account states that no account is chosen, so it
+releases the pin instead of recording one against the `__main__` fallback that the same handler uses
+for its paused check. A pin no effective active account matches is invisible — `pinned` compares the
+two and reports false — while the tier filter still honours it, which would silently cap the pool at
+the main account's tier.
+
+The pin is a ceiling, not a selection: inside the capped tier the strategy cursor still moves. So the
+pinned account and the effective active account are different questions, and the management API answers
+both (`pinned` and `pinnedAccountId`). A surface that marks only the active account loses the pin from
+view exactly when it is doing the most work — suppressing every higher tier.
+
 ```text
 gpt-5.6-sol                         # openai; Pool or Direct follows the provider option
+main/gpt-daybreak-blue-latest       # openai; observed account-native Daybreak, Sol capability metadata
+openai/gpt-daybreak-blue-latest     # Codex forward; explicit Daybreak row with Sol native metadata
 openai-apikey/gpt-5.6-sol           # OpenAI API key
+openai-apikey/daybreak-blue-latest  # API Daybreak alias; separate approval/provisioning
 openai-apikey/gpt-5.6-sol-pro       # API Pro virtual model
 ```
 
@@ -60,10 +99,11 @@ shipped v1 shape; the next startup re-migrates to the same marker-2 bytes.
 
 A pre-existing snapshot that differs from the current config is classified before anything is written
 (`src/config.ts` `classifyOpenAiTierBackup`): a snapshot that parses as a valid pre-migration (v1)
-config is a user-intentional rollback point and blocks migration; a snapshot that is unparseable or
-already tier-v2 is stale and is replaced with a warning. The distinction matters because silently
-discarding a rollback point is destructive, while preserving a stale one would block every later
-migration.
+config is a user-intentional rollback point and is copied to a unique
+`config.json.pre-openai-tiers-v1-rollback.<timestamp>.bak` path before startup retries the v2
+migration backup; a snapshot that is unparseable or already tier-v2 is stale and is replaced with a
+warning. The distinction matters because silently discarding a rollback point is destructive, while
+preserving a stale one would block every later migration.
 
 ## Model and wire identity
 
@@ -71,6 +111,10 @@ migration.
   change catalog, selected, requested, or wire model identity.
 - `openai-apikey` exposes namespaced API rows. Its trusted catalog contains `gpt-5.5`, `gpt-5.6`,
   Sol/Terra/Luna, and the three corresponding Pro variants. No generic `gpt-5.6-pro` alias exists.
+- The selector-qualified account-native `*/gpt-daybreak-blue-latest` and API-key
+  `daybreak-blue-latest` are distinct wire surfaces. An observed native row follows the pinned Sol
+  capability metadata, but routing strips only the account selector and keeps
+  `gpt-daybreak-blue-latest` byte-for-byte; it never expands the bare list or substitutes Sol.
 - API GPT-5.6 rows use 1,050,000 context tokens and 922,000 max input tokens. Codex-login rows keep
   the native 372,000-token contract.
 - `*-pro` selected ids rewrite to the base wire id with `reasoning.mode: "pro"`; request logs,

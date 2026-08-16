@@ -15,6 +15,7 @@ function entry(overrides: Partial<PersistedUsageEntry> & { ts: number }): Persis
     durationMs: rest.durationMs ?? 10,
     usageStatus: rest.usageStatus ?? "unreported",
     ...(rest.surface === "claude" ? { surface: rest.surface } : {}),
+    ...(rest.accountLogLabel !== undefined ? { accountLogLabel: rest.accountLogLabel } : {}),
     ...(rest.resolvedModel !== undefined ? { resolvedModel: rest.resolvedModel } : {}),
     ...(rest.usage ? { usage: rest.usage } : {}),
     ...(rest.totalTokens !== undefined ? { totalTokens: rest.totalTokens } : {}),
@@ -149,6 +150,153 @@ describe("summarizeUsage", () => {
     expect(sum.summary.totalTokens).toBe(15);
     expect(sum.summary.inputTokens).toBe(10);
     expect(sum.summary.outputTokens).toBe(5);
+  });
+
+  test("attributes Codex usage and API-equivalent cost by stable account log label", () => {
+    const entries: PersistedUsageEntry[] = [
+      entry({
+        ts: FIXED_NOW - 1_000,
+        requestId: "added-explicit",
+        provider: "openai-pabc123",
+        accountLogLabel: "pabc123",
+        usageStatus: "reported",
+        usage: { inputTokens: 100, outputTokens: 10 },
+        totalTokens: 110,
+      }),
+      entry({
+        ts: FIXED_NOW - 2_000,
+        requestId: "added-legacy",
+        provider: "openai-pabc123",
+        usageStatus: "estimated",
+        usage: { inputTokens: 40, outputTokens: 5, estimated: true },
+        totalTokens: 45,
+      }),
+      entry({
+        ts: FIXED_NOW - 3_000,
+        requestId: "main-explicit",
+        provider: "openai",
+        accountLogLabel: "main",
+        usageStatus: "reported",
+        usage: { inputTokens: 20, outputTokens: 2 },
+        totalTokens: 22,
+      }),
+      entry({
+        ts: FIXED_NOW - 4_000,
+        requestId: "main-legacy",
+        provider: "openai-main",
+        usageStatus: "reported",
+        usage: { inputTokens: 30, outputTokens: 3 },
+        totalTokens: 33,
+      }),
+      entry({
+        ts: FIXED_NOW - 5_000,
+        requestId: "legacy-bare",
+        provider: "openai",
+        usageStatus: "unreported",
+      }),
+      entry({
+        ts: FIXED_NOW - 6_000,
+        requestId: "custom-selector-explicit",
+        provider: "openai-side",
+        accountLogLabel: "pffffff",
+        usageStatus: "reported",
+        usage: { inputTokens: 500, outputTokens: 50 },
+        totalTokens: 550,
+      }),
+    ];
+
+    const sum = summarizeUsage(entries, "30d", FIXED_NOW, "codex");
+    expect(sum.accounts.map(row => row.accountLogLabel).sort()).toEqual([
+      "legacy-ambiguous",
+      "main",
+      "pabc123",
+      "pffffff",
+    ]);
+    expect(sum.accounts.find(row => row.accountLogLabel === "pabc123")).toMatchObject({
+      requests: 2,
+      attemptCount: 2,
+      measuredAttempts: 2,
+      reportedAttempts: 1,
+      estimatedAttempts: 1,
+      totalTokens: 155,
+      inputTokens: 140,
+      outputTokens: 15,
+      usageCoverageRatio: 1,
+      priceCoverageRatio: 1,
+    });
+    expect(sum.accounts.find(row => row.accountLogLabel === "pabc123")?.estimatedCostUsd)
+      .toBeCloseTo((140 * 5 + 15 * 30) / 1e6, 9);
+    expect(sum.accounts.find(row => row.accountLogLabel === "main")).toMatchObject({
+      requests: 2,
+      totalTokens: 55,
+      ambiguous: false,
+    });
+    expect(sum.accounts.find(row => row.accountLogLabel === "pffffff")).toMatchObject({
+      requests: 1,
+      totalTokens: 550,
+      ambiguous: false,
+    });
+    expect(sum.accounts.find(row => row.accountLogLabel === "legacy-ambiguous")).toMatchObject({
+      requests: 1,
+      unmeteredAttempts: 1,
+      totalTokens: 0,
+      usageCoverageRatio: 0,
+      ambiguous: true,
+    });
+  });
+
+  test("attributes combo attempts to the account that physically served each attempt", () => {
+    const combo = entry({
+      ts: FIXED_NOW - 1_000,
+      requestId: "combo-two-accounts",
+      provider: "combo",
+      model: "combo/native",
+      usageStatus: "reported",
+      usage: { inputTokens: 33, outputTokens: 3 },
+      totalTokens: 36,
+      attempts: [
+        {
+          ordinal: 1,
+          provider: "openai-p111111",
+          model: "gpt-5.5",
+          adapter: "openai-responses",
+          accountLogLabel: "p111111",
+          status: 502,
+          durationMs: 10,
+          sendCount: 1,
+          recoveryKinds: [],
+          usageStatus: "reported",
+          usage: { inputTokens: 11, outputTokens: 1 },
+          totalTokens: 12,
+        },
+        {
+          ordinal: 2,
+          provider: "openai-p222222",
+          model: "gpt-5.5",
+          adapter: "openai-responses",
+          accountLogLabel: "p222222",
+          status: 200,
+          durationMs: 20,
+          sendCount: 1,
+          recoveryKinds: [],
+          usageStatus: "reported",
+          usage: { inputTokens: 22, outputTokens: 2 },
+          totalTokens: 24,
+        },
+      ],
+    });
+
+    const rows = summarizeUsage([combo], "30d", FIXED_NOW, "codex").accounts;
+    expect(rows.find(row => row.accountLogLabel === "p111111")).toMatchObject({
+      requests: 1,
+      attemptCount: 1,
+      totalTokens: 12,
+    });
+    expect(rows.find(row => row.accountLogLabel === "p222222")).toMatchObject({
+      requests: 1,
+      attemptCount: 1,
+      totalTokens: 24,
+    });
   });
 
   test("three OpenAI API Pro selections stay separate from their resolved base models", () => {
@@ -603,13 +751,25 @@ describe("summarizeUsage", () => {
     const sum = summarizeUsage(entries, "30d", FIXED_NOW);
     const byModel = Object.fromEntries(sum.models.map(m => [`${m.provider}/${m.model}`, m]));
 
-    expect(byModel["google-antigravity/gemini-3.6-flash"]).toMatchObject({
-      provider: "google-antigravity",
-      model: "gemini-3.6-flash",
-      requests: 3,
-      totalTokens: 1760,
+    // Retired Flash ids keep their own usage identity. Routing now sends these ids to
+    // 3.7, but a historical row records the model the user actually called — collapsing
+    // them into the successor would move past spend onto a model that did not exist yet.
+    expect(byModel["google-antigravity/gemini-3.5-flash-high"]).toMatchObject({
+      model: "gemini-3.5-flash-high",
+      requests: 1,
+      totalTokens: 1100,
     });
-    expect(byModel["google-antigravity/gemini-3.6-flash"]?.resolvedModel).toBeUndefined();
+    expect(byModel["google-antigravity/gemini-3.5-flash-low"]).toMatchObject({
+      model: "gemini-3.5-flash-low",
+      requests: 1,
+      totalTokens: 550,
+    });
+    expect(byModel["google-antigravity/gemini-3-flash-agent"]).toMatchObject({
+      model: "gemini-3-flash-agent",
+      requests: 1,
+      totalTokens: 110,
+    });
+    expect(byModel["google-antigravity/gemini-3.7-flash"]).toBeUndefined();
 
     expect(byModel["google-antigravity/gemini-3.1-pro"]).toMatchObject({
       provider: "google-antigravity",
@@ -634,11 +794,11 @@ describe("summarizeUsage", () => {
 
     const day = sum.days.find(d => d.requests > 0)!;
     const dayModels = Object.fromEntries(day.models.map(m => [`${m.provider}/${m.model}`, m]));
-    expect(dayModels["google-antigravity/gemini-3.6-flash"]?.requests).toBe(3);
+    expect(dayModels["google-antigravity/gemini-3.5-flash-high"]?.requests).toBe(1);
     expect(dayModels["google-antigravity/gemini-3.1-pro"]?.requests).toBe(2);
   });
 
-  test("collapses antigravity base model + wire resolvedModel into one picker row", () => {
+  test("keeps a retired antigravity model's history under its own id", () => {
     const entries: PersistedUsageEntry[] = [
       entry({
         ts: FIXED_NOW - 1,
@@ -661,14 +821,120 @@ describe("summarizeUsage", () => {
       }),
     ];
     const sum = summarizeUsage(entries, "30d", FIXED_NOW);
-    expect(sum.models).toHaveLength(1);
-    expect(sum.models[0]).toMatchObject({
+    const byModel = Object.fromEntries(sum.models.map(m => [m.model, m]));
+    expect(byModel["gemini-3.6-flash"]).toMatchObject({
       provider: "google-antigravity",
       model: "gemini-3.6-flash",
-      requests: 2,
-      totalTokens: 165,
+      requests: 1,
+      totalTokens: 110,
     });
-    expect(sum.models[0]?.resolvedModel).toBeUndefined();
+    expect(byModel["gemini-3.6-flash-high"]).toMatchObject({
+      model: "gemini-3.6-flash-high",
+      requests: 1,
+      totalTokens: 55,
+    });
+  });
+
+  test("caps top-level and per-day model breakdowns with a lossless other bucket", () => {
+    const entries = Array.from({ length: 260 }, (_, index) => entry({
+      ts: FIXED_NOW - index,
+      requestId: index >= 255 ? "shared-overflow-request" : `request-${index}`,
+      provider: `provider-${index}`,
+      model: `model-${index}`,
+      usageStatus: "reported",
+      usage: { inputTokens: 1, outputTokens: 1 },
+      totalTokens: 2,
+    }));
+    const sum = summarizeUsage(entries, "30d", FIXED_NOW);
+    expect(sum.models).toHaveLength(256);
+    expect(sum.days.find(day => day.requests > 0)?.models).toHaveLength(256);
+    expect(sum.models.at(-1)).toMatchObject({
+      provider: "other",
+      model: "other",
+      requests: 1,
+      attemptCount: 5,
+      measuredRequests: 1,
+      reportedRequests: 1,
+      inputTokens: 5,
+      outputTokens: 5,
+      totalTokens: 10,
+    });
+    expect(sum.days.find(day => day.requests > 0)?.models.at(-1)).toMatchObject({
+      provider: "other",
+      model: "other",
+      requests: 1,
+      attemptCount: 5,
+      totalTokens: 10,
+    });
+  });
+
+  test("7d and 30d range windows align to calendar day boundaries (00:00:00) so completed days remain stable (#1580)", () => {
+    // Construct local midnight for 2026-08-13
+    const todayMidnight = new Date(2026, 7, 13, 0, 0, 0, 0).getTime();
+    const dayMs = 86_400_000;
+
+    // Day -29 (2026-07-15) at 04:00 AM (for 30d boundary)
+    const dayMinus29Date = new Date(todayMidnight);
+    dayMinus29Date.setDate(dayMinus29Date.getDate() - 29);
+    dayMinus29Date.setHours(4, 0, 0, 0);
+    const dayMinus29Ts = dayMinus29Date.getTime();
+
+    // Day -6 (2026-08-07) at 02:30 AM (for 7d boundary)
+    const dayMinus6Early = todayMidnight - 6 * dayMs + 2.5 * 3600_000;
+    // Yesterday (2026-08-12) at 03:00 AM
+    const yesterdayEarly = todayMidnight - 1 * dayMs + 3 * 3600_000;
+    // Yesterday (2026-08-12) at 19:00 PM
+    const yesterdayLate = todayMidnight - 1 * dayMs + 19 * 3600_000;
+    // Today (2026-08-13) at 08:00 AM
+    const todayMorning = todayMidnight + 8 * 3600_000;
+
+    const entries: PersistedUsageEntry[] = [
+      entry({ ts: dayMinus29Ts, usageStatus: "reported", usage: { inputTokens: 600, outputTokens: 600 }, totalTokens: 1200 }),
+      entry({ ts: dayMinus6Early, usageStatus: "reported", usage: { inputTokens: 250, outputTokens: 250 }, totalTokens: 500 }),
+      entry({ ts: yesterdayEarly, usageStatus: "reported", usage: { inputTokens: 400, outputTokens: 400 }, totalTokens: 800 }),
+      entry({ ts: yesterdayLate, usageStatus: "reported", usage: { inputTokens: 100, outputTokens: 100 }, totalTokens: 200 }),
+      entry({ ts: todayMorning, usageStatus: "reported", usage: { inputTokens: 150, outputTokens: 150 }, totalTokens: 300 }),
+    ];
+
+    // Summary at 09:00 AM today (7d)
+    const sumMorning7d = summarizeUsage(entries, "7d", todayMidnight + 9 * 3600_000);
+    const day6Morning = sumMorning7d.days.find(d => d.date.endsWith("08-07"))?.totalTokens;
+    const yesterdayMorningTotal = sumMorning7d.days.find(d => d.date.endsWith("08-12"))?.totalTokens;
+
+    expect(day6Morning).toBe(500);
+    expect(yesterdayMorningTotal).toBe(1000);
+
+    // Summary at 09:00 AM today (30d)
+    const sumMorning30d = summarizeUsage(entries, "30d", todayMidnight + 9 * 3600_000);
+    const day29Morning = sumMorning30d.days.find(d => d.date.endsWith("07-15"))?.totalTokens;
+    expect(sumMorning30d.days).toHaveLength(30);
+    expect(day29Morning).toBe(1200);
+
+    // Summary at 23:30 PM today (later in the day) with an additional turn today
+    const todayEvening = todayMidnight + 20 * 3600_000;
+    const entriesLater = [
+      ...entries,
+      entry({ ts: todayEvening, usageStatus: "reported", usage: { inputTokens: 50, outputTokens: 50 }, totalTokens: 100 }),
+    ];
+
+    // 7d evening
+    const sumEvening7d = summarizeUsage(entriesLater, "7d", todayMidnight + 23.5 * 3600_000);
+    const day6Evening = sumEvening7d.days.find(d => d.date.endsWith("08-07"))?.totalTokens;
+    const yesterdayEveningTotal = sumEvening7d.days.find(d => d.date.endsWith("08-12"))?.totalTokens;
+    const todayEveningTotal = sumEvening7d.days.find(d => d.date.endsWith("08-13"))?.totalTokens;
+
+    // Critical assertion: completed days NEVER lose tokens as hours progress in 7d
+    expect(day6Evening).toBe(500);
+    expect(yesterdayEveningTotal).toBe(1000);
+    expect(todayEveningTotal).toBe(400); // 300 + 100
+    expect(sumMorning7d.since).toBe(sumEvening7d.since);
+
+    // 30d evening
+    const sumEvening30d = summarizeUsage(entriesLater, "30d", todayMidnight + 23.5 * 3600_000);
+    const day29Evening = sumEvening30d.days.find(d => d.date.endsWith("07-15"))?.totalTokens;
+    expect(sumEvening30d.days).toHaveLength(30);
+    expect(day29Evening).toBe(1200);
+    expect(sumMorning30d.since).toBe(sumEvening30d.since);
   });
 
   test("caps top-level and per-day model breakdowns with a lossless other bucket", () => {

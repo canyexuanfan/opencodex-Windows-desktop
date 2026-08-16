@@ -2,12 +2,15 @@ import { existsSync, readFileSync } from "node:fs";
 import type { ResponsesTerminalStatus } from "../bridge";
 import {
   classifyError,
+  CYBER_POLICY_ERROR_CODE,
   httpStatusFromTerminalError as httpStatusFromClassifiedTerminalError,
   isClientClosedMessage,
+  isCyberPolicyCode,
 } from "../lib/errors";
 import { CODEX_CONFIG_PATH, readRootTomlString } from "../codex/paths";
 import { readCodexCatalogPath } from "../codex/catalog";
 import type { OcxUsage } from "../types";
+import { normalizeRouteDecisionTrace, type RouteDecisionTraceV1 } from "../routing/trace";
 import type { AdapterRequest } from "../adapters/base";
 import { redactSecretString } from "../lib/redact";
 import {
@@ -15,6 +18,8 @@ import {
   isKnownAdmissionKind,
   isKnownInboundProtocol,
   isKnownUsageSurface,
+  isCodexUsageAccountLogLabel,
+  isValidReasoningWireValue,
   readRecentUsageEntries,
   usageForFinalLog,
   usageStatusForFinalLog,
@@ -33,6 +38,10 @@ import {
 } from "../usage/debug";
 import { matchesLogConversationId } from "./request-log-conversation";
 import { enforceAppOwnedMemoryBudget, type RetainedStoreSnapshot } from "../lib/app-owned-memory";
+import { capEstimateAtContextWindow } from "../lib/token-estimate";
+import { inferCursorContextWindow } from "../adapters/cursor/discovery";
+import { KIRO_MODEL_CONTEXT_WINDOWS, normalizeKiroModelId } from "../providers/kiro-models";
+import { modelRecordValue } from "../reasoning-effort";
 
 export interface RequestLogContext {
   model: string;
@@ -52,13 +61,15 @@ export interface RequestLogContext {
    *  product: widening that enum would merge Responses and Chat Completions,
    *  since both leave it undefined. */
   inboundProtocol?: "responses" | "chat" | "messages";
+  /** Stable non-PII Codex Pool account identity for durable usage attribution. */
+  accountLogLabel?: string;
   requestedModel?: string;
   /** Internal structural combo identity; omitted from RequestLogEntry/JSONL. */
   comboId?: string;
   requestedEffort?: string;
   effectiveEffort?: string;
   reasoningWireField?: string;
-  reasoningWireValue?: string | number;
+  reasoningWireValue?: string | number | boolean;
   requestedServiceTier?: string;
   requestedSpeedLabel?: string;
   configuredServiceTier?: string;
@@ -66,6 +77,8 @@ export interface RequestLogContext {
   modelSupportsServiceTier?: boolean;
   responseServiceTier?: string;
   resolvedModel?: string;
+  /** Internal: client-facing response metadata must not replace the physical routed model. */
+  preserveResolvedModelFromRoute?: boolean;
   usage?: OcxUsage;
   usageLogInputTokens?: number;
   attempts?: PersistedUsageAttempt[];
@@ -90,11 +103,15 @@ export interface RequestLogContext {
   upstreamError?: string;
   /** HTTP status derived from a terminal `response.failed` SSE payload (429/401/503/etc.). */
   terminalHttpStatus?: number;
+  /** Recognized structured terminal code whose exact identity must survive status mapping. */
+  terminalErrorCode?: typeof CYBER_POLICY_ERROR_CODE;
   /** Structured reason from `response.incomplete`; internal-only input to log classification. */
   terminalIncompleteReason?: string;
   affinity?: "reused" | "new_bind" | "rebound" | "cleared";
   transportPhase?: "pre_headers" | "mid_stream" | "terminal_sse";
   terminalSource?: "upstream" | "synthetic";
+  /** Bounded route-decision trace (RI-01); never contains secrets. */
+  routeDecision?: RouteDecisionTraceV1;
 }
 
 export interface RequestLogEntry {
@@ -115,13 +132,14 @@ export interface RequestLogEntry {
    *  product: widening that enum would merge Responses and Chat Completions,
    *  since both leave it undefined. */
   inboundProtocol?: "responses" | "chat" | "messages";
+  accountLogLabel?: string;
   /** Best-effort chat/session correlation for Logs grouping (#330). */
   conversationId?: string;
   requestedModel?: string;
   requestedEffort?: string;
   effectiveEffort?: string;
   reasoningWireField?: string;
-  reasoningWireValue?: string | number;
+  reasoningWireValue?: string | number | boolean;
   requestedServiceTier?: string;
   requestedSpeedLabel?: string;
   configuredServiceTier?: string;
@@ -146,6 +164,8 @@ export interface RequestLogEntry {
   transportPhase?: "pre_headers" | "mid_stream" | "terminal_sse";
   /** Whether the terminal came from a real upstream SSE event or a proxy synthetic tail. */
   terminalSource?: "upstream" | "synthetic";
+  /** Bounded route-decision trace (RI-01); never contains secrets. */
+  routeDecision?: RouteDecisionTraceV1;
 }
 
 const requestLog: RequestLogEntry[] = [];
@@ -214,6 +234,7 @@ function asCloseReason(value: string | undefined): RequestLogEntry["closeReason"
 export function requestLogEntryFromPersistedUsage(entry: PersistedUsageEntry): RequestLogEntry {
   const terminalStatus = asTerminalStatus(entry.terminalStatus);
   const closeReason = asCloseReason(entry.closeReason);
+  const routeDecision = normalizeRouteDecisionTraceForLog(entry.routeDecision);
   return {
     requestId: entry.requestId,
     timestamp: entry.timestamp,
@@ -222,6 +243,9 @@ export function requestLogEntryFromPersistedUsage(entry: PersistedUsageEntry): R
     ...(entry.firstOutputMs !== undefined ? { firstOutputMs: entry.firstOutputMs } : {}),
     ...(isKnownUsageSurface(entry.surface) ? { surface: entry.surface } : {}),
     ...(entry.conversationId ? { conversationId: entry.conversationId } : {}),
+    ...(isCodexUsageAccountLogLabel(entry.accountLogLabel)
+      ? { accountLogLabel: entry.accountLogLabel }
+      : {}),
     ...(entry.requestedModel ? { requestedModel: entry.requestedModel } : {}),
     ...(entry.requestedEffort ? { requestedEffort: entry.requestedEffort } : {}),
     ...(entry.effectiveEffort ? { effectiveEffort: entry.effectiveEffort } : {}),
@@ -245,8 +269,20 @@ export function requestLogEntryFromPersistedUsage(entry: PersistedUsageEntry): R
     usageStatus: entry.usageStatus,
     ...(entry.usage ? { usage: entry.usage } : {}),
     ...(entry.totalTokens !== undefined ? { totalTokens: entry.totalTokens } : {}),
-    ...(entry.attempts?.length ? { attempts: entry.attempts } : {}),
+    ...(entry.attempts !== undefined ? { attempts: entry.attempts } : {}),
+    ...(routeDecision ? { routeDecision } : {}),
   };
+}
+
+/**
+ * Hydration guard: persisted traces are re-normalized before they enter the
+ * in-memory ring buffer so a hand-edited or corrupt row cannot poison the DTO.
+ * A row that fails validation is dropped, never forwarded unvalidated.
+ */
+function normalizeRouteDecisionTraceForLog(
+  entry: RouteDecisionTraceV1 | undefined,
+): RouteDecisionTraceV1 | null {
+  return entry ? normalizeRouteDecisionTrace(entry) : null;
 }
 
 /**
@@ -306,6 +342,9 @@ export function addRequestLog(entry: RequestLogEntry) {
       ...(entry.apiKeyId ? { apiKeyId: entry.apiKeyId } : {}),
       ...(isKnownAdmissionKind(entry.admissionKind) ? { admissionKind: entry.admissionKind } : {}),
       ...(isKnownInboundProtocol(entry.inboundProtocol) ? { inboundProtocol: entry.inboundProtocol } : {}),
+      ...(isCodexUsageAccountLogLabel(entry.accountLogLabel)
+        ? { accountLogLabel: entry.accountLogLabel }
+        : {}),
       ...(entry.conversationId ? { conversationId: entry.conversationId } : {}),
       ...(entry.resolvedModel ? { resolvedModel: entry.resolvedModel } : {}),
       ...(entry.requestedModel ? { requestedModel: entry.requestedModel } : {}),
@@ -327,8 +366,9 @@ export function addRequestLog(entry: RequestLogEntry) {
       usageStatus: entry.usageStatus,
       ...(entry.usage ? { usage: entry.usage } : {}),
       ...(entry.totalTokens !== undefined ? { totalTokens: entry.totalTokens } : {}),
-      ...(entry.attempts?.length ? { attempts: entry.attempts } : {}),
+      ...(entry.attempts !== undefined ? { attempts: entry.attempts } : {}),
       ...failureDiagnostics,
+      ...(entry.routeDecision ? { routeDecision: entry.routeDecision } : {}),
     });
   } catch {
     /* request logging must never fail a user request */
@@ -399,12 +439,11 @@ export function recordAdapterReasoning(
     const reasoning = raw as Record<string, unknown>;
     if (typeof reasoning.effectiveEffort !== "string" || !reasoning.effectiveEffort
       || (reasoning.wireField !== "reasoning_effort"
+        && reasoning.wireField !== "reasoning.enabled"
+        && reasoning.wireField !== "reasoning.effort"
         && reasoning.wireField !== "thinking_budget"
         && reasoning.wireField !== "thinking.type")
-      || (!(typeof reasoning.wireValue === "string" && reasoning.wireValue)
-        && !(typeof reasoning.wireValue === "number"
-          && Number.isFinite(reasoning.wireValue)
-          && reasoning.wireValue >= 0))) {
+      || !isValidReasoningWireValue(reasoning.wireField, reasoning.wireValue)) {
       return;
     }
 
@@ -425,12 +464,26 @@ export function recordAdapterReasoning(
   }
 }
 
-export function requestLogErrorCode(status: number, upstreamError?: string): string | undefined {
+export function requestLogErrorCode(
+  status: number,
+  upstreamError?: string,
+  terminalErrorCode?: string,
+): string | undefined {
   if (status >= 200 && status < 400) return undefined;
+  // A structured terminal code is authoritative even when the provider message is localized,
+  // generic, or absent. Only preserve the one narrowly recognized policy code here: broadly
+  // forwarding arbitrary upstream codes would change unrelated request-log taxonomy.
+  if (isCyberPolicyCode(terminalErrorCode)) return CYBER_POLICY_ERROR_CODE;
+  const classifiedCode = upstreamError?.trim()
+    ? classifyError(status, "upstream_error", upstreamError).code
+    : undefined;
   // Defense in depth: mid-stream web-search aborts used to land as 502 with this message.
-  if (status === 499 || (upstreamError?.trim() && classifyError(status, "upstream_error", upstreamError).code === "client_closed_request")) {
+  if (status === 499 || classifiedCode === "client_closed_request") {
     return "client_closed_request";
   }
+  // Keep the high-confidence message fallback for runtimes/providers that stripped the
+  // structured code before emitting response.failed.
+  if (classifiedCode === CYBER_POLICY_ERROR_CODE) return CYBER_POLICY_ERROR_CODE;
   if (status === 400 || status === 409) return "invalid_request_error";
   if (status === 401) return "invalid_api_key";
   if (status === 403) {
@@ -493,7 +546,11 @@ export function applyResponseLogMetadata(logCtx: RequestLogContext, payload: unk
     : payload;
   if (!source || typeof source !== "object") return;
   const model = (source as { model?: unknown }).model;
-  if (typeof model === "string" && model.trim()) logCtx.resolvedModel = model;
+  if (
+    !logCtx.preserveResolvedModelFromRoute
+    && typeof model === "string"
+    && model.trim()
+  ) logCtx.resolvedModel = model;
   const serviceTier = (source as { service_tier?: unknown }).service_tier;
   if (typeof serviceTier === "string" && serviceTier.trim()) logCtx.responseServiceTier = serviceTier;
   const usage = usageFromResponsesPayload((source as { usage?: unknown }).usage);
@@ -694,9 +751,17 @@ function captureTerminalHttpStatus(
   if (json.type !== "response.failed") return;
   const error = json.response?.error;
   if (!error || typeof error !== "object") return;
+  const terminalCode = error.code === null || typeof error.code === "string"
+    ? error.code
+    : undefined;
+  if (isCyberPolicyCode(terminalCode)) {
+    logCtx.terminalErrorCode = CYBER_POLICY_ERROR_CODE;
+  } else {
+    delete logCtx.terminalErrorCode;
+  }
   logCtx.terminalHttpStatus = httpStatusFromTerminalError({
     type: typeof error.type === "string" ? error.type : undefined,
-    code: error.code === null || typeof error.code === "string" ? error.code : undefined,
+    code: terminalCode,
     message: typeof error.message === "string" ? error.message : undefined,
   });
 }
@@ -752,7 +817,11 @@ export function addFinalRequestLog(
   const effectiveStatus = status >= 500 && logCtx.upstreamError && isClientClosedMessage(logCtx.upstreamError)
     ? 499
     : status;
-  const errorCode = requestLogErrorCode(effectiveStatus, logCtx.upstreamError);
+  const errorCode = requestLogErrorCode(
+    effectiveStatus,
+    logCtx.upstreamError,
+    logCtx.terminalErrorCode,
+  );
   // A response.failed whose classified status is 499 is still a client cancel, not an upstream
   // terminal failure — keep /api/logs closeReason aligned with that.
   const closeReason = effectiveStatus === 499
@@ -765,11 +834,16 @@ export function addFinalRequestLog(
       Date.now() - (logCtx.activeAttemptStartedAt ?? start),
       logCtx.usage,
     );
+    // The final row and its active physical attempt describe the same terminal. Preserve the
+    // semantic code on both so detailed attempt telemetry cannot regress to a generic status code.
+    if (errorCode) logCtx.activeAttempt.errorCode = errorCode;
+    else delete logCtx.activeAttempt.errorCode;
   }
   const existing = finalizedUsage(
     logCtx.providerAdapter ?? logCtx.provider,
     logCtx.usage,
     logCtx.usageLogInputTokens,
+    contextWindowForModel(logCtx.providerAdapter ?? logCtx.provider, logCtx.model),
   );
   const attempts = logCtx.attempts?.map(attempt => ({
     ...attempt,
@@ -790,6 +864,9 @@ export function addFinalRequestLog(
     ...(logCtx.apiKeyId ? { apiKeyId: logCtx.apiKeyId } : {}),
     ...(logCtx.admissionKind ? { admissionKind: logCtx.admissionKind } : {}),
     ...(logCtx.inboundProtocol ? { inboundProtocol: logCtx.inboundProtocol } : {}),
+    ...(isCodexUsageAccountLogLabel(logCtx.accountLogLabel)
+      ? { accountLogLabel: logCtx.accountLogLabel }
+      : {}),
     ...(logCtx.conversationId ? { conversationId: logCtx.conversationId } : {}),
     ...(logCtx.requestedModel ? { requestedModel: logCtx.requestedModel } : {}),
     ...(logCtx.requestedEffort ? { requestedEffort: logCtx.requestedEffort } : {}),
@@ -813,10 +890,11 @@ export function addFinalRequestLog(
     usageStatus,
     ...(loggedUsage ? { usage: loggedUsage } : {}),
     ...(totalTokens !== undefined ? { totalTokens } : {}),
-    ...(attempts?.length ? { attempts } : {}),
+    ...(attempts !== undefined ? { attempts } : {}),
     ...(logCtx.affinity ? { affinity: logCtx.affinity } : {}),
     ...(logCtx.transportPhase ? { transportPhase: logCtx.transportPhase } : {}),
     ...(logCtx.terminalSource ? { terminalSource: logCtx.terminalSource } : {}),
+    ...(logCtx.routeDecision ? { routeDecision: logCtx.routeDecision } : {}),
   });
   if (isUsageDebugEnabled()) {
     appendUsageDebug({
@@ -887,15 +965,40 @@ interface FinalizedUsageResult {
   totalTokens?: number;
 }
 
+/**
+ * Context window for the routed model, used to cap the token estimate (codex-router PR #140):
+ * a request the provider answered cannot have exceeded the window, so the estimate must never
+ * claim it did. The family is picked by the route ADAPTER, not the model id alone, because
+ * claude-family ids are shared between Kiro and Cursor with different windows. Kiro "auto" is
+ * a router with no fixed window and is never guessed; unknown adapters/models stay uncapped.
+ */
+function contextWindowForModel(adapter: string, modelId: string | undefined): number | undefined {
+  if (!modelId) return undefined;
+  if (adapter === "kiro" || adapter.startsWith("kiro-")) {
+    const normalized = normalizeKiroModelId(modelId);
+    if (normalized === "auto") return undefined;
+    return modelRecordValue(KIRO_MODEL_CONTEXT_WINDOWS, modelId)
+      ?? modelRecordValue(KIRO_MODEL_CONTEXT_WINDOWS, normalized);
+  }
+  if (adapter === "cursor" || adapter.startsWith("cursor-")) {
+    return inferCursorContextWindow(modelId);
+  }
+  return undefined;
+}
+
 function finalizedUsage(
   adapter: string,
   usage: OcxUsage | undefined,
   inputTokenEstimate: number | undefined,
+  contextWindow: number | undefined,
 ): FinalizedUsageResult {
+  // The ESTIMATE itself is capped at the model's context window (codex-router PR #140). The
+  // combined value below keeps its max(inputTokens, estimate) behavior — a provider-reported
+  // positive count is never reduced by this cap, only the estimate that could substitute it.
   const estimate = typeof inputTokenEstimate === "number"
     && Number.isFinite(inputTokenEstimate)
     && inputTokenEstimate >= 0
-    ? inputTokenEstimate
+    ? capEstimateAtContextWindow(inputTokenEstimate, contextWindow)
     : undefined;
   const finalUsage = usageForFinalLog(adapter, usage);
   const usageFallback = !finalUsage && estimate !== undefined
@@ -907,7 +1010,16 @@ function finalizedUsage(
         inputTokens: Math.max(finalUsage.inputTokens, estimate),
         estimated: true,
       }
-    : (finalUsage ?? usageFallback);
+    : finalUsage
+      // When the adapter alone produced an estimated count and no local estimate
+      // exists, cap it at the context window — an adapter estimate above the window
+      // misleads the usage dashboard.  The combined branch (above) already caps the
+      // ESTIMATE via capEstimateAtContextWindow, and Math.max preserves a real
+      // provider-reported count, so it needs no further reduction.
+      ? (finalUsage.estimated && contextWindow !== undefined && finalUsage.inputTokens > contextWindow
+          ? { ...finalUsage, inputTokens: contextWindow }
+          : finalUsage)
+      : usageFallback;
   const totalTokens = usageTotalTokens(loggedUsage);
   return {
     status: usageStatusForFinalLog(loggedUsage),
@@ -939,10 +1051,12 @@ export function sealRequestAttemptIdentity(
   attempt: PersistedUsageAttempt | undefined,
   provider: string,
   adapter: string,
+  accountLogLabel?: string,
 ): void {
   if (!attempt) return;
   attempt.provider = provider;
   attempt.adapter = adapter;
+  if (isCodexUsageAccountLogLabel(accountLogLabel)) attempt.accountLogLabel = accountLogLabel;
 }
 
 export function noteAttemptSend(
@@ -955,7 +1069,12 @@ export function noteAttemptSend(
   if (typeof inputTokenEstimate === "number"
     && Number.isFinite(inputTokenEstimate)
     && inputTokenEstimate >= 0) {
-    attempt.inputTokenEstimate = inputTokenEstimate;
+    // Store the ESTIMATE field already capped at the model's window (codex-router PR #140):
+    // what gets persisted, and later merged into usage, never claims a count above the window.
+    attempt.inputTokenEstimate = capEstimateAtContextWindow(
+      inputTokenEstimate,
+      contextWindowForModel(attempt.adapter, attempt.model),
+    );
   }
   if (recovery && !attempt.recoveryKinds.includes(recovery)) {
     attempt.recoveryKinds.push(recovery);
@@ -972,6 +1091,7 @@ export function finishRequestAttempt(
     attempt.adapter,
     usage ?? attempt.usage,
     attempt.inputTokenEstimate,
+    contextWindowForModel(attempt.adapter, attempt.model),
   );
   attempt.status = status;
   attempt.durationMs = Math.max(0, durationMs);

@@ -3,10 +3,11 @@ import type { OcxContentPart, OcxParsedRequest } from "../types";
 import { antigravityUserAgent } from "./client-fingerprint";
 
 /**
- * Antigravity request User-Agent. Mirrors the real Antigravity CLI UA
- * (`antigravity/cli/{ver} (aidev_client; os_type=darwin; arch=arm64)`) so the request fingerprint
+ * Antigravity request User-Agent. Mirrors the real Antigravity IDE UA
+ * (`antigravity/ide/{ver} (aidev_client; os_type=windows; arch=amd64)`) so the request fingerprint
  * matches the OAuth credential — the prior literal `"antigravity"` was a giveaway no real client
- * sends. A `GOOGLE_ANTIGRAVITY_USER_AGENT` override still wins.
+ * sends. The IDE client family is also required to unlock newer agent models (the backend 404s
+ * CLI-shaped UAs for `gemini-3.7-*`). A `GOOGLE_ANTIGRAVITY_USER_AGENT` override still wins.
  */
 export const ANTIGRAVITY_REQUEST_UA = process.env.GOOGLE_ANTIGRAVITY_USER_AGENT || antigravityUserAgent();
 
@@ -51,16 +52,48 @@ function firstUserText(parsed: OcxParsedRequest): string | undefined {
  * 0x7FFFFFFFFFFFFFFF, prefixed with "-". Falls back to a random "-<digits>" id when there is no text.
  */
 export function antigravitySessionId(parsed: OcxParsedRequest): string {
-  // Anchored on the first user message text: this is the one value that stays STABLE across every
-  // turn of a conversation, which the replay cache requires (it observes signatures on turn N's
-  // response and re-injects them on turn N+1's request, so both turns must map to the same id).
-  // Cross-conversation collisions (two threads opening with identical text) are made harmless by
-  // the replay cache keying signatures on functionCall identity (name+args), not on this id alone.
-  const text = firstUserText(parsed);
+  // The id must be IDENTICAL on turn N and turn N+1: the replay cache observes thought signatures
+  // on turn N's response and re-injects them on turn N+1's request, so a changing id loses the
+  // association entirely. (A *shared* id does not — signatures are keyed on functionCall identity,
+  // name+args, so cross-conversation collisions stay harmless. Instability is the failure mode.)
+  //
+  // First-user text does not guarantee that. It is stable only while the first user message
+  // survives verbatim in what this adapter sees, and Codex compacts, summarises, and trims long
+  // histories — at which point the anchor changes mid-conversation (#1295's sibling, #1297).
+  //
+  // `_clientThreadId` is Codex's own thread identity from `x-codex-parent-thread-id`. It survives
+  // compaction because it does not depend on message content, which is the property first-user
+  // text fails to provide. Deliberately NOT `promptCacheKey`: that is arbitrary Responses input
+  // and is explicitly shared across conversations for some clients
+  // (`adapters/cursor/request-builder.ts`), so it identifies a cache cohort, not a conversation.
+  //
+  // What is NOT claimed: that Google treats this id as anything but opaque, or that upstream
+  // signatures are not session-bound. Only the local association is verified here.
+  //
+  // Clients that send no thread header keep the text anchor and its instability; this is a scoped
+  // repair, not a universal one.
+  const text = clientThreadAnchor(parsed) ?? firstUserText(parsed);
   if (!text) return `-${Math.floor(Math.random() * 9e18).toString()}`;
   const digest = createHash("sha256").update(text, "utf8").digest();
   const masked = digest.readBigUInt64BE(0) & 0x7fffffffffffffffn;
   return `-${masked.toString()}`;
+}
+
+/**
+ * Codex's stable client thread id, prefixed before hashing so it does not collide with a first
+ * user message equal to the bare thread id.
+ *
+ * This is a prefix, not full domain separation: a textless-anchor request whose first message is
+ * literally `codex-thread:<id>` still hashes the same preimage. Tagging BOTH anchor classes would
+ * separate them completely, but it would also change every existing text-derived id — a
+ * Google-visible wire value for live conversations — which is a larger blast radius than the
+ * collision it removes. A collision is harmless here anyway: the replay cache keys signatures on
+ * functionCall identity (name+args), so a shared id does not misattribute them. Instability, not
+ * collision, is the failure mode this function exists to prevent.
+ */
+function clientThreadAnchor(parsed: OcxParsedRequest): string | undefined {
+  const threadId = parsed._clientThreadId?.trim();
+  return threadId ? `codex-thread:${threadId}` : undefined;
 }
 
 /** A Gemini content part as it appears in an Antigravity request body. */

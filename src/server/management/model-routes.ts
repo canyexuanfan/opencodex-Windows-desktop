@@ -29,8 +29,48 @@ function readInputModalities(raw: unknown): { values?: string[]; error?: string 
   }
   return { values: raw as string[] };
 }
+
+/**
+ * Custom-row reasoning ladder. Labels are validated against the Codex ladder (low..ultra)
+ * exactly like provider `modelReasoningEfforts` values; unknown labels would otherwise
+ * surface in a catalog the upstream never accepts. An empty array is meaningful (explicit
+ * "no reasoning" hides the effort control) and must be preserved, not cleared.
+ */
+function readReasoningEfforts(raw: unknown): { values?: string[]; error?: string } {
+  if (raw === undefined) return {};
+  if (!Array.isArray(raw)) return { error: "reasoningEfforts must be an array" };
+  const rejected: string[] = [];
+  const values: string[] = [];
+  for (const value of raw) {
+    if (typeof value !== "string") return { error: "reasoningEfforts must contain only strings" };
+    if (!isDeclaredReasoningEffort(value)) { rejected.push(value); continue; }
+    if (!values.includes(value)) values.push(value);
+  }
+  if (rejected.length > 0) {
+    return { error: `unsupported reasoning effort: ${rejected.join(", ")} (allowed: none, minimal, low, medium, high, xhigh, max, ultra)` };
+  }
+  // Canonical order: the catalog writes supported_reasoning_levels in input order and the
+  // fallback default picks the first entry, so a caller-chosen order must not leak through.
+  return { values: canonicalizeReasoningEfforts(values) };
+}
+
+/** Default effort must be a ladder member that the declared ladder actually includes. */
+function readDefaultReasoningEffort(raw: unknown, efforts: string[] | undefined): { value?: string; error?: string } {
+  if (raw === undefined) return {};
+  if (raw === null) return { value: undefined };
+  if (typeof raw !== "string" || !isDeclaredReasoningEffort(raw)) {
+    return { error: "defaultReasoningEffort must be one of: none, minimal, low, medium, high, xhigh, max, ultra" };
+  }
+  if (efforts === undefined || efforts.length === 0) {
+    return { error: "defaultReasoningEffort requires a non-empty reasoningEfforts ladder" };
+  }
+  if (!efforts.includes(raw)) {
+    return { error: `defaultReasoningEffort "${raw}" is not in the declared reasoningEfforts ladder` };
+  }
+  return { value: raw };
+}
 import type { CatalogModel } from "../../codex/catalog";
-import { catalogModelSlug, disabledNativeSlugs, invalidateCodexModelsCache, nativeModelRows, uniqueCatalogModelsForPublicList } from "../../codex/catalog";
+import { accountBoundNativeOpenAiSlugsBySelector, catalogModelSlug, configuredNativeAliasSlugs, disabledNativeSlugs, invalidateCodexModelsCache, nativeModelRows, shouldIncludeAccountBoundNativeOpenAi, uniqueCatalogModelsForPublicList } from "../../codex/catalog";
 import { CatalogGatherBusyError } from "../../codex/catalog/provider-fetch";
 import { getProviderLiveModelCount } from "../../codex/model-cache";
 import {
@@ -57,8 +97,9 @@ import { providerDestinationResolvedError } from "../../lib/destination-policy";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../../oauth/key-providers";
 import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
-import { routedSlug, slugEquals } from "../../providers/slug-codec";
-import { COMBO_NAMESPACE, comboModelId, comboPublicModelId, preservesPhysicalComboProvider } from "../../combos";
+import { encodedModelIdCollides, routedSlug, slugEquals } from "../../providers/slug-codec";
+import { knownModelIdsForProvider } from "../../router";
+import { COMBO_NAMESPACE, comboDisabledModelSelectors, comboModelId, preservesPhysicalComboProvider } from "../../combos";
 import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../../providers/quota";
 import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
 import { clearThreadAccountMap } from "../../codex/routing";
@@ -71,6 +112,7 @@ import { parseRange, parseUsageSurface, summarizeUsage } from "../../usage/summa
 import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
 import { getProviderRegistryEntry } from "../../providers/registry";
 import { getDebugLogEntries } from "../../lib/debug-log-buffer";
+import { canonicalizeReasoningEfforts, isDeclaredReasoningEffort } from "../../reasoning-effort";
 import { getInjectionDebugLogEntries } from "../../lib/injection-debug-log";
 import {
   clearDebugSettings,
@@ -90,7 +132,7 @@ import {
   EXPORT_CLIENTS,
   EXPORT_CLIENT_IDS,
   OPENCODE_PROVIDER_ID,
-  buildClientConfig,
+  buildClientConfigText,
   isExportClientId,
   opencodeProxyBaseUrl,
 } from "../../clients/config-export";
@@ -104,92 +146,8 @@ import type {
 import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostReason, costResult, requestLogDto, stripRegistryOnlyStaticHeaders, fetchAllModels } from "./shared";
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
 import type { ManagementContext } from "./context";
+import { listManagementModelRows, loadExportModels } from "./model-rows";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
-
-/**
- * One row of the `/api/models` list. Routed rows spread a `CatalogModel`, so the shape is
- * that model plus the identity/visibility fields this boundary computes for every row
- * regardless of source. `disabled` is always present; the rest vary by row origin.
- */
-type ManagementModelRow = Partial<CatalogModel> & {
-  provider: string;
-  id: string;
-  namespaced: string;
-  disabled: boolean;
-  native?: boolean;
-  custom?: boolean;
-  customId?: string;
-};
-
-/**
- * The exact row list `/api/models` returns. Extracted so `/api/client-config` exports the
- * models the GUI's Models tab shows — including this function's `disabled` computation,
- * which the export core (src/clients/config-export.ts) deliberately does not perform.
- */
-async function listManagementModelRows(config: OcxConfig): Promise<ManagementModelRow[]> {
-  const models = await fetchAllModels(config);
-  const disabled = new Set(config.disabledModels ?? []);
-  // Native GPT passthrough rows lead (provider "openai", bare-slug namespaced ids): sourced
-  // from the static supported set so a disabled model stays listed and re-enableable.
-  const native: ManagementModelRow[] = nativeModelRows(config).map(row => ({
-    provider: "openai",
-    id: row.slug,
-    namespaced: row.slug,
-    disabled: row.disabled,
-    native: true,
-    ...(row.contextWindow !== undefined ? { contextWindow: row.contextWindow } : {}),
-  }));
-  const customModels: ManagementModelRow[] = (config.customModels ?? []).map(cm => {
-    const namespaced = routedSlug(cm.provider, cm.modelId);
-    return {
-      provider: cm.provider,
-      id: cm.modelId,
-      namespaced,
-      disabled: [...disabled].some(stored => slugEquals(stored, cm.provider, cm.modelId)),
-      custom: true,
-      customId: cm.id,
-      displayName: cm.displayName,
-      ...(cm.contextWindow ? { contextWindow: cm.contextWindow } : {}),
-      ...(cm.inputModalities ? { inputModalities: cm.inputModalities } : {}),
-    };
-  });
-  const publicModels = uniqueCatalogModelsForPublicList(models);
-  const comboNamespaced = new Set(
-    publicModels.filter(model => model.provider === "combo").map(catalogModelSlug),
-  );
-  const visibleCustomModels = customModels.filter(model => !comboNamespaced.has(model.namespaced));
-  // Custom metadata wins when a physical live/static row resolves to the same Codex-facing
-  // slug, while a combo keeps the same precedence it has in routing and /v1/models.
-  const customNamespaced = new Set(visibleCustomModels.map(c => c.namespaced));
-  const dedupedRouted = publicModels.map((m): ManagementModelRow | null => {
-    // Codex-facing slug (one "/", slug-codec); disabledModels compares tolerate both forms.
-    const namespaced = catalogModelSlug(m);
-    if (m.provider !== "combo" && customNamespaced.has(namespaced)) return null;
-    const contextCap = providerContextCap(config, m.provider);
-    return {
-      ...m,
-      namespaced,
-      disabled: [...disabled].some(stored => (
-        stored === namespaced || slugEquals(stored, m.provider, m.id)
-      )),
-      ...(contextCap !== undefined ? { contextCap, contextCapped: m.contextCapped === true } : {}),
-    };
-  }).filter((row): row is ManagementModelRow => row !== null);
-  return [...native, ...dedupedRouted, ...visibleCustomModels];
-}
-
-/** `/api/models` row → the narrower input the client-config serializers accept. */
-function toExportModel(row: ManagementModelRow): ExportModel {
-  return {
-    namespaced: row.namespaced,
-    provider: row.provider,
-    id: row.id,
-    ...(row.native ? { native: true } : {}),
-    ...(row.displayName ? { displayName: row.displayName } : {}),
-    ...(row.contextWindow !== undefined ? { contextWindow: row.contextWindow } : {}),
-    ...(row.inputModalities ? { inputModalities: row.inputModalities } : {}),
-  };
-}
 
 /**
  * Counts read back off the SERIALIZED document rather than recomputed from the input rows.
@@ -198,17 +156,14 @@ function toExportModel(row: ManagementModelRow): ExportModel {
  * core's "authoritative context window" rule would be free to drift from it silently.
  */
 function summarizeExportedModels(client: ExportClientId, document: unknown): { modelCount: number; modelsWithoutLimits: number } {
-  if (client === "opencode") {
-    const models = (document as OpencodeGeneratedConfig).provider[OPENCODE_PROVIDER_ID].models;
-    const entries = Object.values(models);
-    return { modelCount: entries.length, modelsWithoutLimits: entries.filter(entry => entry.limit === undefined).length };
-  }
-  const models = (document as PiGeneratedConfig).providers[OPENCODE_PROVIDER_ID].models;
-  return { modelCount: models.length, modelsWithoutLimits: models.filter(entry => entry.contextWindow === undefined).length };
+  // Each client counts its own document shape. The previous branch assumed
+  // "anything that is not OpenCode must be Pi", which silently misread the
+  // moment a third client existed.
+  return EXPORT_CLIENTS[client].summarize(document);
 }
 
 export async function handleModelRoutes(ctx: ManagementContext): Promise<Response | null> {
-  const { req, url, config, deps, refreshCodexCatalogBestEffort, syncClaudeAgentDefsBestEffort } = ctx;
+  const { req, url, config, deps, convergeCodexCatalog, syncClaudeAgentDefsBestEffort } = ctx;
   // A handler persists the exact config object passed in. Production defaults to
   // the real store; tests that pass an in-memory fixture inject a no-op/spy. Do not
   // bypass this seam with a dynamic config import — doing so replaced a user's
@@ -249,9 +204,12 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
       );
     }
     const spec = EXPORT_CLIENTS[requested];
-    let rows: ManagementModelRow[];
+    let models: ExportModel[];
     try {
-      rows = await listManagementModelRows(config);
+      // The ONE loader every export surface uses. It carries the visibility
+      // filter with it, so this route and the integration routes cannot end up
+      // telling a client about different models.
+      models = await loadExportModels(config);
     } catch (error) {
       // A partial or empty `models` block reads as a valid config while offering nothing,
       // so a catalog failure is surfaced as unavailable rather than serialized. The
@@ -264,21 +222,24 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
         config,
       );
     }
-    // The export core does not filter visibility — it serializes what it is given. A model the
-    // user disabled in the Models tab is absent from /v1/models, so exporting it would hand the
-    // client a selector the proxy refuses to route.
-    const models = rows.filter(row => !row.disabled).map(toExportModel);
-    const document = buildClientConfig(requested, {
+    const built = buildClientConfigText(requested, {
       baseUrl: opencodeProxyBaseUrl(Number(url.port) || config.port, config.hostname),
       models,
       config,
     });
+    const document = built.document;
     return jsonResponse({
       client: spec.id,
       filename: spec.filename,
       destination: spec.destination(process.env),
       apiKeyEnv: spec.apiKeyEnv,
       exportHint: spec.exportHint,
+      // The client's own format and the exact bytes for it. The GUI previously
+      // re-serialized `config` as JSON, which is wrong for four of the six
+      // clients; `mediaType` also drives the download blob.
+      format: built.format,
+      mediaType: built.mediaType,
+      text: built.text,
       ...summarizeExportedModels(requested, document),
       config: document,
     }, 200, req, config);
@@ -292,8 +253,8 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     const disabled = Array.isArray(body.models) ? body.models.filter((m): m is string => typeof m === "string") : [];
     config.disabledModels = disabled;
     persistConfig(config);
-    await refreshCodexCatalogBestEffort();
-    return jsonResponse({ ok: true, disabled });
+    const catalogRefresh = await convergeCodexCatalog();
+    return jsonResponse({ ok: true, disabled, catalogRefresh });
   }
 
   // One user-facing visibility switch spans two persisted filters: a provider allowlist and the
@@ -315,7 +276,14 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     if (!providerConfig && provider !== "openai" && !isVirtualComboNamespace) {
       return jsonResponse({ error: "unknown model visibility provider" }, 400);
     }
-    const supportedNative = new Set(nativeModelRows(config).map(row => row.slug));
+    const accountNativeQualified = shouldIncludeAccountBoundNativeOpenAi(config)
+      ? [...accountBoundNativeOpenAiSlugsBySelector(config).entries()].flatMap(([selector, slugs]) =>
+        slugs.filter(slug => !nativeModelRows(config).some(row => row.slug === slug)).map(slug => `${selector}/${slug}`))
+      : [];
+    const supportedNative = new Set([
+      ...nativeModelRows(config).map(row => row.slug),
+      ...accountNativeQualified,
+    ]);
     const targets: Array<{ id: string; native: boolean }> = [];
     const seen = new Set<string>();
     for (const value of body.targets) {
@@ -336,17 +304,16 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     if (targets.length === 0) return jsonResponse({ error: "model visibility targets required" }, 400);
 
     const knownComboSelectors = new Set(
-      Object.entries(config.combos ?? {}).flatMap(([id, combo]) => [
-        comboModelId(id),
-        comboPublicModelId(id, combo),
-      ]),
+      Object.entries(config.combos ?? {}).flatMap(([id, combo]) => (
+        comboDisabledModelSelectors(id, combo)
+      )),
     );
     const targetComboSelectors = new Map<string, Set<string>>();
     if (isVirtualComboNamespace) {
       for (const target of targets) {
         const combo = config.combos && Object.hasOwn(config.combos, target.id) ? config.combos[target.id] : undefined;
         if (!combo) return jsonResponse({ error: "invalid model visibility target" }, 400);
-        targetComboSelectors.set(target.id, new Set([comboModelId(target.id), comboPublicModelId(target.id, combo)]));
+        targetComboSelectors.set(target.id, new Set(comboDisabledModelSelectors(target.id, combo)));
       }
     }
     const matchesTarget = (stored: string, target: { id: string; native: boolean }) => target.native
@@ -365,9 +332,14 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
           const nativeIds = provider === "openai"
             ? disabledNativeSlugs({ disabledModels: disabled })
             : new Set<string>();
+          const accountNativeIds = provider === "openai" ? new Set(accountNativeQualified) : new Set<string>();
+          const nativeAliasSlugs = provider === "openai"
+            ? configuredNativeAliasSlugs(config)
+            : new Set<string>();
           disabled = disabled.filter(stored => (
             knownComboSelectors.has(stored)
-            || (!stored.startsWith(`${provider}/`) && !nativeIds.has(stored))
+            || nativeAliasSlugs.has(stored)
+            || (!stored.startsWith(`${provider}/`) && !nativeIds.has(stored) && !accountNativeIds.has(stored))
           ));
         }
       } else {
@@ -391,8 +363,8 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
 
     config.disabledModels = disabled;
     persistConfig(config);
-    await refreshCodexCatalogBestEffort();
-    return jsonResponse({ ok: true, scope, provider, enabled: body.enabled, disabled });
+    const catalogRefresh = await convergeCodexCatalog();
+    return jsonResponse({ ok: true, scope, provider, enabled: body.enabled, disabled, catalogRefresh });
   }
 
   if (url.pathname === "/api/custom-models" && req.method === "GET") {
@@ -400,12 +372,11 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
   }
 
   if (url.pathname === "/api/custom-models" && req.method === "POST") {
-    let body: { provider?: unknown; modelId?: unknown; displayName?: unknown; contextWindow?: unknown; inputModalities?: unknown };
+    let body: { provider?: unknown; modelId?: unknown; displayName?: unknown; contextWindow?: unknown; inputModalities?: unknown; reasoningEfforts?: unknown; defaultReasoningEffort?: unknown };
     try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     const provider = typeof body.provider === "string" ? body.provider.trim() : "";
     const modelId = typeof body.modelId === "string" ? body.modelId.trim() : "";
     if (!provider || !modelId) return jsonResponse({ error: "provider and modelId are required" }, 400);
-    if (modelId.includes("/")) return jsonResponse({ error: "modelId must not contain /" }, 400);
     if (!isValidProviderName(provider)) return jsonResponse({ error: "invalid provider name" }, 400);
     if (!hasOwnProvider(config.providers, provider)) return jsonResponse({ error: "provider not configured" }, 404);
     const displayName = typeof body.displayName === "string" && body.displayName.trim() ? body.displayName.trim() : undefined;
@@ -414,10 +385,18 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     const modalities = readInputModalities(body.inputModalities);
     if (modalities.error) return jsonResponse({ error: modalities.error }, 400);
     const inputModalities = modalities.values;
+    const reasoning = readReasoningEfforts(body.reasoningEfforts);
+    if (reasoning.error) return jsonResponse({ error: reasoning.error }, 400);
+    const defaultEffort = readDefaultReasoningEffort(body.defaultReasoningEffort, reasoning.values);
+    if (defaultEffort.error) return jsonResponse({ error: defaultEffort.error }, 400);
     const existing = config.customModels ?? [];
     const newSlug = routedSlug(provider, modelId);
     if (existing.some(cm => routedSlug(cm.provider, cm.modelId) === newSlug)) {
       return jsonResponse({ error: "duplicate model" }, 409);
+    }
+    const known = knownModelIdsForProvider(provider, config.providers[provider], config);
+    if (encodedModelIdCollides(modelId, known)) {
+      return jsonResponse({ error: "ambiguous model id" }, 409);
     }
     const entry: OcxCustomModel = {
       id: randomUUID(),
@@ -426,26 +405,27 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
       ...(displayName ? { displayName } : {}),
       ...(contextWindow ? { contextWindow } : {}),
       ...(inputModalities && inputModalities.length > 0 ? { inputModalities } : {}),
+      ...(reasoning.values !== undefined ? { reasoningEfforts: reasoning.values } : {}),
+      ...(defaultEffort.value ? { defaultReasoningEffort: defaultEffort.value } : {}),
       addedAt: new Date().toISOString(),
     };
     config.customModels = [...existing, entry];
     persistConfig(config);
-    await refreshCodexCatalogBestEffort();
-    return jsonResponse(entry, 201);
+    const catalogRefresh = await convergeCodexCatalog();
+    return jsonResponse({ ...entry, catalogRefresh }, 201);
   }
 
   const customPutMatch = url.pathname.match(/^\/api\/custom-models\/([^/]+)$/);
   if (customPutMatch && req.method === "PUT") {
     let id: string;
     try { id = decodeURIComponent(customPutMatch[1]); } catch { return jsonResponse({ error: "invalid id encoding" }, 400); }
-    let body: { displayName?: unknown; contextWindow?: unknown; inputModalities?: unknown; modelId?: unknown };
+    let body: { displayName?: unknown; contextWindow?: unknown; inputModalities?: unknown; modelId?: unknown; reasoningEfforts?: unknown; defaultReasoningEffort?: unknown };
     try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     const list = config.customModels ?? [];
     const idx = list.findIndex(cm => cm.id === id);
     if (idx === -1) return jsonResponse({ error: "not found" }, 404);
     const cm = { ...list[idx] };
     if (typeof body.modelId === "string" && body.modelId.trim()) {
-      if (body.modelId.includes("/")) return jsonResponse({ error: "modelId must not contain /" }, 400);
       cm.modelId = body.modelId.trim();
     }
     if (body.displayName !== undefined) {
@@ -461,15 +441,48 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
       if (edited.error) return jsonResponse({ error: edited.error }, 400);
       cm.inputModalities = edited.values && edited.values.length > 0 ? edited.values : undefined;
     }
+    // `null` clears the stored ladder back to "inherit from the provider row"; `[]` stays
+    // stored as an explicit "no reasoning" override. The default effort rides along and is
+    // validated against the ladder the row ends up with.
+    if (body.reasoningEfforts !== undefined) {
+      if (body.reasoningEfforts === null) {
+        cm.reasoningEfforts = undefined;
+      } else {
+        const edited = readReasoningEfforts(body.reasoningEfforts);
+        if (edited.error) return jsonResponse({ error: edited.error }, 400);
+        cm.reasoningEfforts = edited.values;
+      }
+    }
+    if (body.defaultReasoningEffort !== undefined) {
+      const edited = readDefaultReasoningEffort(body.defaultReasoningEffort, cm.reasoningEfforts);
+      if (edited.error) return jsonResponse({ error: edited.error }, 400);
+      cm.defaultReasoningEffort = edited.value;
+    }
+    // Mirror of the POST invariant: a default only survives as a member of the final ladder.
+    // Without this, a ladder shrink/clear on a row that was created with a default leaves a
+    // stale default that re-applies itself onto the inherited ladder in the generated catalog
+    // (the GUI toggle-off path sends only reasoningEfforts, never the default).
+    if (cm.defaultReasoningEffort !== undefined) {
+      const ladder = cm.reasoningEfforts;
+      if (!ladder || ladder.length === 0 || !ladder.includes(cm.defaultReasoningEffort)) {
+        cm.defaultReasoningEffort = undefined;
+      }
+    }
     const updatedSlug = routedSlug(cm.provider, cm.modelId);
     if (list.some((other, i) => i !== idx && routedSlug(other.provider, other.modelId) === updatedSlug)) {
       return jsonResponse({ error: "duplicate model" }, 409);
     }
+    const known = knownModelIdsForProvider(cm.provider, config.providers[cm.provider], {
+      customModels: list.filter((_, i) => i !== idx),
+    });
+    if (encodedModelIdCollides(cm.modelId, known)) {
+      return jsonResponse({ error: "ambiguous model id" }, 409);
+    }
     list[idx] = cm;
     config.customModels = list;
     persistConfig(config);
-    await refreshCodexCatalogBestEffort();
-    return jsonResponse(cm);
+    const catalogRefresh = await convergeCodexCatalog();
+    return jsonResponse({ ...cm, catalogRefresh });
   }
 
   const customDelMatch = url.pathname.match(/^\/api\/custom-models\/([^/]+)$/);
@@ -482,8 +495,8 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     list.splice(idx, 1);
     config.customModels = list.length > 0 ? list : undefined;
     persistConfig(config);
-    await refreshCodexCatalogBestEffort();
-    return jsonResponse({ ok: true });
+    const catalogRefresh = await convergeCodexCatalog();
+    return jsonResponse({ ok: true, catalogRefresh });
   }
 
   // Per-provider catalog allowlist (issue #52): when a provider has a non-empty selectedModels list,
@@ -518,8 +531,8 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     if (models.length > 0) config.providers[provider].selectedModels = models;
     else delete config.providers[provider].selectedModels;
     persistConfig(config);
-    await refreshCodexCatalogBestEffort();
-    return jsonResponse({ ok: true, provider, selected: models });
+    const catalogRefresh = await convergeCodexCatalog();
+    return jsonResponse({ ok: true, provider, selected: models, catalogRefresh });
   }
   return null;
 }

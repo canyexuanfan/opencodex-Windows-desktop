@@ -143,7 +143,7 @@ test("unmapped claude model + sk-ant credential passes through verbatim", async 
     expect(codexUsage.surface).toBe("codex");
     expect(codexUsage.summary.requests).toBe(0);
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -177,7 +177,7 @@ test("native passthrough persists conversationId from metadata.user_id", async (
     expect(logs[0]?.provider).toBe("anthropic-native");
     expect(logs[0]?.conversationId).toBe(createHash("sha256").update(userId).digest("hex").slice(0, 32));
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -200,7 +200,99 @@ test("count_tokens passes through with native credentials", async () => {
     expect(captured[0].path).toBe("/v1/messages/count_tokens");
     expect(captured[0].headers.get("x-api-key")).toBe("sk-ant-api03-key");
   } finally {
-    server.stop(true);
+    await server.stop(true);
+    upstream.stop(true);
+  }
+});
+
+test("exposed native passthrough requires dedicated admission and never forwards admission credentials", async () => {
+  const admissionSecret = "sk-ant-api03-key";
+  const providerBearer = "sk-ant-oat01-provider";
+  const providerApiKey = "sk-ant-api03-provider";
+  const captured: Captured[] = [];
+  const upstream = mockAnthropicUpstream(captured);
+  saveConfig({
+    ...cfg(upstream.url.toString().replace(/\/$/, "")),
+    hostname: "0.0.0.0",
+    apiKeys: [{ id: "remote", name: "remote", key: admissionSecret, createdAt: "2026-08-12" }],
+  } as OcxConfig);
+  const server = startServer(0);
+  const messagesUrl = `http://127.0.0.1:${server.port}/v1/messages`;
+  try {
+    // The routed Messages surface still accepts legacy bearer admission, but native passthrough
+    // on an exposed bind requires the dedicated header so provider credentials stay unambiguous.
+    const withoutDedicated = await globalThis.fetch(messagesUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${admissionSecret}`,
+        "x-api-key": providerApiKey,
+      },
+      body: JSON.stringify(claudeBody()),
+    });
+    expect(withoutDedicated.status).not.toBe(200);
+    await withoutDedicated.body?.cancel();
+    expect(captured).toHaveLength(0);
+
+    const bearerProvider = await globalThis.fetch(messagesUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-opencodex-api-key": admissionSecret,
+        authorization: `Bearer ${providerBearer}`,
+        "x-api-key": admissionSecret,
+      },
+      body: JSON.stringify(claudeBody()),
+    });
+    expect(bearerProvider.status).toBe(200);
+    await bearerProvider.text();
+    expect(captured).toHaveLength(1);
+    expect(captured[0].headers.get("authorization")).toBe(`Bearer ${providerBearer}`);
+    expect(captured[0].headers.get("x-api-key")).toBeNull();
+    expect(captured[0].headers.get("x-opencodex-api-key")).toBeNull();
+
+    // CodeRabbit follow-up: the inverse layout must also keep the real provider x-api-key while
+    // removing an admission secret carried in Authorization.
+    const apiKeyProvider = await globalThis.fetch(messagesUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-opencodex-api-key": admissionSecret,
+        authorization: `Bearer ${admissionSecret}`,
+        "x-api-key": providerApiKey,
+      },
+      body: JSON.stringify(claudeBody()),
+    });
+    expect(apiKeyProvider.status).toBe(200);
+    await apiKeyProvider.text();
+    expect(captured).toHaveLength(2);
+    expect(captured[1].headers.get("authorization")).toBeNull();
+    expect(captured[1].headers.get("x-api-key")).toBe(providerApiKey);
+    expect(captured[1].headers.get("x-opencodex-api-key")).toBeNull();
+
+    for (const headerName of ["authorization", "x-api-key"] as const) {
+      const headers = new Headers({
+        "content-type": "application/json",
+        "x-opencodex-api-key": admissionSecret,
+      });
+      if (headerName === "authorization") {
+        headers.append(headerName, `Bearer ${providerBearer}`);
+        headers.append(headerName, `Bearer ${admissionSecret}`);
+      } else {
+        headers.append(headerName, providerApiKey);
+        headers.append(headerName, admissionSecret);
+      }
+      const ambiguous = await globalThis.fetch(messagesUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(claudeBody()),
+      });
+      expect(ambiguous.status).not.toBe(200);
+      await ambiguous.body?.cancel();
+      expect(captured).toHaveLength(2);
+    }
+  } finally {
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -237,7 +329,7 @@ test("alias/mapped models and non-anthropic credentials do NOT pass through", as
 
     expect(captured).toHaveLength(0); // the anthropic upstream never saw any of them
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -256,7 +348,7 @@ test("nativePassthrough:false disables the pierce", async () => {
     expect(res.status).not.toBe(200);
     expect(captured).toHaveLength(0);
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -322,7 +414,7 @@ test("P1: 30-image history arrives age-tiered — newest pass through, older shr
       expect(images[i].source?.data).toBe(src);
     }
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -341,7 +433,7 @@ test("P2: dimension-oversized image is re-encoded (normalized), not dropped", as
     const d = sniffImageDimensions(img.source?.data ?? "");
     expect(Math.max(d!.width, d!.height)).toBeLessThanOrEqual(2000);
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -359,7 +451,7 @@ test("P2b: 101 images trip the guard's 100-cap — exactly one oldest textified"
     expect(blocks.filter(b => b.type === "image")).toHaveLength(100);
     expect(blocks.filter(b => b.type === "text").length).toBeGreaterThanOrEqual(2); // original text + 1 omitted note
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -378,7 +470,7 @@ test("P4: count_tokens body is normalized identically to the real send", async (
     const [img] = capturedBlocks(captured).filter(b => b.type === "image");
     expect(img.source?.media_type).toBe("image/jpeg");
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
@@ -396,7 +488,7 @@ test("P5: Files API image source passes through untouched", async () => {
     const [img] = capturedBlocks(captured).filter(b => b.type === "image");
     expect(img.source).toEqual({ type: "file", file_id: "file_abc123" });
   } finally {
-    server.stop(true);
+    await server.stop(true);
     upstream.stop(true);
   }
 });
