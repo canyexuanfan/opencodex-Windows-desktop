@@ -289,10 +289,20 @@ function invalidChoicesEvent(usage?: OcxUsage): Extract<AdapterEvent, { type: "e
   };
 }
 
-function invalidToolCallsEvent(usage?: OcxUsage): Extract<AdapterEvent, { type: "error" }> {
+function invalidToolCallsEvent(
+  rawToolCalls: unknown,
+  mode: "stream" | "response",
+  usage?: OcxUsage,
+): Extract<AdapterEvent, { type: "error" }> {
+  const diagnostic = diagnoseInvalidToolCalls(rawToolCalls, mode);
+  const detail = diagnostic
+    ? ` (${diagnostic.reason}${diagnostic.callIndex !== undefined ? `; callIndex=${diagnostic.callIndex}` : ""}; valueType=${diagnostic.valueType})`
+    : "";
   return {
     type: "error",
-    message: "upstream response contained invalid tool calls",
+    status: 502,
+    errorType: "upstream_error",
+    message: `upstream response contained invalid tool calls${detail}`,
     ...(usage !== undefined ? { usage } : {}),
   };
 }
@@ -1479,12 +1489,12 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
             // tolerated as absent because OpenAI-compatible providers may emit it as stream padding.
             if (!Array.isArray(rawToolCalls)) {
               logInvalidToolCalls("stream", rawToolCalls);
-              return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
+              return yield* terminateWithError(invalidToolCallsEvent(rawToolCalls, "stream", pendingUsage));
             }
             for (const rawToolCall of rawToolCalls) {
               if (!isRecord(rawToolCall)) {
                 logInvalidToolCalls("stream", rawToolCalls);
-                return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
+                return yield* terminateWithError(invalidToolCallsEvent(rawToolCalls, "stream", pendingUsage));
               }
               const tc = rawToolCall as {
                 index?: number;
@@ -1499,7 +1509,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
               if (rawFunction !== undefined && rawFunction !== null) {
                 if (!isRecord(rawFunction)) {
                   logInvalidToolCalls("stream", rawToolCalls);
-                  return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
+                  return yield* terminateWithError(invalidToolCallsEvent(rawToolCalls, "stream", pendingUsage));
                 }
                 const rawName = rawFunction.name;
                 const rawArguments = rawFunction.arguments;
@@ -1508,12 +1518,12 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
                 // non-string value still fails closed before entering the accumulator.
                 if (isInvalidStreamStringField(rawName) || isInvalidStreamStringField(rawArguments)) {
                   logInvalidToolCalls("stream", rawToolCalls);
-                  return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
+                  return yield* terminateWithError(invalidToolCallsEvent(rawToolCalls, "stream", pendingUsage));
                 }
               }
               if (isInvalidStreamStringField(tc.id)) {
                 logInvalidToolCalls("stream", rawToolCalls);
-                return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
+                return yield* terminateWithError(invalidToolCallsEvent(rawToolCalls, "stream", pendingUsage));
               }
               const key = typeof tc.index === "number"
                 ? `i:${tc.index}`
@@ -1675,12 +1685,12 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         if (rawToolCalls !== undefined && rawToolCalls !== null) {
           if (!Array.isArray(rawToolCalls)) {
             logInvalidToolCalls("response", rawToolCalls);
-            return [invalidToolCallsEvent(usage)];
+            return [invalidToolCallsEvent(rawToolCalls, "response", usage)];
           }
           for (const rawToolCall of rawToolCalls) {
             if (!isRecord(rawToolCall) || !isRecord(rawToolCall.function)) {
               logInvalidToolCalls("response", rawToolCalls);
-              return [invalidToolCallsEvent(usage)];
+              return [invalidToolCallsEvent(rawToolCalls, "response", usage)];
             }
             const id = rawToolCall.id;
             const name = rawToolCall.function.name;
@@ -1691,7 +1701,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
             if (typeof id !== "string" || typeof name !== "string" || typeof args !== "string"
               || name.trim().length === 0) {
               logInvalidToolCalls("response", rawToolCalls);
-              return [invalidToolCallsEvent(usage)];
+              return [invalidToolCallsEvent(rawToolCalls, "response", usage)];
             }
             events.push({ type: "tool_call_start", id, name });
             events.push({ type: "tool_call_delta", arguments: args });
