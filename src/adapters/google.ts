@@ -1,6 +1,6 @@
 import type { AdapterFetchContext, AdapterRequest, ProviderAdapter } from "./base";
 import { debugDroppedFrame } from "../lib/debug";
-import { anthropicToolCallId } from "./tool-call-id";
+import { createToolCallIdAllocator } from "./tool-call-id";
 import { createImageBudget, materializeInlineImage, MAX_ENCODED_BYTES_PER_IMAGE, artifactHttpUrl } from "../images/artifacts";
 import type {
   AdapterEvent,
@@ -11,6 +11,7 @@ import type {
   OcxProviderOpaqueToolCallMetadata,
   OcxTextContent,
   OcxToolCall,
+  OcxToolResultMessage,
   OcxUsage,
 } from "../types";
 import { isAllowedToolChoice, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
@@ -95,7 +96,9 @@ function vertexReplaySessionId(parsed: OcxParsedRequest): string {
  * the call/response pairing is preserved. Returns `undefined` for an empty id so the caller omits the
  * field entirely rather than inventing a non-matching one.
  */
-const geminiToolCallId = anthropicToolCallId;
+// Aliasing the stateless transform here would reintroduce the collision it cannot prevent:
+// a rewritten id can equal a distinct raw id that already conforms. Use a request-scoped
+// allocator, exactly as the Anthropic adapter does, so call/response pairing stays injective.
 
 /**
  * Inline image parts (Gemini `inline_data`) extracted from tool-result content. Only base64 data URLs
@@ -158,6 +161,16 @@ function messagesToGeminiFormat(
 
   const contents: unknown[] = [];
 
+  const callIds = createToolCallIdAllocator();
+  for (const msg of parsed.context.messages) {
+    if (msg.role === "assistant") {
+      for (const part of (msg as OcxAssistantMessage).content) {
+        if (part.type === "toolCall") callIds.reserve((part as OcxToolCall).id);
+      }
+    } else if (msg.role === "toolResult") {
+      callIds.reserve((msg as OcxToolResultMessage).toolCallId);
+    }
+  }
   for (const msg of parsed.context.messages) {
     switch (msg.role) {
       case "user":
@@ -196,7 +209,7 @@ function messagesToGeminiFormat(
             // streaming covered by the replay cache. Only forward a REAL upstream signature — the
             // Responses parser also stashes synthetic item ids (`fc_...`) on this field, and sending
             // those as a thoughtSignature breaks continuity (the replay cache supplies the real one).
-            const callId = geminiToolCallId(tc.id);
+            const callId = callIds.allocate(tc.id);
             const functionCall: Record<string, unknown> = { name: namespacedToolName(tc.namespace, tc.name), args: tc.arguments };
             // Claude-on-Antigravity maps this id to Anthropic `tool_use.id`; without it the upstream
             // conversion 400s. Gemini accepts the optional id and pairs call/response by it.
@@ -221,7 +234,8 @@ function messagesToGeminiFormat(
         // functionResponse, but it does accept sibling inline_data parts in the same user turn, so
         // tool-result screenshots (e.g. Computer Use) ride along as inline_data instead of being
         // flattened to a "[image]" marker the model can't actually see.
-        const responseId = geminiToolCallId(msg.toolCallId);
+        // lookup(), not allocate(): a response must reuse its call's id and must never mint a new one.
+        const responseId = callIds.lookup(msg.toolCallId);
         const functionResponse: Record<string, unknown> = { name: namespacedToolName(msg.toolNamespace, msg.toolName), response: { result: geminiToolResultText(msg.content) } };
         // Mirror the matching functionCall id so Claude-on-Antigravity can pair this result with its
         // `tool_use` block (-> Anthropic `tool_result.tool_use_id`).

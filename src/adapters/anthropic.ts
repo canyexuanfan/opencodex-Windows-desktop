@@ -1,5 +1,5 @@
 import type { IncomingMeta, ProviderAdapter } from "./base";
-import { anthropicToolCallId } from "./tool-call-id";
+import { createToolCallIdAllocator, type ToolCallIdAllocator } from "./tool-call-id";
 import { debugDroppedFrame } from "../lib/debug";
 import type {
   AdapterEvent,
@@ -560,7 +560,7 @@ function buildToolNameTransforms(provider: OcxProviderConfig): { toWire: (name: 
   return { toWire: (name) => name, fromWire: (name) => name };
 }
 
-function toAnthropicToolResult(msg: OcxToolResultMessage): Record<string, unknown> {
+function toAnthropicToolResult(msg: OcxToolResultMessage, wireCallId: string): Record<string, unknown> {
   // Anthropic tool_result accepts a string OR content blocks — render images natively
   // (e.g. Codex view_image output) instead of dropping them.
   let content: string | unknown[];
@@ -575,10 +575,15 @@ function toAnthropicToolResult(msg: OcxToolResultMessage): Record<string, unknow
   }
   return {
     type: "tool_result",
-    tool_use_id: anthropicToolCallId(msg.toolCallId) ?? msg.toolCallId,
+    tool_use_id: wireCallId,
     content,
     ...(msg.isError ? { is_error: true } : {}),
   };
+}
+
+function unrepresentableToolCallText(tc: OcxToolCall, wireName: string): string {
+  const args = typeof tc.arguments === "string" ? tc.arguments : JSON.stringify(tc.arguments);
+  return `[tool_use without a usable id: ${wireName}]\n${args}`;
 }
 
 function orphanToolResultText(msg: OcxToolResultMessage): string {
@@ -593,6 +598,19 @@ function messagesToAnthropicFormat(
   parsed: OcxParsedRequest,
   toolNames: { toWire: (name: string) => string },
 ): { system: string | undefined; messages: unknown[] } {
+  // One allocator for the whole request: a tool_result must resolve to the SAME wire id its
+  // call got, and two distinct raw ids must never collapse into one. Conforming ids are claimed
+  // first so a rewritten id can never squat on an id another call legitimately owns.
+  const callIds = createToolCallIdAllocator();
+  for (const message of parsed.context.messages) {
+    if (message.role === "assistant") {
+      for (const part of (message as OcxAssistantMessage).content) {
+        if (part.type === "toolCall") callIds.reserve((part as OcxToolCall).id);
+      }
+    } else if (message.role === "toolResult") {
+      callIds.reserve((message as OcxToolResultMessage).toolCallId);
+    }
+  }
   const toolCatalogNudge = buildNonOpenAIToolCatalogNudgeForTools(
     parsed.context.tools,
     parsed.options.toolChoice,
@@ -646,7 +664,13 @@ function messagesToAnthropicFormat(
             const flatName = namespacedToolName(tc.namespace, tc.name);
             // Normalized here, and identically for the matching tool_result above, so a history
             // replayed from another provider path keeps its call/result pairing (#1767).
-            const wireCallId = anthropicToolCallId(tc.id) ?? tc.id;
+            // No raw fallback: restoring an empty/unusable id puts a value on the wire Anthropic
+            // rejects. An unrepresentable call becomes text instead, and its result follows it there.
+            const wireCallId = callIds.allocate(tc.id);
+            if (wireCallId === undefined) {
+              preface.push({ type: "text", text: unrepresentableToolCallText(tc, toolNames.toWire(flatName)) });
+              continue;
+            }
             toolUseIds.push(wireCallId);
             toolUses.push({ type: "tool_use", id: wireCallId, name: toolNames.toWire(flatName), input: tc.arguments });
           }
@@ -664,9 +688,13 @@ function messagesToAnthropicFormat(
           let j = i + 1;
           while (j < parsed.context.messages.length && parsed.context.messages[j].role === "toolResult") {
             const tr = parsed.context.messages[j] as OcxToolResultMessage;
-            if (requiredIds.has(tr.toolCallId) && !seen.has(tr.toolCallId)) {
-              resultBlocks.push(toAnthropicToolResult(tr));
-              seen.add(tr.toolCallId);
+            // Match on the WIRE id. requiredIds holds normalized ids, so comparing the raw result id
+            // made every rewritten pair lose its result to orphan text and gain a synthetic
+            // missing-result block. lookup() never mints an id: a result with no call stays orphan.
+            const wireResultId = callIds.lookup(tr.toolCallId);
+            if (wireResultId !== undefined && requiredIds.has(wireResultId) && !seen.has(wireResultId)) {
+              resultBlocks.push(toAnthropicToolResult(tr, wireResultId));
+              seen.add(wireResultId);
             } else {
               orphanBlocks.push({ type: "text", text: orphanToolResultText(tr) });
             }
