@@ -60,6 +60,7 @@ import {
   OPENAI_PROVIDER_TIER_VERSION,
   pinnedWireAdapter,
   REASONING_SUMMARY_DELIVERY_VALUES,
+  UPSTREAM_HTTP_VERSION_VALUES,
   type OcxClaudeCodeConfig,
   type OcxConfig,
   type OcxApiKeyEntry,
@@ -734,6 +735,12 @@ const providerConfigSchema = z.object({
   modelSupportsServiceTier: z.record(z.string().min(1), z.boolean()).optional(),
   preserveResponsesReasoningContent: z.boolean().optional(),
   allowPrivateNetwork: z.boolean().optional(),
+  // The management API accepts `null` as "clear this", so a config written before the POST
+  // canonicalization below can hold one on disk. Rejecting it here would send the operator
+  // through invalid-config recovery for a value the API told them was fine.
+  upstreamHttpVersion: z.enum(UPSTREAM_HTTP_VERSION_VALUES)
+    .nullish()
+    .transform(value => value ?? undefined),
   noStructuredOutputModels: z.array(z.string().min(1))
     .transform(normalizeNonBlankStringArray)
     .optional(),
@@ -902,6 +909,20 @@ export function apiKeyTransportConfigError(
   }
   if (provider.authMode === "oauth" || provider.authMode === "forward" || provider.authMode === "local") {
     return "apiKeyTransport requires Anthropic API-key authentication";
+  }
+  return null;
+}
+
+/**
+ * Shared runtime boundary for the per-provider upstream HTTP-version pin (#1668). Used by
+ * the management write path (providerManagementConfigError / PATCH) so it can never disagree
+ * with the strict zod load schema: a value that survives POST/PATCH is always loadable, and
+ * a value the loader rejects is rejected at write time too.
+ */
+export function upstreamHttpVersionConfigError(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || !(UPSTREAM_HTTP_VERSION_VALUES as readonly string[]).includes(value)) {
+    return 'upstreamHttpVersion must be one of "auto", "http1.1", "h1", "http2", "h2", or null to clear';
   }
   return null;
 }

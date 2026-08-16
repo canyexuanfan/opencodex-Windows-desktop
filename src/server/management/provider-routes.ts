@@ -17,6 +17,7 @@ import {
   requestPacingConfigError,
   readConfigAdmissionSnapshot,
   saveConfigPreservingClaudeCode,
+  upstreamHttpVersionConfigError,
   withConfigMutationLockSync,
 } from "../../config";
 import {
@@ -191,6 +192,19 @@ function applyProviderPatchFields(
       // `requestPacingConfigError` is the runtime narrowing boundary above; keep the
       // assertion explicit because a generic plain record cannot express `enabled`.
       next.requestPacing = structuredClone(value) as unknown as OcxProviderConfig["requestPacing"];
+    }
+    touched = true;
+  }
+  if (Object.hasOwn(rawBody, "upstreamHttpVersion")) {
+    const value = rawBody.upstreamHttpVersion;
+    if (value === null || value === "") {
+      delete next.upstreamHttpVersion;
+    } else {
+      const versionError = upstreamHttpVersionConfigError(value);
+      if (versionError) return { error: versionError };
+      // `upstreamHttpVersionConfigError` is the shared write boundary; the assertion is
+      // explicit because the incoming value is an unknown JSON scalar.
+      next.upstreamHttpVersion = value as OcxProviderConfig["upstreamHttpVersion"];
     }
     touched = true;
   }
@@ -374,6 +388,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       modelContextWindows: p.modelContextWindows,
       modelSupportsServiceTier: p.modelSupportsServiceTier,
       noStructuredOutputModels: p.noStructuredOutputModels,
+      upstreamHttpVersion: p.upstreamHttpVersion,
       authMode: p.authMode,
       apiKeyTransport: p.apiKeyTransport,
       disabled: p.disabled === true,
@@ -466,6 +481,10 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     const serviceTierError = providerServiceTierConfigError(name, body.provider);
     if (serviceTierError) return jsonResponse({ error: serviceTierError }, 400);
     const prov = body.provider ? stripCodexRuntimeProviderFields(body.provider as OcxProviderConfig) : undefined;
+    // PATCH already clears on null; POST persisted the body as submitted, so a `null` here
+    // reached disk and the next loadConfig() refused it. Canonicalize to absent, which is what
+    // "clear" means everywhere else.
+    if (prov && prov.upstreamHttpVersion === null) delete prov.upstreamHttpVersion;
     if (!name || !prov?.adapter || !prov?.baseUrl) {
       return jsonResponse({ error: "name, provider.adapter and provider.baseUrl are required" }, 400);
     }
