@@ -38,8 +38,6 @@ type Store<T> = {
   inflight: AbortController | null;
   /** Subscriber that started the current in-flight request (if any). */
   inflightOwner: (() => void) | null;
-  /** Store-level visibilitychange handler, installed only while this store polls. */
-  visibilityListener: (() => void) | null;
   generation: number;
   /**
    * Set when `setClientResourceData` publishes while nobody is subscribed (session-cache
@@ -99,7 +97,6 @@ function getStore<T>(key: string): Store<T> {
       pollIntervalMs: undefined,
       inflight: null,
       inflightOwner: null,
-      visibilityListener: null,
       generation: 0,
       seedNeedsRevalidate: false,
       lastSettledAt: undefined,
@@ -269,37 +266,43 @@ function recomputePoll<T>(store: Store<T>) {
 }
 
 /**
- * One listener per polling store, installed whenever a polling subscriber exists —
- * regardless of whether a timer is currently armed (a mount-while-hidden store has
- * no timer but MUST still resume). On hidden the timer is suspended outright (zero
- * wakeups, unless an opt-out subscriber keeps it); on visible the skipped ticks are
- * made up with a single quiet revalidation and the cadence re-arms.
+ * ONE listener for the whole module, not one per store. Timers are shared by bucket,
+ * so a visibility flip is a single global re-evaluation: hidden buckets with no
+ * opt-out member drop their timers outright (zero wakeups), visible ones re-arm, and
+ * every store that polls gets one quiet make-up fetch. A per-store listener would run
+ * that same global sweep N times per flip.
  *
  * `replaceInflight: false` keeps this from cancelling work a visible-again mount just
  * started; if something is already loading, that request is the fresh answer.
  */
-function ensureVisibilityListener<T>(store: Store<T>) {
-  if (typeof document === "undefined" || store.visibilityListener) return;
+let moduleVisibilityListener: (() => void) | null = null;
+
+function ensureVisibilityListener<T>(_store: Store<T>) {
+  if (typeof document === "undefined" || moduleVisibilityListener) return;
   const onVisibility = () => {
-    if (store.pollIntervalMs === undefined) return;
-    // Buckets are shared, so one transition re-evaluates all of them: a hidden bucket
-    // with no opt-out member drops its timer entirely, and a visible one re-arms.
     syncAllBuckets();
     if (documentIsHidden()) return;
-    const entry = pickFetcherEntry(store);
-    if (!entry) return;
-    void runFetch(store, entry.fetcher, { replaceInflight: false, owner: entry.owner, deadlineMs: entry.deadlineMs });
+    // Make up the ticks each polling store missed while hidden.
+    for (const bucket of pollBuckets.values()) {
+      for (const store of bucket.stores) {
+        const entry = pickFetcherEntry(store);
+        if (!entry) continue;
+        void runFetch(store, entry.fetcher, { replaceInflight: false, owner: entry.owner, deadlineMs: entry.deadlineMs });
+      }
+    }
   };
   document.addEventListener("visibilitychange", onVisibility);
-  store.visibilityListener = onVisibility;
+  moduleVisibilityListener = onVisibility;
 }
 
-function removeVisibilityListener<T>(store: Store<T>) {
-  if (!store.visibilityListener) return;
+/** Drop the shared listener once nothing polls at all. */
+function removeVisibilityListener<T>(_store: Store<T>) {
+  if (!moduleVisibilityListener) return;
+  if (pollBuckets.size > 0) return;
   if (typeof document !== "undefined") {
-    document.removeEventListener("visibilitychange", store.visibilityListener);
+    document.removeEventListener("visibilitychange", moduleVisibilityListener);
   }
-  store.visibilityListener = null;
+  moduleVisibilityListener = null;
 }
 
 async function runFetch<T>(
@@ -670,6 +673,12 @@ export function clearClientResourceStoresForTests(): void {
     if (bucket.timer !== null) clearInterval(bucket.timer);
     pollBuckets.delete(intervalMs);
   }
+  // The shared listener outlives individual stores, so the reset must drop it too or
+  // a later suite's document would keep a handler bound to the previous one.
+  if (moduleVisibilityListener && typeof document !== "undefined") {
+    document.removeEventListener("visibilitychange", moduleVisibilityListener);
+  }
+  moduleVisibilityListener = null;
 }
 
 /**

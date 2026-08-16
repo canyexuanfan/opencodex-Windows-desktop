@@ -7,6 +7,7 @@
  * with per-page booleans, which is why a slow load could look identical to an empty result.
  */
 
+import { useCallback, useMemo } from "react";
 import { type ResourceSnapshot, useKeyedClientResource } from "./client-resource";
 import { readSessionListCacheEntry, writeSessionListCacheEntry } from "./session-list-cache";
 
@@ -56,6 +57,12 @@ export type DataSurfaceOptions<T> = {
    * Opt-in session-cache wiring: the surface seeds from this key on mount and writes
    * every successful payload back with its timestamp. Pages that already own their
    * cache keep doing it themselves and leave this unset.
+   *
+   * Seeding alone (no `staleAfterMs`) keeps today's always-revalidate behavior: the
+   * cached payload paints immediately instead of a skeleton, and the live value still
+   * arrives. Add `staleAfterMs` only for a surface that OWNS its truth — a view that
+   * mirrors state another page can mutate would otherwise contradict the toggle the
+   * user just made, with no request in flight to correct it.
    */
   sessionCacheKey?: string;
 };
@@ -158,16 +165,21 @@ export function useDataSurface<T>(
   options: DataSurfaceOptions<T>,
 ): DataSurfaceResource<T> {
   const { isEmpty, sessionCacheKey, ...resourceOptions } = options;
-  // Read once per render; sessionStorage is synchronous and the seed only applies
-  // while the store is empty, so a repeat read costs nothing and stays in sync.
-  const cachedEntry = sessionCacheKey ? readSessionListCacheEntry<T>(sessionCacheKey) : null;
-  const loadAndCache = sessionCacheKey
-    ? async (signal: AbortSignal): Promise<T> => {
+  // The seed only applies while the store is empty, so reading it once per key is
+  // enough — and a page like the Integrations overview holds eight of these, whose
+  // parses would otherwise repeat on every render as each resource settles.
+  const cachedEntry = useMemo(
+    () => (sessionCacheKey ? readSessionListCacheEntry<T>(sessionCacheKey) : null),
+    [sessionCacheKey],
+  );
+  const loadAndCache = useCallback(
+    async (signal: AbortSignal): Promise<T> => {
       const next = await load(signal);
-      writeSessionListCacheEntry(sessionCacheKey, next);
+      if (sessionCacheKey) writeSessionListCacheEntry(sessionCacheKey, next);
       return next;
-    }
-    : load;
+    },
+    [load, sessionCacheKey],
+  );
   const resource = useKeyedClientResource(key, deps, loadAndCache, {
     ...resourceOptions,
     ...(sessionCacheKey
