@@ -596,7 +596,7 @@ export interface OcxCustomModel {
   id: string;
   /** 프로바이더 키 (기존 providers[name]) */
   provider: string;
-  /** 모델 슬러그 (프로바이더 접두사 없는 bare id) */
+  /** Native provider model id; slashes are allowed and encoded for Codex as provider/<hyphenated-id>. */
   modelId: string;
   /** 인간 가독 표시명 (선택, 슬래시 불가) */
   displayName?: string;
@@ -825,6 +825,11 @@ export interface OcxConfig {
    * - "v2": force ALL models to v2 surface (override upstream pins)
    */
   multiAgentMode?: "v1" | "default" | "v2";
+  /**
+   * When `multiAgentMode` is `"v2"`, keep ChatGPT-native catalog rows on v1.
+   * Routed parents get v2 tools; Sol/Terra can still spawn Grok/Claude (issue #92).
+   */
+  keepNativeChatGptOnV1?: boolean;
   /** Experimental, default-off ChatGPT recovery for encrypted V2 routed tasks. */
   agentTaskRecovery?: {
     enabled?: boolean;

@@ -304,6 +304,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
         agentsMaxThreadsConflict: data.agentsMaxThreadsConflict === true,
         maxConcurrentThreadsPerSession: typeof data.maxConcurrentThreadsPerSession === "number" ? data.maxConcurrentThreadsPerSession : null,
         multiAgentMode: data.multiAgentMode === "v1" || data.multiAgentMode === "v2" ? data.multiAgentMode : "default",
+        keepNativeChatGptOnV1: data.keepNativeChatGptOnV1 === true,
       });
     } catch {
       setV2(null); // old server / network: hide the section instead of guessing
@@ -771,9 +772,15 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
     }
   };
 
-  const setMultiAgentMode = async (mode: "v1" | "default" | "v2") => {
+  /**
+   * Both v2 surface writes adopt the response directly instead of calling
+   * `loadV2()`. `loadV2` returns early while `v2BusyRef` is still held by the
+   * in-flight write, so the refetch was a no-op and the control kept its old
+   * value until the next 10s poll. That is visible here: "Keep ChatGPT on v1"
+   * only renders while the mode is v2, so a stale mode also delayed the row.
+   */
+  const putV2Setting = async (body: Record<string, unknown>) => {
     if (!v2 || v2BusyRef.current) return;
-    if (v2.multiAgentMode === mode) return;
     setV2Busy(true);
     v2BusyRef.current = true;
     setV2Note("");
@@ -782,14 +789,25 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
       const r = await fetch(`${apiBase}/api/v2`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ multiAgentMode: mode }),
+        body: JSON.stringify(body),
       });
       try {
         const data = await readJsonOrThrow<V2Status & { warnings?: string[] }>(r, t("models.saveFailed"));
-        void loadV2();
+        if (!data || typeof data.enabled !== "boolean") {
+          setOk(false);
+          setStatus(t("models.saveFailed"));
+          return;
+        }
+        setV2({
+          enabled: data.enabled,
+          agentsMaxThreadsConflict: data.agentsMaxThreadsConflict === true,
+          maxConcurrentThreadsPerSession: typeof data.maxConcurrentThreadsPerSession === "number" ? data.maxConcurrentThreadsPerSession : null,
+          multiAgentMode: data.multiAgentMode === "v1" || data.multiAgentMode === "v2" ? data.multiAgentMode : "default",
+          keepNativeChatGptOnV1: data.keepNativeChatGptOnV1 === true,
+        });
         setOk(true);
         setStatus(t("models.v2Applied"));
-        setV2Note((data?.warnings ?? []).join(" "));
+        setV2Note((data.warnings ?? []).join(" "));
       } catch (e) {
         setOk(false);
         setStatus(e instanceof Error ? e.message : t("models.saveFailed"));
@@ -800,6 +818,16 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
       setV2Busy(false);
       v2BusyRef.current = false;
     }
+  };
+
+  const setMultiAgentMode = async (mode: "v1" | "default" | "v2") => {
+    if (!v2 || v2.multiAgentMode === mode) return;
+    await putV2Setting({ multiAgentMode: mode });
+  };
+
+  const setKeepNativeChatGptOnV1 = async (next: boolean) => {
+    if (!v2 || v2.keepNativeChatGptOnV1 === next) return;
+    await putV2Setting({ keepNativeChatGptOnV1: next });
   };
 
   const putV2Threads = async (value: number) => {
@@ -831,6 +859,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
           agentsMaxThreadsConflict: data.agentsMaxThreadsConflict === true,
           maxConcurrentThreadsPerSession: typeof data.maxConcurrentThreadsPerSession === "number" ? data.maxConcurrentThreadsPerSession : null,
           multiAgentMode: data.multiAgentMode === "v1" || data.multiAgentMode === "v2" ? data.multiAgentMode : "default",
+          keepNativeChatGptOnV1: data.keepNativeChatGptOnV1 === true,
         });
         setOk(true);
         setStatus(t("models.v2ThreadsApplied"));
@@ -1290,6 +1319,24 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
             >
               <IconInfo width={14} height={14} aria-hidden="true" />
             </button>
+          </div>
+        )}
+        {v2 && v2.multiAgentMode === "v2" && (
+          <div className="models-v2-keep-native-row">
+            <div className="models-v2-keep-native">
+              <span className="models-v2-keep-native-label text-caption">{t("models.keepNativeOnV1")}</span>
+              <Switch
+                on={v2.keepNativeChatGptOnV1 === true}
+                onClick={() => void setKeepNativeChatGptOnV1(!v2.keepNativeChatGptOnV1)}
+                disabled={v2Busy}
+                label={t("models.keepNativeOnV1")}
+              />
+              <Tooltip content={t("models.keepNativeOnV1Hint")} side="top" maxWidth={360}>
+                <span className="models-v2-keep-native-info" aria-label={t("models.keepNativeOnV1Hint")}>
+                  <IconInfo width={13} height={13} aria-hidden="true" />
+                </span>
+              </Tooltip>
+            </div>
           </div>
         )}
       </div>

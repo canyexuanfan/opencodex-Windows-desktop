@@ -171,8 +171,14 @@ const commandRunners: Record<string, CommandRunner> = {
     return Number(process.exitCode ?? 0);
   },
   doctor: async deps => {
+    const doctorArgs = deps.args.slice(1);
     const { runDoctor } = await import("./doctor");
-    await runDoctor(deps.args.slice(1));
+    await runDoctor(doctorArgs);
+    if (!doctorArgs.includes("--fix-codex-runtime")) {
+      console.log("");
+      const { printCodexLogGuardDoctor } = await import("./codex-log-guard-doctor");
+      printCodexLogGuardDoctor();
+    }
     return 0;
   },
   debug: async deps => {

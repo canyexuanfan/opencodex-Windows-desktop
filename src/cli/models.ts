@@ -6,7 +6,8 @@ import { createInterface } from "node:readline/promises";
 import { syncModelsToCodex } from "../codex/sync";
 import { hasOwnProvider, isValidProviderName, loadConfig, saveConfig } from "../config";
 import { canonicalizeReasoningEfforts, isDeclaredReasoningEffort } from "../reasoning-effort";
-import { routedSlug } from "../providers/slug-codec";
+import { encodedModelIdCollides, routedSlug, slugEquals } from "../providers/slug-codec";
+import { knownModelIdsForProvider } from "../router";
 import { findLiveProxy } from "../server/proxy-liveness";
 import type { OcxConfig, OcxCustomModel } from "../types";
 
@@ -180,7 +181,6 @@ async function handleCustomAdd(args: string[]): Promise<void> {
 
   if (!provider || !modelId) fail("provider and modelId are required", ADD_USAGE);
   if (!isValidProviderName(provider)) fail(`invalid provider name "${provider}"`);
-  if (modelId.includes("/")) fail("modelId must not contain /");
 
   const config = loadConfig();
   if (!hasOwnProvider(config.providers, provider)) {
@@ -215,6 +215,10 @@ async function handleCustomAdd(args: string[]): Promise<void> {
   const slug = routedSlug(provider, modelId);
   if (existing.some(model => routedSlug(model.provider, model.modelId) === slug)) {
     fail(`custom model "${slug}" already exists`);
+  }
+  const known = knownModelIdsForProvider(provider, config.providers[provider], config);
+  if (encodedModelIdCollides(modelId, known)) {
+    fail(`custom model "${slug}" is ambiguous; it encodes to an existing model id`);
   }
 
   const entry: OcxCustomModel = {
@@ -256,10 +260,16 @@ async function handleCustomRemove(args: string[]): Promise<void> {
 
   const config = loadConfig();
   const existing = config.customModels ?? [];
-  const index = target.includes("/")
-    ? existing.findIndex(model => routedSlug(model.provider, model.modelId) === target)
-    : existing.findIndex(model => model.id === target);
-  if (index === -1) fail(`custom model "${target}" not found`);
+  const matchingIndexes = existing.flatMap((model, index) => (
+    target.includes("/")
+      ? slugEquals(target, model.provider, model.modelId)
+      : model.id === target
+  ) ? [index] : []);
+  if (matchingIndexes.length === 0) fail(`custom model "${target}" not found`);
+  if (matchingIndexes.length > 1) {
+    fail(`custom model selector "${target}" is ambiguous; use the custom model id`);
+  }
+  const index = matchingIndexes[0]!;
 
   const model = existing[index];
   if (!confirmed && !(await confirmCustomRemoval(model))) {

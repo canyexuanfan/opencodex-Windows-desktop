@@ -990,6 +990,11 @@ function modelInputModalities(
   if (capabilityRecord?.vision === false) return ["text"];
   if (capabilityRecord?.vision === true || capabilities?.some(value => (
     value === "vision" || value === "image-input" || value === "image_input"
+    // llama.cpp and Ollama-compatible servers report vision as "multimodal" —
+    // it is the only image signal those servers emit (#1797). Mapped to the
+    // closed `text|image` enum rather than passed through: an out-of-enum
+    // modality makes Codex reject the entire catalog file.
+    || value === "multimodal"
   ))) {
     return ["text", "image"];
   }
@@ -1008,6 +1013,13 @@ export function catalogHintsFromModelsApiItem(providerName: string, item: Provid
       item.context_size,
       item.max_model_len,
       item.max_context_length,
+      // llama.cpp reports the served context under `meta`: `n_ctx` is what the
+      // server was actually started with, `n_ctx_train` the model's trained
+      // maximum. Prefer the served value — routing must not promise a window the
+      // running server will refuse. Both come LAST so no provider already
+      // supplying a recognized field changes behavior (#1797).
+      plainRecord(item.meta)?.n_ctx,
+      plainRecord(item.meta)?.n_ctx_train,
     );
   const maxInputTokens = positiveSafeInteger(limits?.max_input_tokens, item.max_input_tokens);
   // Some OpenAI-compatible catalogs expose the selectable ladder under
