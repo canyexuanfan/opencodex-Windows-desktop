@@ -663,6 +663,45 @@ describe("launchd service plist", () => {
       else process.env.OPENCODEX_API_AUTH_TOKEN = oldApiAuthToken;
     }
   });
+
+  // A POSIX unit must carry the literal POSIX path no matter which host writes it. The two
+  // cases above are where this actually bites: on a Windows host `resolve("/tmp/x")` anchors
+  // to the current drive and the generated file said `D:\tmp\codex-sqlite-home`, while
+  // CODEX_HOME beside it kept `/tmp/codex-home`. The same file disagreed with itself about two
+  // variables holding the same kind of value. This states the rule directly so the intent
+  // survives; on a POSIX host `resolve()` is identity here, so only Windows can catch it.
+  test("carries an absolute POSIX sqlite home into POSIX units without host anchoring", () => {
+    const inherited = process.env.CODEX_SQLITE_HOME;
+    try {
+      process.env.CODEX_SQLITE_HOME = "/var/lib/opencodex/codex-sqlite";
+
+      expect(buildPlist()).toContain(
+        "<key>CODEX_SQLITE_HOME</key><string>/var/lib/opencodex/codex-sqlite</string>",
+      );
+      expect(buildUnit()).toContain(
+        'Environment="CODEX_SQLITE_HOME=/var/lib/opencodex/codex-sqlite"',
+      );
+    } finally {
+      if (inherited === undefined) delete process.env.CODEX_SQLITE_HOME;
+      else process.env.CODEX_SQLITE_HOME = inherited;
+    }
+  });
+
+  // The relative case is why the resolve() is there at all: a service unit has no meaningful
+  // working directory, so a relative home must still be made absolute.
+  test("still absolutizes a relative sqlite home", () => {
+    const inherited = process.env.CODEX_SQLITE_HOME;
+    try {
+      process.env.CODEX_SQLITE_HOME = "relative-sqlite-home";
+      const plist = buildPlist();
+
+      expect(plist).toContain("<key>CODEX_SQLITE_HOME</key>");
+      expect(plist).not.toContain("<string>relative-sqlite-home</string>");
+    } finally {
+      if (inherited === undefined) delete process.env.CODEX_SQLITE_HOME;
+      else process.env.CODEX_SQLITE_HOME = inherited;
+    }
+  });
 });
 
 describe("service lifecycle cleanup ordering", () => {
