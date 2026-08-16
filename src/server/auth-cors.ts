@@ -391,8 +391,12 @@ export interface ApiAuthMatrixRow {
  * against every cell rather than reading the table back to itself.
  */
 export const AUTH_MATRIX: readonly ApiAuthMatrixRow[] = [
-  { endpoint: "/v1/responses", bearer: "rejected", dedicated: "required", xApiKey: "rejected" },
-  { endpoint: "/v1/chat/completions", bearer: "rejected", dedicated: "required", xApiKey: "rejected" },
+  // #1686: a bearer that is one of OUR admission secrets is now accepted here. It is safe
+  // because materializeCodexUpstreamAuth substitutes the stored main credential rather than
+  // forwarding it; a bearer that is NOT our secret stays unadmitted and remains Codex Direct
+  // passthrough, so the two bearer domains still never mix. `x-api-key` is still rejected.
+  { endpoint: "/v1/responses", bearer: "accepted", dedicated: "accepted", xApiKey: "rejected" },
+  { endpoint: "/v1/chat/completions", bearer: "accepted", dedicated: "accepted", xApiKey: "rejected" },
   { endpoint: "/v1/messages", bearer: "accepted", dedicated: "accepted", xApiKey: "accepted" },
   { endpoint: "/v1/models", bearer: "accepted", dedicated: "accepted", xApiKey: "accepted" },
 ];
