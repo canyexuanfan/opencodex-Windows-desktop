@@ -46,6 +46,34 @@ const INJECT_REWRITE_RESTORE = [
   "})();",
 ].join("\n");
 
+/** Inject with an explicit catalog path, drop `model_catalog_json` the way a rewrite does, then restore. */
+const CATALOG_REWRITE_RESTORE = [
+  'const fs = require("fs");',
+  'const path = require("path");',
+  'const { injectCodexConfig, restoreNativeCodex } = require("./src/codex/inject");',
+  "(async () => {",
+  '  const cachePath = path.join(process.env.CODEX_HOME, "models_cache.json");',
+  "  // The catalog file itself is written by catalog sync, which needs network state this",
+  "  // test has no business standing up. Seed it directly: what is under test is WHICH file",
+  "  // restore targets, not how sync populates it.",
+  '  fs.writeFileSync(cachePath, JSON.stringify({ models: [{ slug: "gpt-5.5" }, { slug: "opencode-go/deepseek-v4-flash" }] }), "utf8");',
+  "  await injectCodexConfig(10100, {",
+  "    port: 10100,",
+  "    providers: {},",
+  '    defaultProvider: "openai",',
+  '    injectionModel: "gpt-5.6-sol",',
+  '    injectionEffort: "high",',
+  "  }, { catalogPath: cachePath });",
+  '  const configPath = path.join(process.env.CODEX_HOME, "config.toml");',
+  '  const rewritten = fs.readFileSync(configPath, "utf8")',
+  "    .split(String.fromCharCode(10))",
+  '    .filter(line => !line.trim().startsWith("#") && !line.includes("model_catalog_json"))',
+  "    .join(String.fromCharCode(10));",
+  '  fs.writeFileSync(configPath, rewritten, "utf8");',
+  "  const result = restoreNativeCodex();",
+  "  console.log(JSON.stringify({ success: result.success, catalog: result.artifacts.catalog.path }));",
+  "})();",
+].join(String.fromCharCode(10));
 function runScript(codexHome: string, script: string): { stdout: string; stderr: string; status: number } {
   const result = spawnSync(process.execPath, ["--eval", script], {
     cwd: repoRoot,
@@ -95,6 +123,22 @@ describe("#1798 restore after the Codex app rewrites the config", () => {
     const restored = readFileSync(join(testDir, "config.toml"), "utf8");
     expect(restored).toContain("https://my-own-gateway.example/v1");
     expect(restored).not.toContain("127.0.0.1:10100");
+  });
+
+  test("the routed catalog we wrote is restored even when the rewrite dropped model_catalog_json", () => {
+    // The catalog half of #1798. Restore used to re-resolve its target from the CURRENT
+    // config, so a rewrite that removed `model_catalog_json` sent it to the default catalog
+    // while the proxy-written models_cache.json kept every routed entry.
+    writeFileSync(join(testDir, "config.toml"), 'model = "gpt-5.5"' + String.fromCharCode(10), "utf8");
+
+    const r = runScript(testDir, CATALOG_REWRITE_RESTORE);
+    if (r.status !== 0) throw new Error(r.stderr || r.stdout);
+
+    const cachePath = join(testDir, "models_cache.json");
+    const cache = JSON.parse(readFileSync(cachePath, "utf8"));
+    const routed = (cache.models ?? []).filter((m: { slug?: string }) => typeof m.slug === "string" && m.slug.includes("/"));
+    expect(routed).toEqual([]);
+    expect(JSON.parse(r.stdout).catalog).toBe(cachePath);
   });
 });
 

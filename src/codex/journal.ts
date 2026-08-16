@@ -31,6 +31,15 @@ interface Journal {
    * and it is what lets restore tell OUR loopback URL apart from a gateway the user set.
    */
   injectedOpenaiBaseUrl?: string | null;
+  /**
+   * The catalog path this injection actually wrote to.
+   *
+   * #1798: restore re-resolves the catalog from the CURRENT config, so a Codex app rewrite
+   * that dropped `model_catalog_json` sends restore to the default catalog while the
+   * proxy-written one is left routed. The injected path is the only durable record of which
+   * file we actually touched.
+   */
+  injectedCatalogPath?: string | null;
   pid: number;
   timestamp: string;
 }
@@ -108,6 +117,7 @@ export function markJournalInjectedState(config: string, profile: string | null)
   // Read from the bytes we are about to install, not from the file: another writer may
   // already have rewritten it, and then the recorded value would describe their config.
   journal.injectedOpenaiBaseUrl = rootTomlString(config, "openai_base_url");
+  journal.injectedCatalogPath = rootTomlString(config, "model_catalog_json");
   atomicWriteFile(JOURNAL_PATH, JSON.stringify(journal));
 }
 
@@ -121,6 +131,11 @@ export function markJournalInjectedState(config: string, profile: string | null)
  */
 export function journaledInjectedOpenaiBaseUrl(): string | null {
   return readJournal()?.injectedOpenaiBaseUrl ?? null;
+}
+
+/** The catalog path the last injection wrote to, or null when none was recorded. */
+export function journaledInjectedCatalogPath(): string | null {
+  return readJournal()?.injectedCatalogPath ?? null;
 }
 
 export function removeJournal(): void {

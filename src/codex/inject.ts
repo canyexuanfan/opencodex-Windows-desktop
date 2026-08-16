@@ -31,6 +31,7 @@ import {
 import {
   markJournalInjectedState,
   journaledInjectedOpenaiBaseUrl,
+  journaledInjectedCatalogPath,
   removeJournal,
   restoreJournalState,
   writeJournal,
@@ -1383,13 +1384,23 @@ function restoreCodexConfigInline(): CodexRestoreConfigResult {
 }
 
 /** The catalog half, always inside its own K acquisition. */
-function restoreCodexCatalogArtifact(revalidateDesiredState: boolean): CodexRestoreCatalogResult {
+/**
+ * The catalog half, always inside its own K acquisition.
+ *
+ * `journaledCatalogPath` must be captured by the CALLER, before the config half runs: a
+ * successful journal restore deletes the journal, and a config restore can remove
+ * `model_catalog_json`. Reading it here would be too late in both cases (#1798).
+ */
+function restoreCodexCatalogArtifact(
+  revalidateDesiredState: boolean,
+  journaledCatalogPath: string | null,
+): CodexRestoreCatalogResult {
   const owningCodexHome = getCodexHome();
   try {
     const restored = withCatalogWriteSerialization(owningCodexHome, permit =>
       revalidateDesiredState && shouldSyncCodexOnStart(loadConfig())
         ? null
-        : restoreCodexCatalogWithPermit(permit, owningCodexHome));
+        : restoreCodexCatalogWithPermit(permit, owningCodexHome, journaledCatalogPath));
     return restored.kind === "completed" && restored.value !== null
       ? { state: "ok", changed: restored.value.removed > 0, ...restored.value, message: "Codex catalog restored." }
       : restored.kind === "completed"
@@ -1447,6 +1458,10 @@ export async function restoreNativeCodexAsync(
     integrationRecord: () => readIntegrationRecord(),
   });
 
+  // Captured before the config half: a successful journal restore DELETES the journal, and
+  // restoring the config can drop `model_catalog_json`. Either one would hide the routed
+  // catalog we actually wrote (#1798).
+  const journaledCatalogPath = journaledInjectedCatalogPath();
   let config: CodexRestoreConfigResult;
   let transitionReceipt: { nativeGeneration: number; currentTxId: string } | undefined;
 
@@ -1523,7 +1538,7 @@ export async function restoreNativeCodexAsync(
     config = restoreCodexConfigInline();
   }
 
-  const catalog = restoreCodexCatalogArtifact(options.revalidateDesiredState === true);
+  const catalog = restoreCodexCatalogArtifact(options.revalidateDesiredState === true, journaledCatalogPath);
   const outcome = await runCodexHistoryJob({
     ...resolveCodexHistoryJobTarget(),
     ...(options.revalidateDesiredState ? { expectedDesiredEnabled: false } : {}),
@@ -1573,8 +1588,12 @@ export function restoreNativeCodex(options: { skipHistory?: boolean; revalidateD
   if (options.revalidateDesiredState && shouldSyncCodexOnStart(loadConfig())) {
     return desiredEnabledRestoreSkip();
   }
+  // Captured before the config half: a successful journal restore DELETES the journal, and
+  // restoring the config can drop `model_catalog_json`. Either one would hide the routed
+  // catalog we actually wrote (#1798).
+  const journaledCatalogPath = journaledInjectedCatalogPath();
   const config = restoreCodexConfigInline();
-  const catalog = restoreCodexCatalogArtifact(options.revalidateDesiredState === true);
+  const catalog = restoreCodexCatalogArtifact(options.revalidateDesiredState === true, journaledCatalogPath);
   // Design B (loopback) steady state: threads are already tagged openai, so prove the
   // no-op with a readonly probe instead of write-opening a DB the Codex app may hold
   // (Windows: WAL writer lock -> seconds of stalling + a false warning on every stop).
