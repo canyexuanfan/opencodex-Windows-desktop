@@ -237,6 +237,13 @@ import {
 } from "../sse-payload-rewrite";
 import { restoreRoutedCustomCallsInJson } from "../../responses/custom-tool-compat";
 import { createRoutedCustomToolRestoreBlockRewrite } from "../responses-custom-tool-repair";
+import {
+  collectDeclaredWireToolNames,
+  createUndeclaredToolCallGuardBlockRewrite,
+  undeclaredToolCallMessage,
+  undeclaredToolCallName,
+  undeclaredToolCallNameInResponse,
+} from "../responses-undeclared-tool-guard";
 import { createGithubCopilotResponsesBlockRewrite } from "../github-copilot-responses-repair";
 import { responsesJsonToSseStream } from "../responses-json-events";
 import { guardTerminalEventStream } from "./terminal-guard";
@@ -2280,6 +2287,69 @@ async function handleResponsesInner(
         if (toolBridgeMaps.freeformToolNames.has(name)) routedCustomToolNames.add(name);
       }
     }
+    // #1700: the bridged paths refuse a call to a tool the request never declared
+    // (`declaredToolNames`, src/bridge.ts). The passthrough had no equivalent, so a routed
+    // provider's top-level `apply_patch` — which under Codex code mode exists only as a nested
+    // `tools.apply_patch(...)` helper inside `exec`, never as a wire tool — reached Codex as a
+    // call it cannot execute, and the turn showed a bare `aborted` with the file untouched.
+    // Forward auth is the canonical ChatGPT backend speaking Codex's own protocol rather than a
+    // routed provider, so it keeps passing through unguarded, as it does for the rewrites above.
+    // The guard needs a catalog to compare against, so it stands down when the request carries
+    // none. That is not the same claim as "no tools means no tool may be called": a passthrough
+    // request can legitimately omit `tools` entirely and still receive a tool call the client
+    // understands — `tests/github-copilot-stream-contract.test.ts` sends `{model, input, stream}`
+    // with no tools and Copilot answers with a `custom_tool_call` for `apply_patch`. Policing an
+    // empty catalog truncates that turn. An unreadable body lands here too, since it yields no
+    // names either.
+    const outboundRequestBody = (() => {
+      try {
+        const body = JSON.parse(request.body) as unknown;
+        return body && typeof body === "object" && !Array.isArray(body) ? body : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+    const declaredWireToolNames = collectDeclaredWireToolNames(outboundRequestBody);
+    // Union with the caller's own catalog, because the outbound body is not always a complete
+    // record of it: hosted-tool preference REPLACES a client tool with its hosted form, so a
+    // request declaring `image_gen.generate` ships `{type:"image_generation"}` upstream and gets
+    // the client's name back. Widening only ever makes the guard fire less; a name declared in
+    // neither place — #1700's `apply_patch` — is still refused.
+    for (const name of toolBridgeMaps.declaredToolNames) declaredWireToolNames.add(name);
+    const undeclaredToolGuardActive = declaredWireToolNames.size > 0
+      && route.provider.authMode !== "forward";
+    // A refused turn must not seed `previous_response_id` replay. The inspection branch reads the
+    // untouched upstream stream, so it can still observe a `response.completed` the client never
+    // received; checking the payload itself rather than a flag shared with the client relay keeps
+    // this free of tee ordering races.
+    //
+    // Checking only the terminal snapshot is not enough. An upstream can announce the undeclared
+    // call in `response.output_item.added`, which trips the client guard, and then close with a
+    // `response.completed` whose `output` is empty. The client gets `response.failed`, the terminal
+    // check sees nothing undeclared, and the refused turn enters continuation state anyway. So the
+    // rejection is sticky for the whole turn, set from every parsed payload on the inspection side.
+    let inspectionSawUndeclaredTool = false;
+    const noteInspectedPayload = (payload: unknown) => {
+      // Gated on the same flag as the guard itself: with no readable catalog (or a forward-auth
+      // provider) every name looks undeclared, and flipping this would stop recording continuation
+      // state for exactly the passthrough traffic the guard deliberately stands down for.
+      if (!undeclaredToolGuardActive || inspectionSawUndeclaredTool) return;
+      if (undeclaredToolCallName(payload, declaredWireToolNames) !== undefined) {
+        inspectionSawUndeclaredTool = true;
+      }
+    };
+    const rememberPassthroughResponseChecked = rememberPassthroughResponse
+      ? (response: { id?: unknown; output?: unknown; status?: unknown }) => {
+        if (inspectionSawUndeclaredTool) return;
+        if (
+          undeclaredToolGuardActive
+          && undeclaredToolCallNameInResponse(response, declaredWireToolNames) !== undefined
+        ) {
+          return;
+        }
+        rememberPassthroughResponse(response);
+      }
+      : undefined;
     recordAdapterReasoning(logCtx, request);
     const actualHostKey = upstreamHostHealthKey(
       route.providerName,
@@ -2667,13 +2737,6 @@ async function handleResponsesInner(
       // injection at the block level, after payload rewrites. Defaults come
       // from the finalized OUTBOUND body — the normalized internal tool shapes
       // are not the Responses wire shapes the snapshot must mirror.
-      const snapshotDefaultsRequest = (() => {
-        try {
-          return JSON.parse(request.body) as unknown;
-        } catch {
-          return undefined;
-        }
-      })();
       const blockRewrites = [
         payloadRewrites.length > 0
           ? payloadRewriteAsBlockRewrite(composeSsePayloadRewrites(...payloadRewrites))
@@ -2685,7 +2748,12 @@ async function handleResponsesInner(
           ? createGithubCopilotResponsesBlockRewrite(translatorBudget)
           : undefined,
         snapshotRepairEnabled
-          ? createResponsesSnapshotBlockRewrite(snapshotDefaultsRequest, translatorBudget)
+          ? createResponsesSnapshotBlockRewrite(outboundRequestBody, translatorBudget)
+          : undefined,
+        // Last: every rewrite above can still rename or reshape a call item, so the guard must
+        // compare the names the client will actually receive against the declared catalog.
+        undeclaredToolGuardActive
+          ? createUndeclaredToolCallGuardBlockRewrite(declaredWireToolNames)
           : undefined,
       ].filter((rewrite): rewrite is NonNullable<typeof rewrite> => rewrite !== undefined);
       const clientBlockRewrite = blockRewrites.length > 0
@@ -2737,7 +2805,8 @@ async function handleResponsesInner(
         const inspector = createSseInspector({
           onTerminal: reportNativeTerminal,
           logCtx,
-          onCompletedResponse: rememberPassthroughResponse,
+          onCompletedResponse: rememberPassthroughResponseChecked,
+          onParsedPayload: noteInspectedPayload,
           onFirstOutput: options.onFirstOutput,
           pinCompletedResponseIdToFirstSeen: githubCopilotRepairEnabled,
         });
@@ -2788,6 +2857,7 @@ async function handleResponsesInner(
         drainBounds: { ms: 15_000, bytes: 32 * 1024 * 1024 },
         upstream,
         pinCompletedResponseIdToFirstSeen: githubCopilotRepairEnabled,
+        onParsedPayload: noteInspectedPayload,
       };
       if (recordTerminalOutcomes) {
         // A real terminal was parsed from the (teed) inspection stream — record it as the outcome
@@ -2821,7 +2891,7 @@ async function handleResponsesInner(
           () => unregisterTurn(turnAc),
           logCtx,
           () => options.onNativePassthroughCancel?.(),
-          rememberPassthroughResponse,
+          rememberPassthroughResponseChecked,
           options.onFirstOutput,
           inspectionConsumerOptions,
         );
@@ -2831,7 +2901,7 @@ async function handleResponsesInner(
           logCtx,
           turnAc.signal,
           () => unregisterTurn(turnAc),
-          rememberPassthroughResponse,
+          rememberPassthroughResponseChecked,
           options.onFirstOutput,
           inspectionConsumerOptions,
         );
@@ -2865,30 +2935,41 @@ async function handleResponsesInner(
       }
       const text = bounded.text;
       inspectResponseLogJson(logCtx, text);
-      if (rememberPassthroughResponse) {
-        try {
-          rememberPassthroughResponse(JSON.parse(text) as { id?: unknown; output?: unknown; status?: unknown });
-        } catch { /* non-JSON despite content-type; recording is best-effort */ }
-      }
       const clientJson = (() => {
         const restored = restoreRoutedCustomCallsInJson(
           restoreImageGenCallsInJson(text, imageGenCallAliases),
           routedCustomToolNames,
         );
-        const repaired = (() => {
-          if (!hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair)) return restored;
-          let outbound: unknown;
-          try {
-            outbound = JSON.parse(request.body);
-          } catch {
-            outbound = undefined;
-          }
-          return repairResponsesSnapshotJson(restored, outbound);
-        })();
+        const repaired = hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair)
+          ? repairResponsesSnapshotJson(restored, outboundRequestBody)
+          : restored;
         return parsed._responseModelId !== undefined && parsed._responseModelId !== parsed.modelId
           ? rewriteResponsesModelJson(repaired, parsed._responseModelId)
           : repaired;
       })();
+      // #1700: same fail-closed policy as the SSE relay above. Both the plain JSON answer and
+      // the reframed-SSE branch below are built from this body, so one check covers them. This
+      // runs BEFORE the continuation cache write below: a refused turn must not become state a
+      // later `previous_response_id` replay can expand from.
+      if (undeclaredToolGuardActive) {
+        const undeclared = (() => {
+          try {
+            return undeclaredToolCallNameInResponse(JSON.parse(clientJson), declaredWireToolNames);
+          } catch {
+            return undefined;
+          }
+        })();
+        if (undeclared !== undefined) {
+          return formatErrorResponse(502, "upstream_error", undeclaredToolCallMessage(undeclared));
+        }
+      }
+      if (rememberPassthroughResponseChecked) {
+        try {
+          rememberPassthroughResponseChecked(
+            JSON.parse(text) as { id?: unknown; output?: unknown; status?: unknown },
+          );
+        } catch { /* non-JSON despite content-type; recording is best-effort */ }
+      }
       // #875: the transport-neutral reliability policy forced a bounded JSON
       // upstream for a client that asked for SSE. Reframe the completed JSON
       // as the canonical terminal SSE sequence (created → output_item.done →
