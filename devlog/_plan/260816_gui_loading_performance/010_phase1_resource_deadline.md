@@ -200,3 +200,26 @@ recovery without reload.
 
 Auth-path deadline (WP2), visibility clearing (WP3), interval consolidation (WP4),
 fetcher-resolves-undefined normalization (S5 — noted, no live offender).
+
+## D addendum — landed (2026-08-16)
+
+Implementation: commits 0e5194cff (all §1-§7 changes + tests) and c704eecf5
+(indent nit from the implementation review).
+
+Verification evidence:
+- `cd gui && bun test tests/client-resource-deadline.test.tsx` → 7 pass / 0 fail;
+  combined with client-resource-poll, data-surface, page-loading-contract,
+  storage-loading-race, startup-usage-loading-race, startup-revisit-cache,
+  models-*, providers/add-provider/subagents suites → 70 pass / 0 fail total.
+- `cd gui && bun run build` → green (tsc -b + vite).
+- Browser E1 re-run (CDP stall on /api/settings): under the old code the wedged
+  store produced ZERO retries; with the deadline the store settles and retries on
+  a measured 35s cycle (request timestamps: +34.96s, +35.0s = 30s deadline + 5s
+  poll tick), and a reload showed the full healthy 5s poll wave.
+- Implementation audit: binding review round r2 (explorer subagent) — PASS, no
+  High/Critical; accepted Low: usage-summary:codex keeps the 30s default (single
+  subscriber, still bounded).
+
+Deviation from spec: none in mechanism. The race's abort-listener else-resolve
+(round-2 audit addition) is what frees owner-aborted frames for signal-dropping
+fetchers; confirmed covered by test 4's unmount path.
