@@ -97,7 +97,8 @@ import { providerDestinationResolvedError } from "../../lib/destination-policy";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../../oauth/key-providers";
 import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
-import { routedSlug, slugEquals } from "../../providers/slug-codec";
+import { encodedModelIdCollides, routedSlug, slugEquals } from "../../providers/slug-codec";
+import { knownModelIdsForProvider } from "../../router";
 import { COMBO_NAMESPACE, comboDisabledModelSelectors, comboModelId, preservesPhysicalComboProvider } from "../../combos";
 import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../../providers/quota";
 import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
@@ -376,7 +377,6 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     const provider = typeof body.provider === "string" ? body.provider.trim() : "";
     const modelId = typeof body.modelId === "string" ? body.modelId.trim() : "";
     if (!provider || !modelId) return jsonResponse({ error: "provider and modelId are required" }, 400);
-    if (modelId.includes("/")) return jsonResponse({ error: "modelId must not contain /" }, 400);
     if (!isValidProviderName(provider)) return jsonResponse({ error: "invalid provider name" }, 400);
     if (!hasOwnProvider(config.providers, provider)) return jsonResponse({ error: "provider not configured" }, 404);
     const displayName = typeof body.displayName === "string" && body.displayName.trim() ? body.displayName.trim() : undefined;
@@ -393,6 +393,10 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     const newSlug = routedSlug(provider, modelId);
     if (existing.some(cm => routedSlug(cm.provider, cm.modelId) === newSlug)) {
       return jsonResponse({ error: "duplicate model" }, 409);
+    }
+    const known = knownModelIdsForProvider(provider, config.providers[provider], config);
+    if (encodedModelIdCollides(modelId, known)) {
+      return jsonResponse({ error: "ambiguous model id" }, 409);
     }
     const entry: OcxCustomModel = {
       id: randomUUID(),
@@ -422,7 +426,6 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     if (idx === -1) return jsonResponse({ error: "not found" }, 404);
     const cm = { ...list[idx] };
     if (typeof body.modelId === "string" && body.modelId.trim()) {
-      if (body.modelId.includes("/")) return jsonResponse({ error: "modelId must not contain /" }, 400);
       cm.modelId = body.modelId.trim();
     }
     if (body.displayName !== undefined) {
@@ -468,6 +471,12 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     const updatedSlug = routedSlug(cm.provider, cm.modelId);
     if (list.some((other, i) => i !== idx && routedSlug(other.provider, other.modelId) === updatedSlug)) {
       return jsonResponse({ error: "duplicate model" }, 409);
+    }
+    const known = knownModelIdsForProvider(cm.provider, config.providers[cm.provider], {
+      customModels: list.filter((_, i) => i !== idx),
+    });
+    if (encodedModelIdCollides(cm.modelId, known)) {
+      return jsonResponse({ error: "ambiguous model id" }, 409);
     }
     list[idx] = cm;
     config.customModels = list;

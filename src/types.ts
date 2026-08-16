@@ -180,8 +180,25 @@ export interface OcxToolCall {
   arguments: Record<string, unknown>;
   customWireName?: string;
   thoughtSignature?: string;
+  /**
+   * Provider-issued opaque metadata that must survive the whole round trip unchanged
+   * (issue #1735). A signed Gemini part is only valid when its signature comes back on the
+   * SAME part it was issued for, so this travels with the individual tool call rather than
+   * being matched by name/arguments after the fact.
+   */
+  providerMetadata?: OcxProviderOpaqueToolCallMetadata;
   /** MCP namespace (e.g. "mcp__context7") when this call targets a namespaced tool. */
   namespace?: string;
+}
+
+/**
+ * Opaque, provider-scoped tool-call metadata. Values are never parsed, merged, re-encoded, or
+ * synthesized — they are carried verbatim or not at all.
+ */
+export interface OcxProviderOpaqueToolCallMetadata {
+  google?: {
+    thoughtSignature?: string;
+  };
 }
 
 export type OcxAssistantContentPart = OcxTextContent | OcxThinkingContent | OcxToolCall;
@@ -328,7 +345,7 @@ export type AdapterEvent =
   // Never rendered — it only rides the reasoning item's envelope so the next request can replay it.
   | { type: "kiro_redacted_reasoning"; data: string }
   | { type: "reasoning_raw_delta"; text: string }
-  | { type: "tool_call_start"; id: string; name: string }
+  | { type: "tool_call_start"; id: string; name: string; providerMetadata?: OcxProviderOpaqueToolCallMetadata }
   | { type: "tool_call_delta"; arguments: string }
   | { type: "tool_call_end" }
   /** Internal boundary between a guarded first pass and its one-shot continuation. */
@@ -579,7 +596,7 @@ export interface OcxCustomModel {
   id: string;
   /** 프로바이더 키 (기존 providers[name]) */
   provider: string;
-  /** 모델 슬러그 (프로바이더 접두사 없는 bare id) */
+  /** Native provider model id; slashes are allowed and encoded for Codex as provider/<hyphenated-id>. */
   modelId: string;
   /** 인간 가독 표시명 (선택, 슬래시 불가) */
   displayName?: string;
@@ -808,6 +825,11 @@ export interface OcxConfig {
    * - "v2": force ALL models to v2 surface (override upstream pins)
    */
   multiAgentMode?: "v1" | "default" | "v2";
+  /**
+   * When `multiAgentMode` is `"v2"`, keep ChatGPT-native catalog rows on v1.
+   * Routed parents get v2 tools; Sol/Terra can still spawn Grok/Claude (issue #92).
+   */
+  keepNativeChatGptOnV1?: boolean;
   /** Experimental, default-off ChatGPT recovery for encrypted V2 routed tasks. */
   agentTaskRecovery?: {
     enabled?: boolean;
