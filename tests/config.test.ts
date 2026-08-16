@@ -1632,6 +1632,79 @@ describe("opencodex config defaults", () => {
       }
     });
 
+
+    test("diagnostics salvage the same way instead of reporting defaults", () => {
+      // The salvage in loadConfig was not enough on its own: readConfigDiagnostics fell
+      // through to getDefaultConfig(), and a config command writing that result back would
+      // have persisted built-in defaults over the operator's providers, keys and prices.
+      configWith({
+        routingProfiles: {
+          good: { candidates: [{ provider: "keep1", model: "m" }] },
+          bad:  { candidates: [{ provider: "TR", model: "moonshotai/kimi-k3" }] },
+        },
+      });
+      const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const diagnostics = readConfigDiagnostics();
+
+        expect(diagnostics.source).toBe("file");
+        expect(diagnostics.error).toBeNull();
+        const config = diagnostics.config as Record<string, any>;
+        expect(Object.keys(config.providers)).toEqual(expect.arrayContaining(["TR", "keep1", "keep2"]));
+        expect(config.modelCosts).toHaveProperty("keep1/m");
+        expect(Object.keys(config.routingProfiles)).toEqual(["good"]);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    test("salvage repeats when dropping one entry exposes a new failure", () => {
+      // Sections are not independent of each other: a profile alias is validated against the
+      // combo map, so removing an invalid combo can surface a NEW failure in a profile that
+      // was fine while that combo existed. A single-pass salvage saw that second failure and
+      // discarded the whole config -- the outcome this exists to stop.
+      configWith({
+        combos: {
+          badCombo: { members: [{ provider: "nope-not-configured", model: "m" }] },
+        },
+        routingProfiles: {
+          alsoBad: { candidates: [{ provider: "TR", model: "m" }] },
+          good:    { candidates: [{ provider: "keep2", model: "m" }] },
+        },
+      });
+      const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const loaded = loadConfig() as Record<string, any>;
+
+        // Everything unrelated survives, and both bad entries are gone.
+        expect(Object.keys(loaded.providers)).toEqual(expect.arrayContaining(["TR", "keep1", "keep2"]));
+        expect(loaded.modelCosts).toHaveProperty("keep1/m");
+        expect(Object.keys(loaded.combos ?? {})).not.toContain("badCombo");
+        expect(Object.keys(loaded.routingProfiles ?? {})).toEqual(["good"]);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
+
+    test("a token-shaped entry id is not echoed into the warning", () => {
+      // Entry ids are operator-chosen and can be pasted secrets. The warning names the
+      // section so the operator knows where to look, but nothing dynamic goes out raw.
+      const tokenId = "sk-ant-api03-" + "A".repeat(40);
+      configWith({
+        routingProfiles: {
+          [tokenId]: { candidates: [{ provider: "TR", model: "m" }] },
+        },
+      });
+      const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        loadConfig();
+        const logged = errorSpy.mock.calls.map(call => String(call[0])).join("\n");
+        expect(logged).toContain("routingProfiles.");
+        expect(logged).not.toContain(tokenId);
+      } finally {
+        errorSpy.mockRestore();
+      }
+    });
     test("combos are salvaged the same way", () => {
       configWith({
         combos: {
