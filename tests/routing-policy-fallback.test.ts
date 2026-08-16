@@ -54,6 +54,55 @@ describe("policy candidate fallback", () => {
     ]);
   });
 
+  test("a local input-admission refusal hops instead of ending the chain (#1524)", async () => {
+    // #1524: a candidate whose context window cannot fit the request used to TERMINATE the
+    // fallback chain. It is a local preflight verdict about ONE candidate, not about the
+    // request, so the next candidate -- which may have a larger window -- must still be tried.
+    const trace = policyTrace();
+    const logCtx = { requestedModel: "policy/daily", routeDecision: trace, attempts: [] } as unknown as RequestLogContext;
+    const seenModels: string[] = [];
+    const runCore = async (req: Request, _config: OcxConfig, ctx: RequestLogContext) => {
+      const body = await req.clone().json() as { model?: string };
+      seenModels.push(String(body.model));
+      ctx.routeDecision = trace;
+      seedAttempt(ctx, "provider", String(body.model));
+      if (seenModels.length === 1) {
+        return Response.json(
+          { error: { message: "Estimated input is far past the context window", type: "input_admission_refused", code: "input_admission_refused" } },
+          { status: 413 },
+        );
+      }
+      return Response.json({ id: "resp", object: "response", status: "completed", output: [] });
+    };
+
+    const response = await handleResponsesWithPolicyFallback(request(), {} as OcxConfig, logCtx, {}, { runCore });
+
+    expect(response.status).toBe(200);
+    expect(seenModels).toEqual(["policy/daily", "provider-b/model-b"]);
+  });
+
+  test("an upstream context_length_exceeded still stops the chain (#1524)", async () => {
+    // The mirror-image contract. An upstream verdict is about the REQUEST, so retrying it
+    // elsewhere is guesswork -- and hopping would burn every candidate on a doomed request.
+    const trace = policyTrace();
+    const logCtx = { requestedModel: "policy/daily", routeDecision: trace, attempts: [] } as unknown as RequestLogContext;
+    const seenModels: string[] = [];
+    const runCore = async (req: Request, _config: OcxConfig, ctx: RequestLogContext) => {
+      const body = await req.clone().json() as { model?: string };
+      seenModels.push(String(body.model));
+      ctx.routeDecision = trace;
+      seedAttempt(ctx, "provider", String(body.model));
+      return Response.json(
+        { error: { message: "context length exceeded", type: "invalid_request_error", code: "context_length_exceeded" } },
+        { status: 400 },
+      );
+    };
+
+    const response = await handleResponsesWithPolicyFallback(request(), {} as OcxConfig, logCtx, {}, { runCore });
+
+    expect(response.status).toBe(400);
+    expect(seenModels).toEqual(["policy/daily"]);
+  });
   test("retries the next policy candidate and keeps distinct physical attempts", async () => {
     const trace = policyTrace();
     const logCtx = { requestedModel: "policy/daily", routeDecision: trace, attempts: [] } as unknown as RequestLogContext;

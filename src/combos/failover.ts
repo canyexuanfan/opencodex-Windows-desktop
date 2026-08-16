@@ -121,18 +121,20 @@ export function comboFailureDecision(
   if (isCyberPolicyCode(options?.code)) return "stop";
   const error = classifyError(status, "upstream_error", message);
   if (isCyberPolicyCode(error.code)) return "stop";
-  if (["origin_rejected", "context_length_exceeded", "invalid_request_error"].includes(error.code ?? "")) {
-    return "stop";
-  }
   // A local input-admission refusal (#1524) says "this candidate cannot fit the request",
-  // not "the request is impossible". Hopping is exactly right: the next candidate may have a
-  // larger context window. Read it from the structured code OR the body text, because the
-  // generic classifier maps 413 to its own code and would otherwise swallow this signal.
-  // Upstream `context_length_exceeded` above still stops.
+  // not "the request is impossible": the next candidate may have a larger context window.
+  //
+  // This MUST be tested before the generic stop list below. `classifyError` maps a real 413
+  // admission body to `context_length_exceeded`, so checking the stop list first swallowed
+  // the signal and ended the chain -- the exact behavior #1524 reports. An UPSTREAM
+  // `context_length_exceeded` carries no admission marker and still falls through to stop.
   if (options?.code === "input_admission_refused"
     || error.code === "input_admission_refused"
     || message.includes("input_admission_refused")) {
     return "hop";
+  }
+  if (["origin_rejected", "context_length_exceeded", "invalid_request_error"].includes(error.code ?? "")) {
+    return "stop";
   }
   if ([401, 403, 404, 408, 429].includes(status) || status >= 500) return "hop";
   if ([
