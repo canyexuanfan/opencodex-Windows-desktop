@@ -69,6 +69,7 @@ const INITIAL_OWNED_PATHS = [
   "service-state.json",
   "service.log",
   "system-env-port",
+  "thought-signature-replay.json",
   "tray-heartbeat.json",
   "tray-state.json",
   "update-job.json",
