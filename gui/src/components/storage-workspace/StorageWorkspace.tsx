@@ -8,6 +8,8 @@
 import { useMemo, useState } from "react";
 import { IconChevron, IconHardDrive } from "../../icons";
 import { useT, type TFn, type TKey, type Locale } from "../../i18n/shared";
+import { logGuardLabel } from "../../i18n/log-guard-labels";
+import { logGuardSchemaStateLabel } from "../../i18n/log-guard-state-labels";
 import { formatBytes } from "../../format-bytes";
 
 export interface StorageLargestEntry {
@@ -26,11 +28,46 @@ export interface StorageBucket {
   rows?: number | null;
 }
 
+type LogGuardReason = "database_missing" | "database_unreadable" | "unknown_schema";
+type LogGuardCapability = { state: "supported" } | { state: "unsupported"; reason: LogGuardReason };
+type LogGuardSchema =
+  | { state: "compatible" }
+  | { state: "missing"; reason: "database_missing" }
+  | { state: "unreadable"; reason: "database_unreadable" }
+  | { state: "unsupported"; reason: "unknown_schema" };
+
+export interface CodexLogGuardReport {
+  generatedAt: number;
+  externalSqliteHome: boolean;
+  snapshot: "checkpointed";
+  files: { databaseBytes: number; walBytes: number; shmBytes: number };
+  schema: LogGuardSchema;
+  capabilities: {
+    inspection: LogGuardCapability;
+    protection: LogGuardCapability;
+    reclaim: LogGuardCapability;
+  };
+  metrics: null | {
+    totalRows: number;
+    rowsByLevel: Record<string, number>;
+    traceRows: number;
+    traceShare: number;
+    topTargets: Array<{ target: string; rows: number }>;
+    pageSize: number;
+    pageCount: number;
+    freelistPages: number;
+    reclaimableBytes: number;
+    estimatedLogBytes: number | null;
+  };
+}
+
 export interface StorageReport {
   codexHome: string;
   generatedAt: number;
   total: { bytes: number; fileCount: number };
   buckets: StorageBucket[];
+  codexLogs?: CodexLogGuardReport | null;
+  codexLogsError?: string;
   error?: string;
 }
 
@@ -58,6 +95,82 @@ function rowsDisplay(bucket: StorageBucket, locale: Locale, t: TFn): string {
   if (bucket.rows === undefined) return "—";
   if (bucket.rows === null) return t("storage.rows.unknown");
   return bucket.rows.toLocaleString(locale);
+}
+
+function CodexLogGuardPanel({ report, locale, t }: { report: CodexLogGuardReport; locale: Locale; t: TFn }) {
+  const metrics = report.metrics;
+  const inspectOnly = report.capabilities.protection.state === "unsupported"
+    || report.capabilities.reclaim.state === "unsupported";
+
+  return (
+    <div className="stw-section" data-testid="codex-log-guard">
+      <h3 className="stw-section-title">{t("storage.bucket.logs_db")}</h3>
+      <dl className="stw-kv">
+        <div className="stw-kv-row">
+          <dt>{t("dash.status")}</dt>
+          <dd className="stw-kv-mono">
+            <code>{logGuardSchemaStateLabel(locale, report.schema.state)}</code>
+            {inspectOnly && report.schema.state === "unsupported" ? <><span aria-hidden="true"> · </span><code>{logGuardLabel(locale, "inspectionOnly")}</code></> : null}
+          </dd>
+        </div>
+        <div className="stw-kv-row">
+          <dt>{t("storage.bucket.logs_db")}</dt>
+          <dd className="stw-kv-mono">{formatBytes(report.files.databaseBytes, locale)}</dd>
+        </div>
+        <div className="stw-kv-row">
+          <dt><code>WAL</code></dt>
+          <dd className="stw-kv-mono">{formatBytes(report.files.walBytes, locale)}</dd>
+        </div>
+        <div className="stw-kv-row">
+          <dt><code>SHM</code></dt>
+          <dd className="stw-kv-mono">{formatBytes(report.files.shmBytes, locale)}</dd>
+        </div>
+        {metrics && (
+          <>
+            <div className="stw-kv-row">
+              <dt>{t("storage.col.rows")}</dt>
+              <dd className="stw-kv-mono">{metrics.totalRows.toLocaleString(locale)}</dd>
+            </div>
+            <div className="stw-kv-row">
+              <dt><code>TRACE</code></dt>
+              <dd className="stw-kv-mono">{(metrics.traceShare * 100).toFixed(1)}%</dd>
+            </div>
+            <div className="stw-kv-row">
+              <dt><code>freelist</code></dt>
+              <dd className="stw-kv-mono">{formatBytes(metrics.reclaimableBytes, locale)}</dd>
+            </div>
+          </>
+        )}
+        <div className="stw-kv-row">
+          <dt><code>sqlite_home</code></dt>
+          <dd className="stw-kv-mono">
+            <code>{report.externalSqliteHome ? logGuardLabel(locale, "externalSqliteHome") : "CODEX_HOME"}</code>
+          </dd>
+        </div>
+      </dl>
+      {metrics && metrics.topTargets.length > 0 && (
+        <div className="stw-section">
+          <h4 className="stw-section-title"><code>target</code></h4>
+          {metrics.topTargets.slice(0, 5).map(target => (
+            <div key={target.target} className="stw-file-row">
+              <span className="stw-file-path" title={target.target}><code>{target.target}</code></span>
+              <span className="stw-file-size">{target.rows.toLocaleString(locale)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="stw-hint"><code>immutable=1 · snapshot={report.snapshot}</code></p>
+    </div>
+  );
+}
+
+function CodexLogGuardUnavailablePanel({ locale, t }: { locale: Locale; t: TFn }) {
+  return (
+    <div className="stw-section" data-testid="codex-log-guard-unavailable">
+      <h3 className="stw-section-title">{t("storage.bucket.logs_db")}</h3>
+      <p className="stw-hint">{logGuardLabel(locale, "inspectionUnavailable")}</p>
+    </div>
+  );
 }
 
 export interface StorageWorkspaceProps {
@@ -183,6 +296,12 @@ export default function StorageWorkspace({ report, locale }: StorageWorkspacePro
                 <div className="stw-summary-value mono stw-home-path" title={report.codexHome}>{report.codexHome}</div>
               </div>
             </div>
+
+            {report.codexLogs ? (
+              <CodexLogGuardPanel report={report.codexLogs} locale={locale} t={t} />
+            ) : report.codexLogsError === "inspect_failed" ? (
+              <CodexLogGuardUnavailablePanel locale={locale} t={t} />
+            ) : null}
 
             {largestAcross.length > 0 ? (
               <div className="stw-section">

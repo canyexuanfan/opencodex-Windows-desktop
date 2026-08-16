@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 
 import { resolveCodexHistoryJobTarget } from "../src/codex/history-job";
 import { historyBackupPathFor } from "../src/codex/history-provider";
-import { resolveCodexSqliteHome, resolveCodexStateDbPath } from "../src/codex/paths";
+import { resolveCodexLogsDbPath, resolveCodexSqliteHome, resolveCodexStateDbPath } from "../src/codex/paths";
 
 const originalCodexHome = process.env.CODEX_HOME;
 const originalSqliteHome = process.env.CODEX_SQLITE_HOME;
@@ -84,6 +84,7 @@ describe("Codex SQLite home resolution", () => {
     };
     expect(resolveCodexSqliteHome(deps)).toBe("/work/sqlite");
     expect(resolveCodexStateDbPath(deps)).toBe("/work/sqlite/state_5.sqlite");
+    expect(resolveCodexLogsDbPath(deps)).toBe("/work/sqlite/logs_2.sqlite");
   });
 
   test("history jobs resolve the selected database and backup identity at call time", () => {
