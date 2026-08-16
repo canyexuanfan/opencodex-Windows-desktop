@@ -261,6 +261,23 @@ function sameColumns(columns: ColumnRow[]): boolean {
   });
 }
 
+/**
+ * The authoritative compatibility predicate: exact table SQL, exact column
+ * metadata, and every canonical index.
+ *
+ * Exported because the mutation paths must apply the SAME test inside their
+ * write transaction. They used to check column NAMES only, which is strictly
+ * weaker than what the inspector reports, so a schema change landing between
+ * the outer inspection and the locked write let Protect install a row-dropping
+ * trigger and let Reclaim vacuum pages on a database the inspector classifies
+ * as monitor-only. The lock serializes OpenCodex against itself; it does not
+ * stop Codex or another SQLite writer, so that TOCTOU window is real.
+ */
+export function hasCurrentLogsSchema(db: Database): boolean {
+  const columns = db.query<ColumnRow, []>("PRAGMA table_info(logs)").all();
+  return hasCurrentLogsTable(db, columns);
+}
+
 function hasCurrentLogsTable(db: Database, columns: ColumnRow[]): boolean {
   const table = db.query<SchemaObjectRow, []>(
     "SELECT name, type, sql FROM sqlite_schema WHERE name = 'logs' LIMIT 1",

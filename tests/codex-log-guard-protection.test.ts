@@ -327,4 +327,22 @@ describe("Codex Log Guard protection", () => {
     expect(unprotectCodexLogs(deps).ok).toBe(true);
     expect(triggers(databasePath)).toEqual([]);
   });
+  test("a schema change between inspection and the locked write is refused", () => {
+    // TOCTOU: the lock serializes OpenCodex against itself, not against Codex or
+    // another SQLite writer. The locked recheck used to compare column NAMES
+    // only - strictly weaker than the inspector's contract - so a migration
+    // landing in that window let Protect install a row-dropping trigger on a
+    // database the inspector classifies as monitor-only.
+    const { codexHome, databasePath } = fixture();
+    const deps = testDeps(codexHome);
+
+    // Drop a canonical index the inspector requires but a column-name check
+    // cannot see.
+    const db = new Database(databasePath);
+    db.exec("DROP INDEX idx_logs_ts");
+    db.close();
+
+    expect(protectCodexLogs("quiet", deps)).toEqual({ ok: false, error: "unsupported_schema" });
+    expect(triggers(databasePath)).toEqual([]);
+  });
 });

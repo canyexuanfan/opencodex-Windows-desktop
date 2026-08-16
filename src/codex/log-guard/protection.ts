@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 import { Database, constants as sqliteConstants } from "bun:sqlite";
 
 import { getCodexHome, resolveCodexLogsDbPath } from "../paths";
-import { inspectCodexLogs, type CodexLogGuardInspection } from "./inspect";
+import { hasCurrentLogsSchema, inspectCodexLogs, type CodexLogGuardInspection } from "./inspect";
 import { withCodexLogGuardLock, type CodexLogGuardLockOutcome } from "./lock";
 import { sameLogGuardPathIdentity } from "./path-safety";
 import { isSqliteBusy } from "./sqlite-errors";
@@ -193,9 +193,11 @@ function observeTriggers(db: Database): CodexLogGuardObservedMode {
 }
 
 function exactCurrentSchema(db: Database): boolean {
-  const columns = db.query<ColumnRow, []>("PRAGMA table_info(logs)").all().map(row => row.name).sort();
-  const expected = [...CURRENT_LOG_COLUMNS].sort();
-  return columns.length === expected.length && columns.every((value, index) => value === expected[index]);
+  // Delegates to the inspector's predicate so the locked recheck is exactly as
+  // strict as the compatibility report. Column names alone let a schema change
+  // between inspection and the locked write slip a mutation onto a database the
+  // inspector calls monitor-only.
+  return hasCurrentLogsSchema(db);
 }
 
 /**

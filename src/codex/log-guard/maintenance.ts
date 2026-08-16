@@ -3,7 +3,7 @@ import { Database, constants as sqliteConstants } from "bun:sqlite";
 
 import { getCodexHome, resolveCodexLogsDbPath } from "../paths";
 import { samePathIdentity } from "../user-identity";
-import { inspectCodexLogs } from "./inspect";
+import { hasCurrentLogsSchema, inspectCodexLogs } from "./inspect";
 import { withCodexLogGuardLock, type CodexLogGuardLockOutcome } from "./lock";
 import { sameLogGuardPathIdentity } from "./path-safety";
 import { isSqliteBusy } from "./sqlite-errors";
@@ -145,10 +145,10 @@ function databasePathStillMatches(
 }
 
 function exactCurrentSchema(db: Database): boolean {
-  const columns = db.query<ColumnRow, []>("PRAGMA table_info(logs)").all().map(row => row.name).sort();
-  const expected = [...CURRENT_LOG_COLUMNS].sort();
-  return columns.length === expected.length
-    && columns.every((value, index) => value === expected[index]);
+  // Same reasoning as protection.ts: the pre-mutation recheck must match the
+  // inspector's compatibility contract exactly, or Reclaim can vacuum a
+  // database the inspector classifies as monitor-only.
+  return hasCurrentLogsSchema(db);
 }
 
 function pragmaNumber(db: Database, sql: string): number {
