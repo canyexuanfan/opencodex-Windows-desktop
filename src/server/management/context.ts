@@ -1,5 +1,6 @@
 import type { OcxConfig } from "../../types";
 import type { NativeProfileApiDeps } from "../../codex/native-profile-api";
+import type { CodexLogGuardProtectionDeps } from "../../codex/log-guard/protection";
 import type { StartupHealth } from "../../codex/autostart-health";
 import type { StartupInstallAction } from "../startup-action-control";
 import type { ManagementPrincipal } from "../management-auth";
@@ -70,6 +71,13 @@ export interface ManagementApiDeps {
     performRestart: typeof performCodexRestart;
   };
   nativeProfileApi?: NativeProfileApiDeps;
+  /**
+   * Log Guard mutation seam. Production leaves this unset and therefore uses the
+   * owner-verified process enumerator, trusted L namespace and real config store.
+   * Route tests inject all three so they cannot depend on local Codex processes
+   * or create lock/config state outside the fixture.
+   */
+  codexLogGuardProtectionDeps?: CodexLogGuardProtectionDeps;
 }
 
 

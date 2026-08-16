@@ -75,6 +75,7 @@ export interface CodexAppServerProcess {
 export interface ProcessSnapshot {
   pid: number;
   commandLine: string;
+  executable?: string;
   uid?: number;
   owner?: string;
   startedAtMs?: number;
@@ -223,13 +224,20 @@ export function codexAppServerProcessIdentity(proc: Pick<CodexAppServerProcess, 
 }
 
 /** True when the command line is a Codex app-server (or code-mode host) worth restarting. */
-export function isCodexAppServerCommandLine(commandLine: string): boolean {
-  const tokens = tokenizeCommandLine(commandLine.trim());
+export function isCodexAppServerCommandLine(commandLine: string, executable?: string): boolean {
+  const trimmed = commandLine.trim();
+  let tokens = tokenizeCommandLine(trimmed);
+  if (executable) {
+    if (isCodeModeHostToken(executable)) return true;
+    if (isCodexExecutableToken(executable)) {
+      let remainder = trimmed;
+      if (remainder.startsWith(executable)) remainder = remainder.slice(executable.length).trimStart();
+      else if (remainder.startsWith(`"${executable}"`)) remainder = remainder.slice(executable.length + 2).trimStart();
+      tokens = [executable, ...tokenizeCommandLine(remainder)];
+    }
+  }
   if (tokens.length === 0) return false;
   if (isCodeModeHostProcess(tokens)) return true;
-
-  // Require Codex as argv0 so later-argument occurrences stay unmatched
-  // (e.g. `node worker.js codex app-server`).
   if (!isCodexExecutableToken(tokens[0]!)) return false;
 
   let i = 1;
@@ -239,7 +247,6 @@ export function isCodexAppServerCommandLine(commandLine: string): boolean {
       i = advancePastCodexGlobalOption(tokens, i);
       continue;
     }
-    // First non-option after globals is the Codex subcommand.
     return token.toLowerCase() === "app-server";
   }
   return false;
@@ -265,12 +272,13 @@ function listUnixProcSnapshots(uid: number | undefined): ProcessSnapshot[] {
       const status = readFileSync(`/proc/${pid}/status`, "utf8");
       const processUid = parseUnixProcStatusUid(status);
       if (uid !== undefined && processUid !== undefined && processUid !== uid) continue;
-      const commandLine = readFileSync(`/proc/${pid}/cmdline`)
+      const argv = readFileSync(`/proc/${pid}/cmdline`)
         .toString("utf8")
-        .replace(/\0/g, " ")
-        .trim();
+        .split("\0")
+        .filter(Boolean);
+      const commandLine = argv.join(" ").trim();
       if (!commandLine) continue;
-      out.push({ pid, commandLine, uid: processUid });
+      out.push({ pid, commandLine, executable: argv[0], uid: processUid });
     } catch {
       /* process exited mid-scan */
     }
@@ -280,20 +288,29 @@ function listUnixProcSnapshots(uid: number | undefined): ProcessSnapshot[] {
 
 function listDarwinSnapshots(uid: number | undefined): ProcessSnapshot[] {
   const out: ProcessSnapshot[] = [];
-  // Top-level exec failure propagates: callers decide their own safe default
-  // (restart flow → treat as none; staleness check → unknown, never "fresh").
-  const output = uid !== undefined
+  const commandOutput = uid !== undefined
     ? execFileSync("/bin/ps", ["-u", String(uid), "-o", "pid=,command="], {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5_000,
+      encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000,
     })
     : execFileSync("/bin/ps", ["-axo", "pid=,uid=,command="], {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5_000,
+      encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000,
     });
-  for (const raw of output.split(/\r?\n/)) {
+  const executableOutput = uid !== undefined
+    ? execFileSync("/bin/ps", ["-u", String(uid), "-o", "pid=,comm="], {
+      encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000,
+    })
+    : execFileSync("/bin/ps", ["-axo", "pid=,comm="], {
+      encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000,
+    });
+  const executableByPid = new Map<number, string>();
+  for (const raw of executableOutput.split(/\r?\n/)) {
+    const match = /^\s*(\d+)\s+(.+)$/.exec(raw);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    const executable = match[2]?.trim() ?? "";
+    if (Number.isSafeInteger(pid) && pid > 0 && executable) executableByPid.set(pid, executable);
+  }
+  for (const raw of commandOutput.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
     if (uid !== undefined) {
@@ -301,8 +318,8 @@ function listDarwinSnapshots(uid: number | undefined): ProcessSnapshot[] {
       if (!match) continue;
       const pid = Number(match[1]);
       const commandLine = match[2]?.trim() ?? "";
-      if (!Number.isSafeInteger(pid) || pid <= 1 || !commandLine) continue;
-      out.push({ pid, commandLine, uid });
+      if (!Number.isSafeInteger(pid) || pid <= 0 || !commandLine) continue;
+      out.push({ pid, commandLine, executable: executableByPid.get(pid), uid });
       continue;
     }
     const match = /^(\d+)\s+(\d+)\s+(.*)$/.exec(line);
@@ -310,8 +327,11 @@ function listDarwinSnapshots(uid: number | undefined): ProcessSnapshot[] {
     const pid = Number(match[1]);
     const processUid = Number(match[2]);
     const commandLine = match[3]?.trim() ?? "";
-    if (!Number.isSafeInteger(pid) || pid <= 1 || !commandLine) continue;
-    out.push({ pid, commandLine, uid: Number.isSafeInteger(processUid) ? processUid : undefined });
+    if (!Number.isSafeInteger(pid) || pid <= 0 || !commandLine) continue;
+    out.push({
+      pid, commandLine, executable: executableByPid.get(pid),
+      uid: Number.isSafeInteger(processUid) ? processUid : undefined,
+    });
   }
   return out;
 }
@@ -414,7 +434,7 @@ export function listCodexAppServerProcesses(io: CodexAppServerProcessIo = {}): C
   const matched: CodexAppServerProcess[] = [];
   for (const snapshot of snapshots) {
     if (seen.has(snapshot.pid)) continue;
-    if (!isCodexAppServerCommandLine(snapshot.commandLine)) continue;
+    if (!isCodexAppServerCommandLine(snapshot.commandLine, snapshot.executable)) continue;
     seen.add(snapshot.pid);
     matched.push({ pid: snapshot.pid, commandLine: snapshot.commandLine });
   }
@@ -626,7 +646,7 @@ export function collectCodexAppServerCatalogState(
     const seen = new Set<number>();
     for (const snapshot of snapshots) {
       if (seen.has(snapshot.pid)) continue;
-      if (!isCodexAppServerCommandLine(snapshot.commandLine)) continue;
+      if (!isCodexAppServerCommandLine(snapshot.commandLine, snapshot.executable)) continue;
       seen.add(snapshot.pid);
       processes.push({ pid: snapshot.pid, commandLine: snapshot.commandLine });
     }

@@ -18,7 +18,7 @@ const USAGE = `Usage:
   ocx logs rebuild-index
   ocx logs index-status
   ocx observe usage [--range <7d|30d|all>] [--surface <all|codex|claude|grok>] [--json]
-  ocx observe storage [codex-logs [status]] [--json]
+  ocx observe storage [codex-logs [status|protect|unprotect|repair] [--mode <compat|quiet>]] [--json]
   ocx observe memory [--json]
   ocx observe debug [--json]
   ocx observe claude-inbound [--limit <n>] [--json]
@@ -154,13 +154,32 @@ async function storage(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   }
 
   const args = argv.slice(1);
-  if (args[0] === "status") args.shift();
-  else if (args[0] && !args[0].startsWith("-")) {
-    throw new CliUsageError(`unknown codex-logs action ${args[0]}`, USAGE);
-  }
+  const action = args[0] && !args[0].startsWith("-") ? args.shift()! : "status";
   const wantsJson = takeFlag(args, "--json");
+  const mode = takeOption(args, "--mode");
   rejectArgs(args, USAGE);
-  const result = await runtimeRequest("/api/storage/codex-logs", {}, deps);
+
+  let result: unknown;
+  if (action === "status") {
+    if (mode !== undefined) throw new CliUsageError("--mode is only valid with codex-logs protect", USAGE);
+    result = await runtimeRequest("/api/storage/codex-logs", {}, deps);
+  } else if (action === "protect") {
+    const requestedMode = mode ?? "compat";
+    if (requestedMode !== "compat" && requestedMode !== "quiet") {
+      throw new CliUsageError("--mode must be compat or quiet", USAGE);
+    }
+    result = await runtimeRequest("/api/storage/codex-logs/protect", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode: requestedMode }),
+    }, deps);
+  } else if (action === "unprotect" || action === "repair") {
+    if (mode !== undefined) throw new CliUsageError("--mode is only valid with codex-logs protect", USAGE);
+    result = await runtimeRequest(`/api/storage/codex-logs/${action}`, { method: "POST" }, deps);
+  } else {
+    throw new CliUsageError(`unknown codex-logs action ${action}`, USAGE);
+  }
+
   printData(result, wantsJson, summaryLines(result));
 }
 
