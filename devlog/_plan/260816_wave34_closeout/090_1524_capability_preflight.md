@@ -127,8 +127,8 @@ the proxy does not emit. A green test proved a shape that never reaches producti
 
 - `src/lib/errors.ts:152` — `classifyError` returns `input_admission_refused` when that is the
   type it was given, placed before the context-window remap.
-- `src/combos/failover.ts:135` — the hop rule, matched on the structured code only and tested
-  before the generic stop list at `:138`.
+- `src/combos/failover.ts:141` — the hop rule, matched on the structured code only and tested
+  before the generic stop list at `:144`.
 - `src/server/responses/core.ts:2003` — the emitter.
 - `tests/routing-policy-fallback.test.ts` — the fixture calls `formatErrorResponse` itself, plus a
   negative case pinning that an upstream merely mentioning the token does not hop.
