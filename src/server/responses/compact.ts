@@ -51,6 +51,8 @@ import {
   CodexPoolAuthenticationError,
   CodexThreadAffinityExpiredError,
   headersForCodexAuthContext,
+  materializeCodexUpstreamAuth,
+  CodexMainSubstitutionUnavailableError,
   isCodexAuthContextUsable,
   resolveCodexAuthContext,
   codexProbeLeaseId,
@@ -81,6 +83,7 @@ import {
   type UpstreamHostAdmissionLease,
 } from "../../codex/upstream-host-health";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "../auth-cors";
+import type { DataPlaneAdmission } from "../auth-cors";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
 import { CODEX_FORWARD_BASE_URL, isCanonicalOpenAiForwardProvider, supportsNativeResponsesCompactEndpoint } from "../../providers/openai-tiers";
 import { slugsEquivalent } from "../../providers/slug-codec";
@@ -269,6 +272,7 @@ export async function handleResponsesCompact(
   config: OcxConfig,
   logCtx: RequestLogContext,
   turnAdmissionLease?: AdmissionLease,
+  admission?: DataPlaneAdmission,
 ): Promise<Response> {
   let body: unknown;
   try {
@@ -316,7 +320,10 @@ export async function handleResponsesCompact(
     logCtx.resolvedModel = route.modelId;
   }
 
-  if (route.codexAccountMode === "direct") {
+  // #1686: a bearer-presented admission secret is one of ours, so the stored main credential
+  // is substituted below instead of the caller bearer being forwarded.
+  const substituteMainCredential = admission?.source === "bearer";
+  if (route.codexAccountMode === "direct" && !substituteMainCredential) {
     try { validateForwardAdmissionCredential(req.headers, config); }
     catch (err) {
       if (err instanceof ForwardAdmissionCredentialError) return formatErrorResponse(401, "authentication_error", err.message);
@@ -364,7 +371,7 @@ export async function handleResponsesCompact(
           beginCodexAccountSelection: codexAccountSelectionForTurn(turnAdmissionLease),
         });
         logCtx.accountLogLabel = codexAuthContextLogLabel(authCtx, config);
-        const selected = headersForCodexAuthContext(req.headers, authCtx);
+        const selected = materializeCodexUpstreamAuth(req.headers, authCtx, { substituteMainCredential });
         compactProvider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
         for (const name of FORWARD_HEADERS) {
           const value = selected.get(name);
@@ -671,7 +678,7 @@ export async function handleResponsesCompact(
     headers: internalHeaders,
     body: JSON.stringify(internalBody),
   });
-  const response = await handleResponses(internalReq, config, logCtx, { abortSignal: req.signal, turnAdmissionLease });
+  const response = await handleResponses(internalReq, config, logCtx, { abortSignal: req.signal, turnAdmissionLease, ...(admission ? { admission } : {}) });
   if (!response.ok) return response;
   let json: { output?: unknown[]; status?: unknown; error?: unknown };
   try {
