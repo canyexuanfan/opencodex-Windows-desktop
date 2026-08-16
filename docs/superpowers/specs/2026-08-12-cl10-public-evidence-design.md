@@ -124,4 +124,4 @@ The contract review gate is satisfied. Runtime CL-10.1 through CL-10.4 may now l
 
 The detailed normative contract is:
 
-`devlog/_plan/260807_compatibility_lab/010_cl10_public_evidence_export.md`
+`devlog/_fin/260807_compatibility_lab/010_cl10_public_evidence_export.md`

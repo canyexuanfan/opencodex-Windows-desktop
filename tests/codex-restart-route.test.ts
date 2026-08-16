@@ -5,7 +5,7 @@
  * enumerates or signals a real process. Service-level branch coverage lives in
  * tests/codex-app-server-restart-service.test.ts.
  *
- * Plan: devlog/_plan/260815_gui_codex_restart/010_phase1_backend_endpoint.md
+ * Plan: devlog/_fin/260815_gui_codex_restart/010_phase1_backend_endpoint.md
  */
 import { describe, expect, test } from "bun:test";
 import { handleSystemRoutes } from "../src/server/management/system-routes";
