@@ -357,6 +357,14 @@ describe("combo failure policy and advancement", () => {
     expect(comboFailureDecision(409, "conflict")).toBe("stop");
     expect(comboFailureDecision(499, "client cancelled")).toBe("stop");
     expect(comboFailureDecision(422, "invalid_api_key")).toBe("hop");
+    // #1524: a LOCAL input-admission refusal means "this candidate cannot fit the request",
+    // not "the request is impossible". The next candidate may have a larger context window,
+    // so the chain must continue instead of ending at the first incompatible target.
+    expect(comboFailureDecision(413, '{"code":"input_admission_refused"}')).toBe("hop");
+    // An UPSTREAM context verdict still stops: retrying that elsewhere is guesswork, and a
+    // generic 413 with no structured code keeps its existing conservative handling.
+    expect(comboFailureDecision(400, "context_length_exceeded")).toBe("stop");
+    expect(comboFailureDecision(413, "request too large")).toBe("stop");
   });
 
   test("failure clears the active sticky target without adding a success", () => {
