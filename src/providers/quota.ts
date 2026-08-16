@@ -242,7 +242,7 @@ function normalizeResetAt(value: unknown): number | undefined {
     const trimmed = value.trim();
     // Cursor Connect RPC returns billingCycleEnd as a unix-ms decimal string ("1771077734000").
     // Date.parse treats that as invalid; numeric epoch strings must be handled explicitly.
-    if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    if (/^[+-]?\d+(\.\d+)?$/.test(trimmed)) {
       const numeric = Number(trimmed);
       return epochMillis(numeric);
     }
