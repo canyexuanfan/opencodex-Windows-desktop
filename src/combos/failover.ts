@@ -124,13 +124,15 @@ export function comboFailureDecision(
   // A local input-admission refusal (#1524) says "this candidate cannot fit the request",
   // not "the request is impossible": the next candidate may have a larger context window.
   //
-  // This MUST be tested before the generic stop list below. `classifyError` maps a real 413
-  // admission body to `context_length_exceeded`, so checking the stop list first swallowed
-  // the signal and ended the chain -- the exact behavior #1524 reports. An UPSTREAM
-  // `context_length_exceeded` carries no admission marker and still falls through to stop.
-  if (options?.code === "input_admission_refused"
-    || error.code === "input_admission_refused"
-    || message.includes("input_admission_refused")) {
+  // This MUST be tested before the generic stop list below. Our own refusal message says
+  // "context window" -- that is what it refuses on -- and the classifier remaps that phrase,
+  // so checking the stop list first swallowed the signal and ended the chain. An UPSTREAM
+  // `context_length_exceeded` carries no admission code and still falls through to stop.
+  //
+  // Matched on the STRUCTURED code only. The refusal is ours, so it always carries the code
+  // now that classifyError preserves it; a raw substring test would instead let any upstream
+  // override a terminal verdict by echoing the token in text we do not control.
+  if (options?.code === "input_admission_refused" || error.code === "input_admission_refused") {
     return "hop";
   }
   if (["origin_rejected", "context_length_exceeded", "invalid_request_error"].includes(error.code ?? "")) {
