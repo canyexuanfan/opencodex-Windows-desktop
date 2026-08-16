@@ -62,8 +62,10 @@ opencodex encodes the OLD rule in two places, not one:
    row `"v2"` when the feature flag is on, claiming every routed third-party model is a
    recursive delegator.
 
-Both must change together: fixing only the stamp leaves Luna excluded, and fixing only
-the predicate leaves routed models over-claiming recursion.
+Both must change eventually, but they are **separable and are being done in separate cycles**
+(see `011` 3판): the roster predicate alone puts Luna back in the roster, while the stamp fix
+must be redesigned around `8a0de6c44`'s explicit-v2 policy. Fixing only the predicate leaves
+routed rows over-claiming recursion in `default` mode — that residual is tracked as G1b.
 
 Classification: **silent degradation** — nothing errors; the roster is simply wrong.
 
@@ -105,7 +107,8 @@ opencodex is a provider proxy, not Codex's app-server. It must **not** implement
 
 | # | Gap | Class | Phase |
 | --- | --- | --- | --- |
-| G1 | `default` mode stamps unpinned rows `v2`, erasing leaf semantics | silent-degradation | 010 |
+| G1a | Roster predicate `isEligibleV2SubagentEntry` (`sync.ts:105-108`) excludes explicit `v1` pins, dropping Luna | silent-degradation | **C1 (011)** |
+| G1b | `default` mode stamps unpinned rows `v2` (`parsing.ts:409+`) — NOT fixed by `8a0de6c44`, which only added an explicit-`v2` branch | silent-degradation | **OPEN** — later cycle |
 | G2 | No typed per-model multi-agent capability, and no creation path for one | missed-opportunity | 010 |
 | G3 | `updateSessionMeta` appends ordinal-less lines to paginated rollouts | compat-break | 020 |
 | G4 | Thread SELECTs omit `history_mode`; bulk updates cannot skip unknown rows | compat-break | 020 |
@@ -140,7 +143,15 @@ Recommended execution order (risk-first, not dependency-forced): 1 → 2 → 4 �
 Phase 1 carries two compat-breaks (G12) and the headline defect; Phase 2 carries the
 data-corruption risk. Phases 3 and 5 may both close as NOOP with recorded evidence.
 
-Each phase is one full PABCD cycle and closes with an independently verifiable gate.
+Each phase closes with an independently verifiable gate. Most phases are one PABCD cycle;
+**Phase 1 is split into three** because `8a0de6c44` landed mid-roadmap and the encrypted-NEW_TASK
+constraint (#92) entangles part of it (see `011_c1_investigation_and_scope.md`):
+
+| Cycle | Covers | Status |
+| --- | --- | --- |
+| C1 | Roster predicate G1a (`sync.ts:105-108`) + `gpt-daybreak-blue-latest` global allowlist (owner decision) | in progress |
+| C2 | G1b — `default`-mode blanket stamp, redesigned on top of `8a0de6c44`'s explicit-v2 policy | open |
+| C3 | G2 creation path + G12 fallback capability class (entangled with encrypted-task native-only fallback) | open |
 
 ## Environment precondition (applies to every phase)
 

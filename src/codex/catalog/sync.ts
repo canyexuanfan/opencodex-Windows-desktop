@@ -90,21 +90,36 @@ export type SubagentRosterExclusionReason =
 /**
  * Whether a catalog entry may be offered as a V2 subagent model.
  *
- * Upstream (codex-rs 92938d880) requires `multi_agent_version === "v2"` exactly,
- * because upstream assumes a single backend serves every model. opencodex routes
- * many providers, so that equality would reject the cross-provider spawns this
- * proxy exists to enable.
+ * Upstream changed this rule in codex-rs `6d4d9442c` ("Support leaf models in
+ * multi-agent v2"). `model_supports_multi_agent_backend`
+ * (core/src/tools/handlers/multi_agents_common.rs:36-42) now admits EVERY model
+ * except one explicitly marked `disabled`; the older `== Some(V2)` equality that
+ * `92938d880` introduced is gone.
  *
- * Decision (option B, devlog 260730_codex_rs_upstream_v2_live_handoff/060): any
- * model opencodex actually routes is eligible. An entry pinned to a DIFFERENT
- * multi-agent backend (`v1`) stays excluded, because that pin is a real capability
- * statement rather than an absence of information. An unpinned entry (null or
- * absent) is a routed or unpinned-native model and is allowed. The three-way
- * distinction is the substance; do not flatten it into a truthiness check.
+ * The field no longer answers "may I be a delegation target". It answers "does the
+ * CHILD get collaboration tools": `collab_tools_enabled`
+ * (core/src/tools/spec_plan.rs:599-610) grants a child recursive tools only when its
+ * own catalog value is exactly `Some(V2)`. The three-way distinction survives, but it
+ * now means eligible-recursive / eligible-LEAF / excluded:
+ *
+ * - `"v2"`       -> eligible, and the child may itself delegate.
+ * - `"v1"`       -> eligible LEAF worker. This is upstream's pin for `gpt-5.6-luna`
+ *                   (models-manager/models.json); excluding it here is exactly what
+ *                   kept Luna out of opencodex's roster.
+ * - absent/null  -> eligible LEAF worker (routed or unpinned-native model).
+ * - `"disabled"` -> the sole capability-based exclusion.
+ *
+ * This is the roster filter only. Catalog STAMPING is a separate concern owned by
+ * `applyMultiAgentMode`, including the `keepNativeChatGptOnV1` policy (#1728) that
+ * keeps ChatGPT-native rows on `v1` so a native parent can still spawn a routed child
+ * despite backend-encrypted NEW_TASK bodies (#92). Recognizing those `v1` rows as
+ * eligible leaves here is what makes that policy usable, not a contradiction of it.
+ *
+ * Devlog: 260816_codexrs_multiagent_v2_and_history_perf/011 (C1), superseding the
+ * option-B decision in 260730_codex_rs_upstream_v2_live_handoff/060.
  */
 export function isEligibleV2SubagentEntry(entry: RawEntry): boolean {
-  const pinned = entry.multi_agent_version;
-  return pinned === "v2" || pinned === null || pinned === undefined;
+  return entry.multi_agent_version !== "disabled";
 }
 
 export interface EffectiveSubagentModel {
