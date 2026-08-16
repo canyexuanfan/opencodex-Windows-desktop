@@ -111,6 +111,20 @@ export function rememberAndSerializeExtraContent(
   return extra;
 }
 
+/**
+ * Remember the signature without serializing it onto the item. Used for freeform tools, whose
+ * Responses items are custom_tool_call blocks that cannot carry extra_content — the signature
+ * still must be stored so the replayed call (which comes back as custom_tool_call and never
+ * echoes metadata) can be re-signed server-side.
+ */
+export function rememberExtraContentForReplay(
+  callId: string,
+  metadata: OcxProviderOpaqueToolCallMetadata | undefined,
+): void {
+  const extra = responsesExtraContentFromProviderMetadata(metadata);
+  if (extra) rememberThoughtSignatureForReplay(callId, extra.extra_content.google.thought_signature);
+}
+
 /** Look up a signature previously handed out for this call_id, if it is still fresh. */
 export function lookupReplayThoughtSignature(callId: string): string | undefined {
   if (!callId) return undefined;

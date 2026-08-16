@@ -11,7 +11,10 @@ import { adapterFailureFromMessage, classifyError, CYBER_POLICY_ERROR_CODE, isCy
 import { encodeCompactionSummary } from "./responses/compaction";
 import { encodeReasoningEnvelope, type ReasoningEnvelope } from "./responses/reasoning-envelope";
 import { rememberReasoningForCall } from "./responses/reasoning-replay-cache";
-import { rememberAndSerializeExtraContent } from "./responses/thought-signature-replay";
+import {
+  rememberAndSerializeExtraContent,
+  rememberExtraContentForReplay,
+} from "./responses/thought-signature-replay";
 import { resolveStallTimeoutSec } from "./stall-timeout";
 import { usageDisplayTotalTokens } from "./usage/totals";
 import {
@@ -606,6 +609,9 @@ export function bridgeToResponsesSSE(
             input: freeformInput(currentToolCall.args),
           });
         }
+        // Freeform tools serialize as custom_tool_call without extra_content; remember the
+        // signature server-side regardless so the replayed call can be re-signed (#1735).
+        rememberExtraContentForReplay(currentToolCall.callId, currentToolCall.providerMetadata);
         const item = currentToolCall.toolSearch
           ? {
               type: "tool_search_call", id: currentToolCall.itemId,
@@ -644,6 +650,7 @@ export function bridgeToResponsesSSE(
       const failCurrentToolCall = () => {
         if (!currentToolCall) return;
         const argsStr = currentToolCall.args || "{}";
+        rememberExtraContentForReplay(currentToolCall.callId, currentToolCall.providerMetadata);
         const item = currentToolCall.toolSearch
           ? {
               type: "tool_search_call", id: currentToolCall.itemId,
@@ -1577,6 +1584,9 @@ function buildResponseJSONWithBudget(
       currentToolCallArgs,
       options?.toolParameterSchemas?.get(currentToolCallName),
     );
+    // Freeform tools serialize as custom_tool_call without extra_content; remember the
+    // signature server-side regardless so the replayed call can be re-signed (#1735).
+    rememberExtraContentForReplay(currentToolCallId, currentToolCallProviderMetadata);
     if (toolSearch) {
       pushOutput({
         type: "tool_search_call", id: `tsc_${uuid()}`,
