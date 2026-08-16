@@ -81,9 +81,9 @@ A follow-up comment correctly pointed out that this contradicts the repository's
 
 Reference: https://github.com/lidge-jun/opencodex/issues/1795#issuecomment-5305003614
 
-## Kimi K3 v2.22.0 reproduction
+## Kimi K3 v2.14.2 reproduction and v2.22.0 re-check
 
-A second reproduction on current stable OpenCodex v2.22.0 confirmed that the problem is not SenseNova-specific and also reaches the Codex-native Code Mode helper boundary.
+A second reproduction was captured with Teamwicked Kimi K3 on OpenCodex v2.14.2. It showed the same semantic mismatch at the Codex-native Code Mode helper boundary. That run was initially misidentified as v2.22.0 because it came from a different worktree that was still running v2.14.2.
 
 Observed request characteristics:
 
@@ -104,9 +104,16 @@ routed provider emitted undeclared client tool "apply_patch"; only request-decla
 
 The request/conversation identifiers were intentionally omitted from the public issue comment.
 
-Reference: https://github.com/lidge-jun/opencodex/issues/1795#issuecomment-5305779307
+References:
 
-This reproduction matters because Code Mode deliberately exposes patching through the declared `exec` surface with a nested helper:
+- original repro: https://github.com/lidge-jun/opencodex/issues/1795#issuecomment-5305779307
+- version correction: https://github.com/lidge-jun/opencodex/issues/1795#issuecomment-5306871615
+
+Re-running the same Kimi K3 / `openai-chat` / `xhigh` Code Mode scenario on actual v2.22.0 has not reproduced the undeclared top-level `apply_patch` failure so far. The live v2.22.0 Kimi case therefore remains unconfirmed.
+
+That does not remove the separate static metadata defect addressed by this PR: v2.22.0/current dev still applies `apply_patch`-specific `input` guidance to non-`apply_patch` Responses custom tools, and the non-OpenAI catalog nudge still does not explicitly distinguish the top-level invocation surface from nested helper APIs.
+
+The v2.14.2 reproduction still matters because Code Mode deliberately exposes patching through the declared `exec` surface with a nested helper:
 
 ```text
 exec
