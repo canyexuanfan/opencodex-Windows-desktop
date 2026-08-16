@@ -38,8 +38,18 @@ fatal: Unable to create 'F:/workbuddy/opencodex/.git/index.lock': Permission den
 
 ## 更新记录
 
+- ❌ 2026-08-04：同步上游 v2.10.0 前，默认权限下执行 `git switch -c codex/sync-upstream-v2.10.0` 失败，报 `cannot lock ref ... Permission denied`；执行只读上游 `git fetch` 也因无法写 `.git/FETCH_HEAD` 失败。判断仍属于当前环境对 `.git` 元数据写入的权限边界，不是上游网络或代码冲突问题。下一步按既有经验使用最小范围 Git 元数据授权重试分支创建和 fetch，不扩大到 push/release/workflow。
 - ❌ 2026-08-04：本轮首次执行精确路径 `git add` 时，代码文件和中文排查指南中位于 sparse-checkout 范围外的路径被 Git 拒绝，提示 `outside of your sparse-checkout definition`；未改变索引。按既有经验改用 `git add --sparse -- <明确路径>`，不扩大 sparse-checkout 范围。
 - ❌ 2026-08-04：在 Windows PowerShell 中把 `git add --sparse` 与 `git commit` 用 `&&` 串联，PowerShell 解析器拒绝该语法，索引和提交均未改变；下一步分两条命令执行。
+- ❌ 2026-08-04：创建 `.tmp/public-release` 临时 worktree 时，Git 无法在 `.git/worktrees/` 创建 worktree 元数据目录，报 `could not create leading directories ... Permission denied`；未创建工作树，也未改变当前索引。下一步改用仓库外的已授权临时路径，并继续保持公开文件精确筛选。
+- ❌ 2026-08-04：临时 worktree 创建成功后，使用 `git -C .tmp/public-release apply` 应用带 `a/`、`b/` 前缀的筛选补丁时，Git 报 `git diff header lacks filename information when removing 1 leading pathname component`；补丁未应用。下一步从主仓库根目录使用 `git apply --directory=.tmp/public-release`，避免 `-C` 改变补丁路径解析。
+- ❌ 2026-08-04：改用 `git apply --directory=.tmp\public-release` 后，Windows Git 将反斜杠拼入补丁路径，报 `invalid path '.tmp\\public-release/README.md'`；补丁仍未应用。下一步使用 Git 语义可识别的正斜杠目录参数 `.tmp/public-release`。
+- ❌ 2026-08-04：使用正斜杠目录参数后，补丁只看到根目录少量文件，桌面和源码路径报 `No such file or directory`，其余文件上下文也无法匹配；确认新 worktree 继承了当前 sparse-checkout 配置。下一步只在临时 worktree 关闭 sparse-checkout，再重新应用补丁。
+- ❌ 2026-08-04：关闭临时 worktree 的 sparse-checkout 后，使用 `git apply --directory=.tmp/public-release` 仍把目录前缀叠加到补丁路径，导致所有上下文无法匹配；下一步回到 `git -C .tmp/public-release apply`，并排除纯文件模式变更。
+- ❌ 2026-08-04：对临时 worktree 应用完整补丁时，默认权限无法创建其 `.git/worktrees/public-release/index.lock`，且此前已试改的 README 无法用普通 `git restore` 回退；补丁只留下了已应用的 README 修改。下一步用已批准的最小 Git 元数据授权完成临时 worktree 的 restore 和 apply。
+- ❌ 2026-08-04：即使在授权下并排除纯模式变更，`git apply` 对比远端基线仍无法匹配多处文本补丁；确认文件 blob 与基线一致，问题来自 Windows 工作树换行/补丁路径组合。下一步改用 Git 原生从目标提交检出选定文件，再恢复排除目录的基线内容。
+- ❌ 2026-08-04：从目标提交检出后，用 `git checkout <基线> -- docs devlog dist` 一次恢复时，基线不存在 `dist` pathspec，Git 中止整条恢复命令，临时树短暂显示大量 docs/devlog 删除。下一步按确认存在的目录分别恢复，并单独清理新增过程目录。
+- ❌ 2026-08-04：临时树索引暂时承载了全量目标提交后，尝试 `git add -A` 统一收口时被安全审查拒绝，原因是同时包含大量内部过程文件的新增/删除变更；未完成暂存。下一步销毁并重建干净临时树，只检出明确的公开目录和文件。
 
 - ❌ 2026-08-01：本阶段尝试暂存桌面路由恢复、托盘重启、能力对齐测试、`todolist.md` 和新排查指南时，`.git/index.lock` 仍无法创建；已确认 `.git/index.lock` 不存在，属于当前执行环境对 Git 元数据目录的写权限限制，尚未修改索引。
 - ❌ 2026-08-01：获得最小 Git 元数据写权限后，普通 `git add` 又被仓库 sparse-checkout 规则拒绝（桌面源码和新问题指南在稀疏范围外）；按既有指南改用 `git add --sparse -- <明确文件>`，不扩大稀疏范围。

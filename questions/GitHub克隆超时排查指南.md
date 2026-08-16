@@ -58,7 +58,17 @@
 
 ## 更新记录
 
+- ❌ 2026-08-04：同步上游 v2.10.0 时，改用只读 `git fetch --no-tags https://github.com/lidge-jun/opencodex.git refs/tags/v2.10.0:refs/remotes/upstream/v2.10.0`，在 124 秒内未完成并被工具超时终止；未写入目标引用，`.git/FETCH_HEAD` 为空。按用户要求不再尝试下载源码包或大范围克隆，下一步改用 GitHub API 精确读取上游 tag/commit 的必要文件与补丁。
+- ❌ 2026-08-04：改用 GitHub compare diff `v2.8.0...v2.10.0` 时，120 秒超时，仅留下约 4.18 MB 的不完整 diff，尾部停在 Markdown 表格中间，不能用于 `git apply`。下一步不再取整包 diff，改为按单个上游提交或少量关键文件精确读取。
+- ❌ 2026-08-04：用 PowerShell 重定向 `>` 保存单个 GitHub commit diff 后，文件肉眼看似以 `diff --git` 开头，但 `git apply --check` 报 `No valid patches in input`。原因是 PowerShell 重定向改变了 patch 编码/字节形态。下一步改用 `gh api --output <file>` 直接写入，避免 shell 文本重编码。
+- ❌ 2026-08-04：当前 `gh api` 版本没有 `--output`，改用 `curl.exe -L -o` 下载 commit `.diff` 时，Schannel 报 `SEC_E_NO_CREDENTIALS`，未取得文件。下一步改用 PowerShell `Invoke-WebRequest -OutFile` 写入原始响应体。
+- ❌ 2026-08-04：用 `gh api "repos/.../contents/<path>?ref=<sha>"` 批量读取 raw 文件时，PowerShell/gh 参数组合把查询串解析坏，出现 `contents/=<sha>` 404，并写出 0 字节文件。下一步改用 `gh api -X GET repos/.../contents/<path> -f ref=<sha>`，且读取后强制校验字节数非 0。
+- ✅ 2026-08-04：Git fetch 超时后发现 4 个启动时间与 fetch 窗口一致的 `git.exe` 子进程仍在后台运行。为避免继续占用网络/磁盘，使用精确 PID `Stop-Process -Id 5416,40076,48284,51548 -Force` 停止，仅处理本次残留进程，不扩大到其他 Git/系统进程。
 - 2026-08-04：拉取参考项目 `jlcodes99/cockpit-tools` 与 `farion1231/cc-switch` 时，普通 `git clone --depth 1` 两路均在 120 秒超时；两个目标目录仅创建了 `.git`，无工作树文件。按既有策略不重复普通 clone，改用 `--filter=blob:none` 与 sparse checkout 获取源码关键目录。
+- ❌ 2026-08-04：使用既有推荐的 `git clone --filter=blob:none --no-checkout --depth 1 --branch v2.10.0` 拉取上游 `lidge-jun/opencodex` 时，184 秒内未完成并被工具超时终止；不重复 Git 长连接，改用 npm `2.10.0` tarball 做源码对比，并保留上游 Git commit 作为版本锚点。
+- ❌ 2026-08-04：`npm pack @bitkyc08/opencodex@2.10.0` 已成功生成 7.5 MB tarball，但随后把完整 tar 列表直接管道给 `Select-Object -First`，下游提前关闭导致 tar 返回非零；包文件本身已确认存在。下一步不截断管道，直接解包到临时目录。
+- ❌ 2026-08-04：在 PowerShell 中把 `git archive` 的二进制 tar 直接通过管道传给 `tar -xf`，解包端报 `Unrecognized archive format`，当前对比目录未生成；下一步让 `git archive -o` 先写临时 tar 文件，再单独解包。
+- ❌ 2026-08-04：读取 GitHub compare 提交摘要时，`gh api --jq` 的 PowerShell 引号把 jq 的 `split("\\n")` 变成了非法表达式；文件差异摘要已返回，只有提交摘要失败。下一步使用不含换行解析的简化 jq 表达式，避免重复网络请求。
 - 2026-08-04：随后 filtered fetch 被两个残留 `shallow.lock` 拦截；检查发现普通 clone 超时后仍留下 8 个对应 git 子进程，30 秒等待未自然退出。下一步只精确停止这批 clone PID，并删除两个由本次 clone 创建的 lock 文件后重试。
 - 2026-08-04：✅ 精确停止残留 clone/checkout 进程并清理本次创建的局部目录后，使用 `git clone --depth 1 --filter=blob:none --no-checkout` 成功取得两个参考仓库提交对象：`cockpit-tools` 为 `e1ef55ce9f158dd1ee9fd682cf8d9aa1b79601e8`，`cc-switch` 为 `492245dcb9196b0169e227d9eae2ab91466c0058`。
 - 2026-08-04：❌ 首次 sparse checkout 目录过宽，包含大量 UI/图片/文档资产，导致 checkout 超时并留下待检出状态。不要再用根级 `src`、`docs`、`.github` 这类大范围规则分析参考项目。
