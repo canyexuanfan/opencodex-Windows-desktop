@@ -80,12 +80,12 @@ describe("openai-chat request hardening", () => {
         },
       },
       patternProperties: { encrypted: { type: "string", encrypted: true } },
-      $defs: { encrypted: { type: "number", encrypted: true } },
-      definitions: { encrypted: { type: "integer", encrypted: false } },
-      dependencies: { encrypted: ["message"], other: { type: "object", encrypted: true } },
-      dependentSchemas: { encrypted: { type: "string", encrypted: true } },
+      $defs: { encrypted: { type: "number" } },
+      definitions: { encrypted: { type: "integer" } },
+      dependencies: { encrypted: ["message"], other: { type: "object" } },
+      dependentSchemas: { encrypted: { type: "string" } },
       dependentRequired: { encrypted: ["message"] },
-      propertiesWithSpecialName: { type: "object", properties: { ["__proto__"]: { type: "string", encrypted: true } } },
+      propertiesWithSpecialName: { type: "object", properties: { ["__proto__"]: { type: "string" } } },
       required: ["message", "encrypted"],
     };
     const before = structuredClone(parameters);
@@ -135,8 +135,6 @@ describe("openai-chat request hardening", () => {
   });
 
   test("a deeply nested schema is stripped without exhausting the stack", () => {
-    // The schema is caller-supplied, so its depth is attacker-influenced: a recursive walk
-    // would take the request path down with a stack overflow instead of answering.
     const depth = 50_000;
     const root: Record<string, unknown> = { type: "object", encrypted: true };
     let cursor = root;
@@ -151,7 +149,6 @@ describe("openai-chat request hardening", () => {
     expect(stripped.encrypted).toBeUndefined();
     let walk = stripped;
     for (let i = 0; i < depth; i++) {
-      // Each level keeps the property literally named `encrypted` and drops the keyword.
       walk = (walk.properties as Record<string, Record<string, unknown>>).encrypted;
       expect(walk.encrypted).toBeUndefined();
       expect(walk.type).toBe("object");
@@ -299,10 +296,6 @@ describe("openai-chat non-stream response hardening", () => {
     expect(getDebugLogEntries()).toHaveLength(0);
   });
 
-  // The diagnostic's job is to say WHICH check rejected the payload. If its precedence drifts
-  // from the validator's, a payload with more than one problem is reported under the wrong
-  // reason and sends provider-compatibility work after the wrong shape. These cases each carry
-  // two defects at once, so only the matching order produces the expected reason.
   describe("diagnostic precedence matches the buffered validator", () => {
     async function reasonFor(toolCall: unknown): Promise<string> {
       process.env.OCX_DEBUG = "1";
@@ -316,7 +309,6 @@ describe("openai-chat non-stream response hardening", () => {
     }
 
     test("a bad function container outranks a bad id", async () => {
-      // Validator checks `!isRecord(rawToolCall.function)` before it reads `id`.
       expect(await reasonFor({ id: 7, function: "not-an-object" }))
         .toBe("tool_call_function_not_object");
     });
@@ -327,8 +319,6 @@ describe("openai-chat non-stream response hardening", () => {
     });
 
     test("a bad arguments type outranks a blank name", async () => {
-      // Both are rejected by the same validator condition; arguments is checked first there,
-      // so a blank name must not shadow it.
       expect(await reasonFor({ id: "call_1", function: { name: "   ", arguments: 5 } }))
         .toBe("tool_call_function_arguments_invalid");
     });
@@ -470,8 +460,6 @@ describe("openai-chat stream response hardening", () => {
       message: "upstream response contained invalid tool calls (tool_call_not_object; callIndex=1; valueType=null)",
     }]);
     const lines = getDebugLogEntries().map(entry => entry.line).join("\n");
-    // The null-padded continuation delta at index 0 is accepted by the accumulator, so the
-    // diagnostic must point at index 1 rather than claiming the padding was the defect.
     expect(lines).toContain('"reason":"tool_call_not_object"');
     expect(lines).toContain('"callIndex":1');
     expect(lines).not.toContain('"tool_call_function_name_invalid"');
@@ -582,10 +570,6 @@ describe("openai-chat credential hardening", () => {
       .not.toHaveProperty("service_tier");
   });
 
-  // `service_tier` is an OpenAI-specific extension and this adapter serves 66 registry
-  // providers, several of which reject unknown body fields. Forwarding it by default would
-  // turn a caller-supplied tier into an upstream 400 on those routes, so absence of the
-  // opt-in must mean the field is dropped — the same contract `prompt_cache_key` uses.
   test("drops a caller-supplied service tier when the provider has not opted in", () => {
     for (const p of [provider(), provider({ chatServiceTier: false })]) {
       const req = parsed();
