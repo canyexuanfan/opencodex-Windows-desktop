@@ -21,7 +21,8 @@ opencodex must change, and stages it as dependency-ordered implementation phases
 
 | Repo | Commit | Verified |
 | --- | --- | --- |
-| upstream codex-rs | `9dd22890f5ff47e4af128c20e32b9758a61d78d2` | `git log -1`, 2026-08-12, `Add an LRU baseline to skill shadow selection (#38197)` |
+| upstream codex-rs (조사 시점) | `9dd22890f5ff47e4af128c20e32b9758a61d78d2` | `git log -1`, 2026-08-12 |
+| upstream codex-rs (재검증 후, ff 완료) | `49db349ff` | 2026-08-15, +181 커밋. 두 P0 모두 유효함을 재확인 — `008`/`009` |
 | opencodex | `7612e4c4f81544a250c3eea9fe8ca85d8022e765` | `git log -1`, `fix(routing): source capability evidence from explicit catalog provenance (#1799)` |
 
 Research documents (evidence only — no prescriptions; see LEXICO-SPLIT-01):
@@ -88,9 +89,14 @@ The "~98% fewer requests" figure is an N+1 elimination in *local SQLite* summary
 not a reduction in `/v1/responses` calls, and `ResponsesApiRequest`
 (`codex-rs/codex-api/src/common.rs:252`) is unchanged by the entire history series.
 
-The `27.6s → 1.7s` and 741-turn figures are **UNVERIFIED**: 26 web queries found no
-primary source, and they appear in no upstream commit message or test. Do not treat them
-as a benchmark target; the mechanism is the finding.
+The `27.6s → 1.7s` and 741-turn figures come from an **official OpenAI announcement**
+(user-confirmed). They do not appear in any public PR body — `gh api search/issues` returns
+`total_count: 0` for both `27.6s` and `"98% fewer"` — so treat them as an internal benchmark
+whose *code* is public, not as a fabricated claim. `009_gh_pr_review.md` maps the figures to
+the PRs that produced them (#36384 N+1 removal, #32234/#33364 pagination, #36948-36951 TUI
+bounded hydration, #38604 resume round-trip removal, #34361 clone avoidance). What remains
+opencodex-relevant is unchanged: those requests are local SQLite/app-server calls, not
+`/v1/responses` calls.
 
 opencodex is a provider proxy, not Codex's app-server. It must **not** implement
 `thread/turns/list`, `thread/items/list`, or `includeTurns`.
@@ -110,6 +116,7 @@ opencodex is a provider proxy, not Codex's app-server. It must **not** implement
 | G9 | `structure/03_catalog-and-subagents.md:133-153` documents the superseded rule | docs-drift | 010 |
 | **G12** | Quota fallback can rewrite a v2 child to a v1/disabled model, keeping collab tools | **compat-break** | 010 |
 | G13 | `collaboration.ts:349` fork-override guidance | **no-action (optional polish)** — upstream's own hint (`config/mod.rs:253`) says forks "do not accept overrides", so our text mirrors it; the implementation honors overrides but the guidance is not wrong | 010 |
+| **G14** | `model_messages.multi_agent` (role/mode 지시문)이 카탈로그에서 공급됨 (#38619); opencodex는 `model_messages` 를 `metadata.ts:300-308` 에서 변형하고 `upstream-models.json` 스냅샷으로 공급하는데 이 서브트리를 모름 | missed-opportunity → 잠재 silent-degradation | 060 (신규, 미작성) |
 | G10 | Storage cleanup refuses paginated history | no-action (keep refusal) | — |
 | G11 | App-server pagination protocol | no-action (out of proxy scope) | — |
 
