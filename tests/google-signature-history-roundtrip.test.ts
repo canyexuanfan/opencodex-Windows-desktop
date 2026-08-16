@@ -2,10 +2,19 @@
  * #1735: a Gemini thought signature must survive a HISTORY-driven turn, where the same-process
  * replay cache is not available — the exact case the cache was masking.
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createGoogleAdapter as createGoogleAdapterProduction } from "../src/adapters/google";
 import { __resetAntigravityReplayCache } from "../src/adapters/google-antigravity-replay";
 import { parseRequest } from "../src/responses/parser";
+import {
+  flushThoughtSignatureReplayForTests,
+  lookupReplayThoughtSignature,
+  rememberThoughtSignatureForReplay,
+  resetThoughtSignatureReplayForTests,
+} from "../src/responses/thought-signature-replay";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig } from "../src/types";
 import { withTestTranslatorBudget } from "./helpers/translator-budget";
 
@@ -49,7 +58,22 @@ function modelParts(body: string): Record<string, unknown>[] {
 }
 
 describe("#1735 thought signature survives history replay", () => {
-  beforeEach(() => __resetAntigravityReplayCache());
+  let previousHome: string | undefined;
+  let testDir: string;
+
+  beforeEach(() => {
+    __resetAntigravityReplayCache();
+    resetThoughtSignatureReplayForTests();
+    previousHome = process.env.OPENCODEX_HOME;
+    testDir = mkdtempSync(join(tmpdir(), "ocx-thought-sig-"));
+    process.env.OPENCODEX_HOME = testDir;
+  });
+
+  afterEach(() => {
+    if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = previousHome;
+    rmSync(testDir, { recursive: true, force: true });
+  });
 
   test("the adapter attaches the signature to the tool call that produced it", async () => {
     const adapter = createGoogleAdapter(provider);
@@ -112,5 +136,62 @@ describe("#1735 thought signature survives history replay", () => {
     const request = await createGoogleAdapter(provider).buildRequest(parsed);
     const part = modelParts(request.body as string).find(candidate => "functionCall" in candidate);
     expect(part?.thoughtSignature).toBeUndefined();
+  });
+
+  test("a signature the proxy remembered re-signs a replay the client sent without extra_content", async () => {
+    // The proxy handed out SIGNATURE for call_shell_9 in a previous turn; the client replays
+    // the call as a bare function_call item (codex-rs/desktop never echo extra_content).
+    rememberThoughtSignatureForReplay("call_shell_9", SIGNATURE);
+    const parsed = parseRequest({
+      model: MODEL,
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "run pwd" }] },
+        { type: "function_call", call_id: "call_shell_9", name: "shell_command", arguments: JSON.stringify({ command: "pwd" }) },
+        { type: "function_call_output", call_id: "call_shell_9", output: "/workspace" },
+      ],
+      tools: [{ type: "function", name: "shell_command", description: "run", parameters: { type: "object" } }],
+    });
+    const request = await createGoogleAdapter(provider).buildRequest(parsed);
+    const part = modelParts(request.body as string).find(candidate => "functionCall" in candidate);
+    expect(part?.thoughtSignature).toBe(SIGNATURE);
+  });
+
+  test("a custom_tool_call replay is re-signed from the proxy-side store", async () => {
+    rememberThoughtSignatureForReplay("call_custom_1", SIGNATURE_B);
+    const parsed = parseRequest({
+      model: MODEL,
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "run pwd" }] },
+        { type: "custom_tool_call", call_id: "call_custom_1", name: "shell_command", input: JSON.stringify({ command: "pwd" }) },
+        { type: "custom_tool_call_output", call_id: "call_custom_1", output: "/workspace" },
+      ],
+      tools: [{ type: "function", name: "shell_command", description: "run", parameters: { type: "object" } }],
+    });
+    const request = await createGoogleAdapter(provider).buildRequest(parsed);
+    const part = modelParts(request.body as string).find(candidate => "functionCall" in candidate);
+    expect(part?.thoughtSignature).toBe(SIGNATURE_B);
+  });
+
+  test("an unknown call_id stays unsigned", async () => {
+    const parsed = parseRequest({
+      model: MODEL,
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "run pwd" }] },
+        { type: "function_call", call_id: "call_never_seen", name: "shell_command", arguments: JSON.stringify({ command: "pwd" }) },
+        { type: "function_call_output", call_id: "call_never_seen", output: "/workspace" },
+      ],
+      tools: [{ type: "function", name: "shell_command", description: "run", parameters: { type: "object" } }],
+    });
+    const request = await createGoogleAdapter(provider).buildRequest(parsed);
+    const part = modelParts(request.body as string).find(candidate => "functionCall" in candidate);
+    expect(part?.thoughtSignature).toBeUndefined();
+  });
+
+  test("the proxy-side store survives a process restart via its snapshot", async () => {
+    rememberThoughtSignatureForReplay("call_disk_1", SIGNATURE);
+    await flushThoughtSignatureReplayForTests();
+    // Simulate a fresh process: drop in-memory state; lookup must reload from disk.
+    resetThoughtSignatureReplayForTests();
+    expect(lookupReplayThoughtSignature("call_disk_1")).toBe(SIGNATURE);
   });
 });

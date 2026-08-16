@@ -13,6 +13,7 @@ import type {
 import { namespacedToolName } from "../types";
 import { responsesRequestSchema } from "./schema";
 import { providerMetadataFromResponsesFunctionCall } from "./provider-opaque-metadata";
+import { lookupReplayThoughtSignature } from "./thought-signature-replay";
 import { compactionItemToText } from "./compaction";
 import { previousResponseReplayPrefixLength } from "./state";
 import { decodeReasoningEnvelope } from "./reasoning-envelope";
@@ -21,6 +22,12 @@ import { extractHostedImageGeneration, IMAGE_GEN_TOOL_NAME } from "../images/syn
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Wrap a remembered proxy-side signature as provider metadata for a replayed tool call. */
+function replayThoughtSignatureMetadata(callId: string): { google: { thoughtSignature: string } } | undefined {
+  const signature = lookupReplayThoughtSignature(callId);
+  return signature ? { google: { thoughtSignature: signature } } : undefined;
 }
 
 type InputBlock =
@@ -522,8 +529,12 @@ export function parseRequest(body: unknown): OcxParsedRequest {
         };
         // Provider-opaque metadata (e.g. a Gemini thought signature) travels with the call so a
         // history-replayed or previous_response_id turn rebuilds the same signed part instead of
-        // depending on the same-process replay cache (issue #1735).
-        const providerMetadata = providerMetadataFromResponsesFunctionCall(call);
+        // depending on the same-process replay cache (issue #1735). Real clients do not echo
+        // extra_content on replay, so fall back to the proxy-side store keyed by call_id.
+        const providerMetadata = providerMetadataFromResponsesFunctionCall(call)
+          ?? (typeof call.call_id === "string"
+            ? replayThoughtSignatureMetadata(call.call_id)
+            : undefined);
         if (providerMetadata) toolCall.providerMetadata = providerMetadata;
         assistantHolderWithReasoning().content.push(toolCall);
         continue;
@@ -531,10 +542,12 @@ export function parseRequest(body: unknown): OcxParsedRequest {
 
       if (effectiveType === "custom_tool_call") {
         const call = item as { id?: string; call_id: string; name: string; input: string };
+        const remembered = typeof call.call_id === "string" ? replayThoughtSignatureMetadata(call.call_id) : undefined;
         const toolCall: OcxToolCall = {
           type: "toolCall", id: call.call_id, name: call.name,
           arguments: { input: call.input ?? "" },
           customWireName: call.name,
+          ...(remembered ? { providerMetadata: remembered } : {}),
         };
         assistantHolderWithReasoning().content.push(toolCall);
         continue;
