@@ -100,6 +100,9 @@ export function buildOpenAIChatPassthroughRequest(
     if (rawBody[field] !== undefined) body[field] = rawBody[field];
   }
 
+  const openRouterRouting = resolveOpenRouterRouting(provider, modelId);
+  if (openRouterRouting) body.provider = openRouterProviderPayload(openRouterRouting);
+
   if (modelInList(provider.noTemperatureModels, modelId)) delete body.temperature;
   if (modelInList(provider.noTopPModels, modelId)) delete body.top_p;
   if (modelInList(provider.noPenaltyModels, modelId)) {

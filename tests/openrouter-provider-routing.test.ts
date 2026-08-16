@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
+import { buildOpenAIChatPassthroughRequest, createOpenAIChatAdapter } from "../src/adapters/openai-chat";
 import {
   openRouterRoutingConfigError,
   openRouterProviderPayload,
@@ -98,6 +98,21 @@ describe("OpenRouter configurable provider routing", () => {
     const requestBody = body("https://openrouter.ai/api/v1", "deepseek/deepseek-chat", deepSeekLock, true);
     expect(requestBody.provider).toEqual({ only: ["deepseek"], allow_fallbacks: false });
     expect(requestBody.stream_options).toEqual({ include_usage: true });
+  });
+
+  test("preserves exact model routing on native Chat passthrough requests", () => {
+    const request = buildOpenAIChatPassthroughRequest(provider("https://openrouter.ai/api/v1", {
+      openRouterRouting: { order: ["deepseek"], allowFallbacks: true },
+      modelOpenRouterRouting: {
+        "anthropic/claude-sonnet-5": { only: ["anthropic"], allowFallbacks: false },
+      },
+    }), {
+      messages: [{ role: "user", content: "hello" }],
+    }, "anthropic/claude-sonnet-5", false);
+
+    expect(JSON.parse(request.body as string).provider).toEqual({
+      only: ["anthropic"], allow_fallbacks: false,
+    });
   });
 
   test.each([
