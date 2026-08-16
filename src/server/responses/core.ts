@@ -91,6 +91,8 @@ import {
   CodexPoolAuthenticationError,
   CodexThreadAffinityExpiredError,
   headersForCodexAuthContext,
+  materializeCodexUpstreamAuth,
+  CodexMainSubstitutionUnavailableError,
   isCodexAuthContextUsable,
   resolveCodexAuthContext,
   codexProbeLeaseId,
@@ -114,6 +116,7 @@ import {
   prepareSameTarget429Wait,
 } from "../../lib/upstream-retry";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "../auth-cors";
+import type { DataPlaneAdmission } from "../auth-cors";
 import { createTranslatorBudget, isTranslatorBudgetExceededError, type TranslatorBudget } from "../../lib/translator-budget";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
 import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
@@ -755,6 +758,15 @@ export interface ConsumedComboFailure {
 
 export interface HandleResponsesOptions {
   turnAdmissionLease?: AdmissionLease;
+  /**
+   * How the caller proved data-plane admission (#1686).
+   *
+   * A bearer-presented admission secret is one of OUR OWN secrets, so a Direct turn must
+   * SUBSTITUTE the stored main credential rather than forward it. Without this fact at the
+   * decision point, Direct cannot tell an admission bearer from the user own ChatGPT bearer,
+   * which is why it refused the whole env_key flow instead of serving it.
+   */
+  admission?: DataPlaneAdmission;
   /** Called at most once after the complete client body is read and accepted for dispatch. */
   onRequestBodyRead?: () => void;
   forceEmptyResponseId?: boolean;
@@ -988,7 +1000,14 @@ async function resolveResponsesCodexAuth(
   options: HandleResponsesOptions,
 ): Promise<ResponsesAuthResolution> {
   try {
-    if (route.codexAccountMode === "direct") validateForwardAdmissionCredential(req.headers, config);
+    // #1686: a caller that proved admission with a BEARER presented one of our own secrets.
+    // Refusing it here is what made the codex-cli `env_key` contract unusable against Direct.
+    // Admitting it is only safe because the stored main credential is substituted below, so
+    // the admission secret still never leaves this process.
+    const substituteMainCredential = options.admission?.source === "bearer";
+    if (route.codexAccountMode === "direct" && !substituteMainCredential) {
+      validateForwardAdmissionCredential(req.headers, config);
+    }
     let authCtx: CodexAuthContext;
     if (route.codexAccountMode) {
       authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode, {
@@ -1011,7 +1030,7 @@ async function resolveResponsesCodexAuth(
     return {
       ok: true,
       authCtx,
-      headers: headersForCodexAuthContext(req.headers, authCtx),
+      headers: materializeCodexUpstreamAuth(req.headers, authCtx, { substituteMainCredential }),
     };
   } catch (err) {
     if (err instanceof CodexAccountCooldownError) {
@@ -1044,6 +1063,13 @@ async function resolveResponsesCodexAuth(
     }
     if (err instanceof ForwardAdmissionCredentialError) {
       return { ok: false, response: formatErrorResponse(401, "authentication_error", err.message) };
+    }
+    if (err instanceof CodexMainSubstitutionUnavailableError) {
+      // Fail BEFORE any upstream I/O. The alternative is forwarding the admission secret.
+      return {
+        ok: false,
+        response: formatErrorResponse(401, "authentication_error", "No usable Codex main credential to serve this request"),
+      };
     }
     throw err;
   }
