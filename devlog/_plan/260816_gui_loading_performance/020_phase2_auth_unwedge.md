@@ -163,3 +163,25 @@ the abort-race branch; browser check repeats 001/E2 end-to-end.
 ## Out of scope (WP2)
 
 Server-side session TTL changes; token UX redesign; /v1/* proxy-path auth.
+
+## D addendum — landed (2026-08-16)
+
+Implementation: commits 4f489ddf9 (bounded tri-state bootstrap + abort-aware
+resolution), 6ced61d45 (bootstrap watchdog + 001/E3 harness-artifact correction),
+edc51e6b2 (watchdog scoped off the prompt — round-3 audit fix).
+
+Verification evidence:
+- `cd gui && bun test tests/api-auth-deadline.test.ts tests/api-auth-memory.test.ts tests/admin-token-dialog.test.ts tests/bounded-fetch.test.ts`
+  → 23 pass / 0 fail (6 new deadline cases: hung-bootstrap re-arm, no-prompt on
+  timeout/5xx, per-caller abort unwind with listener-balance spy, signal carry on
+  retry, signal-dropping zombie bounded by the watchdog, prompt never watchdog-
+  bounded with single-dialog join).
+- `cd gui && bun run build` → green.
+- Live E2 (in-app browser, CDP Fetch injection on a sandboxed instance): 401 storm
+  + bootstrap stalled past every bound → poll waves settle and re-arm (~15s
+  cycle); after the injection clears, EVERY tab recovers automatically with no
+  reload (full 5s poll wave of 200s, dashboard exits the cannot-connect state).
+  Harness note: the raw CDP channel rejects Fetch.disable — interception is
+  cleared with Fetch.enable + empty patterns; earlier "post-heal silence"
+  observations were that artifact, recorded as a correction in 001/E3.
+- Audit: binding rounds r3 (FAIL → fixed) and r4 (PASS, fresh).
