@@ -1,5 +1,7 @@
 # 010 — Wave 0: triage mutations
 
+Status: **executed 2026-08-16**. Every action below is already reflected on GitHub; the section is retained as the record. Re-running it would duplicate external communication, so treat each step as complete and verify state instead of re-posting.
+
 No issue is closed in this phase. GitHub metadata only; no repository code.
 
 ## Actions
@@ -9,11 +11,11 @@ No issue is closed in this phase. GitHub metadata only; no repository code.
 3. PR `#1822` — `bug` label review. The PR clarifies Log Guard storage UX and adds a write-load poster; that is GUI UX follow-up, not a defect fix. Replace `bug` with `gui`.
 4. `#1049` — post a comment linking `#1798` and `#1802` as independent acceptance cases under the write-coordinator umbrella, stating explicitly that closing `#1049` does not close either.
 
-## Evidence
+## Evidence (captured)
 
-- `gh issue view 1802 --json labels` shows `bug` present afterwards.
-- `gh pr view 1822 --json labels` shows `gui`, not `bug`.
-- Comment URLs on `#1049`, `#92`, `#417`.
+- `gh issue view 1802 --json labels` → `bug,cli`.
+- `gh pr view 1822 --json labels` → `gui`.
+- `#1049` comment `5307288259`, `#92` comment `5307288327`, `#417` comment `5307288395`.
 
 ## Non-goals
 

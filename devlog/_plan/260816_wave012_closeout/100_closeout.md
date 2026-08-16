@@ -10,7 +10,7 @@
 6. `060` `#1788` streaming state fix, close `#1700`.
 7. `070` `#1780` allocator, close `#1767`.
 8. `080` `#1792` null normalization + sponsorship, close `#1668`.
-9. `090` `#1703` redesign, close `#1697`.
+9. `090` `#1703` redesign, close `#1697` **only if the redesign actually lands with its evidence**; otherwise record the contract, keep the PR on design hold, and report the phase outcome honestly.
 
 Each numbered unit is one PABCD work-phase. No two decade docs are implemented in one build phase.
 
@@ -25,5 +25,7 @@ Each numbered unit is one PABCD work-phase. No two decade docs are implemented i
 
 - Merges land on `dev` under maintainer authority. `main` promotion, tags and npm publish are out of scope; every close comment says the fix is on `dev` and release is pending.
 - Local pushes use `--no-verify` per the operator's standing instruction for this loop; the substitute evidence is the remote suite, not the local hook.
-- Contributor-branch CI is `action_required` and cannot be treated as green. Where a PR never ran an exact-head matrix, the `dev`-side suite after the merge is the evidence of record.
+- Contributor-branch CI is `action_required` and cannot be treated as green. Authorize the workflow runs and get the exact-head matrix **before** merging; `MAINTAINERS.md` requires maintainer approval plus successful CI, and post-merge testing is not a substitute. Windows-specific changes (`#1805`, `#1806`) specifically require the native Windows shards — the Linux `ssh lidge` suite cannot stand in for them.
+- Any push to a contributor head resets review readiness and exact-head evidence: re-authorize CI and re-request approval after each such push.
+- Units that touch the same file must be sequenced and rebased, not merged in parallel. `050` (`#1819`) and `080` (`#1792`) both edit `src/config.ts`; `#1792` rebases onto the post-`#1819` head and is re-audited before sponsorship.
 - `#1795` stays open. `#92`, `#417`, `#1049`, `#1798`, `#1802` stay open.
