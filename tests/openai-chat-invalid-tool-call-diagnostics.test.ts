@@ -1,5 +1,7 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { createOpenAIChatAdapter as createOpenAIChatAdapterProduction } from "../src/adapters/openai-chat";
+import { getDebugLogEntries, resetDebugLogBufferForTests } from "../src/lib/debug-log-buffer";
+import { resetDebugSettingsForTests } from "../src/lib/debug-settings";
 import type { AdapterEvent, OcxProviderConfig } from "../src/types";
 import { withTestTranslatorBudget } from "./helpers/translator-budget";
 
@@ -13,17 +15,23 @@ const provider: OcxProviderConfig = {
   authMode: "key",
 };
 
+const previousDebug = process.env.OCX_DEBUG;
+
+afterEach(() => {
+  resetDebugSettingsForTests();
+  resetDebugLogBufferForTests();
+  if (previousDebug === undefined) delete process.env.OCX_DEBUG;
+  else process.env.OCX_DEBUG = previousDebug;
+});
+
 async function collect(stream: AsyncGenerator<AdapterEvent>): Promise<AdapterEvent[]> {
   const events: AdapterEvent[] = [];
   for await (const event of stream) events.push(event);
   return events;
 }
 
-test("object-valued streamed function.name is a 502 with value-free compatibility detail", async () => {
-  const privateNameValue = "must-not-reach-diagnostics";
-  const privateArguments = "must-not-reach-diagnostics-either";
-  const adapter = createOpenAIChatAdapter(provider);
-  const response = new Response(
+function malformedNameResponse(name: unknown, args = "{}"): Response {
+  return new Response(
     `data: ${JSON.stringify({
       choices: [{
         index: 0,
@@ -31,17 +39,22 @@ test("object-valued streamed function.name is a 502 with value-free compatibilit
           tool_calls: [{
             index: 0,
             id: "call_1",
-            function: {
-              name: { privateNameValue },
-              arguments: JSON.stringify({ value: privateArguments }),
-            },
+            function: { name, arguments: args },
           }],
         },
       }],
     })}\n\n`,
   );
+}
 
-  const events = await collect(adapter.parseStream(response));
+test("object-valued streamed function.name is a 502 with value-free compatibility detail", async () => {
+  const privateNameValue = "must-not-reach-diagnostics";
+  const privateArguments = "must-not-reach-diagnostics-either";
+  const adapter = createOpenAIChatAdapter(provider);
+  const events = await collect(adapter.parseStream(malformedNameResponse(
+    { privateNameValue },
+    JSON.stringify({ value: privateArguments }),
+  )));
 
   expect(events).toEqual([{
     type: "error",
@@ -53,4 +66,45 @@ test("object-valued streamed function.name is a 502 with value-free compatibilit
   expect(serialized).not.toContain(privateNameValue);
   expect(serialized).not.toContain(privateArguments);
   expect(serialized).not.toContain("call_1");
+});
+
+test("provider debug fingerprints only allowlisted object structure for an invalid field", async () => {
+  process.env.OCX_DEBUG = "1";
+  const privateNestedValue = "must-not-reach-provider-debug";
+  const privateUnknownKey = "must-not-reach-provider-debug-as-a-key";
+  const privateUnknownValue = "must-not-reach-provider-debug-as-a-value";
+  const privateArguments = "must-not-reach-provider-debug-arguments";
+  const adapter = createOpenAIChatAdapter(provider);
+
+  const events = await collect(adapter.parseStream(malformedNameResponse({
+    name: privateNestedValue,
+    [privateUnknownKey]: privateUnknownValue,
+  }, JSON.stringify({ privateArguments }))));
+
+  expect(events[0]?.message).not.toContain("fieldShape");
+  const lines = getDebugLogEntries().map(entry => entry.line).join("\n");
+  expect(lines).toContain('[ocx:openai-chat:invalid-tool-calls]');
+  expect(lines).toContain('"reason":"tool_call_function_name_invalid"');
+  expect(lines).toContain('"fieldShape":{"kind":"object"');
+  expect(lines).toContain('"knownKeys":["name"]');
+  expect(lines).toContain('"knownFieldTypes":{"name":"string"}');
+  expect(lines).toContain('"hasUnknownKeys":true');
+  expect(lines).not.toContain(privateNestedValue);
+  expect(lines).not.toContain(privateUnknownKey);
+  expect(lines).not.toContain(privateUnknownValue);
+  expect(lines).not.toContain(privateArguments);
+  expect(lines).not.toContain("call_1");
+});
+
+test("provider debug fingerprints invalid arrays by length without retaining elements", async () => {
+  process.env.OCX_DEBUG = "1";
+  const privateElement = "must-not-reach-array-fingerprint";
+  const adapter = createOpenAIChatAdapter(provider);
+
+  const events = await collect(adapter.parseStream(malformedNameResponse([privateElement, { privateElement }])));
+
+  expect(events[0]?.message).not.toContain("fieldShape");
+  const lines = getDebugLogEntries().map(entry => entry.line).join("\n");
+  expect(lines).toContain('"fieldShape":{"kind":"array","length":2}');
+  expect(lines).not.toContain(privateElement);
 });
