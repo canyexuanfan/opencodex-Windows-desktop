@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, posix, win32 } from "node:path";
 import * as serviceModule from "../src/service";
 import { saveConfig } from "../src/config";
 import { windowsEnvIndirectBatchValue } from "../src/lib/win-paths";
@@ -695,8 +695,24 @@ describe("launchd service plist", () => {
       process.env.CODEX_SQLITE_HOME = "relative-sqlite-home";
       const plist = buildPlist();
 
-      expect(plist).toContain("<key>CODEX_SQLITE_HOME</key>");
-      expect(plist).not.toContain("<string>relative-sqlite-home</string>");
+      // Assert the emitted value is actually absolute. Rejecting only the raw string would
+      // stay green for any other non-absolute transform, which is the whole thing this test
+      // exists to catch. The two artifact formats differ, so each is extracted on its own
+      // terms: launchd is XML, systemd is a quoted Environment= line.
+      const plistValue = /<key>CODEX_SQLITE_HOME<\/key>\s*<string>([^<]*)<\/string>/.exec(plist)?.[1];
+      expect(plistValue).toBeDefined();
+      expect(
+        isAbsolute(plistValue!) || posix.isAbsolute(plistValue!) || win32.isAbsolute(plistValue!),
+      ).toBe(true);
+      expect(plistValue!.endsWith("relative-sqlite-home")).toBe(true);
+
+      const unit = buildUnit();
+      const unitValue = /Environment="CODEX_SQLITE_HOME=([^"]*)"/.exec(unit)?.[1];
+      expect(unitValue).toBeDefined();
+      expect(
+        isAbsolute(unitValue!) || posix.isAbsolute(unitValue!) || win32.isAbsolute(unitValue!),
+      ).toBe(true);
+      expect(unitValue!.endsWith("relative-sqlite-home")).toBe(true);
     } finally {
       if (inherited === undefined) delete process.env.CODEX_SQLITE_HOME;
       else process.env.CODEX_SQLITE_HOME = inherited;
