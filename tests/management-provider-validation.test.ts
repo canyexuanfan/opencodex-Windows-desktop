@@ -3170,3 +3170,165 @@ describe("provider management validation", () => {
     }
   });
 });
+
+describe("provider upstreamHttpVersion management contract (#1668)", () => {
+  function makeConfig(): OcxConfig {
+    return {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "nvidia",
+      providers: {
+        nvidia: {
+          adapter: "openai-chat",
+          baseUrl: "https://integrate.api.nvidia.com/v1",
+          apiKey: "sk-nvidia",
+        },
+      },
+    };
+  }
+
+  // Direct handleManagementAPI calls (no startServer) keep the whole contract in one
+  // synchronous authority, matching the request-pacing PATCH tests above.
+  async function withRequest(liveConfig: OcxConfig, run: (request: (path: string, init?: RequestInit) => Promise<Response | null>) => Promise<void>): Promise<void> {
+    const resolvedError = spyOn(destinationPolicy, "providerDestinationResolvedError")
+      .mockResolvedValue(null);
+    try {
+      const request = async (path: string, init?: RequestInit) => {
+        const req = new Request(`http://127.0.0.1${path}`, init);
+        return handleManagementAPI(req, new URL(req.url), liveConfig, {
+          createManagementConvergeCodex: catalogConvergenceFactory(),
+        });
+      };
+      await run(request);
+    } finally {
+      resolvedError.mockRestore();
+    }
+  }
+
+  test("POST accepts a valid upstreamHttpVersion and persists it; GET exposes it", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig = makeConfig();
+    saveConfig(liveConfig);
+    await withRequest(liveConfig, async (request) => {
+      const created = await request("/api/providers", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "h1-provider",
+          provider: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.example.test/v1",
+            upstreamHttpVersion: "http1.1",
+          },
+        }),
+      });
+      expect(created?.status).toBe(200);
+      // Live config, disk reload, and the public GET row must all carry the pin.
+      expect(liveConfig.providers["h1-provider"]?.upstreamHttpVersion).toBe("http1.1");
+      expect(loadConfig().providers["h1-provider"]?.upstreamHttpVersion).toBe("http1.1");
+      const list = await request("/api/providers");
+      expect(await list?.json()).toContainEqual(expect.objectContaining({
+        name: "h1-provider",
+        upstreamHttpVersion: "http1.1",
+      }));
+    });
+  });
+
+  test("POST rejects an invalid upstreamHttpVersion at the write boundary without persisting", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig = makeConfig();
+    saveConfig(liveConfig);
+    await withRequest(liveConfig, async (request) => {
+      const rejected = await request("/api/providers", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "bad-version",
+          provider: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.example.test/v1",
+            upstreamHttpVersion: "http3",
+          },
+        }),
+      });
+      expect(rejected?.status).toBe(400);
+      expect(await rejected?.json()).toMatchObject({
+        error: expect.stringContaining("upstreamHttpVersion"),
+      });
+      expect(loadConfig().providers["bad-version"]).toBeUndefined();
+    });
+  });
+
+  test("PATCH sets, then clears upstreamHttpVersion with live + disk persistence", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig = makeConfig();
+    saveConfig(liveConfig);
+    await withRequest(liveConfig, async (request) => {
+      const set = await request("/api/providers?name=nvidia", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ upstreamHttpVersion: "http1.1" }),
+      });
+      expect(set?.status).toBe(200);
+      expect(liveConfig.providers.nvidia?.upstreamHttpVersion).toBe("http1.1");
+      expect(loadConfig().providers.nvidia?.upstreamHttpVersion).toBe("http1.1");
+
+      const invalid = await request("/api/providers?name=nvidia", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ upstreamHttpVersion: "h3" }),
+      });
+      expect(invalid?.status).toBe(400);
+      expect(liveConfig.providers.nvidia?.upstreamHttpVersion).toBe("http1.1");
+
+      const clear = await request("/api/providers?name=nvidia", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ upstreamHttpVersion: null }),
+      });
+      expect(clear?.status).toBe(200);
+      expect(liveConfig.providers.nvidia?.upstreamHttpVersion).toBeUndefined();
+      expect(loadConfig().providers.nvidia?.upstreamHttpVersion).toBeUndefined();
+    });
+  });
+
+  test("safeConfigDTO exposes upstreamHttpVersion without leaking it into the live row", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig = makeConfig();
+    liveConfig.providers.nvidia = {
+      ...liveConfig.providers.nvidia!,
+      upstreamHttpVersion: "http1.1",
+    };
+    saveConfig(liveConfig);
+    const dto = safeConfigDTO(loadConfig()) as {
+      providers?: Record<string, Record<string, unknown>>;
+    };
+    expect(dto.providers?.nvidia?.upstreamHttpVersion).toBe("http1.1");
+  });
+
+  test("providerManagementConfigError rejects invalid upstreamHttpVersion values", () => {
+    expect(providerManagementConfigError("x", {
+      adapter: "openai-chat",
+      baseUrl: "https://api.example.test/v1",
+      upstreamHttpVersion: "http3",
+    })).toContain("upstreamHttpVersion");
+    expect(providerManagementConfigError("x", {
+      adapter: "openai-chat",
+      baseUrl: "https://api.example.test/v1",
+      upstreamHttpVersion: "http1.1",
+    })).toBeNull();
+    expect(providerManagementConfigError("x", {
+      adapter: "openai-chat",
+      baseUrl: "https://api.example.test/v1",
+      upstreamHttpVersion: 42,
+    })).toContain("upstreamHttpVersion");
+  });
+});

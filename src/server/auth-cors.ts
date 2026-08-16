@@ -16,6 +16,7 @@ import {
   retryOn429PolicyConfigError,
   requestPacingConfigError,
   sanitizeModelCostsForDisplay,
+  upstreamHttpVersionConfigError,
 } from "../config";
 import { providerDestinationConfigError } from "../lib/destination-policy";
 import { redactSecretString } from "../lib/redact";
@@ -520,6 +521,10 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
   if (requestPacingError) {
     return `provider ${JSON.stringify(redactSecretString(name))} ${requestPacingError}`;
   }
+  const upstreamHttpVersionError = upstreamHttpVersionConfigError(raw.upstreamHttpVersion);
+  if (upstreamHttpVersionError) {
+    return `provider ${JSON.stringify(redactSecretString(name))} ${upstreamHttpVersionError}`;
+  }
   const modelCostsError = providerModelCostsConfigError(raw.modelCosts);
   if (modelCostsError) {
     // The provider name is caller-controlled and can be token-shaped; redact and JSON-escape
@@ -640,6 +645,7 @@ export function safeConfigDTO(config: OcxConfig): unknown {
       "noTopPModels",
       "noPenaltyModels",
       "noStructuredOutputModels",
+      "upstreamHttpVersion",
       "autoToolChoiceOnlyModels",
       "preserveReasoningContentModels",
       "requiresReasoningPlaceholderModels",

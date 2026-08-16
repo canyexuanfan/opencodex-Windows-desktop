@@ -33,7 +33,7 @@ import {
 import { isInjectionDebugEnabled } from "../../lib/debug-settings";
 import { injectionDebugLog } from "../../lib/injection-debug-log";
 import { modelInList, namespacedToolName } from "../../types";
-import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig, OcxProviderContinuationState, OcxUsage } from "../../types";
+import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig, OcxProviderContinuationState, OcxUsage, UpstreamHttpVersion } from "../../types";
 import {
   forceRefreshOAuthAccessSnapshot,
   getOAuthCredentialApiBaseUrl,
@@ -153,9 +153,8 @@ export interface ProviderFetchOptions {
  * Bun's fetch accepts a non-standard `protocol` init to pin the HTTP version
  * (BunFetchRequestInit.protocol). The DOM lib types do not include it, so the
  * value is carried on an intersection and stripped before non-Bun callers.
+ * The accepted values are the shared UPSTREAM_HTTP_VERSION_VALUES enum from types.
  */
-export type UpstreamHttpVersion = NonNullable<OcxProviderConfig["upstreamHttpVersion"]>;
-
 const UPSTREAM_HTTP_VERSION_PROTOCOL: Record<Exclude<UpstreamHttpVersion, "auto">, string> = {
   "http1.1": "http1.1",
   h1: "h1",

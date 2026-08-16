@@ -5,7 +5,11 @@ import type { OcxProviderConfig } from "../src/types";
 const HTTPS_URL = "https://opencode.ai/zen/go/v1/chat/completions";
 const HTTP_URL = "http://127.0.0.1:10900/zen/go/v1/chat/completions";
 
-function provider(overrides: Partial<OcxProviderConfig> = {}): OcxProviderConfig {
+// OcxProviderConfig has no fetch member; the stub fetch used by the propagation
+// tests is a test-only transport override, so the helper needs an intersection.
+type TestProvider = OcxProviderConfig & { fetch?: typeof globalThis.fetch };
+
+function provider(overrides: Partial<TestProvider> = {}): TestProvider {
   return {
     adapter: "openai-chat",
     baseUrl: "https://opencode.ai/zen/go/v1",

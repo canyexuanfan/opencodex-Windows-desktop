@@ -1382,7 +1382,7 @@ export interface OcxProviderConfig {
    * "http2" / "h2" forces HTTP/2. Absent or "auto" keeps Bun's default negotiation
    * (current behavior unchanged). Only meaningful for https: base URLs.
    */
-  upstreamHttpVersion?: "auto" | "http1.1" | "h1" | "http2" | "h2";
+  upstreamHttpVersion?: UpstreamHttpVersion;
   /** Keep provider settings on disk but exclude it from routing and model/catalog listings. */
   disabled?: boolean;
   /**
@@ -1675,6 +1675,21 @@ export interface OcxProviderConfig {
    */
   nativeLocalExec?: "off" | "codex-sandbox" | "on";
 }
+
+/**
+ * Accepted values for the per-provider upstream HTTP-version pin (#1668). Shared by the
+ * zod load schema, the management write boundary (POST/PATCH), and the fetch runtime, so
+ * a value that one boundary accepts can never be rejected by another.
+ */
+export const UPSTREAM_HTTP_VERSION_VALUES = [
+  "auto",
+  "http1.1",
+  "h1",
+  "http2",
+  "h2",
+] as const;
+
+export type UpstreamHttpVersion = (typeof UPSTREAM_HTTP_VERSION_VALUES)[number];
 
 export const REASONING_SUMMARY_DELIVERY_VALUES = [
   "sequential",
