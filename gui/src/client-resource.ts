@@ -30,6 +30,8 @@ type Store<T> = {
   pauseWhenHiddenByListener: Map<() => void, boolean>;
   /** listener → fetcher owned by that subscriber */
   fetcherByListener: Map<() => void, (signal: AbortSignal) => Promise<T>>;
+  /** listener → per-attempt deadline owned by that subscriber (undefined = default) */
+  deadlineByListener: Map<() => void, number | undefined>;
   subscriberCount: number;
   pollTimer: ReturnType<typeof setInterval> | null;
   /** Currently scheduled poll interval; avoids resetting the countdown on churn. */
@@ -53,6 +55,15 @@ type Store<T> = {
  * different resource types (no runtime check — keys are an API contract).
  */
 const stores = new Map<string, Store<unknown>>();
+
+/**
+ * Per-attempt deadline for every store fetch. Endpoints documented as slow finish in
+ * ~5s; 30s leaves generous headroom. Without this a hung request wedges the store
+ * forever: poll ticks skip while inflight and no abort ever fires on its own.
+ */
+const DEFAULT_REQUEST_DEADLINE_MS = 30_000;
+/** Abort-reason sentinel distinguishing the deadline from owner aborts (replace/unmount). */
+const RESOURCE_TIMEOUT = "ocx-resource-deadline";
 
 const EMPTY_SNAPSHOT: ResourceSnapshot<never> = {
   data: undefined,
@@ -79,6 +90,7 @@ function getStore<T>(key: string): Store<T> {
       pollByListener: new Map(),
       pauseWhenHiddenByListener: new Map(),
       fetcherByListener: new Map(),
+      deadlineByListener: new Map(),
       subscriberCount: 0,
       pollTimer: null,
       pollIntervalMs: undefined,
@@ -119,13 +131,13 @@ function documentIsHidden(): boolean {
  */
 function pickPollEntry<T>(
   store: Store<T>,
-): { owner: () => void; fetcher: (signal: AbortSignal) => Promise<T> } | null {
+): { owner: () => void; fetcher: (signal: AbortSignal) => Promise<T>; deadlineMs: number | undefined } | null {
   if (!documentIsHidden()) return pickFetcherEntry(store);
   for (const [listener, ms] of store.pollByListener) {
     if (typeof ms !== "number" || ms <= 0) continue;
     if (store.pauseWhenHiddenByListener.get(listener) === false) {
       const fetcher = store.fetcherByListener.get(listener);
-      if (fetcher) return { owner: listener, fetcher };
+      if (fetcher) return { owner: listener, fetcher, deadlineMs: store.deadlineByListener.get(listener) };
     }
   }
   return null;
@@ -134,15 +146,15 @@ function pickPollEntry<T>(
 /** Prefer a polling subscriber's fetcher; otherwise any remaining subscriber. */
 function pickFetcherEntry<T>(
   store: Store<T>,
-): { owner: () => void; fetcher: (signal: AbortSignal) => Promise<T> } | null {
+): { owner: () => void; fetcher: (signal: AbortSignal) => Promise<T>; deadlineMs: number | undefined } | null {
   for (const [listener, ms] of store.pollByListener) {
     if (typeof ms === "number" && ms > 0) {
       const fetcher = store.fetcherByListener.get(listener);
-      if (fetcher) return { owner: listener, fetcher };
+      if (fetcher) return { owner: listener, fetcher, deadlineMs: store.deadlineByListener.get(listener) };
     }
   }
   for (const [listener, fetcher] of store.fetcherByListener) {
-    return { owner: listener, fetcher };
+    return { owner: listener, fetcher, deadlineMs: store.deadlineByListener.get(listener) };
   }
   return null;
 }
@@ -170,7 +182,7 @@ function recomputePoll<T>(store: Store<T>) {
     const entry = pickPollEntry(store);
     if (!entry) return;
     // Skip ticks while a request is in flight so slow polls can finish.
-    void runFetch(store, entry.fetcher, { replaceInflight: false, owner: entry.owner });
+    void runFetch(store, entry.fetcher, { replaceInflight: false, owner: entry.owner, deadlineMs: entry.deadlineMs });
   }, pollMs);
   ensureVisibilityListener(store);
 }
@@ -189,7 +201,7 @@ function ensureVisibilityListener<T>(store: Store<T>) {
     if (store.pollIntervalMs === undefined) return;
     const entry = pickFetcherEntry(store);
     if (!entry) return;
-    void runFetch(store, entry.fetcher, { replaceInflight: false, owner: entry.owner });
+    void runFetch(store, entry.fetcher, { replaceInflight: false, owner: entry.owner, deadlineMs: entry.deadlineMs });
   };
   document.addEventListener("visibilitychange", onVisible);
   store.visibilityListener = onVisible;
@@ -206,7 +218,7 @@ function removeVisibilityListener<T>(store: Store<T>) {
 async function runFetch<T>(
   store: Store<T>,
   fetcher: (signal: AbortSignal) => Promise<T>,
-  options?: { replaceInflight?: boolean; owner?: (() => void) | null; forceLoading?: boolean },
+  options?: { replaceInflight?: boolean; owner?: (() => void) | null; forceLoading?: boolean; deadlineMs?: number },
 ) {
   const replaceInflight = options?.replaceInflight !== false;
   if (store.inflight && !replaceInflight) return;
@@ -216,6 +228,21 @@ async function runFetch<T>(
   store.inflight = controller;
   store.inflightOwner = options?.owner ?? null;
   const gen = ++store.generation;
+
+  /**
+   * Every attempt has a deadline, enforced two ways at once:
+   * - the abort tells well-behaved fetchers to stop (with RESOURCE_TIMEOUT as the
+   *   reason, so the settle guard can tell the deadline apart from an owner abort);
+   * - the race settles the store even when a fetcher drops the signal entirely.
+   * Without the flag, a fallback that aborts the guarded controller would make a
+   * timeout indistinguishable from an owner abort and the store would never settle.
+   */
+  const deadlineMs = options?.deadlineMs ?? DEFAULT_REQUEST_DEADLINE_MS;
+  let timedOut = false;
+  const deadlineTimer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(RESOURCE_TIMEOUT);
+  }, deadlineMs);
 
   // Falsy cached values stay visible during polls; forceLoading is for identity changes (deps).
   // `refreshing` always rises so a slow revalidation is observable without blanking content.
@@ -228,7 +255,17 @@ async function runFetch<T>(
   emit(store);
 
   try {
-    const data = await fetcher(controller.signal);
+    const data = await Promise.race([
+      fetcher(controller.signal),
+      new Promise<never>((resolve, reject) => {
+        controller.signal.addEventListener("abort", () => {
+          if (timedOut) reject(new Error(`resource request timed out after ${deadlineMs}ms`));
+          // An owner abort frees the race frame immediately; the success guard below
+          // early-returns on signal.aborted, so this never settles data.
+          else resolve(null as never);
+        }, { once: true });
+      }),
+    ]);
     if (gen !== store.generation || controller.signal.aborted) return;
     // Cleared on settle (not at subscribe) so StrictMode's aborted first mount still revalidates.
     store.seedNeedsRevalidate = false;
@@ -241,7 +278,10 @@ async function runFetch<T>(
       lastAttemptOk: true,
     };
   } catch (error) {
-    if (gen !== store.generation || controller.signal.aborted) return;
+    if (gen !== store.generation) return;
+    // Owner aborts (replace/unmount) never settle; only the deadline and real
+    // fetcher rejections reach the failure path.
+    if (controller.signal.aborted && !timedOut) return;
     store.seedNeedsRevalidate = false;
     store.snapshot = {
       ...store.snapshot,
@@ -252,6 +292,7 @@ async function runFetch<T>(
       lastAttemptOk: false,
     };
   } finally {
+    clearTimeout(deadlineTimer);
     if (store.inflight === controller) {
       store.inflight = null;
       store.inflightOwner = null;
@@ -294,25 +335,33 @@ function scheduleStoreEviction(key: string, store: Store<unknown>) {
   }, 0);
 }
 
+/** Per-listener registration: one object instead of positional sprawl. */
+type ListenerRegistration<T> = {
+  fetcher: (signal: AbortSignal) => Promise<T>;
+  pollMs?: number;
+  pauseWhenHidden?: boolean;
+  deadlineMs?: number;
+};
+
 function subscribeResource<T>(
   key: string,
-  fetcher: (signal: AbortSignal) => Promise<T>,
-  pollMs: number | undefined,
   onStoreChange: () => void,
-  pauseWhenHidden = true,
+  registration: ListenerRegistration<T>,
 ) {
+  const { fetcher, pollMs, pauseWhenHidden = true, deadlineMs } = registration;
   const store = getStore<T>(key);
   store.listeners.add(onStoreChange);
   store.pollByListener.set(onStoreChange, pollMs);
   store.pauseWhenHiddenByListener.set(onStoreChange, pauseWhenHidden);
   store.fetcherByListener.set(onStoreChange, fetcher);
+  store.deadlineByListener.set(onStoreChange, deadlineMs);
   store.subscriberCount++;
 
   // Cold start, or a pre-subscribe seed that still needs a network check. Keep
   // cached data across transient 0→1 resubscribe gaps when neither applies.
   if (store.subscriberCount === 1) {
     if (store.snapshot.data === undefined || store.seedNeedsRevalidate) {
-      void runFetch(store, fetcher, { replaceInflight: true, owner: onStoreChange });
+      void runFetch(store, fetcher, { replaceInflight: true, owner: onStoreChange, deadlineMs });
     }
   }
   recomputePoll(store);
@@ -322,6 +371,7 @@ function subscribeResource<T>(
     store.pollByListener.delete(onStoreChange);
     store.pauseWhenHiddenByListener.delete(onStoreChange);
     store.fetcherByListener.delete(onStoreChange);
+    store.deadlineByListener.delete(onStoreChange);
     store.subscriberCount--;
     // Drop this subscriber's in-flight work so a late resolve cannot stomp shared data.
     const abortedOwned = abortInflightOwnedBy(store, onStoreChange);
@@ -333,7 +383,7 @@ function subscribeResource<T>(
     if (abortedOwned) {
       const entry = pickFetcherEntry(store);
       if (entry) {
-        void runFetch(store, entry.fetcher, { replaceInflight: true, owner: entry.owner });
+        void runFetch(store, entry.fetcher, { replaceInflight: true, owner: entry.owner, deadlineMs: entry.deadlineMs });
       }
     }
     recomputePoll(store);
@@ -356,6 +406,12 @@ export interface ClientResourceOptions<T = unknown> {
    * stay quiet while the mount fetch still quiet-revalidates via `seedNeedsRevalidate`.
    */
   initialData?: T;
+  /**
+   * Per-attempt deadline override. Default DEFAULT_REQUEST_DEADLINE_MS (30s). Raise it
+   * for endpoints documented as slow; a timed-out attempt settles failed instead of
+   * wedging the store.
+   */
+  deadlineMs?: number;
 }
 
 /** Seed an empty, unsubscribed store. No-ops when data already exists or someone is listening. */
@@ -375,6 +431,7 @@ export function useClientResource<T>(
   // Default true: a background tab has nobody reading the paint. Opt out for polls that
   // must keep running while hidden, such as waiting for a restarted server to answer.
   const pauseWhenHidden = options?.pauseWhenHidden !== false;
+  const deadlineMs = options?.deadlineMs;
   if (enabled && options?.initialData !== undefined) {
     seedClientResourceIfEmpty(key, options.initialData);
   }
@@ -396,9 +453,9 @@ export function useClientResource<T>(
     (onStoreChange: () => void) => {
       if (!enabled) return () => {};
       listenerRef.current = onStoreChange;
-      return subscribeResource(key, stableFetcher, pollMs, onStoreChange, pauseWhenHidden);
+      return subscribeResource(key, onStoreChange, { fetcher: stableFetcher, pollMs, pauseWhenHidden, deadlineMs });
     },
-    [key, stableFetcher, pollMs, enabled, pauseWhenHidden],
+    [key, stableFetcher, pollMs, enabled, pauseWhenHidden, deadlineMs],
   );
 
   const getSnapshot = useCallback((): ResourceSnapshot<T> => {
@@ -410,12 +467,16 @@ export function useClientResource<T>(
 
   const refresh = useCallback((opts?: { forceLoading?: boolean }) => {
     if (!enabled) return;
-    void runFetch(getStore<T>(key), stableFetcher, {
+    const store = getStore<T>(key);
+    void runFetch(store, stableFetcher, {
       replaceInflight: true,
       owner: listenerRef.current,
       forceLoading: opts?.forceLoading,
+      // The refreshing listener's own deadline — not a frozen option — so a shared
+      // key keeps each owner's contract.
+      deadlineMs: listenerRef.current ? store.deadlineByListener.get(listenerRef.current) : deadlineMs,
     });
-  }, [key, stableFetcher, enabled]);
+  }, [key, stableFetcher, enabled, deadlineMs]);
 
   return { ...snapshot, refresh };
 }
