@@ -2,6 +2,8 @@
 
 Head `493c7712a`. Draft, no review threads, no exact-head test CI. The roadmap's factual description of the store is accurate; its prescription is not.
 
+**Citation base:** every `src/responses/thought-signature-replay.ts` reference below is at PR #1823 head `493c7712a`, not at baseline `7c348a032` — that file does not exist on `dev`. The `src/bridge.ts`, `src/types.ts` and `src/config.ts` references are at the PR head too, since the PR edits `bridge.ts`.
+
 ## Verified defects (all three block merge)
 
 1. **Key is the client-visible `call_id` alone.** `entries: Map<string, StoredEntry>`, write `entries.set(callId, ...)`, lookup `entries.get(callId)` (`src/responses/thought-signature-replay.ts:29-33`, `:92-97`, `:129-138`). Two threads, accounts, providers or models sharing a `call_id` overwrite each other.

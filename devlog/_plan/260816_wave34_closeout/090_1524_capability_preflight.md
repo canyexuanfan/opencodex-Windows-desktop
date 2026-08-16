@@ -16,18 +16,31 @@ So a 200k-token conversation or an image-bearing request can fall back onto a ca
 
 The missing pieces are (a) an actual request-size measurement and (b) re-running the existing eligibility check at fallback time.
 
-## Fix
+## Two mechanisms, two fixes
 
-1. Populate request context size in `PolicyRequestEvidence`. The serialized request is already available at the fallback boundary; use a token estimate consistent with what the request log already computes rather than inventing a second estimator.
-2. In `policy-fallback.ts`, re-evaluate each candidate against the CURRENT request evidence instead of reusing the frozen verdict. Reuse `src/routing/evaluator.ts`'s existing context/modality rejection rather than writing a parallel check.
+There are two independent fallback paths and one change does not cover both. Splitting them is the difference between a fix and a half-fix.
+
+Also note what already works: policy routing DOES evaluate image requirements for every candidate, and every concrete retry runs `checkInputAdmission` (`src/server/responses/input-admission.ts:159`, called at `src/server/responses/core.ts:1956`) before upstream I/O. So an oversized request is not silently sent — the real defect is that an incompatible candidate TERMINATES the fallback chain instead of being skipped so the next one can be tried.
+
+### (a) Policy fallback
+
+1. Populate request context size in `PolicyRequestEvidence` (`src/routing/request-evidence.ts:36` leaves it unknown). Use the estimate the request log already computes rather than inventing a second estimator.
+2. In `policy-fallback.ts:153`, re-evaluate each candidate against the CURRENT evidence instead of reusing the frozen verdict, using the evaluator's existing context/modality rejection.
+
+### (b) Combo fallback
+
+`policy-fallback.ts` is not on this path. Combo selection needs `payloadEligible` (`src/server/responses/core.ts:1463`) extended beyond encrypted-task decryptability to consult the same capability evidence. Without this, the combo path cited in the issue is unchanged.
 3. Unknown capability is NOT a pass. When neither config, registry, catalog nor native metadata can answer, treat the candidate as ineligible for a request that requires the capability, and record the reason — the issue explicitly asks for conservative-unknown handling.
 4. Never truncate history or drop images to force a candidate to fit. If nothing is compatible, fail with a typed reason naming the constraint.
 5. Preserve quota/cooldown/priority semantics: capability is an additional filter, not a replacement ordering.
 
 ## Tests
 
-- A fallback candidate with a smaller context window than the request is skipped, and the next compatible one is used.
-- An image-bearing request skips a text-only candidate.
+Cover BOTH paths explicitly:
+
+- Policy fallback: a candidate with a smaller context window than the request is skipped and the next compatible one is used — not treated as the end of the chain.
+- Combo fallback: the same, through `payloadEligible`.
+- An image-bearing request skips a text-only candidate on both paths.
 - A candidate with unknown modality support is skipped for an image request but still usable for a text one.
 - No compatible candidate produces a typed failure naming the constraint, not a silent truncation.
 - Cooldown and prior-attempt exclusion still apply unchanged.

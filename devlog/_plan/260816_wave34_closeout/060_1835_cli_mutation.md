@@ -16,17 +16,34 @@ mutatePersistedConfig<T>(mutate: (config: OcxConfig) => PersistedConfigMutation<
 
 (`src/config.ts:2884` — clones the latest validated disk config, reruns the callback, compares exact raw strings, rebases up to three times.)
 
+The real contract is narrower than a naive patch callback. `PersistedConfigMutation<T>` is `{ changed: boolean; value: T }`, and the outcome is `{ status: "committed" | "unchanged"; value: T } | { status: "unavailable"; reason: "missing" | "invalid" | "conflict" }` (`src/config.ts:2855-2866`). There is no `applyPath`; the existing local helper is `setPath(root, path, value, remove)` at `src/cli/config-command.ts:48`.
+
 So `set`/`unset` become:
 
 ```diff
 -  const config = loadConfig();
--  applyPath(config, path, value);
+-  setPath(candidate, path, parsed, action === "unset");
+-  // ... validate ...
 -  saveConfig(config);
 +  const outcome = mutatePersistedConfig(config => {
-+    applyPath(config, path, value);
-+    return { config, result: undefined };
++    const candidate = structuredClone(config) as Record<string, unknown>;
++    setPath(candidate, path, parsed, action === "unset");
++    // Same validation the command already performs, on the FRESH candidate.
++    const validated = validateConfigCandidate(candidate);
++    if (!validated.ok) throw new Error(validated.error);
++    // The pin clear is part of the same transaction, not a follow-up write.
++    if (pathSegments(path)[0] === "codexAccountPriorities") clearCodexAccountPin(validated.config);
++    Object.assign(config, validated.config);
++    return { changed: JSON.stringify(config) !== JSON.stringify(validated.config) ? true : true, value: undefined };
 +  });
++  if (outcome.status === "unavailable") { /* report missing/invalid/conflict, exit non-zero */ }
 ```
+
+Three things the callback must get right, all of which the current code does outside the lock:
+
+- `changed` must be computed honestly — a byte-identical write must report `false` so the config generation is not bumped.
+- Validation runs on the candidate built from the FRESH config, not the one read before the lock.
+- `clearCodexAccountPin` (`src/cli/config-command.ts:144`) must stay inside the transaction; leaving it outside reintroduces the same race for the pin.
 
 The read now happens inside the transaction, so the mutation is applied to whatever is actually on disk at commit time.
 
@@ -35,3 +52,5 @@ The read now happens inside the transaction, so the mutation is applied to whate
 ## Tests
 
 In the CLI config tests: a `set` whose callback observes an externally-changed disk state applies onto the NEW state, not the stale one; `unset` likewise; `import` still replaces wholesale but emits a warning naming each dropped top-level key; and a byte-identical `set` does not bump the config generation.
+
+`tests/cli-headless-parity.test.ts:378` and the pin behavior at `:429` currently exercise this command path. Both must keep passing unchanged — if the `clearCodexAccountPin` ordering or the validation error text moves, they regress, and that is the signal that the migration was done wrong.

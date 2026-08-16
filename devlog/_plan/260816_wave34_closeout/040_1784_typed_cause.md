@@ -6,8 +6,8 @@ There is no exception type to propagate — failures are DATA. `CatalogDispositi
 
 The cause is discarded twice:
 
-1. `createManagementConvergeCodex` catches, inspects two message substrings for busy/database admission, and otherwise returns hard-coded `failed/disk` without storing the caught error (`src/codex/management-convergence.ts:52`, `:62`, `:93`).
-2. `src/server/management-api.ts:150` uses a bare `catch {}` and again manufactures `reason: "disk"`, choosing gather-vs-commit purely from whether invocation had begun.
+1. `createManagementConvergeCodex` catches, inspects two message substrings for busy/database admission, and otherwise returns hard-coded `failed/disk` without storing the caught error (`src/codex/management-convergence.ts:52`, `:62`, `:107`).
+2. `src/server/management-api.ts:177` uses a bare `catch {}` and again manufactures `reason: "disk"`, choosing gather-vs-commit purely from whether invocation had begun.
 
 Tests pin both collapses (`tests/codex-management-convergence.test.ts:67`, `tests/codex-convergence-contract.test.ts:303`).
 
@@ -32,8 +32,23 @@ Extend the disposition rather than inventing the roadmap's `CatalogConvergenceEr
 - `internal` for anything genuinely unclassified — explicitly not `disk`.
 - `disk` narrows to real filesystem failures.
 
-Populate `cause` from the caught error at both sites, passing it through `redactSecretString` so nothing operator-controlled leaks into a management response.
+### The normalization boundary must be updated too
+
+`normalizeCatalogDisposition` (`src/codex/catalog-refresh-status.ts:42`) is an explicit privacy boundary: it rebuilds the disposition from an allowlist of own data properties precisely so a malformed callback cannot smuggle provider or account detail into a management response. Adding `reason` values or a `cause` field without updating that allowlist means the new information is silently dropped — the plan would look implemented and change nothing.
+
+So: extend the allowlist with the new reasons AND with `cause`, and update its exhaustive disposition matrix plus `tests/codex-catalog-refresh-status.test.ts`.
+
+### `cause` must be a bounded summary, not an error message
+
+Passing `Error.message` through `redactSecretString` is NOT sufficient. That helper masks token-shaped values; it does not remove filesystem paths, home directories, account ids or hostnames, all of which routinely appear in an error message and all of which this boundary exists to keep out.
+
+Build `cause` from bounded, non-sensitive parts instead:
+
+- `name`: the error constructor name, which is a fixed vocabulary.
+- `detail`: a short allowlisted summary — an errno/code when present, otherwise a fixed phrase per branch. Never the raw message.
+
+If a branch cannot produce a safe summary, omit `cause` entirely. The point of the change is that `request-invalid` is distinguishable from `disk`; the free-text message is not required for that.
 
 ## Tests
 
-Update the two pinning tests to assert the NEW classification rather than `disk`, and add: a malformed scope yields `request-invalid` with a cause; a simulated lock-busy yields `admission` with `retryable: true`; a simulated write failure still yields `disk`; and a token-shaped string inside an error message does not survive into the response.
+Update the two pinning tests to assert the NEW classification rather than `disk`, update the disposition matrix in `tests/codex-catalog-refresh-status.test.ts`, and add: a malformed scope yields `request-invalid`; a simulated lock-busy yields `admission` with `retryable: true`; a simulated write failure still yields `disk`; and an error whose message embeds a home path plus a token-shaped string produces a response containing neither.

@@ -18,7 +18,9 @@ So the PR could pass while the real catalog either exceeds the budget or drops t
 
 ## Required test
 
-Build the advertised catalog the way a real Cursor-routed subagent turn does, run it through `applyCursorToolBudget`, and assert:
+**Constructibility caveat first.** OpenCodex does not build Codex's host-advertised `exec`/`wait` catalog; `src/responses/parser.ts:647` consumes whatever tools the client supplied. So the test cannot synthesize the real catalog from repository code — it must start from a captured fixture of a real Cursor-routed subagent request, committed as test data, or from an explicit boundary seam added for the purpose.
+
+With that fixture, parse it the way a real turn does, build the request through `createCursorRequest`, and assert:
 
 1. serialized size `<= CURSOR_TOOL_BYTES_LIMIT`;
 2. a Responses-owned execution tool survives the budget — `exec` (or the bridge equivalent) is still present;
@@ -26,6 +28,8 @@ Build the advertised catalog the way a real Cursor-routed subagent turn does, ru
 4. the search flag this PR sets is on the entry that actually reaches the wire.
 
 Assert against the SERIALIZED form, not the pre-budget array, or the test proves nothing about what the child receives.
+
+The live Cursor child check stays a SEPARATE functional acceptance gate. The byte test proves the catalog survives the budget; only a real child performing a read-only task proves the execution path works.
 
 ## Close-out
 

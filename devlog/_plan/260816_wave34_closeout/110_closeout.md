@@ -11,9 +11,17 @@
 7. `070` #1823 — scoped signature replay.
 8. `080` #1830 — catalog serialization evidence (PR #1832).
 9. `090` #1524 — capability preflight.
-10. `100` #1686 / #1049 / #1798 — one cycle each, security review for #1686.
+10. `100` #1686 — bearer admission + guaranteed substitution. Security review required.
+11. `101` #1049 — legacy home adoption. AFTER `100`.
+12. `102` #1798 — restore three-way merge. AFTER `101`.
 
-One decade doc per PABCD work-phase. Units touching the same file are sequenced, not parallel: `040` and `050` both sit in the Codex account/catalog area, and `030`/`050` both touch `src/codex/` quota-adjacent paths.
+One decade doc per PABCD work-phase — which is why the three large units are `100`, `101` and `102` rather than one document.
+
+Units touching the same file are sequenced, not parallel:
+
+- `100`, `101` and `102` ALL edit `src/codex/inject.ts`; they run strictly in that order, each rebased onto the previous.
+- `030`, `040` and `050` all sit in the Codex account/catalog area (`src/codex/routing.ts`, `quota.ts`, convergence); run them in listed order.
+- `060` edits `src/cli/config-command.ts` and `090` edits `src/server/responses/core.ts`; neither overlaps the above.
 
 ## Gates
 

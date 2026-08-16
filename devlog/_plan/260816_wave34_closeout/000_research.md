@@ -23,15 +23,15 @@ The roadmap opens with a public-dev convergence gate because it saw Wave 2 PRs s
 
 - `DataPlaneAdmission` DOES exist (`src/server/auth-cors.ts:314`) as `configured\|environment\|loopback`. It is credential-identity-aware but NOT presentation-source-aware — it does not record whether the token arrived as dedicated header, bearer, or `x-api-key`.
 - A fresh-disk, field-scoped mutation primitive already exists: `mutatePersistedConfig<T>()` at `src/config.ts:2884`, with rebase-up-to-3-times and exact-raw-string comparison.
-- A baseline/live/persisted three-way merge already exists: `saveConfigPreservingClaudeCode` at `src/config.ts:3132`, though its baseline is armed only for long-lived server instances (`src/server/index.ts:556`), so unarmed CLI calls get lock + atomic write but no rebase.
-- Real latency IS measured — but only inside `healthScore()` at `src/routing/health.ts:323`, scaled by `optimize.health`, never by `optimize.latency`.
+- A baseline/live/persisted three-way merge already exists: `saveConfigPreservingClaudeCode` at `src/config.ts:3264`, though its baseline is armed only for long-lived server instances (`src/server/index.ts:556`), so unarmed CLI calls get lock + atomic write but no rebase.
+- Real latency IS measured — but only inside `healthScore()` at `src/routing/health.ts:386`, scaled by `optimize.health`, never by `optimize.latency`.
 
 ## The security claim is wrong, and that matters
 
 The roadmap asserts a direct main path forwards the caller's admission secret upstream. Traced at this SHA, that is **not** reachable:
 
 - `/v1/responses` admission reads ONLY `x-opencodex-api-key`; bearer is rejected (`src/server/auth-cors.ts:441`, pinned by `tests/data-plane-admission-identity.test.ts:116`).
-- Direct then runs `validateForwardAdmissionCredential` BEFORE upstream auth resolution and throws 401 on a recognized proxy secret (`src/server/responses/core.ts:970`, `src/server/auth-cors.ts:392`).
+- Direct then runs `validateForwardAdmissionCredential` BEFORE upstream auth resolution and throws 401 on a recognized proxy secret (`src/server/responses/core.ts:970`; the validator executes at `src/server/auth-cors.ts:407`).
 - Pool/main-pool overwrite Authorization with the stored account token (`src/codex/auth-context.ts:460`), proven by `tests/server-auth.test.ts:1543`.
 
 A caller bearer IS forwarded in Direct, but only under canonical `authMode: "forward"` — intentional passthrough, not a leak.
@@ -49,7 +49,7 @@ So #1686 is real for the OPPOSITE reason the roadmap gives: the proxy **refuses*
 | `#1798` | W3-08 | Real. Restore is exact-byte restore-or-strip; an app-rewritten unmarked `openai_base_url` survives because ownership requires the marker (`src/codex/injected-marker.ts:53`, `src/codex/inject.ts:1193`). |
 | `#1789` | W3-09 | Real. 403 → `credential` → `markAccountNeedsReauth` unconditionally (`src/codex/routing.ts:330`, `:1678`); a test PINS it (`tests/codex-routing.test.ts:377`). |
 | `#1791` | W3-10 | Real. Storage is fixed `weeklyPercent`/`monthlyPercent`, not window-generic (`src/codex/quota.ts:7`); a 5-hour primary + 7-day secondary loses the true weekly window (`:439`). |
-| `#1784` | W3-12 | Real. Cause discarded twice: `src/codex/management-convergence.ts:93` and `src/server/management-api.ts:150` both manufacture `reason: "disk"`. |
+| `#1784` | W3-12 | Real. Cause discarded twice: `src/codex/management-convergence.ts:107` and `src/server/management-api.ts:177` both manufacture `reason: "disk"`. |
 | `#1834` | W3-13 | CLOSED not_planned (template), refiled as **`#1837`**. Real: evaluator reads only health/quota/cost (`src/routing/evaluator.ts:397`); `components.latency` is never populated. |
 | `#1830` | W4-03 | Real, and PR #1832 is CI-green but its evidence is thin — no test builds the real advertised catalog and asserts the 120KB budget with `exec`/`wait` present. |
 | `#1524` | W4-08 | Real. Fallback reuses frozen eligibility (`src/server/responses/policy-fallback.ts:153`); `payloadEligible` checks only encrypted-task decryptability (`src/server/responses/core.ts:1463`). |
@@ -79,4 +79,3 @@ Ordered by (real user impact) / (implementation risk), landing smallest-first:
 8. `#1830` — real catalog serialization evidence.
 9. `#1524` — capability preflight in fallback.
 10. `#1686`, `#1049`, `#1798` — the three large ones, each its own cycle.
-
