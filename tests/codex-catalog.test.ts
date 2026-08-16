@@ -2793,7 +2793,11 @@ describe("Codex catalog routed normalization", () => {
     expect(nativeOpenAiContextWindow("gpt-5.4", 272_000)).toBe(272_000);
   });
 
-  test("account-scoped Daybreak Blue inherits Sol capabilities without expanding the bare allowlist", () => {
+  // Owner decision (devlog 260816_.../011 §4-bis): Daybreak Blue is now a GLOBALLY
+  // allowlisted native, so a bare row IS expected. It still inherits Sol's capability
+  // shape, and the overlap between NATIVE_OPENAI_MODELS and
+  // NATIVE_OPENAI_CAPABILITY_ALIAS_MODELS must not duplicate any row.
+  test("Daybreak Blue inherits Sol capabilities and ships one bare row plus one row per selector", () => {
     expect(NATIVE_DAYBREAK_BLUE_MODEL).toBe("gpt-daybreak-blue-latest");
     expect(nativeOpenAiCapabilitySourceSlug(NATIVE_DAYBREAK_BLUE_MODEL)).toBe("gpt-5.6-sol");
     expect(nativeOpenAiContextWindow(NATIVE_DAYBREAK_BLUE_MODEL)).toBe(372_000);
@@ -2821,6 +2825,7 @@ describe("Codex catalog routed normalization", () => {
     expect((source?.model_messages as { instructions_template?: string })?.instructions_template)
       .toContain("powered by the gpt-daybreak-blue-latest");
 
+    // NATIVE_OPENAI_MODELS already contains the slug; passing it again would double it.
     const projected = buildCatalogEntries(
       nativeTemplate(),
       NATIVE_OPENAI_MODELS,
@@ -2833,8 +2838,8 @@ describe("Codex catalog routed normalization", () => {
       new Set(),
       new Set(),
       undefined,
-      [...NATIVE_OPENAI_MODELS, NATIVE_DAYBREAK_BLUE_MODEL],
-      new Map([["main", [...NATIVE_OPENAI_MODELS, NATIVE_DAYBREAK_BLUE_MODEL]]]),
+      [...NATIVE_OPENAI_MODELS],
+      new Map([["main", [...NATIVE_OPENAI_MODELS]]]),
     );
     const daybreak = projected.find(entry => entry.slug === `main/${NATIVE_DAYBREAK_BLUE_MODEL}`);
     const sol = projected.find(entry => entry.slug === "gpt-5.6-sol");
@@ -2849,7 +2854,11 @@ describe("Codex catalog routed normalization", () => {
       supports_parallel_tool_calls: sol?.supports_parallel_tool_calls,
       input_modalities: sol?.input_modalities,
     });
-    expect(projected.some(entry => entry.slug === NATIVE_DAYBREAK_BLUE_MODEL)).toBe(false);
+    // The bare row now exists (owner decision) and appears exactly once, proving the
+    // two-list overlap does not duplicate it.
+    expect(projected.filter(entry => entry.slug === NATIVE_DAYBREAK_BLUE_MODEL)).toHaveLength(1);
+    expect(projected.filter(entry => entry.slug === `main/${NATIVE_DAYBREAK_BLUE_MODEL}`)).toHaveLength(1);
+    // The separately billed API-key alias must still never appear on the Codex surface.
     expect(projected.some(entry => entry.slug === "daybreak-blue-latest")).toBe(false);
   });
 

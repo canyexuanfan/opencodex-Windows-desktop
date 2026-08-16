@@ -355,7 +355,7 @@ test("convergence drops unsupported bare native rows and never qualifies them", 
     ))).toBe(true);
 });
 
-test("convergence preserves an observed account-only native id without creating a bare row", async () => {
+test("convergence projects the observed Daybreak row onto its selector and one bare row", async () => {
   writeCatalog([nativeEntry()]);
   writeFileSync(join(codexHome, "models_cache.json"), JSON.stringify({
     models: [{
@@ -388,8 +388,12 @@ test("convergence preserves an observed account-only native id without creating 
   });
   expect((daybreak?.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort))
     .toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
-  expect(models.some(entry => entry.slug === "team/gpt-daybreak-blue-latest")).toBe(false);
-  expect(models.some(entry => entry.slug === "gpt-daybreak-blue-latest")).toBe(false);
+  // Daybreak is globally allowlisted (owner decision, devlog 260816_.../011). A global
+  // native is seeded onto EVERY visible selector, not only the one that observed it, and the
+  // bare row now exists. Each must appear exactly once despite the observation also present.
+  expect(models.filter(entry => entry.slug === "team/gpt-daybreak-blue-latest")).toHaveLength(1);
+  expect(models.filter(entry => entry.slug === "desktop/gpt-daybreak-blue-latest")).toHaveLength(1);
+  expect(models.filter(entry => entry.slug === "gpt-daybreak-blue-latest")).toHaveLength(1);
 });
 
 test("convergence preserves unrelated foreign rows alongside fresh configured provider rows", async () => {

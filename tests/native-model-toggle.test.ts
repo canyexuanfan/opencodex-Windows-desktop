@@ -142,15 +142,18 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     expect(entries.every(entry => Number.isInteger(entry.priority))).toBe(true);
   });
 
+  // gpt-daybreak-blue-latest is now a GLOBALLY allowlisted native (owner decision, devlog
+  // 260816_.../011), so it is no longer an "unknown observed id" and cannot stand in for one
+  // here. gpt-future-unlisted plays that role instead; the invariant under test is unchanged.
   test("observed account-only native ids stay qualified and do not expand the bare set", () => {
     const observedEntries = [
-      { ...nativeTemplate(), slug: "gpt-daybreak-blue-latest", visibility: "list", supported_in_api: true },
-      { ...nativeTemplate(), slug: "gpt-hidden-daybreak", visibility: "hide", supported_in_api: true },
+      { ...nativeTemplate(), slug: "gpt-future-unlisted", visibility: "list", supported_in_api: true },
+      { ...nativeTemplate(), slug: "gpt-hidden-future", visibility: "hide", supported_in_api: true },
       { ...nativeTemplate(), slug: "gpt-not-an-api-model", visibility: "list", supported_in_api: false },
-      { ...nativeTemplate(), slug: "provider/gpt-daybreak-blue-latest", visibility: "list", supported_in_api: true },
+      { ...nativeTemplate(), slug: "provider/gpt-future-unlisted", visibility: "list", supported_in_api: true },
     ];
-    expect(accountBoundNativeOpenAiSlugs(observedEntries)).toContain("gpt-daybreak-blue-latest");
-    expect(accountBoundNativeOpenAiSlugs(observedEntries)).not.toContain("gpt-hidden-daybreak");
+    expect(accountBoundNativeOpenAiSlugs(observedEntries)).toContain("gpt-future-unlisted");
+    expect(accountBoundNativeOpenAiSlugs(observedEntries)).not.toContain("gpt-hidden-future");
     expect(accountBoundNativeOpenAiSlugs(observedEntries)).not.toContain("gpt-not-an-api-model");
 
     const entries = buildCatalogEntries(
@@ -167,25 +170,46 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
       undefined,
       accountBoundNativeOpenAiSlugs(observedEntries),
     );
-    expect(entries.find(entry => entry.slug === "gpt-daybreak-blue-latest")).toBeUndefined();
-    expect(entries.find(entry => entry.slug === "team/gpt-daybreak-blue-latest")).toMatchObject({
+    expect(entries.find(entry => entry.slug === "gpt-future-unlisted")).toBeUndefined();
+    expect(entries.find(entry => entry.slug === "team/gpt-future-unlisted")).toMatchObject({
       opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
       visibility: "list",
     });
 
     expect(observedAccountBoundNativeEntries([{
       ...nativeTemplate(),
-      slug: "gpt-daybreak-blue-latest",
+      slug: "gpt-future-unlisted",
       visibility: "hide",
       supported_in_api: true,
       opencodex_account_observed_native: true,
     }])).toHaveLength(1);
-    expect(observedAccountBoundNativeOpenAiSlugs(observedEntries)).toEqual(["gpt-daybreak-blue-latest"]);
+    expect(observedAccountBoundNativeOpenAiSlugs(observedEntries)).toEqual(["gpt-future-unlisted"]);
+  });
+
+  test("gpt-daybreak-blue-latest ships as a global native row without an observation", () => {
+    const entries = buildCatalogEntries(
+      nativeTemplate(),
+      [...NATIVE_OPENAI_MODELS],
+      [],
+      [],
+      false,
+      "default",
+      new Set(),
+      [],
+      new Set(),
+      new Set(),
+    );
+    const bare = entries.filter(entry => entry.slug === "gpt-daybreak-blue-latest");
+    // Exactly one row: the slug sits in BOTH NATIVE_OPENAI_MODELS and
+    // NATIVE_OPENAI_CAPABILITY_ALIAS_MODELS, and that overlap must not duplicate it.
+    expect(bare).toHaveLength(1);
+    // Capability is inherited from gpt-5.6-sol, so it is a recursive-capable v2 delegate.
+    expect(bare[0]?.multi_agent_version).toBe("v2");
   });
 
   test("a minimal hand-edited cache row is ignored", () => {
-    const handEdited = [{ slug: "gpt-daybreak-blue-latest", visibility: "list", supported_in_api: true }];
-    expect(accountBoundNativeOpenAiSlugs(handEdited)).not.toContain("gpt-daybreak-blue-latest");
+    const handEdited = [{ slug: "gpt-future-unlisted", visibility: "list", supported_in_api: true }];
+    expect(accountBoundNativeOpenAiSlugs(handEdited)).not.toContain("gpt-future-unlisted");
     expect(observedAccountBoundNativeEntries(handEdited)).toEqual([]);
   });
 
