@@ -84,6 +84,22 @@ describe("collectCodexAppServerCatalogState (#857)", () => {
     expect(status.state).toBe("not_running");
   });
 
+  // The extraction that made the sentinel testable also silently dropped `owner` on
+  // its first pass, and nothing failed — the field feeds ownership decisions elsewhere,
+  // not the two states these tests assert. Pin the whole parsed row so a refactor of the
+  // parse loop cannot quietly lose a field again.
+  test("parsed rows keep every field the enumeration reports", () => {
+    const rows = parseWindowsSnapshotOutput([
+      "4321\tC:\\Program Files\\codex\\codex.exe app-server\tCONTOSO\\jun",
+      "",
+      "1\tinit\tCONTOSO\\jun",
+      "9999\tcodex app-server\t",
+    ].join("\r\n"));
+    expect(rows).toEqual([
+      { pid: 4321, commandLine: "C:\\Program Files\\codex\\codex.exe app-server", owner: "CONTOSO\\jun" },
+    ]);
+  });
+
   test("enumeration failure reports unknown, never not_running", () => {
     // On macOS the win32 enumeration path has no powershell.exe → it throws,
     // which must surface as unknown rather than "nothing is running".
