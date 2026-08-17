@@ -237,13 +237,30 @@ for (const mutator of mutators) {
     );
 
     expect(readFileSync(path, "utf8")).toBe("new bytes\n");
-    // Windows exposes synthesized POSIX mode bits, so stat cannot prove that chmod took effect.
-    // The recorded harden call still proves every mutator requested the permission transition.
-    expect(effects.some(effect => effect.startsWith("harden:"))).toBe(true);
     if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(readdirSync(targetDir).filter(name => name.endsWith(".tmp"))).toEqual([]);
-    expect(effects.some(effect => effect.startsWith("temp:"))).toBe(true);
-    expect(effects.some(effect => effect.startsWith(isBackup ? "publish:" : "rename:"))).toBe(true);
+
+    // Bind the three effects to ONE temp path, and to each other in order.
+    //
+    // Unbound `some()` checks — "a temp was written, something was hardened, something
+    // was published" — hold even when the three touch different files, which is the
+    // failure they exist to catch. Windows makes that the only available proof:
+    // `chmodSync` there moves the read-only flag alone and `statSync` keeps reporting
+    // 0o666, so real restriction comes from the per-user NTFS ACL, not from a mode.
+    //
+    // Order matters as much as membership. Hardening lands on the temp file and
+    // publishing moves that already-restricted file into place; if publish ran first,
+    // the destination would sit world-readable for the width of the gap. A set-membership
+    // assertion passes for that writer too, so the index comparison is what makes this a
+    // claim about the race rather than about the call list.
+    const tempEffect = effects.find(effect => effect.startsWith("temp:"));
+    expect(tempEffect).toBeDefined();
+    const tempPath = tempEffect!.slice("temp:".length);
+    const hardenIndex = effects.indexOf(`harden:${tempPath}`);
+    const publishIndex = effects.indexOf(`${isBackup ? "publish" : "rename"}:${tempPath}->${path}`);
+    expect(hardenIndex).toBeGreaterThanOrEqual(0);
+    expect(publishIndex).toBeGreaterThanOrEqual(0);
+    expect(hardenIndex).toBeLessThan(publishIndex);
     if (isBackup) expect(result).toBe("written");
   });
 }
