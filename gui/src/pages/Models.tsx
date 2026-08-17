@@ -49,6 +49,8 @@ import {
   collectDisabledNamespaced,
   CUSTOM_OPTION,
   fmtK,
+  NATIVE_CAP_OPTIONS,
+  NATIVE_CAP_OPTION_SET,
   PAGE,
   readCollapsedProviders,
   THREAD_OPTION_SET,
@@ -1000,7 +1002,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
   const selectedModelMap = selectedModels ?? {};
 
   const renderGroup = (group: ProviderModelGroup<ModelRow>) => {
-    const { provider, rows, native, liveModels, discovery } = group;
+    const { provider, rows, nativeProviderGroup, liveModels, discovery } = group;
     const isCollapsed = collapsed.has(provider);
     // Final visibility, not just the disable flag: a model is visible to Codex only when the
     // provider allowlist admits it AND it is not disabled. Reading `disabled` alone made the
@@ -1015,7 +1017,11 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
     const activeCount = rows.filter(isVisible).length;
     const capOn = contextCaps[provider] !== undefined;
     const providerCap = contextCaps[provider] ?? contextCapValue;
-    const isNative = native;
+    // The native group offers only the three windows GPT-5.6 actually has contracts for
+    // (272k live, 372k legacy, 1.05M measured); routed providers keep the generic ladder.
+    // The set has to follow the list, or a saved value outside it loses its option.
+    const capOptions = group.nativeProviderGroup ? NATIVE_CAP_OPTIONS : CAP_OPTIONS;
+    const capOptionSet = group.nativeProviderGroup ? NATIVE_CAP_OPTION_SET : CAP_OPTION_SET;
     const discoveryFailure = liveModels && discovery?.status === "failed" ? discovery : undefined;
     const q = (search[provider] ?? "").trim().toLowerCase();
     const filtered = q ? rows.filter(m => m.id.toLowerCase().includes(q)) : rows;
@@ -1053,7 +1059,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
           >
           <IconChevron style={{ width: 14, height: 14, color: "var(--muted)", transform: isCollapsed ? "none" : "rotate(90deg)", transition: "transform .12s" }} />
           <span className="text-body font-semibold">{providerDisplaySlug(provider)}</span>
-          {isNative && <span className="models-chip muted mono text-caption">{t("models.nativeGroupLabel")}</span>}
+          {nativeProviderGroup && <span className="models-chip muted mono text-caption">{t("models.nativeGroupLabel")}</span>}
          {discoveryFailure && (
            <span
              className="badge badge-amber"
@@ -1066,7 +1072,9 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
           <span className="muted mono text-label">{t("models.active", { active: activeCount, total: rows.length })}</span>
           </button>
            <div className="row models-provider-actions">
-             {!isNative && (
+             {/* The context-window modal saves through PATCH /api/providers, which the canonical
+                 `openai` seed check rejects. The native group gets the cap select below instead. */}
+             {!nativeProviderGroup && (
                <button
                  type="button"
                  className="btn btn-ghost btn-sm text-caption"
@@ -1074,13 +1082,13 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
                  aria-haspopup="dialog"
                >{t("models.contextSettings")}</button>
              )}
-             {!isNative && (
-               <button
-                 type="button"
-                 className="btn btn-ghost btn-sm text-caption"
-                 onClick={(e) => {
-                   e.stopPropagation();
-                   setCustomModalMode("add");
+             {
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm text-caption"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setCustomModalMode("add");
                    setCustomModalProvider(provider);
                    setCustomModalId("");
                    setCustomFormModelId("");
@@ -1094,13 +1102,13 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
                    setCustomError("");
                    setCustomModalOpen(true);
                  }}
-                 aria-label={t("models.customAdd")}
-                 aria-haspopup="dialog"
-               >+</button>
-             )}
+                aria-label={t("models.customAdd")}
+                aria-haspopup="dialog"
+              >+</button>
+             }
              <button type="button" className="btn btn-ghost btn-sm text-caption" disabled={busy || allOn} onClick={() => bulkToggle(true)}>{t("models.allOn")}</button>
              <button type="button" className="btn btn-ghost btn-sm text-caption" disabled={busy || allOff} onClick={() => bulkToggle(false)}>{t("models.allOff")}</button>
-             {!isNative && <>
+             <>
                <Switch on={capOn} onClick={() => toggleProviderCap(provider)} disabled={busy} label={t("models.capValue", { value: fmtK(providerCap) })} />
                {capOn && (
                  <>
@@ -1109,13 +1117,13 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
                      // (inserted below), so select it instead of falling back to "Custom";
                      // otherwise the trigger hides the persisted 128k value behind the
                      // custom-editor label.
-                     value={providerCapCustomOpen[provider] ? CUSTOM_OPTION : String(providerCap)}
-                     options={[
-                       ...(!CAP_OPTION_SET.has(providerCap) && !providerCapCustomOpen[provider]
-                         ? [{ value: String(providerCap), label: fmtK(providerCap) }] : []),
-                       ...CAP_OPTIONS.map(v => ({ value: String(v), label: fmtK(v) })),
-                       { value: CUSTOM_OPTION, label: t("models.custom") },
-                     ]}
+                    value={providerCapCustomOpen[provider] ? CUSTOM_OPTION : String(providerCap)}
+                    options={[
+                      ...(!capOptionSet.has(providerCap) && !providerCapCustomOpen[provider]
+                        ? [{ value: String(providerCap), label: fmtK(providerCap) }] : []),
+                      ...capOptions.map(v => ({ value: String(v), label: fmtK(v) })),
+                      { value: CUSTOM_OPTION, label: t("models.custom") },
+                    ]}
                      onChange={v => onSelectProviderCap(provider, v)}
                      disabled={busy}
                      label={t("models.capValue", { value: fmtK(providerCap) })}
@@ -1138,12 +1146,12 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
                    )}
                  </>
                )}
-             </>}
+             </>
            </div>
         </div>
         {!isCollapsed && (
           <div className="models-provider-body">
-            {isNative && <p className="muted text-label models-provider-hint">{t("models.nativeHint")}</p>}
+            {nativeProviderGroup && <p className="muted text-label models-provider-hint">{t("models.nativeHint")}</p>}
             {rows.length === 0 && (
               <EmptyProviderHint liveModels={liveModels} discovery={discovery} showFailureBadge={false} />
             )}

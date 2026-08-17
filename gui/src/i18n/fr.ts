@@ -492,7 +492,7 @@ export const fr: Record<TKey, string> = {
   "models.subtitle.routing": "Profils de stratégie, évaluation à blanc et analyses de routage fondées sur les sources.",
   "models.subtitle": "Choisissez les modèles visibles par Codex — accès direct aux GPT natifs et fournisseurs routés, regroupés par fournisseur (cliquez sur un en-tête pour le réduire). Les modèles masqués sont retirés du catalogue et du sélecteur, mais restent directement accessibles par leur identifiant exact. Les modifications s’appliquent au prochain tour Codex — opencodex invalide le cache de modèles de Codex de 5 min, sans nécessiter de redémarrage.",
   "models.nativeGroupLabel": "OpenAI natif",
-  "models.nativeHint": "Les modèles en accès direct utilisent l’option de compte Groupe ou Direct sélectionnée dans Fournisseurs. La désactivation d’un modèle le masque dans le sélecteur Codex (son entrée de catalogue est conservée afin que sa réactivation la restaure à l’identique).",
+  "models.nativeHint": "Les modèles en accès direct utilisent l’option de compte Groupe ou Direct sélectionnée dans Fournisseurs. La désactivation d’un modèle le masque dans le sélecteur Codex (son entrée de catalogue est conservée afin que sa réactivation la restaure à l’identique). Ajouter un modèle ici enregistre un sélecteur routé `openai/<model>`, et non un nouvel identifiant passthrough brut.",
   "models.active": "{active}/{total} visibles",
   "models.workspace.providers": "Fournisseurs",
   "models.workspace.allProviders": "Tous les fournisseurs",
