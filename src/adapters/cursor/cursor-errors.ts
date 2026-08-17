@@ -56,9 +56,18 @@ export class CursorStreamTruncatedError extends Error {
  * that failed unexpectedly would report an intentional suspension and misdirect diagnosis.
  */
 export class CursorUnexpectedCancelError extends Error {
+  /**
+   * The originating error's transport code (typically `NGHTTP2_CANCEL`), re-exposed so the
+   * per-turn `turn-failed` diagnostic still records how the stream actually died. Wrapping
+   * without this made the summary for exactly this failure the one with no code.
+   */
+  public readonly code?: string;
+
   constructor(public readonly cause?: unknown) {
     super("Cursor connection was cancelled by the server before the turn completed");
     this.name = "CursorUnexpectedCancelError";
+    const causeCode = errorCode(cause);
+    if (causeCode) this.code = causeCode;
   }
 }
 

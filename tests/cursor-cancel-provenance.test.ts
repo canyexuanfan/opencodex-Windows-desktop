@@ -126,4 +126,13 @@ describe("isCursorBenignCancelError provenance", () => {
     const classified = classifyCursorError(new CursorUnexpectedCancelError().message);
     expect(classified).not.toBe("Cursor stream suspended");
   });
+
+  test("the wrapper keeps the originating transport code for diagnostics", () => {
+    // Wrapping must not blind the per-turn `turn-failed` summary for exactly the failure it
+    // exists to explain: without this the one diagnostic that matters has no error code.
+    const wrapped = new CursorUnexpectedCancelError(cancelError());
+    expect((wrapped as { code?: string }).code).toBe("NGHTTP2_CANCEL");
+    // Carrying the code must NOT make it benign again — provenance still wins.
+    expect(isCursorBenignCancelError(wrapped)).toBe(false);
+  });
 });
