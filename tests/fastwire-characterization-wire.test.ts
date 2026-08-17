@@ -228,12 +228,13 @@ describe("FastWire characterization: known bugs", () => {
     expect(body.service_tier).toBe("flex");
   });
 
-  test("characterization (known bug): chat-to-responses conversion drops service_tier", () => {
+  test("characterization: chat-to-responses conversion preserves service_tier", () => {
+    // FastWire #1886 chat-tier-copy bug-fix unit flips the A0 known-bug characterization.
     const body = chatCompletionsToResponsesBody({
       model: "model",
       messages: [{ role: "user", content: "ping" }],
       service_tier: "priority",
     });
-    expect(body).not.toHaveProperty("service_tier");
+    expect(body.service_tier).toBe("priority");
   });
 });
