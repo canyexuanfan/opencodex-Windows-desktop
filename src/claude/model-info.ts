@@ -156,11 +156,19 @@ export function buildAnthropicModelInfos(
     seen.add(id);
     const ladder = Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts : [];
     const imageInput = Array.isArray(m.inputModalities) ? m.inputModalities.includes("image") : false;
-    const info = modelInfo(id, `${m.id} (${m.provider})`, ladder, imageInput, m.contextWindow);
+    // max_input_tokens is an input limit, so a row that publishes a lower input ceiling than
+    // its window (native GPT-5.6 forwarded through a provider: 922k under 1.05M) reports the
+    // ceiling. Rows without one keep reporting the window, as before.
+    const routedMaxInput = typeof m.maxInputTokens === "number" && m.maxInputTokens > 0
+      ? (typeof m.contextWindow === "number" && m.contextWindow > 0
+        ? Math.min(m.maxInputTokens, m.contextWindow)
+        : m.maxInputTokens)
+      : undefined;
+    const info = modelInfo(id, `${m.id} (${m.provider})`, ladder, imageInput, routedMaxInput ?? m.contextWindow);
     out.push(info);
     // Anthropic passthrough guard (audit 021 #3): never auto-widen canonical claude
     // routes — only a genuine >=1M window earns the variant row there.
-    push1mVariant(info, m.contextWindow);
+    push1mVariant(info, m.contextWindow, routedMaxInput);
   }
   return out;
 }

@@ -207,6 +207,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
         current.apiKeys?.[0]?.key,
         "static",
         current.claudeCode.desktopProfile,
+        providerContextCap(current, OPENAI_CODEX_PROVIDER_ID),
       );
       if (result.written && result.fingerprint) {
         current.claudeCode = { ...current.claudeCode, desktopProfile: { ...current.claudeCode.desktopProfile, appliedFingerprint: result.fingerprint, appliedAt: new Date().toISOString() } };
@@ -885,6 +886,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
         latest.apiKeys?.[0]?.key,
         mode,
         state.profile,
+        providerContextCap(latest, OPENAI_CODEX_PROVIDER_ID),
       );
       if (!result.written) return jsonResponse({ error: result.reason ?? "Claude Desktop apply failed", saved: true, path: result.path }, 500);
       // Persist applied fingerprint + timestamp so GUI can show saved-vs-applied state.

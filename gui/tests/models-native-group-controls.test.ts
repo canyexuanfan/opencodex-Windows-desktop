@@ -50,6 +50,19 @@ test("fmtK renders past a million as M, not as four-digit k", () => {
   expect(fmtK(350_000)).toBe("350k");
 });
 
+test("the native group keeps its window readable with the cap switched off", async () => {
+  const src = await Bun.file(new URL("../src/pages/Models.tsx", import.meta.url)).text();
+  // Routed providers hide the value when the cap is off (off = "no opinion"), but a native
+  // row always advertises some window, so the number stays on screen for that group.
+  expect(src).toContain("{(capOn || nativeProviderGroup) && (");
+  // With the cap off the stored value is only what a future toggle would apply — the 350k
+  // default — so the display falls back to the widest window the rows actually advertise.
+  expect(src).toContain("const capDisplayValue = capOn ? providerCap : (widestRowWindow ?? providerCap);");
+  // The select is inert until the cap is actually on: showing a number is not the same as
+  // offering to change one.
+  expect(src).toContain("disabled={busy || !capOn}");
+});
+
 test("the native group exposes the custom-model and cap controls, but not the context modal", async () => {
   const src = await Bun.file(new URL("../src/pages/Models.tsx", import.meta.url)).text();
   // The context-window modal saves through PATCH /api/providers, which the canonical openai
@@ -61,4 +74,3 @@ test("the native group exposes the custom-model and cap controls, but not the co
   // The custom-add and cap controls no longer sit behind an isNative guard.
   expect(src).not.toMatch(/\{!isNative && </);
 });
-

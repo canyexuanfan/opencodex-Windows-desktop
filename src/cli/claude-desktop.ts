@@ -15,6 +15,8 @@ import { filterCatalogVisibleModels, desktopVisibleNativeSlugs } from "../codex/
 import { buildClaudeDesktopState, fetchAllModels } from "../server/management-api";
 import { findLiveProxy } from "../server/proxy-liveness";
 import { runtimeRequest } from "./runtime-api";
+import { providerContextCap } from "../providers/context-cap";
+import { OPENAI_CODEX_PROVIDER_ID } from "../providers/openai-tiers";
 
 function isFamily(value: string | undefined): value is DesktopFamily {
   return !!value && (DESKTOP_FAMILIES as readonly string[]).includes(value);
@@ -98,6 +100,7 @@ export async function applyProfile(
     config.apiKeys?.[0]?.key,
     mode,
     state.profile,
+    providerContextCap(config, OPENAI_CODEX_PROVIDER_ID),
   );
   return { ok: result.written, path: result.path, reason: result.reason };
 }

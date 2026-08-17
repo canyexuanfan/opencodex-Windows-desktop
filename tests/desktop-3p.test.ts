@@ -94,6 +94,18 @@ describe("Claude Desktop 3P models", () => {
     ]);
   });
 
+  test("an openai context cap reaches the Desktop writer, not just the dashboard", () => {
+    // Without the cap the native row is a 1.05M model and earns supports1m. Capping the
+    // provider at 272k has to take that away here too, or the written Desktop config
+    // promises a window the proxy will not serve (#854's effective-window contract).
+    const uncapped = generateDesktop3pModels(["gpt-5.6-sol"], []);
+    expect(uncapped[0]).toMatchObject({ supports1m: true, prefer1m: true });
+
+    const capped = generateDesktop3pModels(["gpt-5.6-sol"], [], undefined, 272_000);
+    expect(capped[0]!.supports1m).toBeUndefined();
+    expect(capped[0]!.prefer1m).toBeUndefined();
+  });
+
   test("passes Anthropic Claude model ids through without encoding", () => {
     const models = generateDesktop3pModels([], [
       { provider: "anthropic", id: "claude-opus-4-6" },

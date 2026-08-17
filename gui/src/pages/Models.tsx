@@ -1017,6 +1017,15 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
     const activeCount = rows.filter(isVisible).length;
     const capOn = contextCaps[provider] !== undefined;
     const providerCap = contextCaps[provider] ?? contextCapValue;
+    // With the cap off, `providerCap` is only the value a future toggle would apply — for the
+    // native group that is the 350k default, which says nothing true about what Codex sees.
+    // The honest number there is the largest window the rows actually advertise.
+    const widestRowWindow = rows.reduce<number | undefined>((widest, row) => {
+      const window = typeof row.contextWindow === "number" && row.contextWindow > 0 ? row.contextWindow : undefined;
+      if (window === undefined) return widest;
+      return widest === undefined || window > widest ? window : widest;
+    }, undefined);
+    const capDisplayValue = capOn ? providerCap : (widestRowWindow ?? providerCap);
     // The native group offers only the three windows GPT-5.6 actually has contracts for
     // (272k live, 372k legacy, 1.05M measured); routed providers keep the generic ladder.
     // The set has to follow the list, or a saved value outside it loses its option.
@@ -1109,24 +1118,28 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
              <button type="button" className="btn btn-ghost btn-sm text-caption" disabled={busy || allOn} onClick={() => bulkToggle(true)}>{t("models.allOn")}</button>
              <button type="button" className="btn btn-ghost btn-sm text-caption" disabled={busy || allOff} onClick={() => bulkToggle(false)}>{t("models.allOff")}</button>
              <>
-               <Switch on={capOn} onClick={() => toggleProviderCap(provider)} disabled={busy} label={t("models.capValue", { value: fmtK(providerCap) })} />
-               {capOn && (
+               <Switch on={capOn} onClick={() => toggleProviderCap(provider)} disabled={busy} label={t("models.capValue", { value: fmtK(capDisplayValue) })} />
+               {/* The native group keeps the value visible with the cap off: its rows always
+                   advertise SOME window, so hiding the number leaves the card saying nothing
+                   about the context Codex will actually see. Routed providers keep the old
+                   behaviour, where an off cap genuinely means "no opinion". */}
+               {(capOn || nativeProviderGroup) && (
                  <>
                    <Select
                      // A saved cap outside CAP_OPTIONS is still a real selectable option
                      // (inserted below), so select it instead of falling back to "Custom";
                      // otherwise the trigger hides the persisted 128k value behind the
                      // custom-editor label.
-                    value={providerCapCustomOpen[provider] ? CUSTOM_OPTION : String(providerCap)}
+                    value={providerCapCustomOpen[provider] ? CUSTOM_OPTION : String(capDisplayValue)}
                     options={[
-                      ...(!capOptionSet.has(providerCap) && !providerCapCustomOpen[provider]
-                        ? [{ value: String(providerCap), label: fmtK(providerCap) }] : []),
+                      ...(!capOptionSet.has(capDisplayValue) && !providerCapCustomOpen[provider]
+                        ? [{ value: String(capDisplayValue), label: fmtK(capDisplayValue) }] : []),
                       ...capOptions.map(v => ({ value: String(v), label: fmtK(v) })),
                       { value: CUSTOM_OPTION, label: t("models.custom") },
                     ]}
                      onChange={v => onSelectProviderCap(provider, v)}
-                     disabled={busy}
-                     label={t("models.capValue", { value: fmtK(providerCap) })}
+                     disabled={busy || !capOn}
+                     label={t("models.capValue", { value: fmtK(capDisplayValue) })}
                    />
                    {providerCapCustomOpen[provider] && (
                      <>

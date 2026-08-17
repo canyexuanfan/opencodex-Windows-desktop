@@ -337,6 +337,7 @@ export function generateDesktop3pConfig(
   apiKey = "ocx",
   mode: Desktop3pConfigMode = "static",
   profile?: OcxClaudeDesktopProfile,
+  nativeContextCap?: number,
 ): object {
   const base = {
     inferenceProvider: "gateway",
@@ -346,14 +347,14 @@ export function generateDesktop3pConfig(
   };
   if (mode === "discovery") {
     // Build/refresh the decode registry even though no static list is emitted.
-    buildDesktop3pRegistry(nativeSlugs, routedModels, profile);
+    buildDesktop3pRegistry(nativeSlugs, routedModels, profile, nativeContextCap);
     return { ...base, modelDiscoveryEnabled: true };
   }
   return {
     ...base,
     modelDiscoveryEnabled: mode === "hybrid",
     inferenceModels: (() => {
-      const models = generateDesktop3pModels(nativeSlugs, routedModels, profile);
+      const models = generateDesktop3pModels(nativeSlugs, routedModels, profile, nativeContextCap);
       // Fail loud at the write boundary rather than ship a config Desktop rejects:
       // the output counterpart of the request-path guards.
       assertDesktop3pModelsValid(models);
@@ -557,6 +558,7 @@ export function writeDesktop3pConfig(
   apiKey?: string,
   mode: Desktop3pConfigMode = "static",
   profile?: OcxClaudeDesktopProfile,
+  nativeContextCap?: number,
 ): { written: boolean; path: string; reason?: string; fingerprint?: string } {
   const libraryPath = resolveDesktop3pConfigLibraryPath();
   const metadataPath = join(libraryPath, "_meta.json");
@@ -574,7 +576,7 @@ export function writeDesktop3pConfig(
       ? metadata.entries.map(current => current === existing ? entry : current)
       : [...metadata.entries, entry];
 
-    const configJson = JSON.stringify(generateDesktop3pConfig(port, nativeSlugs, routedModels, apiKey, mode, profile), null, 2) + "\n";
+    const configJson = JSON.stringify(generateDesktop3pConfig(port, nativeSlugs, routedModels, apiKey, mode, profile, nativeContextCap), null, 2) + "\n";
     const fingerprint = createHash("sha256").update(configJson).digest("hex").slice(0, 16);
     const { backupPath } = atomicReplaceDesktopConfig(configPath, configJson);
     try {

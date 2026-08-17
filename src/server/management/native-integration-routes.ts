@@ -663,6 +663,7 @@ async function handleClaudeDesktopToggle(ctx: ManagementContext): Promise<Respon
         latest.apiKeys?.[0]?.key,
         "static",
         latest.claudeCode?.desktopProfile,
+        providerContextCap(latest, OPENAI_CODEX_PROVIDER_ID),
       );
       if (!result.written) return postCommitRefusal(500, "claude-desktop", "write_failed", "Claude Desktop apply failed.", { desiredEnabled: latestDesiredEnabled });
       return jsonResponse({

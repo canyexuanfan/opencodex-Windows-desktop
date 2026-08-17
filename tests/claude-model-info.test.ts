@@ -99,6 +99,26 @@ describe("anthropic-flavor ModelInfo discovery entries (devlog 130 B4b)", () => 
     expect(gpt55!.max_input_tokens).toBe(272_000);
   });
 
+  test("a routed row with its own input ceiling reports it on both the base and [1m] rows", () => {
+    // The same GPT-5.6 contract reaching Claude through a provider rather than the native
+    // path: a 1.05M window with a 922k input ceiling. Reporting the window here would push
+    // Claude Code past what the upstream accepts, and the [1m] variant's flat 1e6 would too.
+    const infos = buildAnthropicModelInfos([], [
+      { provider: "cursor", id: "gpt-5.6-sol", contextWindow: 1_050_000, maxInputTokens: 922_000 },
+    ]);
+    const base = infos.find(i => !i.id.endsWith("[1m]"));
+    const variant = infos.find(i => i.id.endsWith("[1m]"));
+    expect(base!.max_input_tokens).toBe(922_000);
+    expect(variant!.max_input_tokens).toBe(922_000);
+  });
+
+  test("a routed row without an input ceiling still reports its window", () => {
+    const infos = buildAnthropicModelInfos([], [
+      { provider: "cursor", id: "plain", contextWindow: 400_000 },
+    ]);
+    expect(infos[0]!.max_input_tokens).toBe(400_000);
+  });
+
   test("[1m] variant never double-suffixes or duplicates (audit R1#11)", () => {
     const infos = buildAnthropicModelInfos([], [
       // Anthropic passthrough keeps its id verbatim, so an id already carrying the
