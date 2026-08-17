@@ -29,6 +29,7 @@ Then:
 ## Verify
 
 ```powershell
+bun run typecheck
 bun test tests/service.test.ts
 bun test tests/windows-deploy-close-regressions.test.ts
 bun test tests/update-job.test.ts

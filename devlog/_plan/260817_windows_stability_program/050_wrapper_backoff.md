@@ -19,8 +19,9 @@ if %ERRORLEVEL% NEQ 0 (
 Replace with capped exponential backoff plus a health reset:
 
 - delay sequence 5s, 15s, 30s, 60s, then hold at 60s;
-- reset the delay to 5s once the child has stayed up past a health threshold
-  (10-15 minutes is the range both audits converged on);
+- reset the delay to 5s once the child has stayed up past **600 seconds**. One
+  number, not a range: the wrapper cannot express a policy, and leaving it open
+  means whoever implements it picks a number that never gets reviewed;
 - keep retrying indefinitely at the 60s cap.
 
 The cap, not a retry ceiling, is the design decision. #1877 declined a flat
@@ -28,14 +29,24 @@ The cap, not a retry ceiling, is the design decision. #1877 declined a flat
 that reasoning still holds. What it did not intend to preserve is a fixed 5s
 cadence for a deterministic crash.
 
-Implementation constraint: this is batch. Tracking elapsed uptime in `cmd.exe`
-without spawning helpers is awkward — capture a timestamp before the child
-starts and compare after it exits, and keep the arithmetic in `set /a`. Do not
-reach for PowerShell here; the wrapper must stay dependency-free.
+Implementation constraint: this is batch, and it must stay dependency-free — no
+PowerShell inside the wrapper.
+
+The timing arithmetic needs care. `%TIME%` is locale-formatted and wraps at
+midnight, so subtracting two samples can produce a negative uptime and reset the
+backoff on a service that has been healthy for hours. Convert each sample to
+seconds-since-midnight with `set /a`, and when the difference is negative add
+86400 before comparing. `%TIME%` is also space-padded before 10:00, which breaks
+naive `set /a` — strip the pad first.
+
+If that proves fragile under review, the fallback is a small state file beside
+the wrapper holding the attempt index and last start time. It trades one file
+write per restart for arithmetic a reviewer can check at a glance.
 
 ## Verify
 
 ```powershell
+bun run typecheck
 bun test tests/service.test.ts
 ```
 

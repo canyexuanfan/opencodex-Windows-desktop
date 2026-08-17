@@ -25,8 +25,16 @@ Policy:
 
 ## Verify
 
-The nightly workflow's own history. After a month, the quarantine list should be
-short and shrinking; if it grows, stage 3 of 060 was premature.
+```powershell
+bun run prepush
+gh workflow run ci.yml --ref <branch>
+```
+
+The nightly workflow is a CI change, so `bun run prepush` applies
+(`.github/AGENTS.md:25`), and workflow edits need the security review named in
+`MAINTAINERS.md`. Beyond that, the policy is verified by its own run history:
+after a month the quarantine list should be short and shrinking. If it grows,
+060 stage 3 was premature.
 
 ## Risk
 

@@ -34,6 +34,7 @@ array form specifically, or it will fire on six correct call sites.
 ## Verify
 
 ```powershell
+bun run typecheck
 bun test tests/windows-deploy-close-regressions.test.ts
 bun test tests/service.test.ts
 ```

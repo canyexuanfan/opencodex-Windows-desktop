@@ -1,11 +1,11 @@
 # 040 — Inventory every credential writer's Windows ACL coverage (F5)
 
-**Depends on:** nothing. Can run parallel to 010-030; sequence it after so its
-findings land against a settled tree.
+**Depends on:** nothing. Independent of every other phase, including 060 — an
+inventory cannot gate CI and should not be sequenced as though it could.
 
 ## Change
 
-This phase produces a document, not a patch.
+This phase produces an inventory. Where it lands depends on what it finds.
 
 Enumerate every path that writes a credential, token, OAuth refresh token, or
 session secret. Starting points: `src/config.ts` (chmod sites at 221, 316, 450,
@@ -15,26 +15,36 @@ and `:386`, `src/lab/artifacts/secure-fs.ts`,
 
 For each, record: the file written, whether `hardenSecretPath` (or the async
 twin) runs on **that specific write**, and whether the `chmod` is the only
-protection. `chmodSync` is a no-op on Windows; `src/service.ts:1983` says so
-outright — "required Windows ACL is authoritative". A writer with only the
-`chmod` has no protection on Windows at all.
+protection. `chmodSync` is a no-op on Windows, so a writer with only the
+`chmod` has no protection there at all.
 
-Output: a table in this unit listing writer, ACL status, and verdict.
+On the ACL-is-authoritative principle: `src/service.ts:1983` states it, but for
+an elevation staging directory specifically — it is evidence for the principle,
+not for any credential writer's coverage. Each row needs its own citation.
 
-## If the inventory finds a live exposure
+## Where the output goes
 
-Stop. Per AGENTS.md, pre-disclosure security material does not go in `devlog/`
-— it goes to `.tmp/` or a `mktemp -d` path, and only the shipped fix plus its
-regression test come back here. This phase's deliverable in that case is the
-table with the exposed rows redacted and a pointer to the scratch location.
+**If every writer is covered:** the table goes in this unit as `041`. It is a
+clean bill of health, discloses nothing, and is worth having on record.
+
+**If any writer is not covered:** nothing goes in this unit. Not a redacted
+table, not a pointer to a scratch path, not a row saying a gap exists. Per
+AGENTS.md, pre-disclosure material stays entirely in scratch (`.tmp/` or a
+`mktemp -d` path) until the fix ships. A tracked file saying "there is an
+unfixed credential exposure, details elsewhere" is itself disclosure — it tells
+a reader exactly where to look and that looking is worthwhile.
+
+In that case this phase reports its status verbally to the maintainer and stays
+otherwise silent in the tree. The record comes back afterwards, in `_fin`, once
+the fix and its regression test are public.
 
 ## Verify
 
-Inventory correctness is verified by reading, not by a command. Each row cites
-the writing line and the hardening line (or its absence).
+Verified by reading. Each row cites the writing line and the hardening line, or
+its absence. No command proves an inventory correct.
 
 ## Risk
 
-None to the runtime. The risk is doing it carelessly and recording a false
-negative — a writer that looks covered because `hardenSecretPath` appears
-somewhere in the file rather than on that path.
+None to the runtime. The risk is a false negative — marking a writer covered
+because `hardenSecretPath` appears somewhere in the file rather than on that
+code path.

@@ -52,8 +52,9 @@ Severity: high. Fix cost: one line. Phase 010.
 Two implementations of the same operation:
 
 ```ts
-// src/service.ts:2330 — canonical full-path token matching, scoped to THIS home
-// src/update/job.ts:1377
+// src/service.ts:2337-2358 — canonical token matching scoped to THIS home
+//   (paths built 2340-2341; token boundaries enforced 2350-2355)
+// src/update/job.ts:1377-1383 (the bare -like match is line 1381)
 "$pats = @('opencodex-service.cmd','opencodex-service-launcher.vbs');"
 ...
 "foreach ($p in $pats) { if ($c -like ('*' + $p + '*')) { return $true } };"
@@ -63,6 +64,8 @@ The updater copy matches a bare filename anywhere in a command line. Two
 OpenCodex homes under one Windows account means a dashboard update for home A
 can terminate home B's scheduler wrapper. Any unrelated process whose command
 line contains either filename also matches.
+
+Cited precisely: the updater's bare match is `src/update/job.ts:1381`; the service copy builds canonical paths at `src/service.ts:2340-2341` and enforces token boundaries at `:2350-2355`.
 
 The drift is already measurable and runs in both directions: `update/job.ts`
 received the #1589 argv cleanup that `service.ts` missed (F1); `service.ts`
@@ -80,11 +83,18 @@ Severity: high (cross-installation process kill). Phase 020.
 if: github.event_name == 'workflow_dispatch'
 ```
 
-The aggregation job (`ci.yml:747-783`) accepts `skipped`. The release preflight
+The aggregation job accepts `skipped` (`ci.yml:771`). The release preflight
 (`release.yml:181-201`) demands a successful **push-event** `ci.yml` run —
 deliberately narrower than "any successful run for this SHA" — but
-`platform-windows` never runs on push. Every release to date has therefore
-published without executing a single Windows test.
+`platform-windows` never runs on push. So the general release preflight does not require `platform-windows`, and a
+release can publish without it having run.
+
+One qualification, because the stronger claim is not true: releases that touch
+`src/service.ts`, `src/cli/index.ts`, `package.json` and a few others separately
+require a green `service-lifecycle.yml` (`release.yml:224-234`), and that
+workflow does include a Windows job. Windows is therefore not entirely absent
+from release gating - it is absent from the *suite* gate, and present only as a
+lifecycle smoke test for service-shaped changes.
 
 Severity: high, and it is the multiplier on every other finding — without it,
 each fix below is one careless merge away from regressing. Phases 060 and 070.
@@ -130,8 +140,10 @@ sets it.
 Where both run, the file is protected. The audit work needed here is an
 inventory: every path that writes a credential, token, or OAuth refresh token,
 and whether the Windows ACL path is reached on that specific write or only the
-`chmod`. `src/service.ts:1983` is explicit that the ACL is authoritative —
-which is correct, and is exactly why any writer that lacks it is a gap.
+`chmod`. `src/service.ts:1983` states the ACL is authoritative, but says so about an
+elevation staging directory specifically. That is evidence for the principle,
+not evidence about any credential writer's coverage - each inventory row needs
+its own citation.
 
 Treated as **unproven** until the inventory is done. Phase 040. Per AGENTS.md,
 if that inventory turns up a live exposure the writeup goes to scratch space,

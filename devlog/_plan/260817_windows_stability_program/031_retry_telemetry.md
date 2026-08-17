@@ -1,23 +1,43 @@
 # 031 — Instrument the retry envelope before widening it (F4)
 
-**Depends on:** 030.
+**Depends on:** 030. This is a genuine dependency: there is nothing to count
+until the primitive exists.
 
 ## Change
 
-Count, do not change. Each time the primitive from 030 retries, and each time it
-exhausts its attempts, increment a counter tagged with the error code and the
-publisher. Surface it wherever the existing diagnostic counters live — this must
-not become a new logging surface, and per AGENTS.md it must never carry a path
-that could identify the user, a request body, or a credential. Code and count
-only.
+Count, do not change behavior.
 
-## Why this phase exists separately
+Add to `src/lib/windows-atomic-replace.ts` (the module created in 030) a
+module-scope counter keyed by `(code, publisher)` where `code` is the
+`ErrnoException.code` that triggered the retry and `publisher` is a caller-
+supplied string literal — `"config"`, `"prompt-journal"`,
+`"config-ownership"`. Two counts per key: `retried` and `exhausted`.
 
-Both audits flagged the 75ms envelope. Neither could show it failing in the
-field, and one explicitly declined to raise its severity for that reason. The
-honest move is to measure first. If the counters stay at zero across a release,
-the envelope is fine and this closes as NOOP. If they do not, 032 widens it with
-bounded jittered backoff and cites the numbers.
+Export `readWindowsReplaceRetryCounters()` returning a plain snapshot object.
+
+Surface it on the existing management diagnostics route rather than inventing a
+transport. The counters are process-lifetime and in-memory; they reset on
+restart, and that is acceptable because the question being answered is "does
+this ever fire at all", not "how often per hour".
+
+**Naming constraint:** the `publisher` value is a fixed literal chosen at the
+call site. It must never be derived from a path, because a path can contain a
+username. `privacy:scan` is the gate that enforces this and it must stay green.
+
+## How the evidence is actually collected
+
+In-memory counters cannot prove anything "across a release" on their own, so
+the collection path is explicit:
+
+- Local: run the proxy through a normal session, hit the diagnostics route,
+  read the snapshot. Zero across ordinary use is itself a data point.
+- CI: assert the counters exist and stay zero during the Windows suite. A
+  non-zero `exhausted` count in CI is a defect, not telemetry.
+- Field: only if a user voluntarily includes a diagnostics snapshot in a bug
+  report. We do not collect this, and nothing in this phase transmits anything.
+
+If those three sources produce no evidence within a release cycle, 032 does not
+happen and this closes NOOP. That is a legitimate outcome.
 
 ## Verify
 
@@ -27,8 +47,7 @@ bun run privacy:scan
 bun test tests/config.test.ts
 ```
 
-`privacy:scan` is the gate that matters here.
-
 ## Risk
 
-Low. No behavioral change.
+Low. No behavioral change to the retry path itself. The privacy surface is the
+only thing worth reviewing.
