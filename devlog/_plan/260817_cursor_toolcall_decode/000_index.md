@@ -186,3 +186,34 @@ not converging noise; the count fell while the severity of what was found rose.
 Scope note: `010` now fixes a defect that predates this unit. That is an
 expansion beyond the original F1, adopted deliberately because the narrow fix
 would have been indistinguishable from a real one while leaving the class alive.
+
+### Round 6 - reversing round 5
+
+Round 6 audited the reframed `010` and **disproved round 5 premise**.
+Verified independently before accepting:
+
+- The bridge ALREADY enforces terminal singleness: streaming cancels upstream at
+  the first terminal (`bridge.ts:1248`), batch ignores later events after the
+  first error (`:1619`).
+- `tests/bridge-terminal-singleness.test.ts` exists for exactly this and covers
+  error-then-done, done-then-error, and producer abort. Run locally: **3 pass, 0 fail**.
+
+So a second ADAPTER terminal never becomes a second PROTOCOL terminal. Round 5
+tests 7 and 8 would have been red at the adapter boundary and green at the
+boundary users observe - a regression test for a bug nobody can see.
+
+| # | Finding | Resolution |
+|---|---------|------------|
+| 1 **BLOCKER** | The invariant was stated at the wrong boundary; protocol-level singleness is already enforced and tested | `010` reverted to its narrow F1 scope; the round-5 scope expansion is recorded as an error |
+| 2 **BLOCKER** | The `push` seam is not turn-wide: adapter-owned errors bypass it (`cursor.ts:127` abort, `:180` throw) | the flag is retained ONLY as a local guard for the EOF branch, where every mapper terminal does pass through `push` |
+| 3 **BLOCKER** | A genuine zero-terminal path exists: an unexpected `NGHTTP2_CANCEL` is thrown (`live-transport.ts:619`) but treated as benign and swallowed (`cursor.ts:181`) | recorded as a follow-up below, NOT absorbed into this phase |
+
+**What rounds 5 and 6 taught together.** Round 5 argued for widening scope on a
+defect it had proven at the adapter boundary; round 6 showed that boundary is not
+where the contract lives. A finding can be technically accurate and still point
+at the wrong layer - which is why the reversal was accepted rather than split
+down the middle. `010` is now smaller than it was three rounds ago.
+
+Added to the open follow-ups: the `NGHTTP2_CANCEL` zero-terminal path
+(`live-transport.ts:619` throws, `cursor.ts:181` swallows), confirmed by a fresh
+probe to produce zero adapter events. Separate defect, separate unit.
