@@ -38,7 +38,7 @@ import {
   type CapturedServiceTierAdapterAuthority,
 } from "../../providers/service-tier";
 import { effectiveGoogleMode, getProviderRegistryEntry, providerMatchesRegistryTransport } from "../../providers/registry";
-import { parseAntigravityAvailableModels } from "../../providers/antigravity-models";
+import { parseAntigravityAvailableModels, registerAntigravityDiscoveredWireModels } from "../../providers/antigravity-models";
 import { applyProviderContextCap, providerContextCap } from "../../providers/context-cap";
 import { routedSlug, slugEquals, slugsEquivalent } from "../../providers/slug-codec";
 import { CODEX_GPT5_IDENTITY_LINE } from "../../adapters/identity";
@@ -1361,6 +1361,7 @@ async function fetchProviderModelsWithAuth(
       return observed(models, "degraded");
     }
     if (antigravity) {
+      registerAntigravityDiscoveredWireModels(prov.baseUrl, antigravity);
       const live = antigravity.map(model => applyProviderConfigHints(name, prov, {
         id: model.id,
         provider: name,

@@ -395,6 +395,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         ? resolveAntigravityEffortWireModel(
             parsed.modelId,
             mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning),
+            provider.baseUrl,
           ).wireModelId
         : resolveDirectGeminiWireModelId(parsed.modelId);
       const { systemInstruction, contents } = messagesToGeminiFormat(parsed, routedModelId);
@@ -450,7 +451,11 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         if (!project) throw new Error("Antigravity requires a discovered Cloud Code Assist project id (re-run `ocx login google-antigravity`).");
         const sessionId = antigravitySessionId(parsed);
         const mappedEffort = mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning);
-        const { wireModelId, thinkingLevel } = resolveAntigravityEffortWireModel(parsed.modelId, mappedEffort);
+        const { wireModelId, thinkingLevel } = resolveAntigravityEffortWireModel(
+          parsed.modelId,
+          mappedEffort,
+          provider.baseUrl,
+        );
         antigravityModel = wireModelId;
         antigravitySession = sessionId;
         // Effort → thinkingConfig for CCA (CLIProxyAPI proven: request.generationConfig.thinkingConfig).

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createGoogleAdapter as createGoogleAdapterProduction } from "../src/adapters/google";
 import { antigravitySessionId, isLikelyRealThoughtSignature } from "../src/adapters/google-antigravity-wire";
-import { ANTIGRAVITY_MODELS, ANTIGRAVITY_MODEL_EFFORTS, canonicalAntigravityUsageModel, parseAntigravityAvailableModels, resolveAntigravityEffortWireModel, resolveAntigravityWireModelId } from "../src/providers/antigravity-models";
+import { ANTIGRAVITY_MODELS, ANTIGRAVITY_MODEL_EFFORTS, canonicalAntigravityUsageModel, parseAntigravityAvailableModels, registerAntigravityDiscoveredWireModels, resolveAntigravityEffortWireModel, resolveAntigravityWireModelId } from "../src/providers/antigravity-models";
 import { MODEL_DISCOVERY_MAX_MODEL_ID_LENGTH, MODEL_DISCOVERY_MAX_MODELS } from "../src/providers/model-discovery";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig } from "../src/types";
 import { withTestTranslatorBudget } from "./helpers/translator-budget";
@@ -188,6 +188,66 @@ describe("antigravity CCA envelope", () => {
     ]);
   });
 
+  test("uses live CCA display names while retaining their wire ids", async () => {
+    const payload = {
+      models: {
+        "gemini-3.7-flash-high": { displayName: "Gemini 3.7 Flash (High)", maxTokens: 1_048_576 },
+        "gemini-3.6-flash-high": { displayName: "Gemini 3.6 Flash (High)", maxTokens: 1_048_576 },
+        "gemini-3-flash-agent": { displayName: "Gemini 3.5 Flash (High)", maxTokens: 1_048_576 },
+        "gemini-3.5-flash-low": { displayName: "Gemini 3.5 Flash (Medium)", maxTokens: 1_048_576 },
+        "gemini-3.5-flash-extra-low": { displayName: "Gemini 3.5 Flash (Low)", maxTokens: 1_048_576 },
+        "gemini-pro-agent": { displayName: "Gemini 3.1 Pro (High)", maxTokens: 1_048_576 },
+        "gemini-3.1-pro-low": { displayName: "Gemini 3.1 Pro (Low)", maxTokens: 1_048_576 },
+        "claude-sonnet-4-6": { displayName: "Claude Sonnet 4.6 (Thinking)", maxTokens: 250_000 },
+      },
+      agentModelSorts: [{ groups: [{ modelIds: [
+        "gemini-3.7-flash-high",
+        "gemini-3.6-flash-high",
+        "gemini-3-flash-agent",
+        "gemini-3.5-flash-low",
+        "gemini-3.5-flash-extra-low",
+        "gemini-pro-agent",
+        "gemini-3.1-pro-low",
+        "claude-sonnet-4-6",
+      ] }] }],
+    };
+    const rows = parseAntigravityAvailableModels(payload)!;
+    expect(rows.map(model => model.id)).toEqual([
+      "gemini-3.7-flash-high",
+      "gemini-3.6-flash-high",
+      "gemini-3.5-flash-high",
+      "gemini-3.5-flash-medium",
+      "gemini-3.5-flash-low",
+      "gemini-3.1-pro-high",
+      "gemini-3.1-pro-low",
+      "claude-sonnet-4-6",
+    ]);
+    expect(rows.map(model => [model.id, model.wireModelId])).toEqual([
+      ["gemini-3.7-flash-high", "gemini-3.7-flash-high"],
+      ["gemini-3.6-flash-high", "gemini-3.6-flash-high"],
+      ["gemini-3.5-flash-high", "gemini-3-flash-agent"],
+      ["gemini-3.5-flash-medium", "gemini-3.5-flash-low"],
+      ["gemini-3.5-flash-low", "gemini-3.5-flash-extra-low"],
+      ["gemini-3.1-pro-high", "gemini-pro-agent"],
+      ["gemini-3.1-pro-low", "gemini-3.1-pro-low"],
+      ["claude-sonnet-4-6", "claude-sonnet-4-6"],
+    ]);
+
+    const baseUrl = "https://cca.example";
+    registerAntigravityDiscoveredWireModels(baseUrl, rows);
+    expect(resolveAntigravityEffortWireModel("gemini-3.5-flash-high", undefined, baseUrl))
+      .toEqual({ wireModelId: "gemini-3-flash-agent" });
+    expect(resolveAntigravityEffortWireModel("gemini-3.6-flash-high", undefined, baseUrl))
+      .toEqual({ wireModelId: "gemini-3.6-flash-high" });
+    expect(resolveAntigravityEffortWireModel("claude-sonnet-4-6", "high", baseUrl))
+      .toEqual({ wireModelId: "claude-sonnet-4-6", thinkingLevel: "high" });
+
+    const req = await createGoogleAdapter({ ...effortProvider, baseUrl }).buildRequest(
+      parsedWithEffort("gemini-3.5-flash-high"),
+    );
+    expect(JSON.parse(req.body).model).toBe("gemini-3-flash-agent");
+  });
+
   test("keeps unknown discovered tier IDs directly routable", async () => {
     for (const modelId of ["future-flash-tiered", "future-flash-low"]) {
       const req = await createGoogleAdapter(effortProvider).buildRequest(parsedWithEffort(modelId, "high"));
@@ -267,7 +327,7 @@ describe("antigravity CCA envelope", () => {
       models: { "agent-model": { maxTokens: 1_048_576 } },
       agentModelSorts: [{ groups: [{ modelIds: ["agent-model"] }] }],
       imageGenerationModelIds: ["gemini-3.1-flash-image"],
-    }, 1)).toBeNull();
+    }, 1)?.map(model => model.id)).toEqual(["agent-model"]);
   });
 
   test("throws when no project id is available", async () => {

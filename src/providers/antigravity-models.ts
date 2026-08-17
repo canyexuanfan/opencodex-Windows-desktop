@@ -74,8 +74,12 @@ const ANTIGRAVITY_DISCOVERY_EFFORTS = ["low", "medium", "high"] as const;
 
 function pickerModelIdForDiscoveredWireId(
   wireId: string,
+  info: Record<string, unknown>,
   available: ReadonlyMap<string, Record<string, unknown>>,
 ): string {
+  const displayModelId = antigravityDisplayModelId(info.displayName, wireId);
+  if (displayModelId) return displayModelId;
+
   const explicitPickerId = Object.hasOwn(ANTIGRAVITY_PICKER_MODEL_BY_WIRE_ID, wireId)
     ? ANTIGRAVITY_PICKER_MODEL_BY_WIRE_ID[wireId]
     : undefined;
@@ -240,6 +244,8 @@ export const ANTIGRAVITY_MODEL_INPUT_MODALITIES: Record<string, string[]> = {
 
 export interface AntigravityAvailableModel {
   id: string;
+  /** CCA model id used by the agent envelope when `id` comes from display metadata. */
+  wireModelId: string;
   contextWindow?: number;
   inputModalities?: string[];
 }
@@ -252,6 +258,69 @@ function antigravityRecord(value: unknown): Record<string, unknown> | undefined 
 
 function antigravityPositiveInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+const discoveredWireModelsByBaseUrl = new Map<string, ReadonlyMap<string, string>>();
+
+function antigravityBaseUrlKey(baseUrl: string | undefined): string | undefined {
+  if (typeof baseUrl !== "string" || !baseUrl.trim()) return undefined;
+  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  try {
+    const url = new URL(trimmed);
+    url.hash = "";
+    url.search = "";
+    return url.toString().replace(/\/+$/, "").toLowerCase();
+  } catch {
+    return trimmed.toLowerCase();
+  }
+}
+
+/** Remember the wire ids returned by one live CCA discovery for request routing. */
+export function registerAntigravityDiscoveredWireModels(
+  baseUrl: string | undefined,
+  models: readonly AntigravityAvailableModel[],
+): void {
+  const key = antigravityBaseUrlKey(baseUrl);
+  if (!key) return;
+  const wireModels = new Map<string, string>();
+  for (const model of models) wireModels.set(model.id, model.wireModelId);
+  discoveredWireModelsByBaseUrl.set(key, wireModels);
+}
+
+function discoveredAntigravityWireModelId(
+  modelId: string,
+  baseUrl: string | undefined,
+): string | undefined {
+  const key = antigravityBaseUrlKey(baseUrl);
+  return key ? discoveredWireModelsByBaseUrl.get(key)?.get(modelId) : undefined;
+}
+
+/**
+ * Convert the CCA display label used by `agy` into its public model selector.
+ *
+ * The wire id is authoritative for requests, while the label is authoritative for the
+ * user-facing selector when Google has renamed or re-tiered a model. Keep both instead
+ * of maintaining a provider-specific list of known model names.
+ */
+function antigravityDisplayModelId(displayName: unknown, wireId: string): string | undefined {
+  if (typeof displayName !== "string") return undefined;
+  const label = displayName.trim();
+  if (!label || label.length > 512) return undefined;
+  const slug = (replaceDots: boolean): string => label
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(replaceDots ? /\./g : /\s+/g, replaceDots ? "-" : " ")
+    .replace(/[^a-z0-9.-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  const preserved = slug(false);
+  const compact = slug(true);
+  if (!isValidModelDiscoveryModelId(preserved) && !isValidModelDiscoveryModelId(compact)) return undefined;
+  if (preserved === wireId || compact === wireId
+    || preserved === `${wireId}-thinking` || compact === `${wireId}-thinking`) {
+    return wireId;
+  }
+  return isValidModelDiscoveryModelId(preserved) ? preserved : compact;
 }
 
 /**
@@ -288,13 +357,6 @@ export function parseAntigravityAvailableModels(
       }
     }
   }
-  // This model is exposed by Antigravity's agent chat surface even though it is grouped under
-  // image generation in the discovery response.
-  if (Array.isArray(body.imageGenerationModelIds)
-    && body.imageGenerationModelIds.includes("gemini-3.1-flash-image")) {
-    if (ids.length >= limit) return null;
-    ids.push("gemini-3.1-flash-image");
-  }
   // Newer CCA responses identify tiered Flash models through this index instead of
   // adding their synthetic wire ids to agentModelSorts.
   const tieredModelIds = antigravityRecord(body.tieredModelIds);
@@ -305,6 +367,8 @@ export function parseAntigravityAvailableModels(
         || !Object.hasOwn(models, id)
         || !antigravityRecord(models[id])
         || ids.length >= limit) return null;
+      const baseId = id.endsWith("-tiered") ? id.slice(0, -"-tiered".length) : id;
+      if (ids.some(agentId => agentId === baseId || agentId.startsWith(`${baseId}-`))) continue;
       ids.push(id);
     }
   }
@@ -313,23 +377,18 @@ export function parseAntigravityAvailableModels(
   for (const wireId of ids) {
     const info = antigravityRecord(models[wireId]);
     if (!info || available.has(wireId)) continue;
-    // Legacy compatibility aliases are deliberately routed to newer wire ids for saved
-    // selections. They are not safe as independently discovered picker rows.
-    const alias = Object.hasOwn(ANTIGRAVITY_MODEL_ALIASES, wireId)
-      ? ANTIGRAVITY_MODEL_ALIASES[wireId]
-      : undefined;
-    if (alias && alias !== wireId) continue;
     available.set(wireId, info);
   }
 
   const out: AntigravityAvailableModel[] = [];
   const seen = new Set<string>();
   for (const [wireId, info] of available) {
-    const id = pickerModelIdForDiscoveredWireId(wireId, available);
+    const id = pickerModelIdForDiscoveredWireId(wireId, info, available);
     if (seen.has(id)) continue;
     seen.add(id);
     out.push({
       id,
+      wireModelId: wireId,
       ...(antigravityPositiveInteger(info.maxTokens) ? { contextWindow: antigravityPositiveInteger(info.maxTokens) } : {}),
       // Tri-state, deliberately not a ternary: `true` asserts image support,
       // `false` asserts against it, and ABSENT is unknown. Collapsing absent into
@@ -347,7 +406,9 @@ export function parseAntigravityAvailableModels(
   return out;
 }
 
-export function resolveAntigravityWireModelId(modelId: string): string {
+export function resolveAntigravityWireModelId(modelId: string, baseUrl?: string): string {
+  const discovered = discoveredAntigravityWireModelId(modelId, baseUrl);
+  if (discovered) return discovered;
   return Object.hasOwn(ANTIGRAVITY_MODEL_ALIASES, modelId)
     ? ANTIGRAVITY_MODEL_ALIASES[modelId]
     : modelId;
@@ -380,7 +441,13 @@ export function retiredAntigravityFlashTier(modelId: string): string | undefined
 export function resolveAntigravityEffortWireModel(
   modelId: string,
   effort?: string,
+  baseUrl?: string,
 ): { wireModelId: string; thinkingLevel?: string } {
+  const discoveredWireModelId = discoveredAntigravityWireModelId(modelId, baseUrl);
+  if (discoveredWireModelId && (discoveredWireModelId !== modelId || isAntigravitySuffixModelId(modelId))) {
+    return { wireModelId: discoveredWireModelId };
+  }
+
   // Rule 0: retired Flash id — Google has taken the wire id offline, so route to the
   // current generation and carry the tier the retired id encoded. This runs BEFORE the
   // suffix check because those ids are aliases, and rule 1 would drop the tier.
@@ -394,7 +461,7 @@ export function resolveAntigravityEffortWireModel(
 
   // Rule 1: suffix/compat alias — suffix IS the effort.
   if (isAntigravitySuffixModelId(modelId)) {
-    return { wireModelId: resolveAntigravityWireModelId(modelId) };
+    return { wireModelId: resolveAntigravityWireModelId(modelId, baseUrl) };
   }
 
   // Rule 1b: single-wire-id Gemini model whose tiers ride on thinkingLevel. Without
@@ -424,7 +491,7 @@ export function resolveAntigravityEffortWireModel(
   }
 
   // Rule 5: everything else.
-  return { wireModelId: resolveAntigravityWireModelId(modelId) };
+  return { wireModelId: resolveAntigravityWireModelId(modelId, baseUrl) };
 }
 
 
