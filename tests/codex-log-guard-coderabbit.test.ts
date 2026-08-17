@@ -86,11 +86,21 @@ describe("CodeRabbit protection regressions", () => {
     const root = mkdtempSync(join(tmpdir(), "ocx-log-guard-cr-symlink-"));
     roots.push(root);
     const codexHome = join(root, "codex-home");
-    mkdirSync(codexHome);
-    writeFileSync(join(codexHome, "config.toml"), "");
-    const target = join(root, "real-logs.sqlite");
-    createCurrentLogsDb(target);
-    symlinkSync(target, join(codexHome, "logs_2.sqlite"));
+    if (process.platform === "win32") {
+      const realCodexHome = join(root, "real-codex-home");
+      mkdirSync(realCodexHome);
+      writeFileSync(join(realCodexHome, "config.toml"), "");
+      createCurrentLogsDb(join(realCodexHome, "logs_2.sqlite"));
+      // Unelevated Windows can create a junction but not a file symlink. The
+      // ancestor redirection exercises the same concrete unsafe-path refusal.
+      symlinkSync(realCodexHome, codexHome, "junction");
+    } else {
+      mkdirSync(codexHome);
+      writeFileSync(join(codexHome, "config.toml"), "");
+      const target = join(root, "real-logs.sqlite");
+      createCurrentLogsDb(target);
+      symlinkSync(target, join(codexHome, "logs_2.sqlite"));
+    }
 
     const status = getCodexLogGuardProtectionStatus(deps(codexHome));
     expect(status.schema.state).toBe("compatible");
