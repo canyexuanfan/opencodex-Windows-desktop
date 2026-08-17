@@ -56,3 +56,38 @@ decode that only confirms its own priors is not a decode.
   `gpt-5.6-luna` low for web discovery.
 - One decade doc per implementation phase; one phase per PABCD cycle.
 
+
+## Audit trail
+
+The first draft of this unit was submitted to an adversarial `gpt-5.6-sol`
+reviewer instructed to falsify it. It returned **FAIL with ten findings**, all of
+which were re-verified against source before being accepted. The unit was
+corrected rather than defended:
+
+| # | Finding | Resolution |
+|---|---------|------------|
+| 1 | `001` put arg buffering on `toolCallDelta`; it happens on `partialToolCall` (`protobuf-events.ts:1254`) | table corrected |
+| 2 | `003` presented two terminal rows as unconditional; both are `expectedClose`-conditional | table corrected |
+| 3 | `010` claimed a typed error makes the turn retryable; `committed` is set on HTTP/2 `connect` (`live-transport.ts:780`) so `canRetry` can never be true | claim withdrawn, retry test removed |
+| 4 | `010` wanted `finalizeTurnEvents` **and** `settleFail`, producing a double terminal | transport named sole terminal owner |
+| 5 | `010` equated `state.terminated` with a real `turnEnded`; the synthetic client-tool finalize also sets it (`:386`, `:750`) | meaning corrected, test 4 added |
+| 6 | `002` claimed image loss is the direct cause of resets; no live trace supports it | causal claim withdrawn |
+| 7 | `020` planned to reuse the MCP base64 decoder; `OcxImageContent` carries a `data:` or remote URL (`types.ts:156`) | data-URL parser specified, remote URLs scoped out |
+| 8 | `020`'s per-image cap cannot bound one `ConversationStep`, which is stored as a single blob | conversation-level byte budget, newest-first |
+| 9 | `030` claimed Grok gets no apply_patch guidance; `parser.ts:189` already attaches per-property guidance | root cause downgraded to "lossy conversion, cause unproven" |
+| 10 | `030`'s guidance would fire for every `openai-chat` provider and could demote a sibling edit tool | xai-scoped, suppressed when a sibling edit tool exists |
+
+Findings 3, 4, 5, 9, and 10 were load-bearing: acting on the original plan would
+have produced a double-terminal bug, a test that could never pass, and a prompt
+change leaking into unrelated providers.
+
+## Open follow-ups (deliberately not in this unit)
+
+- **Non-streaming reports a terminal-less turn as `completed`** (`bridge.ts:1829`).
+  Real, but fixing it needs evidence about whether Cursor ever legitimately ends
+  a stream without `turnEnded`; a wrong guess fails healthy turns. Not smuggled
+  into `010`.
+- **User-message images are placeholdered** (`request-builder.ts:201`,
+  `protobuf-request.ts:314`) although `SelectedImage` supports blob/inline data.
+  Separate capability, separate unit.
+

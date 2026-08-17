@@ -14,8 +14,8 @@ settle wins, later ones are ignored.
 | Connect end-stream frame with error or malformed payload | fatal (`:891`, `:900`) |
 | Successful `{}` trailer | **no settlement**; waits for HTTP/2 `end` (`:175`) |
 | Nonzero `grpc-status` trailer | fatal (`:970`) |
-| HTTP/2 `end` with leftover frame bytes | fatal `ConnectFrameError` (`:1015`) |
-| HTTP/2 `end` with zero frames | fatal unexpected EOF (`:1024`) |
+| HTTP/2 `end` with leftover frame bytes | fatal `ConnectFrameError` **unless `expectedClose`** (`:1016`) |
+| HTTP/2 `end` with zero frames | fatal unexpected EOF **unless `expectedClose`** (`:1024`) |
 | HTTP/2 `end` with >=1 complete frame | **unconditional graceful finish** (`:1029`) |
 | Socket/session error | fatal via `failAndClear` (`:824`, `:975`) |
 | Socket error after intentional client-tool suspension | graceful, `expectedClose` (`:806`) |

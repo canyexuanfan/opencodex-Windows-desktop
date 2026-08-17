@@ -1,18 +1,25 @@
 # 001 — Tool-call lifecycle decode
 
 Source: `src/adapters/cursor/protobuf-events.ts`. Verified by direct read plus
-an independent `gpt-5.6-sol` audit.
+an independent `gpt-5.6-sol` audit, then corrected after an adversarial audit.
 
 ## The lifecycle
 
-Cursor delivers a client tool call across three interaction updates, and the
+Cursor delivers a client tool call across several interaction updates, and the
 adapter deliberately does **not** mirror them one-to-one downstream:
 
 | Cursor update | Adapter action | Emitted downstream |
 |---------------|----------------|--------------------|
 | `toolCallStarted` (`:1249`) | `recordToolCall` opens the call | **nothing** (deferred) |
-| `toolCallDelta` (`:1265`) | `bufferToolArgs` keeps the longest cumulative args | nothing |
+| `partialToolCall` (`:1254`) | `recordToolCall` if new, then `bufferToolArgs` on `argsTextDelta` | nothing |
+| `toolCallDelta` (`:1265`) | **nothing** — returns `[]` | nothing |
 | `toolCallCompleted` (`:1269`) | `resolveCompletedArgs` + `commitToolCall` | `tool_call_start` -> `tool_call_delta` -> `tool_call_end` |
+
+**Correction (adversarial audit).** An earlier draft put argument buffering on
+`toolCallDelta`. That branch returns `[]` by design: Cursor's typed deltas cover
+native exec internals (shell/task/edit), while client Responses tools return as
+`McpToolCall` plus partial args text. Buffering happens on `partialToolCall`,
+which the original table omitted entirely.
 
 The deferral is intentional and correct: Cursor can open several calls in
 parallel or interleave their arg streams, while the Codex bridge tracks a single
@@ -48,6 +55,6 @@ Every `error` `CursorServerMessage` is turn-fatal downstream: it maps to
 ## Verdict
 
 The lifecycle itself is sound. Two prior hypotheses were disproved here (see
-`000`), and no change to this file is proposed for its own sake — `010` touches
-it only to route the clean-EOF terminal into the existing finalizer.
+`000`), and no change to this file is proposed for its own sake — `010` does not
+modify it at all in the revised plan.
 

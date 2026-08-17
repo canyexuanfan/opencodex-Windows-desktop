@@ -1,92 +1,102 @@
-# 010 — Phase 1: gate the clean-EOF terminal
+# 010 — Phase 1: fail an unlabeled EOF that truncates a tool call
 
 Answers **F1** (`003`). Severity High. One PABCD cycle.
+**Revised after an adversarial audit returned FAIL** (findings 3, 4, 5); the
+original plan is corrected below rather than defended.
 
 ## Problem restated
 
 `live-transport.ts:1029` settles gracefully whenever the HTTP/2 stream ends with
-at least one complete frame, regardless of whether Cursor ever sent the
-application-level `turnEnded`. The fail-closed open-tool-call check that already
-exists (`protobuf-events.ts:1361`) is therefore skipped exactly when it is
-needed, and non-streaming callers see `status: "completed"` on a truncated turn
-(`bridge.ts:1829`).
+at least one complete frame, without asking whether a terminal was ever emitted.
+When a client tool call is still open, its buffered arguments are discarded and
+nothing about the call reaches the bridge — the call simply never happened as far
+as Codex can tell.
 
-## Contract to establish
+## What `state.terminated` actually means (audit correction)
 
-A Cursor turn may only settle successfully when the application says it ended.
-Concretely, at the `end` handler, after the existing leftover-bytes and
-zero-frame checks:
+The original plan called it "a real `turnEnded` arrived". That is **wrong**.
+`finalizeTurnEvents` sets it, and two paths call it: the real `turnEnded` update
+(`protobuf-events.ts:1327`) and the synthetic client-tool finalize
+(`finalizeAfterDrain`, `live-transport.ts:386`, armed at `:750`) that ends the
+turn so the Responses bridge can own the client tool.
 
-1. If `state.terminated` is true — a real `turnEnded` was processed — settle
-   gracefully. Unchanged behavior.
-2. If `this.expectedClose` is true — we intentionally suspended the stream to run
-   a client tool — settle gracefully. Unchanged behavior; this path is how a
-   normal Responses-owned tool call works (`:737`, `:806`).
-3. Otherwise the stream ended without application termination. Run the same
-   finalization the `turnEnded` path runs, so open calls produce the existing
-   explicit truncation error, and settle **fail** with a typed error.
+That does not invalidate the check — it corrects its meaning. The predicate we
+need is **"was a terminal already emitted downstream?"**, and `state.terminated`
+is exactly that for both paths. The doc, not the code, was wrong.
 
-Point 3 is the whole change. It routes an unlabeled EOF into machinery that
-already exists rather than inventing new reporting.
+## Single terminal owner (audit correction)
 
-## Why fail rather than emit `done`
+The original plan wanted to call `finalizeTurnEvents` at EOF *and* `settleFail`.
+That is incoherent: with no open call the finalizer returns `done`
+(`protobuf-events.ts:1376`), so we would emit success and then fail the
+transport; with an open call the adapter would emit its error and then the
+`catch` at `cursor.ts:180` would emit a second one.
 
-Emitting `done` would assert the model finished its turn, which is precisely the
-claim we cannot support. A typed failure is also what makes the retry guard
-reachable: today a clean EOF throws nothing, so `transport-retry.ts:97` returns
-success without ever evaluating `canRetry`. With a thrown typed error, a turn
-that emitted nothing downstream (`!emittedAny`) and is still uncommitted becomes
-retryable — turning a dead turn into a transparent retry. The guard itself must
-not be loosened; replay after partial emission would duplicate output.
+**The transport owns this terminal.** At EOF the adapter does not call the
+finalizer at all. It fails with one typed error that carries the open call ids,
+and `cursor.ts:180` turns that into exactly one `error` event. `protobuf-events.ts`
+is not modified by this phase.
+
+## Scope: the open-tool-call case only
+
+Two sub-cases exist at an unlabeled EOF:
+
+| Sub-case | Decision |
+|----------|----------|
+| Open tool call(s) at EOF | **Fail.** Arguments are provably lost; a turn that silently drops a tool call is the reported symptom. |
+| No open call | **Leave as is** for now. Streaming already reports `response.incomplete` / `adapter_eof` (`bridge.ts:1283`). |
+
+The second row is deliberately out of scope. Non-streaming does default a
+terminal-less turn to `"completed"` (`bridge.ts:1829`), which is wrong, but
+fixing it requires evidence about whether Cursor ever legitimately ends a stream
+without `turnEnded` — and getting that wrong would fail healthy turns. It is
+recorded in `000_index.md` as an open follow-up, not smuggled into this phase.
+
+## Retry: claim withdrawn (audit correction)
+
+The original plan claimed a typed error would make the truncated turn retryable.
+**False.** `this.committed = true` is set on the HTTP/2 `connect` event
+(`live-transport.ts:780`), and any EOF that delivered a response frame is
+necessarily post-connect, so `requestUncommitted(transport)` is already false and
+`canRetry` cannot be true (`transport-retry.ts:99`). The commitment flag is
+correct — bytes reached the server, so replay could duplicate a side effect. No
+retry test belongs in this phase, and the guard stays untouched.
 
 ## Diff-level plan
 
-**`src/adapters/cursor/live-transport.ts`**
-
-- In the `end` handler's drain-then-classify block, after the `framesReceived === 0`
-  branch, add the termination check before `settler.settleFinish()`:
-  - allow graceful finish when `this.expectedClose` or the event state reports
-    terminated;
-  - otherwise `releaseBacklogLease()`, then `settler.settleFail(...)` with a new
-    typed error carrying the frame count and any open tool-call ids.
-- The event state is already reachable from the transport for finalization; if it
-  is not, thread the existing state reference rather than duplicating it.
-
 **`src/adapters/cursor/cursor-errors.ts`**
 
-- Add a `CursorStreamTruncatedError` (name it to match existing conventions in
-  that file) so the failure is typed, not a bare `Error`.
-- Classify it as **retryable** in `isRetryableCursorError` only for the
-  no-bytes-emitted case; the `!emittedAny` guard already enforces that, so the
-  classification stays simple.
+- Add `CursorStreamTruncatedError` following the file's existing error
+  conventions, carrying the open call ids and the frame count.
+- Do **not** classify it retryable: commitment already forbids replay.
 
-**`src/adapters/cursor/protobuf-events.ts`**
+**`src/adapters/cursor/live-transport.ts`**
 
-- No behavior change. `finalizeTurnEvents` is reused as-is; if it is not exported
-  in a form the transport can call at EOF, export a thin wrapper.
+- In the `end` handler's drain-then-classify block, before the final
+  `settler.settleFinish()`, add one branch: when `!this.expectedClose`, no
+  terminal has been emitted (`!state.terminated`), and the event state has open
+  tool calls, `releaseBacklogLease()` then `settler.settleFail(new
+  CursorStreamTruncatedError(...))`.
+- Everything else in that block is unchanged, including both existing
+  `expectedClose` exemptions.
 
-**`src/bridge.ts`** — out of scope for this phase. Once the adapter throws, the
-non-streaming `completed` default is no longer reachable via this path. A
-defensive change there would be a separate unit with its own evidence.
-
-## Tests (`tests/cursor-live-transport.test.ts`, or a new `cursor-eof-terminal.test.ts`)
+## Tests (`tests/cursor-eof-terminal.test.ts`)
 
 Each must fail before the change and pass after:
 
-1. **EOF after frames without `turnEnded`, no open call** -> transport rejects
-   with the typed truncation error, not a graceful finish.
-2. **EOF after frames with an open tool call** -> the emitted events include the
-   existing "incomplete tool call(s)" error naming the call id, and the run fails.
-3. **EOF after a real `turnEnded`** -> still settles gracefully, still emits
-   `done`. Regression guard for the normal path.
-4. **EOF during `expectedClose`** (client-tool suspension) -> still graceful.
-   This is the one that would break every working Computer Use turn if the gate
-   were written naively, so it is mandatory.
-5. **Retry**: a truncated EOF with nothing emitted downstream is retried; one
-   with prior emission is not.
+1. EOF after >=1 frame with an open tool call and no terminal -> run rejects with
+   `CursorStreamTruncatedError` naming the open call id.
+2. EOF after a real `turnEnded` -> still graceful, still emits `done`.
+3. EOF during `expectedClose` (client-tool suspension) with an open call -> still
+   graceful. This is the regression that would break every working Computer Use
+   turn, so it is mandatory.
+4. EOF after the synthetic client-tool finalize (`state.terminated` set, no
+   `turnEnded`) -> still graceful. Directly guards audit finding 5.
+5. EOF after >=1 frame with **no** open call -> unchanged graceful finish,
+   pinning the deliberate scope boundary above.
 
 ## Done when
 
-All five tests pass, `bun run typecheck` is clean, and the cursor-focused suite
-passes on `ssh lidge`. Evidence: exact command, output tail, pushed SHA.
+All five pass, `bun run typecheck` clean, cursor suite green on `ssh lidge`,
+pushed. Evidence: exact command, output tail, pushed SHA.
 

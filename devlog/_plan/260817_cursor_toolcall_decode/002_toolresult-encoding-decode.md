@@ -38,9 +38,16 @@ tools invoked through `CursorMcpManager`; it does not cover Codex
 placeholder is therefore not a wire limitation but an unfinished migration — the
 "phase 3" in its own text.
 
-This is the direct mechanism behind the reported symptom: a model driving
-Computer Use gets a blind result, cannot see what happened, and retries or
-resets.
+A model driving Computer Use therefore receives a blind result and cannot see
+what its own action did. That is a real capability loss, proven by source
+reading.
+
+**It is not proven to be the cause of the reported retries and session resets.**
+No live trace ties those symptoms to this branch, and the external evidence in
+`004` points at least partly elsewhere (the `node_repl` runtime). An adversarial
+audit flagged the original causal claim as unsupported; it is withdrawn. The
+defect stands on its own merits and does not need to explain every symptom to be
+worth fixing.
 
 ## The three result paths in `conversationTurns`
 
