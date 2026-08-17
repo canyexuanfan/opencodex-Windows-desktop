@@ -55,6 +55,25 @@ import {
   writeResponseSpillDurably,
 } from "../src/responses/spill-store";
 import { adapterNeedsForcedContinuation, injectDeveloperMessage } from "../src/server/responses";
+
+/**
+ * Windows without Developer Mode or admin cannot create a file symlink (EPERM).
+ * The cases below are irreducibly about symlink resolution -- following one, or
+ * refusing to -- so detect the privilege once and take a visible skip rather than
+ * failing in the fixture before the behaviour under test runs.
+ */
+const canSymlink = (() => {
+  const probeDir = mkdtempSync(join(tmpdir(), "ocx-state-symlink-probe-"));
+  try {
+    symlinkSync(join(probeDir, "probe-target"), join(probeDir, "probe-link"));
+    return true;
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code === "EPERM") return false;
+    throw e;
+  } finally {
+    rmSync(probeDir, { recursive: true, force: true });
+  }
+})();
 import {
   hardenSecretPath,
   hardenedSecretPathCountForTests,
@@ -1236,7 +1255,7 @@ describe("Responses previous_response_id state", () => {
     expect(responseStateMetrics()).toMatchObject({ spillStubCount: 1, spillWriteFailures: 0 });
   });
 
-  test("orphan cleanup obeys scan and cleanup caps rejects symlinks and counts failed unlink", () => {
+  test.skipIf(!canSymlink)("orphan cleanup obeys scan and cleanup caps rejects symlinks and counts failed unlink", () => {
     const dir = responseSpillDirectory(home);
     mkdirSync(dir, { recursive: true });
     const old = new Date(Date.now() - 20 * 60_000);
@@ -1510,7 +1529,7 @@ describe("Responses previous_response_id state", () => {
     for (const path of [live, current, young, unrelated, directory]) expect(existsSync(path)).toBe(true);
   });
 
-  test("load sweeps stale temps in a symlinked snapshot's real directory", () => {
+  test.skipIf(!canSymlink)("load sweeps stale temps in a symlinked snapshot's real directory", () => {
     // Atomic writes place their temp beside the RESOLVED target, so a dotfiles-managed
     // config dir strands temps where a scan of the literal home would never find them.
     const realDir = mkdtempSync(join(tmpdir(), "ocx-state-real-"));
@@ -2051,7 +2070,7 @@ describe("Responses state admission boundary (oversized direct-spill)", () => {
     expect(JSON.stringify(expanded.input)).toContain("b".repeat(64));
   });
 
-  test("oversized symlinked snapshot is refused before parse", () => {
+  test.skipIf(!canSymlink)("oversized symlinked snapshot is refused before parse", () => {
     const target = join(home, "big-snapshot-target.json");
     writeFileSync(target, `{"version":2,"states":[${" ".repeat(33 * 1024 * 1024)}]}`);
     symlinkSync(target, join(home, "responses-state.json"));
@@ -2060,7 +2079,7 @@ describe("Responses state admission boundary (oversized direct-spill)", () => {
     expect(responseAdmissionCountersForTests().snapshotOversizedRefusals).toBe(refusalsBefore + 1);
   });
 
-  test("snapshot symlinked to a non-regular target is never read", () => {
+  test.skipIf(!canSymlink)("snapshot symlinked to a non-regular target is never read", () => {
     // /dev/null is the safe non-regular fixture (a FIFO would block an unfixed
     // read forever — that hang IS the pre-fix behavior this guards).
     symlinkSync("/dev/null", join(home, "responses-state.json"));

@@ -7,6 +7,8 @@
  * them here breaks that cycle. `inject.ts` imports them back and re-exports the
  * two public predicates, so external callers see no change.
  */
+import { parseTomlString } from "./paths";
+
 export const OCX_SECTION_MARKER = "# Auto-injected by opencodex";
 
 export function isRootOpenaiBaseUrlLine(line: string): boolean {
@@ -16,7 +18,11 @@ export function isRootOpenaiBaseUrlLine(line: string): boolean {
 export function tomlStringPattern(key: string): RegExp {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const keyToken = `(?:${escaped}|"${escaped}"|'${escaped}')`;
-  return new RegExp(`^\\s*${keyToken}\\s*=\\s*["']([^"']+)["']\\s*(?:#.*)?$`);
+  // The quoted value is captured WITH its quotes so callers can decode it as TOML.
+  // A basic string escapes backslashes, so a Windows path is stored doubled; reading
+  // the raw bytes back returned a path that matched nothing on disk and made the
+  // journal's recorded catalog path un-restorable (#1798).
+  return new RegExp(`^\\s*${keyToken}\\s*=\\s*("(?:\\\\.|[^"])*"|'[^']*')\\s*(?:#.*)?$`);
 }
 
 export function rootTomlString(content: string, key: string): string | null {
@@ -26,7 +32,7 @@ export function rootTomlString(content: string, key: string): string | null {
   const pattern = tomlStringPattern(key);
   for (const line of rootLines) {
     const match = pattern.exec(line);
-    if (match?.[1]) return match[1].trim();
+    if (match?.[1]) return parseTomlString(match[1]).trim();
   }
   return null;
 }
@@ -45,7 +51,7 @@ export function providerTableString(content: string, provider: string, key: stri
   const pattern = tomlStringPattern(key);
   for (let index = start + 1; index < lines.length && !/^\s*\[/.test(lines[index]); index += 1) {
     const match = pattern.exec(lines[index]);
-    if (match?.[1]) return match[1].trim();
+    if (match?.[1]) return parseTomlString(match[1]).trim();
   }
   return null;
 }

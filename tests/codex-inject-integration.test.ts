@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach, setDefaultTimeout } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -9,8 +9,11 @@ import {
   MANAGED_AGENTS_TABLE_MARKER,
   MANAGED_SUBAGENT_DEFAULT_MARKER,
 } from "../src/codex/subagent-defaults";
+import { SPAWN_BUDGET_MS } from "./helpers/test-budget";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
+
+setDefaultTimeout(SPAWN_BUDGET_MS);
 
 // Full injectCodexConfig runs in a subprocess with isolated CODEX_HOME/OPENCODEX_HOME so
 // module-level path constants bind to the temp dirs (same pattern as codex-journal.test.ts).
@@ -25,6 +28,7 @@ function runInject(codexHome: string, ocxHome: string, configJson = "{}"): { std
     cwd: repoRoot,
     env: { ...process.env, CODEX_HOME: codexHome, OPENCODEX_HOME: ocxHome, TEST_OCX_CONFIG: configJson },
     encoding: "utf8",
+    timeout: SPAWN_BUDGET_MS - 5_000,
   });
   return { stdout: result.stdout?.trim() ?? "", status: result.status ?? 1 };
 }
@@ -38,6 +42,7 @@ function runRestore(codexHome: string, ocxHome: string): { stdout: string; statu
     cwd: repoRoot,
     env: { ...process.env, CODEX_HOME: codexHome, OPENCODEX_HOME: ocxHome },
     encoding: "utf8",
+    timeout: SPAWN_BUDGET_MS - 5_000,
   });
   return { stdout: result.stdout?.trim() ?? "", status: result.status ?? 1 };
 }

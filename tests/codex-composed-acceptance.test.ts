@@ -32,6 +32,7 @@ import {
   resolveEffectiveUserIdentity,
 } from "../src/codex/user-identity";
 import { claimOwnedServiceHome } from "./helpers/owned-service-home";
+import { SERVER_BUDGET_MS } from "./helpers/test-budget";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const cliPath = resolve(repoRoot, "src/cli/index.ts");
@@ -107,6 +108,10 @@ class Fixture {
     return {
       HOME: home,
       USERPROFILE: userprofile,
+      // Windows os.homedir() follows USERPROFILE, while POSIX follows HOME.
+      // Pin the client-specific home so this fixture exercises the same Grok
+      // installation on every platform instead of reporting not_installed.
+      GROK_HOME: join(home, ".grok"),
       CODEX_HOME: this.codex,
       OPENCODEX_HOME: this.ocx,
       XDG_RUNTIME_DIR: this.runtime,
@@ -199,7 +204,12 @@ class Fixture {
     expect(exitCode === 0 || (process.platform === "win32" && exitCode === 143)).toBe(true);
   }
 
-  async request(runtime: RuntimeRecord, path: string, init: RequestInit = {}): Promise<{ status: number; body: Record<string, unknown> }> {
+  async request(
+    runtime: RuntimeRecord,
+    path: string,
+    init: RequestInit = {},
+    timeoutMs = 10_000,
+  ): Promise<{ status: number; body: Record<string, unknown> }> {
     const response = await fetch(`http://127.0.0.1:${runtime.port}${path}`, {
       ...init,
       headers: {
@@ -207,7 +217,7 @@ class Fixture {
         ...(init.body ? { "content-type": "application/json" } : {}),
         ...(init.headers ?? {}),
       },
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     return { status: response.status, body: await response.json() as Record<string, unknown> };
   }
@@ -358,7 +368,9 @@ describe("WP13 composed toggle acceptance", () => {
           allowPrivateNetwork: true, liveModels: true,
         } }, defaultProvider: "fixture", clientIntegrations: { codex: true } });
         hold = true;
-        const stale = fx.request(server.runtime, "/api/sync", { method: "POST" });
+        // This request is intentionally held open while a second real HTTP
+        // mutation crosses the Windows process-backed identity path.
+        const stale = fx.request(server.runtime, "/api/sync", { method: "POST" }, SERVER_BUDGET_MS);
         await Promise.race([
           enteredGather,
           stale.then(result => Promise.reject(new Error(
@@ -367,7 +379,7 @@ describe("WP13 composed toggle acceptance", () => {
         ]);
         const off = await fx.request(server.runtime, "/api/native-integrations/codex", {
           method: "PUT", body: JSON.stringify({ enabled: false }),
-        });
+        }, SERVER_BUDGET_MS);
         expect(off.status).toBe(200);
         const afterOff = manifest(fx.codex);
         release();
