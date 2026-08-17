@@ -241,3 +241,56 @@ describe("Cursor tool-result image admission safety", () => {
     }
   });
 });
+
+
+describe("Cursor tool-result image encoding never enlarges a step", () => {
+  // Round-2 audit finding: at a 1024-byte ceiling an 831-char argument serialized to 993 bytes
+  // with the legacy placeholder but 1025 with the new one — the degraded placeholder itself
+  // pushed a previously admissible step over the limit. The invariant is that a degraded image
+  // must never cost MORE than the legacy text it replaced, so this compares the two encodings
+  // directly rather than guessing at an absolute ceiling.
+  test("a degraded image is never larger than the legacy placeholder it replaces", () => {
+    const legacyText = "[image input unsupported by Cursor adapter phase 3: auto]";
+    const oversized = `data:image/png;base64,${Buffer.from(new Uint8Array(4096).fill(3)).toString("base64")}`;
+
+    setCursorBlobLimitsForTests({ maxEntryBytes: 2048 });
+    try {
+      const items = toolResultItems(request([{ type: "image", imageUrl: oversized }]));
+      expect(items).toBeDefined();
+      expect(items!.length).toBe(1);
+      expect(items![0].content.case).toBe("text");
+      const emitted = items![0].content.case === "text" ? items![0].content.value.text : "";
+      // The whole point: our replacement text is not bigger than what shipped before.
+      expect(emitted.length).toBeLessThanOrEqual(legacyText.length);
+    } finally {
+      setCursorBlobLimitsForTests();
+    }
+  });
+
+  test("an undecodable image placeholder also stays within the legacy budget", () => {
+    const legacyText = "[image input unsupported by Cursor adapter phase 3: auto]";
+    for (const url of ["https://example.com/a.png", "data:image/png;base64,!!!bad!!!"]) {
+      const items = toolResultItems(request([{ type: "image", imageUrl: url }]));
+      const emitted = items && items[0].content.case === "text" ? items[0].content.value.text : "";
+      expect(emitted.length).toBeLessThanOrEqual(legacyText.length);
+    }
+  });
+
+  test("degrading many images stays fast (images are decoded once, not per attempt)", () => {
+    setCursorBlobLimitsForTests({ maxEntryBytes: 8192 });
+    try {
+      const img = `data:image/png;base64,${Buffer.from(new Uint8Array(9 * 1024).fill(4)).toString("base64")}`;
+      const parts = Array.from({ length: 40 }, () => ({ type: "image" as const, imageUrl: img }));
+      const started = Date.now();
+      const items = toolResultItems(request(parts));
+      const elapsed = Date.now() - started;
+
+      expect(items).toBeDefined();
+      expect(items!.every(i => i.content.case === "text")).toBe(true);
+      // Re-decoding base64 on every shrink attempt measured ~3s for 100 images before the fix.
+      expect(elapsed).toBeLessThan(2000);
+    } finally {
+      setCursorBlobLimitsForTests();
+    }
+  });
+});

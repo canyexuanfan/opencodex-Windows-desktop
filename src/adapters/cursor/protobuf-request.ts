@@ -361,18 +361,44 @@ function decodeInlineImage(imageUrl: string): { bytes: Uint8Array; mimeType: str
   }
 }
 
+/**
+ * A degraded image must never make a step LARGER than the legacy encoding did, or this change
+ * could fail admission for a request that previously fit. The old placeholder was
+ * `[image input unsupported by Cursor adapter phase 3: <detail>]`; anything we emit in its place
+ * is truncated to that budget so the zero-image case is byte-bounded by the pre-change behavior.
+ */
+const LEGACY_IMAGE_PLACEHOLDER_BUDGET =
+  "[image input unsupported by Cursor adapter phase 3: auto]".length;
+
 function imagePlaceholder(reason: string): string {
-  return `[image omitted from Cursor replay: ${reason}]`;
+  const text = `[image omitted: ${reason}]`;
+  return text.length <= LEGACY_IMAGE_PLACEHOLDER_BUDGET
+    ? text
+    : `${text.slice(0, LEGACY_IMAGE_PLACEHOLDER_BUDGET - 1)}]`;
 }
 
-/** How many parts of this result are inline images we could actually send. */
-function inlineImageCount(message: OcxToolResultMessage): number {
+type DecodedResultPart =
+  | { kind: "text"; text: string }
+  | { kind: "image"; bytes: Uint8Array; mimeType: string }
+  | { kind: "undecodable" };
+
+/**
+ * Decode a tool result's parts ONCE. `toolCallStep` may re-serialize a step several times while
+ * shrinking it to fit blob admission, and decoding base64 on every attempt made that loop
+ * quadratic (an audit measured ~3s for 100 images).
+ */
+function decodeResultParts(message: OcxToolResultMessage): DecodedResultPart[] | undefined {
   const content = message.content;
-  if (typeof content === "string") return 0;
-  return content.reduce(
-    (count, part) => count + (part.type === "image" && decodeInlineImage(part.imageUrl) ? 1 : 0),
-    0,
-  );
+  if (typeof content === "string") return undefined;
+  return content.map((part): DecodedResultPart => {
+    if (part.type === "text") return { kind: "text", text: part.text };
+    const decoded = decodeInlineImage(part.imageUrl);
+    return decoded ? { kind: "image", ...decoded } : { kind: "undecodable" };
+  });
+}
+
+function countImages(parts: DecodedResultPart[] | undefined): number {
+  return parts ? parts.filter(p => p.kind === "image").length : 0;
 }
 
 /**
@@ -383,42 +409,46 @@ function inlineImageCount(message: OcxToolResultMessage): number {
  * Flattening them to placeholder text blinded every screenshot-returning tool (Computer Use,
  * browser QA) that Codex routes through this path.
  */
-function toolResultContentItems(message: OcxToolResultMessage, maxImages = Number.POSITIVE_INFINITY) {
-  const content = message.content;
-  if (typeof content === "string") {
+function toolResultContentItems(
+  message: OcxToolResultMessage,
+  decoded?: DecodedResultPart[],
+  maxImages = Number.POSITIVE_INFINITY,
+) {
+  const parts = decoded ?? decodeResultParts(message);
+  if (!parts) {
+    const text = typeof message.content === "string" ? message.content : "";
     return [create(McpToolResultContentItemSchema, {
-      content: { case: "text" as const, value: create(McpTextContentSchema, { text: content }) },
+      content: { case: "text" as const, value: create(McpTextContentSchema, { text }) },
     })];
   }
   // Images are dropped OLDEST first when the step must shrink: the most recent screenshot is the
   // one the model is reasoning about, so it is the last to go.
-  const totalImages = inlineImageCount(message);
+  const totalImages = countImages(parts);
   const allowed = Math.max(0, Math.min(totalImages, maxImages));
   let seen = 0;
-  return content.map(part => {
-    if (part.type === "text") {
+  return parts.map(part => {
+    if (part.kind === "text") {
       return create(McpToolResultContentItemSchema, {
         content: { case: "text" as const, value: create(McpTextContentSchema, { text: part.text }) },
       });
     }
-    const decoded = decodeInlineImage(part.imageUrl);
-    if (!decoded) {
+    if (part.kind === "undecodable") {
       return create(McpToolResultContentItemSchema, {
-        content: { case: "text" as const, value: create(McpTextContentSchema, { text: imagePlaceholder("not an inline data URL") }) },
+        content: { case: "text" as const, value: create(McpTextContentSchema, { text: imagePlaceholder("no inline data") }) },
       });
     }
     seen++;
     if (seen <= totalImages - allowed) {
       return create(McpToolResultContentItemSchema, {
         content: { case: "text" as const, value: create(McpTextContentSchema, {
-          text: imagePlaceholder(`${decoded.bytes.byteLength} bytes did not fit the step's blob admission limit`),
+          text: imagePlaceholder(`${part.bytes.byteLength}B over step limit`),
         }) },
       });
     }
     return create(McpToolResultContentItemSchema, {
       content: { case: "image" as const, value: create(McpImageContentSchema, {
-        data: decoded.bytes,
-        mimeType: decoded.mimeType,
+        data: part.bytes,
+        mimeType: part.mimeType,
       }) },
     });
   });
@@ -451,6 +481,7 @@ function toolCallStep(
   const args: Record<string, Uint8Array> = {};
   for (const [key, value] of Object.entries(part.arguments ?? {})) args[key] = argBytes(value);
   const toolName = namespacedToolName(part.namespace, part.name);
+  const decodedResult = result ? decodeResultParts(result) : undefined;
   const serialize = (maxImages: number): Uint8Array => toBinary(ConversationStepSchema, create(ConversationStepSchema, {
     message: {
       case: "toolCall",
@@ -465,7 +496,7 @@ function toolCallStep(
               providerIdentifier: OCX_RESPONSES_TOOL_PROVIDER,
               args,
             }),
-            ...(result ? { result: toolResultPart(result, maxImages) } : {}),
+            ...(result ? { result: toolResultPart(result, decodedResult, maxImages) } : {}),
           }),
         },
       }),
@@ -478,7 +509,7 @@ function toolCallStep(
   // admitted step past the ceiling). Measure the real serialized size instead, then drop images —
   // oldest first, so the most recent screenshot survives — until the step fits.
   const limit = cursorBlobMaxEntryBytes();
-  const imageCount = result ? inlineImageCount(result) : 0;
+  const imageCount = countImages(decodedResult);
   let encoded = serialize(imageCount);
   for (let allowed = imageCount - 1; allowed >= 0 && encoded.byteLength > limit; allowed--) {
     encoded = serialize(allowed);
@@ -486,13 +517,13 @@ function toolCallStep(
   return storeCursorBlob(encoded, requestScope);
 }
 
-function toolResultPart(message: OcxToolResultMessage, maxImages?: number) {
+function toolResultPart(message: OcxToolResultMessage, decoded?: DecodedResultPart[], maxImages?: number) {
   return create(McpToolResultSchema, {
     result: {
       case: "success",
       value: create(McpSuccessSchema, {
         isError: message.isError,
-        content: toolResultContentItems(message, maxImages),
+        content: toolResultContentItems(message, decoded, maxImages),
       }),
     },
   });
