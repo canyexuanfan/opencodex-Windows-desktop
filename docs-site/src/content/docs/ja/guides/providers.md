@@ -14,7 +14,7 @@ description: opencodex が LLM プロバイダーを認証し通信するすべ�
 | `openai-apikey` | OpenAI API | 設定された API キー/キープールのみを使い、Codex アカウントは読みません。 |
 
 bare `gpt-5.6-sol` は Providers ページの Pool/Direct オプションに従い、
-`openai-apikey/gpt-5.6-sol` は API を選択します。認証情報経路間のフォールバックはありません。API は context 1,050,000 /
+`openai-apikey/gpt-5.6-sol` は API を選択します。認証情報経路間のフォールバックはありません。API は context 922,000 /
 max input 922,000 で `*-pro` virtual ID は公開状態を維持し、wire でベースモデルと
 `reasoning.mode: "pro"` に切り替わります。
 
@@ -359,9 +359,9 @@ Sol/Terra/Luna をフォールバックリストに入れています。
 
 | Codex 経路 | 事前登録されたモデル ID | Codex に表示されるコンテキスト |
 | --- | --- | --- |
-| Codex ログイン(Pool または Direct) | `gpt-5.6-*` | 1,050,000 |
-| OpenAI (API キー) | `openai-apikey/gpt-5.6-*` と `*-pro` | 1,050,000 (max input 922,000) |
-| OpenRouter | `openrouter/openai/gpt-5.6-sol`、`openrouter/openai/gpt-5.6-terra`、`openrouter/openai/gpt-5.6-luna` | 1,050,000 |
+| Codex ログイン(Pool または Direct) | `gpt-5.6-*` | 922,000 |
+| OpenAI (API キー) | `openai-apikey/gpt-5.6-*` と `*-pro` | 922,000 (max input 922,000) |
+| OpenRouter | `openrouter/openai/gpt-5.6-sol`、`openrouter/openai/gpt-5.6-terra`、`openrouter/openai/gpt-5.6-luna` | 922,000 |
 | Cursor | `cursor/gpt-5.6-sol`、`cursor/gpt-5.6-terra`、`cursor/gpt-5.6-luna` | 1,000,000 |
 
 ネイティブ GPT-5.6 項目は固定の上流推論段階に従います。例えば Luna には

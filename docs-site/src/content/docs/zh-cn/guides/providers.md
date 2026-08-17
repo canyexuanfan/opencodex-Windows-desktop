@@ -13,7 +13,7 @@ description: opencodex 进行身份验证并与 LLM 提供商通信的所有方�
 | `openai-apikey` | OpenAI API | 只使用配置的 API key/key pool；不读取 Codex 账户。 |
 
 bare `gpt-5.6-sol` 遵循 Providers 页面中的 Pool/Direct 选项，
-`openai-apikey/gpt-5.6-sol` 选择 API。凭证路径之间不会 fallback。API 元数据为 1,050,000 context /
+`openai-apikey/gpt-5.6-sol` 选择 API。凭证路径之间不会 fallback。API 元数据为 922,000 context /
 922,000 max input；`*-pro` virtual id 保留在公开状态中，线上改写为 base 模型加
 `reasoning.mode: "pro"`。
 
@@ -335,9 +335,9 @@ GPT-5.6 Sol/Terra/Luna 会预置在提供商的回退列表中，因此即使实
 
 | Codex 路由 | 预置模型 id | Codex 中显示的上下文 |
 | --- | --- | --- |
-| Codex 登录（Pool 或 Direct） | `gpt-5.6-*` | 1,050,000 |
-| OpenAI (API key) | `openai-apikey/gpt-5.6-*` 和 `*-pro` | 1,050,000（max input 922,000） |
-| OpenRouter | `openrouter/openai/gpt-5.6-sol`、`openrouter/openai/gpt-5.6-terra`、`openrouter/openai/gpt-5.6-luna` | 1,050,000 |
+| Codex 登录（Pool 或 Direct） | `gpt-5.6-*` | 922,000 |
+| OpenAI (API key) | `openai-apikey/gpt-5.6-*` 和 `*-pro` | 922,000（max input 922,000） |
+| OpenRouter | `openrouter/openai/gpt-5.6-sol`、`openrouter/openai/gpt-5.6-terra`、`openrouter/openai/gpt-5.6-luna` | 922,000 |
 | Cursor | `cursor/gpt-5.6-sol`、`cursor/gpt-5.6-terra`、`cursor/gpt-5.6-luna` | 1,000,000 |
 
 原生 GPT-5.6 条目保留固定的上游 reasoning 档位，例如 Luna 有 `max`，但没有 `ultra`。路由条目

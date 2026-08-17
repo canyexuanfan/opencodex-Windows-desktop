@@ -14,8 +14,20 @@ import { nativeOpenAiContextWindow, type CatalogModel } from "../codex/catalog";
 
 const ONE_MILLION = 1_000_000;
 
-/** Auto-context defaults (devlog 260712 020, user-approved). */
-export const AUTO_COMPACT_WINDOW_DEFAULT = 350_000;
+/**
+ * Auto-context defaults (devlog 260712 020, user-approved).
+ *
+ * The compact window is the token count at which Claude Code starts compacting, and it is
+ * also the floor `shouldMarkOneMillion` uses — a model may only carry the marker if it can
+ * host this window. 350,000 was chosen when the widest native row advertised 372,000.
+ *
+ * It now matches the auto-compaction limit the Codex catalog ships for the same models
+ * (`nativeAutoCompactLimit`: 829,800 against the 922,000 native window). Leaving the two
+ * apart meant one model compacting at 350k under Claude Code and at 829,800 under Codex.
+ * The value stays clear of the measured 922,000 ceiling by ~92k, so compaction still has
+ * room to run before the upstream refuses.
+ */
+export const AUTO_COMPACT_WINDOW_DEFAULT = 829_800;
 export const AUTO_CONTEXT_FLOOR = 200_000;
 /** Binary-verified accepted range for CLAUDE_CODE_AUTO_COMPACT_WINDOW (2.1.207: pSo=1e5, yDs=1e6). */
 export const AUTO_COMPACT_WINDOW_MIN = 100_000;
