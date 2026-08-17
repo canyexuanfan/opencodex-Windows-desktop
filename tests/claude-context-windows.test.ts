@@ -22,9 +22,9 @@ describe("claude context-window map (devlog 260712 B2)", () => {
   test("registers native slugs (bare + desktop alias + legacy alias)", () => {
     const map = buildClaudeContextWindows(["gpt-5.6-sol", "gpt-5.4"], []);
     // Authoritative native overrides: gpt-5.6 natives 372k, gpt-5.4 native 1M.
-    expect(map["gpt-5.6-sol"]).toBe(1_050_000);
-    expect(map[desktop3pAlias("native", "gpt-5.6-sol")]).toBe(1_050_000);
-    expect(map["claude-ocx-native--gpt-5.6-sol"]).toBe(1_050_000);
+    expect(map["gpt-5.6-sol"]).toBe(922_000);
+    expect(map[desktop3pAlias("native", "gpt-5.6-sol")]).toBe(922_000);
+    expect(map["claude-ocx-native--gpt-5.6-sol"]).toBe(922_000);
     expect(map["gpt-5.4"]).toBe(1_000_000);
   });
 
@@ -129,21 +129,21 @@ describe("auto-context (devlog 260712 020 + audit 021)", () => {
     ]);
     expect(map["gpt-5.6-luna"]).toBe(400_000);
     expect(map["shared-model"]).toBeUndefined();
-    expect(map["gpt-5.6-sol"]).toBe(1_050_000); // native override, not 999k
+    expect(map["gpt-5.6-sol"]).toBe(922_000); // native override, not 999k
   });
 
-  test("effectiveModelEnv marks an authoritative 1M native slot, and auto-context cannot widen a sub-1M one", () => {
+  test("auto-context marks a wide native slot, and turning it off unmarks anything under 1M", () => {
     const windows = buildClaudeContextWindows(["gpt-5.6-sol"], []);
     const env = effectiveModelEnv({ model: "gpt-5.6-sol" }, windows);
     expect(env.ANTHROPIC_MODEL).toBe("gpt-5.6-sol[1m]");
     // Readable-alias slot value gets the same marking (audit 051 #4).
     const readable = effectiveModelEnv({ model: "claude-ocx-native--gpt-5.6-sol" }, windows);
     expect(readable.ANTHROPIC_MODEL).toBe("claude-ocx-native--gpt-5.6-sol[1m]");
-    // The 5.6 family is authoritatively 1M+ now, so the marker does NOT depend on
-    // auto-context: turning it off keeps the marker.
+    // The marker above comes from auto-context (922k clears the compact window), NOT from an
+    // authoritative 1M window: the 5.6 family advertises 922,000, a cap held under its
+    // measured ceiling. So switching auto-context off takes the marker away (#854).
     const solOff = effectiveModelEnv({ model: "gpt-5.6-sol", autoContext: false }, windows);
-    expect(solOff.ANTHROPIC_MODEL).toBe("gpt-5.6-sol[1m]");
-    // A genuinely sub-1M native still never gets marked with auto-context off (#854).
+    expect(solOff.ANTHROPIC_MODEL).toBe("gpt-5.6-sol");
     const subWindows = buildClaudeContextWindows(["gpt-5.5"], []);
     const off = effectiveModelEnv({ model: "gpt-5.5", autoContext: false }, subWindows);
     expect(off.ANTHROPIC_MODEL).toBe("gpt-5.5");

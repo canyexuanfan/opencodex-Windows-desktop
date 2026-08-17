@@ -100,25 +100,37 @@ export function isUnsupportedOpenAiNativeSlug(slug: string): boolean {
 }
 
 /**
- * Advertised total context for the Codex-login native GPT-5.6 family.
+ * Advertised context for the Codex-login native GPT-5.6 family.
  *
- * Measured on 2026-08-17 against a real Codex-login account, not taken from the live
- * catalog: `GET /backend-api/codex/models` reports `context_window: 272000` /
- * `max_context_window: 872000` for these slugs, yet a `POST /backend-api/codex/responses`
- * probe admitted 921,508 input tokens and refused 922,013 with
- * `error.code: context_length_exceeded` on sol, terra and luna alike. That boundary is
- * exactly the 922,000 max-input the API-key side of this repo already declares
- * (`src/providers/registry.ts`), and 1,050,000 = 922,000 input + 128,000 output.
- * Evidence: devlog/_plan/260817_native_gpt56_1m_context/001_measurement_evidence.md.
+ * This is an OPERATING CAP, not the hard ceiling — the same shape upstream uses. The live
+ * catalog reports `context_window: 272000` against a `max_context_window: 872000` for these
+ * slugs, and gpt-5.4 runs 272,000 against 1,000,000: the advertised window is always well
+ * inside what the model can take.
+ *
+ * The hard ceiling here was measured on 2026-08-17 against a real Codex-login account:
+ * `POST /backend-api/codex/responses` admitted 921,508 input tokens and refused 922,013 with
+ * `error.code: context_length_exceeded` on sol, terra and luna alike.
+ *
+ * Codex spends `context_window * effective_context_window_percent`, which defaults to 95%
+ * (codex-rs `openai_models.rs` / `turn_context.rs`). So this value yields a 875,900-token
+ * budget and leaves ~46k of headroom under the measured ceiling. An earlier release shipped
+ * 1,050,000 here, which spent 997,500 — past what the upstream accepts.
+ *
+ * Do NOT back-solve this from the ceiling (970,000 would land the budget at 921,500, inside
+ * the 1,840-token gap between the last success and the first refusal). The 95% is a safety
+ * margin to keep, not a discount to cancel out.
+ *
+ * Evidence: devlog/_plan/260817_native_gpt56_1m_context/001_measurement_evidence.md
+ * and 014_final_922k_with_margin.md.
  */
-export const NATIVE_GPT56_CONTEXT_WINDOW = 1_050_000;
+export const NATIVE_GPT56_CONTEXT_WINDOW = 922_000;
 
 /**
- * Largest input the native GPT-5.6 family actually accepts (measured; see above).
+ * Hard ceiling: the largest input the native GPT-5.6 family actually accepts (measured).
  *
- * This is deliberately NOT `contextWindow * 0.9`: that would be 945,000, which the
- * upstream refuses. Every derived limit — auto-compaction, admission ceilings, the
- * Anthropic `max_input_tokens` surface — has to clamp to this instead.
+ * Equal to the advertised window above rather than below it, because that window is already
+ * capped under this ceiling. The clamp stays because routed and API-key rows carry the same
+ * family at a 1,050,000 window, where 90% (945,000) WOULD overshoot this limit.
  */
 export const NATIVE_GPT56_MAX_INPUT_TOKENS = 922_000;
 
