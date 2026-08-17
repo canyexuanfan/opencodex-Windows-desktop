@@ -175,7 +175,7 @@ export function assertTrustedSystemExecutableForTests(candidate: string, label: 
   return assertTrustedSystemExecutable(candidate, label);
 }
 
-type ElevationExeOverrides = { powershell?: string; schtasks?: string; taskkill?: string };
+type ElevationExeOverrides = { powershell?: string; schtasks?: string; taskkill?: string; icacls?: string };
 let elevationExeOverridesForTests: ElevationExeOverrides | null = null;
 
 /**
@@ -218,6 +218,15 @@ export function resolveTrustedWindowsTaskkillExe(): string {
   }
   const candidate = join(resolveTrustedWindowsSystemDirectory(), "taskkill.exe");
   return assertTrustedSystemExecutable(candidate, "taskkill.exe");
+}
+
+/** Absolute path to System32\\icacls.exe from a trusted system directory. */
+export function resolveTrustedWindowsIcaclsExe(): string {
+  if (elevationExeOverridesForTests?.icacls) {
+    return elevationExeOverridesForTests.icacls;
+  }
+  const candidate = join(resolveTrustedWindowsSystemDirectory(), "icacls.exe");
+  return assertTrustedSystemExecutable(candidate, "icacls.exe");
 }
 
 /** Stable machine-readable marker for a denied `schtasks /create`. Crosses the CLI→proxy boundary. */
