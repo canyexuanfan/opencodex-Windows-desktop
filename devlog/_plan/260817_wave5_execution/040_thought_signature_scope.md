@@ -103,3 +103,33 @@ implementation, not left to the guard's default.
 File the issue with these conditions, implement, close citing the merge SHA and the
 isolation + restart test output. If the discovery step shows no live caller, the
 issue records that finding instead of claiming a fix.
+## Outcome (executed) — discovery done, implementation deferred with reasons
+
+**The caller-discovery step resolved the open question, and the answer changes the
+shape of the work.** The round-1 audit could find no `src/` caller of the remember
+API and concluded the emit-before-commit defect might not be live. It is live. The
+callers are in `src/bridge.ts`, and they discard the durable promise explicitly:
+
+```ts
+void rememberExtraContentForReplay(currentToolCall.callId, currentToolCall.providerMetadata, replayCacheScope);
+...(rememberAndSerializeExtraContent(...).extra ?? {}),   // durable dropped
+emit("response.output_item.done", { output_index: currentToolCall.outputIndex, item });
+```
+
+in the streaming close path (freeform and function-call branches) and again on the
+non-streaming `pushOutput` path.
+
+**Why this is not a one-line fix.** `closeCurrentToolCall` is a *synchronous* closure
+writing into a `ReadableStream` controller. There is no `await` at that point, so
+"await durability before emit" requires either an async close path or a pre-emit
+barrier — a change to the streaming core, which `AGENTS.md` gates behind the full
+suite and which sits next to the subagent-fallback synchrony invariant documented in
+the repository root. That is its own work-phase, not a rider on a scope fix.
+
+**Filed as #1926** with both halves, the restart-stability constraint, the
+OAuth/key/local credential-identity split, the `version: 2` → `version: 3` migration
+requirement, and the exact caller locations. Terminal outcome for this cycle:
+**NEEDS_HUMAN on sequencing** — the fix is well-specified and the constraint that
+blocked the naive version is written down, but landing it means touching the
+streaming emit path, which deserves a maintainer's call on scheduling rather than an
+agent slipping it into a wave.
