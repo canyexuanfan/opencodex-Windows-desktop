@@ -285,6 +285,24 @@ function spawnFailedResult(): IcaclsResult {
   return { success: false, exitCode: null, timedOut: false, stdout: "" };
 }
 
+/**
+ * Spawn icacls asynchronously, or return null when the executable cannot be
+ * launched. The pipe/ignore stdio literals stay inferred here so `stdout` keeps
+ * its `ReadableStream` type instead of widening to the generic default.
+ */
+function trySpawnIcacls(args: string[]) {
+  try {
+    return Bun.spawn([resolveIcaclsExecutable(), ...args], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "ignore",
+      windowsHide: true,
+    });
+  } catch {
+    return null;
+  }
+}
+
 function defaultIcaclsRunner(args: string[], timeoutMs: number): IcaclsResult {
   // Bun.spawnSync with windowsHide: Node execFileSync has hung under the GUI/proxy even
   // with windowsHide, and console-subsystem tools flash a visible window otherwise.
@@ -313,17 +331,8 @@ function defaultIcaclsRunner(args: string[], timeoutMs: number): IcaclsResult {
  * we still await process exit before classifying so settlement is confirmed.
  */
 async function defaultAsyncIcaclsRunner(args: string[], timeoutMs: number): Promise<IcaclsResult> {
-  let proc: ReturnType<typeof Bun.spawn>;
-  try {
-    proc = Bun.spawn([resolveIcaclsExecutable(), ...args], {
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "ignore",
-      windowsHide: true,
-    });
-  } catch {
-    return spawnFailedResult();
-  }
+  const proc = trySpawnIcacls(args);
+  if (!proc) return spawnFailedResult();
   let timedOutByUs = false;
   const timer = setTimeout(() => {
     timedOutByUs = true;
