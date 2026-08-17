@@ -60,6 +60,14 @@ it:
   text-only condition and is left to the existing admission path — this phase must
   not change behavior for requests that carry no images.
 
+**The limit must come from the admission authority, not a copy.**
+`BLOB_MAX_ENTRY_BYTES` is private and test-overridable (`native-exec.ts:91`, `:122-126`).
+Hardcoding 16 MiB here would drift from admission the moment either side changes,
+and would let test 7 pass against a number the real store no longer uses. Export
+the effective limit (or a shared admission-threshold accessor) and pass it in, so
+the degrade loop and the admission check always agree — including when a test
+overrides it.
+
 That last clause is the real acceptance boundary: **no request that works today
 may start failing because of this phase.**
 
@@ -107,7 +115,9 @@ adapter directory)
 7. **Near-limit text plus an image**: the step is degraded to fit and the request
    still succeeds — the regression guard for round 2 finding 2.
 8. A request carrying **no** images serializes byte-identically to the pre-change
-   behavior.
+   behavior. Requires determinism: `crypto.randomUUID()` is called during
+   request construction (`protobuf-request.ts:509`, `:592`), so either
+   freeze it or compare deterministic nested step bytes against a pre-change fixture.
 9. The external replay path emits no image bytes and keeps its text budget.
 
 ## Done when

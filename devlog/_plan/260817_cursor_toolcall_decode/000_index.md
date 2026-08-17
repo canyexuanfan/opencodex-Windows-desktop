@@ -112,3 +112,24 @@ findings** on the other documents:
 Round 2 mattered most where it was least comfortable: findings 1 and 2 each
 showed a *correction* from round 1 was itself unimplementable. That is the
 argument for auditing revisions rather than only first drafts.
+
+### Round 3
+
+A third reviewer confirmed that F3 is now stated honestly and that `004`'s
+Connect/gRPC-web disambiguation is correct, then returned **FAIL with five
+findings** — every one a refinement of a round-2 correction:
+
+| # | Finding | Resolution |
+|---|---------|------------|
+| 1 | `020` never wires its degrade loop to the real limit authority; `BLOB_MAX_ENTRY_BYTES` is private and test-overridable (`native-exec.ts:91`, `:122-126`) | the effective limit is exported and passed, so the degrade loop and admission cannot drift |
+| 2 | `030`'s identity seam covered one construction site; adapters are rebuilt on retry/rotation (`core.ts:584` and seven more) | identity is mandatory at the route-resolver boundary; a reconstruction test is added |
+| 3 | Same-base-URL isolation does not prove identity gating; auth mode or headers could discriminate | the isolation test now uses an identical `OcxProviderConfig`, varying only identity |
+| 4 | "cannot demote a sibling tool" is an unsupported behavioral claim | wording shape specified (conditional, never "prefer"); residual risk recorded as live-test-dependent, not disproved |
+| 5 | The xAI paragraph was still too absolute | restated as a claim about the *documented contract*; object root or `anyOf`/`oneOf` branches are permitted |
+
+Also folded: test 8's byte-identical comparison must freeze `crypto.randomUUID()`
+(`protobuf-request.ts:509`, `:592`) or compare deterministic nested step bytes.
+
+The finding count fell 10 -> 7 -> 5 and the severity fell with it: round 3 found
+no unimplementable design, only under-specified ones. `010` has now been judged
+coherent, regression-free, and implementable by two independent reviewers.

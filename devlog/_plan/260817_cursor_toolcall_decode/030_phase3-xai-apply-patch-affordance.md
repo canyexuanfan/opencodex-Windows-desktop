@@ -53,6 +53,13 @@ hidden assumption. If that seam turns out to be more invasive than the experimen
 justifies, the honest move is to defer the phase, not to fake the gate with a
 host regex.
 
+**The seam must cover every reconstruction, not just the first build.** Adapters
+are rebuilt on retry and rotation paths (`server/responses/core.ts:584` and seven
+further sites through `:4135`), so identity has to be mandatory at the
+route-resolver boundary rather than passed at one call site. Otherwise the
+guidance silently disappears after a failover — the worst kind of bug, since it
+only manifests on the retry path the user never sees.
+
 ## The sibling-tool predicate is under-specified (round 2, finding 3)
 
 "Suppress when another edit-capable tool exists" has no definition. `OcxTool`
@@ -61,18 +68,30 @@ arbitrary MCP edit tools, and description matching would suppress the experiment
 whenever ordinary code-mode `exec` is present (`tool-catalog-nudge.ts:12-17`).
 
 **Resolution: drop the sibling-tool gate.** Replace it with a narrower, decidable
-rule — the note is phrased to describe how to *call* `apply_patch` when it is
-used, not to command that it be preferred over every other tool. Guidance that
-does not claim exclusivity cannot demote a sibling tool, which removes the need
-for a predicate nobody can define.
+rule — the note describes how to *call* `apply_patch` when it is used, and never
+asserts it should be preferred over another tool. Required wording shape:
+conditional, not imperative — "when using `apply_patch`, pass the entire patch
+as the `input` string, beginning `*** Begin Patch` …" — with no "prefer",
+"always", or "for every file edit".
+
+**This reduces demotion risk; it does not eliminate it.** Any added system-level
+emphasis can shift relative tool selection even without exclusivity language, and
+no unit test can measure that. Residual sibling-selection risk is therefore
+live-test-dependent and is recorded as an accepted risk of running the
+experiment, not as something the tests below disprove.
 
 ## xAI capability, corrected (round 2, finding 5)
 
 The earlier statement that xAI describes Chat Completions as "function-calling
-only" was too strong. Current xAI documentation demonstrates custom function
-calling through `/v1/responses`, while still requiring object-root JSON-schema
-function tools — so native Responses would **not** preserve Codex's freeform
-grammar automatically; lowering remains necessary either way.
+only" was too strong. Current xAI documentation demonstrates function calling
+through `/v1/responses` and accepts an object root or `anyOf`/`oneOf` whose
+branches are objects. What it documents are **Responses function tools**, not
+Codex-style freeform `type: "custom"` grammar tools.
+
+Stated precisely: **the documented contract does not preserve freeform grammar**,
+so lowering to `{input: string}` would still be required on that route. That is
+a statement about the documentation, not a proof that the endpoint would reject a
+grammar tool — only the planned live probe can settle that.
 <https://docs.x.ai/developers/tools/function-calling>
 
 Any option-3 evaluation must also distinguish public API-key Responses support
@@ -99,19 +118,22 @@ rather than iterating on wording.
 ## Tests (`tests/xai-apply-patch-guidance.test.ts`)
 
 1. xai + freeform `apply_patch` -> the note appears exactly once.
-2. A non-xai `openai-chat` provider **with the same base URL** -> no note.
-   Same-URL is mandatory: it is what proves identity gating rather than host
-   sniffing (round 2 finding 1).
+2. A non-xai `openai-chat` provider using an **identical `OcxProviderConfig`
+   object** -> no note. Only the separately threaded provider identity may vary.
+   Same-URL alone is insufficient: auth mode, headers, or the fetch wrapper could
+   otherwise be doing the discriminating (round 3 finding 3).
 3. xai without `apply_patch` -> no note.
 4. The advertised tool remains `type: "function"` with `{input: string}` —
    guidance must not alter the wire schema.
 5. A returned `apply_patch` call still decodes to a `custom_tool_call`
    (regression over `bridge.ts:621`).
 6. The provider-identity seam itself: a route's provider name reaches the adapter.
+7. **Reconstruction**: an adapter rebuilt on a retry/rotation path still carries
+   provider identity, so the note survives a failover (round 3 finding 2).
 
 ## Done when
 
-All six pass, typecheck clean, suite green on `ssh lidge`, pushed — and the
+All seven pass, typecheck clean, suite green on `ssh lidge`, pushed — and the
 report states plainly that the behavioral claim is **unverified pending a live
 xai run**. Passing tests prove delivery and isolation, never that Grok changed
 its mind.
