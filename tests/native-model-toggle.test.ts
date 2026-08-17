@@ -71,6 +71,25 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     expect(rows.find(r => r.slug === "gpt-5.6-sol")?.contextWindow).toBe(1_050_000);
   });
 
+  test("the native /api/models rows carry the input ceiling, not just the window", async () => {
+    // 1,050,000 is the window; 922,000 is the largest input the upstream accepts. A row that
+    // reports only the window tells the dashboard the whole thing is usable as input.
+    const rows = nativeModelRows({});
+    const sol = rows.find(row => row.slug === "gpt-5.6-sol");
+    expect(sol?.contextWindow).toBe(1_050_000);
+    expect(sol?.maxInputTokens).toBe(922_000);
+    // A cap lowers both numbers together — an input ceiling above the capped window would
+    // be nonsense.
+    const capped = nativeModelRows({ providerContextCaps: { openai: 272_000 } });
+    const cappedSol = capped.find(row => row.slug === "gpt-5.6-sol");
+    expect(cappedSol?.contextWindow).toBe(272_000);
+    expect(cappedSol?.maxInputTokens).toBe(272_000);
+    // A native model with no separate ceiling keeps reporting just its window.
+    const gpt55 = rows.find(row => row.slug === "gpt-5.5");
+    expect(gpt55?.contextWindow).toBe(272_000);
+    expect(gpt55?.maxInputTokens).toBeUndefined();
+  });
+
   test("nativeModelRows applies providerContextCaps.openai as a ceiling (#1430)", () => {
     const rows = nativeModelRows({
       disabledModels: [],
