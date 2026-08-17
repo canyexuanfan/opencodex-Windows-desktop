@@ -108,3 +108,31 @@ open follow-up in `000_index.md`. This removes one route to it, not the default.
 All four pass, `bun run typecheck` clean, cursor suite green on `ssh lidge`,
 pushed. Test 1 demonstrated red on the pre-fix tree.
 
+
+## Shipped
+
+Commits `f145fd513` (fix + tests) and `c9681d043` (review follow-up).
+
+The plan's tagging design survived implementation, with one correction the audit
+forced and one it surfaced afterwards:
+
+- **The guard is `!expectedClose && !emittedTerminal`,** not `!expectedClose`
+  alone. Tagging after a terminal was already queued would have added a second
+  one, and buffered JSON processes both — flipping a completed turn to failed.
+- **The typed error carries its own message**, because a raw `NGHTTP2_CANCEL`
+  string is re-matched by `classifyCursorError` and reported as an intentional
+  "Cursor stream suspended". A turn that failed unexpectedly would have claimed a
+  deliberate suspension, which is worse than the silent drop it replaced.
+- **It also re-exposes the originating transport code.** Wrapping hid it from the
+  `turn-failed` diagnostic, leaving the one summary that exists to explain this
+  failure without an error code. The regression test pins the non-obvious
+  consequence: carrying `NGHTTP2_CANCEL` back onto the wrapper must not make
+  `isCursorBenignCancelError` match it again — provenance is checked first.
+
+Implementation note: `classifyTurnFailure` is a closure beside `summarizeFailure`
+rather than a method, because `summarizeFailure` is itself a per-run closure over
+the turn's state. A method could not reach it.
+
+Verified on `ssh lidge` at `c9681d0435`: typecheck clean, 630 pass / 0 fail.
+Red-before-green demonstrated, and independently reproduced by the reviewer as
+4 pass / 1 fail under a mutation that disables the classification.
