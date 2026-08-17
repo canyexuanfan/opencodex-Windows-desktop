@@ -12,6 +12,7 @@ import {
   isWindowsCodexCandidateCommandLine,
   listCodexAppServerProcesses,
   listWindowsSnapshots,
+  parseWindowsSnapshotOutput,
   resetCodexAppServerCatalogStateCache,
   restartCodexAppServers,
   STALE_CODEX_APP_SERVER_HINT,
@@ -459,6 +460,44 @@ describe("Windows Win32_Process owner enumeration (#476)", () => {
     expect(processSource).toContain("WINDOWS_CODEX_BASENAME_CANDIDATE_RE.source");
     expect(processSource).toContain("powerShellSingleQuotedIgnoreCaseMatch");
     expect(WINDOWS_CODEX_BASENAME_CANDIDATE_RE.source).toContain("['\"]?");
+  });
+
+  // The top-level Get-CimInstance sits under `$ErrorActionPreference='SilentlyContinue'`.
+  // If it fails without `-ErrorAction Stop` and an outer catch, it emits nothing at all —
+  // which is byte-identical to a healthy machine running no Codex process. The existing
+  // coverage drives a *throwing* enumerator (by swapping `platform` so the real one fails
+  // on a missing binary); the path below is the one that returns cleanly empty, and it is
+  // the one that used to launder "we could not look" into "nothing is running".
+  test("a top-level CIM failure emits the sentinel, so an empty read is never not_running", () => {
+    const psCommand = { value: "" };
+    expect(() => listWindowsSnapshots((command) => {
+      psCommand.value = command;
+      // What PowerShell actually prints when the outer catch fires.
+      return "__OCX_ENUM_INCOMPLETE__\n";
+    })).toThrow("windows_enum_incomplete");
+
+    // The guard has to be on the top-level query itself, not only per-process.
+    expect(psCommand.value).toContain("Get-CimInstance Win32_Process -ErrorAction Stop");
+    expect(psCommand.value).toContain("} catch { \"__OCX_ENUM_INCOMPLETE__\" }");
+
+    // And the collector must turn that throw into unknown, never not_running.
+    const status = collectCodexAppServerCatalogState({
+      listSnapshots: () => listWindowsSnapshots(() => "__OCX_ENUM_INCOMPLETE__\n"),
+      catalogMtimeMs: () => 1_000,
+    });
+    expect(status.state).toBe("unknown");
+  });
+
+  test("a clean empty read still means not_running", () => {
+    // The other half of the contract: no sentinel, no rows, nothing wrong — the
+    // sentinel must not make every quiet machine look unreadable.
+    expect(listWindowsSnapshots(() => "")).toEqual([]);
+    expect(parseWindowsSnapshotOutput("")).toEqual([]);
+    const status = collectCodexAppServerCatalogState({
+      listSnapshots: () => listWindowsSnapshots(() => ""),
+      catalogMtimeMs: () => 1_000,
+    });
+    expect(status.state).toBe("not_running");
   });
 
   test.skipIf(process.platform !== "win32")(
