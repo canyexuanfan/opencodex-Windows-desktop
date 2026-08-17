@@ -134,9 +134,10 @@ widening. Phase 030 makes the primitive shared; Phase 031 adds the counters.
 ## F5 — `chmod` is load-bearing where it does nothing
 
 `src/config.ts` calls `chmodSync(target, 0o600)` at lines 221, 316, 450, 1713,
-2683 and 3937, and `chmodSync(dir, 0o700)` at 1704, 2632, each wrapped in
-`catch { /* platform may ignore chmod */ }`. The 3937 site is the invalid-config
-backup, which copies the whole config including whatever secrets it held. On Windows the call is a no-op:
+2683 and 3942, and `chmodSync(dir, 0o700)` at 1704, 2632, each wrapped in
+`catch { /* platform may ignore chmod */ }`. The 3942 site sits inside
+`backupInvalidConfig` (declared at 3937), which copies the whole config
+including whatever secrets it held. On Windows the call is a no-op:
 the ACL is what protects the file, and `src/lib/windows-secret-acl.ts` is what
 sets it.
 

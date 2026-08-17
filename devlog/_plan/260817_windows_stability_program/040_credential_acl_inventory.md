@@ -16,7 +16,7 @@ config including any secrets in it; dir sites 1704, 2632), `src/oauth/store.ts`,
 
 These are seeds, not the list. Start by re-deriving every `chmodSync` call in
 `src/` rather than trusting this enumeration — an incomplete seed list is
-exactly the false negative this phase exists to avoid, and the 3937 site was
+exactly the false negative this phase exists to avoid, and the 3942 site was
 missed on the first pass.
 
 For each, record: the file written, whether `hardenSecretPath` (or the async
