@@ -1334,7 +1334,7 @@ export const zhTW: Record<TKey, string> = {
   "claude.fastOn": "ON",
   "claude.fastOff": "OFF",
   "claude.autoContext": "自動利用大上下文",
-  "claude.autoContextDesc": "決定 1M 標記的範圍。開：所有超過 20 萬 token 的模型（GPT 系列等）都有大上下文條目；關：僅真正的 1M 模型有。",
+  "claude.autoContextDesc": "決定 1M 標記的範圍。開：視窗能容納壓縮門檻的模型都有大上下文條目；關：僅真正的 1M 模型有。",
   "claude.autoContextInert": "配置檔案中存在舊式上下文大小值（maxContextTokens），此功能暫不生效。刪除該值即可恢復。",
   "claude.autoCompactWindow": "自動摘要觸發點",
   "claude.autoCompactDefault": "350k（預設）",

@@ -20,7 +20,7 @@ ocx claude
 | `ANTHROPIC_BASE_URL` | `http://127.0.0.1:<port>` |
 | `ANTHROPIC_AUTH_TOKEN` | 프록시에 API 키가 필요할 때만 설정해요. 그 외에는 설정하지 않으므로 claude.ai 로그인(구독 + 커넥터)이 유지돼요 |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | `1` (기본 `/model` 선택기의 모델 검색) |
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 자동 컨텍스트 압축 임곗값(기본값 `350000`). 자동 컨텍스트가 켜져 있을 때만 주입해요 |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 자동 컨텍스트 압축 임곗값(기본값 `829800`). 자동 컨텍스트가 켜져 있을 때만 주입해요 |
 | `ANTHROPIC_MODEL` | `claudeCode.model` (선택 사항) |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `claudeCode.tierModels.haiku ?? claudeCode.smallFastModel` (선택 사항, 기존 `ANTHROPIC_SMALL_FAST_MODEL`도 지원) |
 | `ANTHROPIC_DEFAULT_{OPUS,SONNET,FABLE}_MODEL` | `claudeCode.tierModels.*` (선택 사항) |
@@ -150,7 +150,7 @@ Claude Code는 알 수 없는 모델의 컨텍스트를 200k 토큰으로 계산
 
 1. 실제 컨텍스트 창이 200k보다 크고 자동 압축 임곗값 이상인 모델의 선택기 행과 환경 슬롯에
    `[1m]` 표식이 붙어요.
-2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW`(기본값 `350000`, 범위 `100000`–`1000000`)를 주입해 해당
+2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW`(기본값 `829800`, 범위 `100000`–`1000000`)를 주입해 해당
    지점에서 대화를 자동으로 요약해요.
 
 설정 상태는 세 가지예요.
@@ -164,7 +164,7 @@ Claude 페이지에서 압축 값을 조절할 수 있어요. **경고:** 모델
 
 1M 미만인 네이티브 Anthropic 모델에는 자동으로 표식을 붙이지 않아요. 직접 내보낸 값이 항상
 우선하며, 프록시는 **사용자가 지정한** 값을 기준으로 어떤 모델에 안전하게 표식을 붙일지 결정해요.
-직접 편집한 설정값이 잘못되면 350k로 돌아가요.
+직접 편집한 설정값이 잘못되면 829,800로 돌아가요.
 
 ### 실제 모델 환경
 

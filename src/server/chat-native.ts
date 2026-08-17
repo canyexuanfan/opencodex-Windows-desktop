@@ -7,6 +7,7 @@ import {
   isChatCompletionsStreamError,
 } from "../chat/outbound";
 import { classifyError, CYBER_POLICY_ERROR_CODE, isCyberPolicyCode } from "../lib/errors";
+import type { AdmissionLease } from "../lib/admission";
 import { readBoundedResponseBody } from "../lib/bounded-body";
 import { redactSecretString } from "../lib/redact";
 import { resolveClientRetryAfter } from "../lib/retry-after";
@@ -39,6 +40,7 @@ import {
   type RequestLogContext,
 } from "./request-log";
 import { jsonCompletionSse, nativeChatSse, structuredError, usageFromChat } from "./chat-native-sse";
+import { registerTurn, unregisterTurn } from "./lifecycle";
 
 type Rec = Record<string, unknown>;
 
@@ -78,7 +80,7 @@ interface HandleNativeChatOptions {
   req: Request;
   config: OcxConfig;
   logCtx: RequestLogContext;
-  logIds?: { requestId: string; start: number };
+  logIds?: { requestId: string; start: number; turnAdmissionLease?: AdmissionLease };
   route: RouteResult;
   chatBody: Rec;
   requestedModel: string;
@@ -122,6 +124,21 @@ export async function handleNativeChatCompletions(options: HandleNativeChatOptio
 
   const upstream = new AbortController();
   const cleanupAbort = linkAbortSignal(upstream, req.signal);
+  // nativeChatSse already owns the translated stream's async pull/cancel path.
+  // Bind the lease to that same controller and its terminal callbacks instead
+  // of adding another trackStreamLifetime wrapper (unsafe on bundled Bun#32111).
+  let streamTurnRegistered = false;
+  const transferTurnToStream = () => {
+    const lease = logIds?.turnAdmissionLease;
+    if (!lease || typeof (lease as { bindAbortController?: unknown }).bindAbortController !== "function") return;
+    registerTurn(upstream, lease);
+    streamTurnRegistered = true;
+  };
+  const releaseStreamTurn = () => {
+    if (!streamTurnRegistered) return;
+    streamTurnRegistered = false;
+    unregisterTurn(upstream);
+  };
   const connectMs = config.connectTimeoutMs ?? 200_000;
   let activeProvider: OcxProviderConfig = route.provider;
   let activeAdapter: ProviderAdapter = createOpenAIChatAdapter(activeProvider);
@@ -276,6 +293,7 @@ export async function handleNativeChatCompletions(options: HandleNativeChatOptio
 
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
   if (contentType.includes("text/event-stream") && response.body) {
+    if (requestedStream) transferTurnToStream();
     const stream = nativeChatSse(response.body, {
       requestedModel,
       translatorBudget,
@@ -287,13 +305,21 @@ export async function handleNativeChatCompletions(options: HandleNativeChatOptio
       },
       ...(requestedStream ? {
         onTerminal: (status: number, message?: string) => {
-          cleanupAbort();
-          finishLog(status, message, "terminal");
+          try {
+            cleanupAbort();
+            finishLog(status, message, "terminal");
+          } finally {
+            releaseStreamTurn();
+          }
         },
         onCancel: () => {
-          cleanupAbort();
-          upstream.abort();
-          finishLog(499, undefined, "client_cancel");
+          try {
+            cleanupAbort();
+            upstream.abort();
+            finishLog(499, undefined, "client_cancel");
+          } finally {
+            releaseStreamTurn();
+          }
         },
       } : {}),
     });

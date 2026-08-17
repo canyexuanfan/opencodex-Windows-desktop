@@ -81,12 +81,12 @@ describe("anthropic-flavor ModelInfo discovery entries (devlog 130 B4b)", () => 
   });
 
   test("[1m] variants cover 1M NATIVES too (audit R1#1) — and skip sub-1M natives", () => {
-    // gpt-5.5 is the sub-1M native fixture (272k). gpt-5.4 and gpt-5.6-sol are both
-    // authoritative 1M+ natives, so both carry the marker.
+    // gpt-5.4 is the only authoritative 1M native. gpt-5.6-sol advertises 922k — a cap held
+    // under its measured ceiling — so it stays out, and so does gpt-5.5 at 272k.
     const infos = buildAnthropicModelInfos(["gpt-5.4", "gpt-5.6-sol", "gpt-5.5"], []);
     const variants = infos.filter(i => i.id.endsWith("[1m]"));
-    expect(variants).toHaveLength(2);
-    expect(variants.some(v => v.display_name.includes("gpt-5.5"))).toBe(false);
+    expect(variants).toHaveLength(1);
+    expect(variants[0]!.display_name.includes("gpt-5.4")).toBe(true);
   });
 
   test("native OpenAI rows carry max_input_tokens so Claude Code skips the 200k fallback (#1218)", () => {

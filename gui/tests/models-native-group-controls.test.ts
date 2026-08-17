@@ -32,7 +32,9 @@ test("the native card keeps sorting first once a custom row joins it", () => {
 });
 
 test("the native cap ladder offers exactly the three contracted windows", () => {
-  expect(NATIVE_CAP_OPTIONS).toEqual([272_000, 372_000, 1_050_000]);
+  expect(NATIVE_CAP_OPTIONS).toEqual([272_000, 372_000, 922_000]);
+  // A cap only lowers a window, so no option may sit above the advertised native window.
+  for (const value of NATIVE_CAP_OPTIONS) expect(value).toBeLessThanOrEqual(922_000);
   // The set must follow the list: the select inserts a saved value only when its own
   // option set is missing it, so a mismatched set would drop the selected option.
   for (const value of NATIVE_CAP_OPTIONS) expect(NATIVE_CAP_OPTION_SET.has(value)).toBe(true);
@@ -43,8 +45,9 @@ test("the native cap ladder offers exactly the three contracted windows", () => 
 });
 
 test("fmtK renders past a million as M, not as four-digit k", () => {
-  expect(fmtK(1_050_000)).toBe("1.05M");
   expect(fmtK(1_000_000)).toBe("1M");
+  expect(fmtK(1_050_000)).toBe("1.05M");
+  expect(fmtK(922_000)).toBe("922k");
   expect(fmtK(372_000)).toBe("372k");
   expect(fmtK(272_000)).toBe("272k");
   expect(fmtK(350_000)).toBe("350k");
@@ -63,11 +66,13 @@ test("the native group keeps its window readable with the cap switched off", asy
   expect(src).toContain("disabled={busy || !capOn}");
 });
 
-test("the native group exposes the custom-model and cap controls, but not the context modal", async () => {
+test("the native group exposes the context modal alongside the custom-model and cap controls", async () => {
   const src = await Bun.file(new URL("../src/pages/Models.tsx", import.meta.url)).text();
-  // The context-window modal saves through PATCH /api/providers, which the canonical openai
-  // seed check rejects with a 400 — so that one button stays hidden for the native group.
-  expect(src).toContain("{!nativeProviderGroup && (");
+  // The context button is no longer gated: the canonical openai seed check admits
+  // contextWindow/modelContextWindows as user-owned overlays, and the native accessors only
+  // ever narrow the measured window with them.
+  expect(src).not.toContain("{!nativeProviderGroup && (");
+  expect(src).toContain('onClick={() => openContextSettings(group)}');
   // Badge and hint follow provider identity, not row composition.
   expect(src).toContain("{nativeProviderGroup && <span");
   expect(src).toContain("{nativeProviderGroup && <p");

@@ -1795,7 +1795,7 @@ export const tr: Record<TKey, string> = {
   "claude.fastOn": "AÇIK",
   "claude.fastOff": "KAPALI",
   "claude.autoContext": "Otomatik büyük bağlam kullan",
-  "claude.autoContextDesc": "1M işaretinin ne kadar ileri gideceğini kontrol eder. AÇIK: 200k jeton üzerindeki her model (GPT modelleri vb.) 1M aralığı kazanır. KAPALI: yalnızca gerçek 1M modelleri alır.",
+  "claude.autoContextDesc": "1M işaretinin ne kadar ileri gideceğini kontrol eder. AÇIK: penceresi sıkıştırma eşiğini barındırabilen her model 1M aralığı kazanır. KAPALI: yalnızca gerçek 1M modelleri alır.",
   "claude.autoContextInert": "Pasif durumdadır çünkü konfigürasyon dosyasında eski bir bağlam boyutu değeri (maxContextTokens) var. Yeniden etkinleştirmek için oradan kaldırın.",
   "claude.autoCompactWindow": "Otomatik özetleme noktası",
   "claude.autoCompactDefault": "350k (varsayılan)",

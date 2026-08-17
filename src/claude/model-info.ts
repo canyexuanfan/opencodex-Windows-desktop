@@ -129,7 +129,7 @@ export function buildAnthropicModelInfos(
     if (seen.has(id)) return;
     seen.add(id);
     // The marker fixes Claude Code's accounting at 1e6, but a model may accept less input
-    // than that: GPT-5.6 advertises a 1,050,000 window while refusing anything past 922,000
+    // than that — a routed GPT-5.6 row runs a 1,050,000 window while refusing past 922,000
     // (measured — see devlog/_plan/260817_native_gpt56_1m_context/001_measurement_evidence.md).
     // Advertising the flat 1e6 there would invite mid-session context_length_exceeded, so the
     // variant reports whichever of the two is smaller.

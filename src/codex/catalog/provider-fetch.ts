@@ -1725,8 +1725,10 @@ async function gatherRoutedModelsUncached(
         id: slug,
         owned_by: "openai",
         contextWindow,
-        // Input limit, not the total window: GPT-5.6 advertises 1,050,000 but refuses past
-        // 922,000 (measured). Falls back to the window for slugs with no separate ceiling.
+        // Input limit, not the total window. These coincide for native GPT-5.6 today (the
+        // advertised 922,000 window is already capped at its measured ceiling), but the two
+        // stay separate fields because routed/API rows of the same family run a wider window.
+        // Falls back to the window for slugs with no separate ceiling.
         maxInputTokens: Math.min(nativeOpenAiMaxInputTokens(slug, openaiContextCap) ?? contextWindow, contextWindow),
         inputModalities: nativeInputModalities(slug),
         reasoningEfforts: nativeReasoningEfforts(slug),
