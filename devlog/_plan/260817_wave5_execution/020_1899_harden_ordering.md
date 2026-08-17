@@ -41,6 +41,31 @@ their Windows/POSIX split is already correct on `dev`.
 
 ## Closure
 
-#1899 cannot merge as-is (DIRTY). Land the one-file residue as a direct commit on
-`dev`, then close #1899 with a comment naming the commit, what was taken, and
-what #1881 already covered.
+#1899 cannot merge as-is (CONFLICTING/DIRTY, head `8ab0aa8d0` — re-verified after a
+transient `UNKNOWN` reading). Land the one-file residue as a direct commit on `dev`,
+then close #1899 with a comment naming the commit, what was taken, and what #1881
+already covered.
+
+## Outcome (executed)
+
+DONE. Two commits on `tests/codex-catalog-writer.test.ts`:
+
+| Commit | Change |
+|--------|--------|
+| `fb5ceee35` | bind `temp:`/`harden:`/`publish:`\|`rename:` to one temp path; assert `hardenIndex < publishIndex` |
+| `50a057e20` | state the scope limit the review asked for |
+
+**Red proof.** Forcing the harden index above the publish index fails 4 of 9 tests;
+restoring returns all 9 to green. An independent reviewer reproduced this with two
+ablations on a scratch copy and found something the plan had not predicted: for the
+two backup mutators the index comparison is the **only** detector. `publishNoReplace`
+is `linkSync`, so a temp hardened after publication still shares the destination's
+inode — `chmod` succeeds, `statSync` reads `0o600`, the leftover-`.tmp` check passes,
+and every other assertion agrees nothing is wrong. Only the order disagrees.
+
+**Scope limit, now written into the test.** `io` is an injected seam, so what is
+asserted is production's call order (`src/config.ts:236`,
+`src/codex/internal/catalog-writer.ts:147` both run write → harden → publish).
+Supplying `io` bypasses `hardenSecretPath`, so this proves hardening is *requested*
+on the temp before publication, not that it restricts. The Windows NTFS ACL is
+covered in `tests/windows-secret-acl.test.ts`.
