@@ -523,6 +523,30 @@ describe("Windows service task", () => {
     expect(script).not.toContain("timeout /t");
   });
 
+  test("stops instead of restart-looping when an update removed the baked runtime or CLI (#1849)", () => {
+    const script = buildWindowsServiceScript({
+      bun: "C:\\OpenCodex\\bun.exe",
+      bunRuntimeSource: "bundled",
+      cli: "C:\\OpenCodex\\cli.ts",
+    });
+    const loopAt = script.indexOf(":loop");
+    const bunCheckAt = script.indexOf('if not exist "%OCX_BUN%"');
+    const cliCheckAt = script.indexOf('if not exist "%OCX_CLI%"');
+    const launchAt = script.indexOf('"%OCX_BUN%" "%OCX_CLI%" start --port');
+    const retryAt = script.indexOf("goto loop");
+
+    expect(loopAt).toBeGreaterThanOrEqual(0);
+    expect(bunCheckAt).toBeGreaterThan(loopAt);
+    expect(cliCheckAt).toBeGreaterThan(bunCheckAt);
+    expect(launchAt).toBeGreaterThan(cliCheckAt);
+    expect(retryAt).toBeGreaterThan(launchAt);
+    expect(script).toContain("installation is incomplete: bundled Bun is missing");
+    expect(script).toContain("installation is incomplete: CLI entry is missing");
+    expect(script.match(/exit \/b 3/g)).toHaveLength(2);
+    // `goto loop` re-enters both checks before another child spawn.
+    expect(script.slice(loopAt, launchAt).match(/if not exist/g)).toHaveLength(2);
+  });
+
   test("rewrites profile-relative paths to env indirection so non-ASCII usernames survive OEM-codepage batch parsing", () => {
     const oldUserProfile = process.env.USERPROFILE;
     const oldAppData = process.env.APPDATA;
