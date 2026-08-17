@@ -50,10 +50,36 @@ const DISCOVERY_RETRY_TIMEOUT_MS = 3_000;
  */
 export async function fetchCursorUsableModels(opts: CursorUsableModelsOptions): Promise<CursorUsableModelsResult> {
   if (cursorUsableModelsFetcherForTests) return cursorUsableModelsFetcherForTests(opts);
-  const first = await fetchCursorUsableModelsOnce(opts);
+  const resolved = resolveCursorDiscoveryBaseUrl(opts.baseUrl ?? "https://api2.cursor.sh");
+  if (!resolved.ok) return resolved;
+  const first = await fetchCursorUsableModelsOnce({ ...opts, baseUrl: resolved.baseUrl });
   if (first.ok || !RETRYABLE_DISCOVERY_ERRORS.has(first.error)) return first;
   await new Promise(resolve => setTimeout(resolve, 250 + Math.floor(Math.random() * 250)));
-  return fetchCursorUsableModelsOnce({ ...opts, timeoutMs: Math.min(opts.timeoutMs ?? 8000, DISCOVERY_RETRY_TIMEOUT_MS) });
+  return fetchCursorUsableModelsOnce({
+    ...opts,
+    baseUrl: resolved.baseUrl,
+    timeoutMs: Math.min(opts.timeoutMs ?? 8000, DISCOVERY_RETRY_TIMEOUT_MS),
+  });
+}
+
+function resolveCursorDiscoveryBaseUrl(raw: string): { ok: true; baseUrl: string } | Extract<CursorUsableModelsResult, { ok: false }> {
+  const baseUrl = raw.replace(/\/+$/, "");
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    return { ok: false, error: "transport", detail: "Cursor discovery URL is invalid" };
+  }
+  if (parsed.protocol === "https:") return { ok: true, baseUrl };
+  // Local h2c fixtures (and an operator loopback proxy) never leave the machine.
+  // Anything else with a Bearer token must be HTTPS, matching providerOutbound POST.
+  if (parsed.protocol === "http:") {
+    const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    if (host === "127.0.0.1" || host === "::1" || host === "localhost" || host.endsWith(".localhost")) {
+      return { ok: true, baseUrl };
+    }
+  }
+  return { ok: false, error: "transport", detail: "Cursor discovery URL must use HTTPS" };
 }
 
 async function fetchCursorUsableModelsOnce(opts: CursorUsableModelsOptions): Promise<CursorUsableModelsResult> {

@@ -3,7 +3,10 @@ import { create, toBinary } from "@bufbuild/protobuf";
 import { describe, expect, spyOn, test } from "bun:test";
 import {
   AgentServerMessageSchema,
+  CreatePlanArgsSchema,
+  CreatePlanRequestQuerySchema,
   GetUsableModelsResponseSchema,
+  InteractionQuerySchema,
   KvServerMessageSchema,
   ModelDetailsSchema,
   TextDeltaUpdateSchema,
@@ -76,6 +79,19 @@ describe("Cursor live-model discovery hardening", () => {
       fetchCursorUsableModels({ apiKey: "test-token", baseUrl }));
 
     expect(result).toEqual({ ok: true, models: ["gpt-5.5-high"] });
+  });
+
+  test("rejects a cleartext non-loopback discovery URL before connecting", async () => {
+    const result = await fetchCursorUsableModels({
+      apiKey: "test-token",
+      baseUrl: "http://api2.cursor.sh",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: "transport",
+      detail: "Cursor discovery URL must use HTTPS",
+    });
   });
 
   test("classifies authentication failures", async () => {
@@ -420,6 +436,57 @@ describe("Cursor live transport unexpected EOF", () => {
       }
 
       expect(messages).toContainEqual({ type: "text", text: "hello" });
+      expect(messages.at(-1)).toMatchObject({ type: "done" });
+    });
+  });
+
+  test("synthesizes done after createPlanRequestQuery text on clean Connect EOF", async () => {
+    const planFrame = encodeConnectFrame(toBinary(AgentServerMessageSchema, create(AgentServerMessageSchema, {
+      message: {
+        case: "interactionQuery",
+        value: create(InteractionQuerySchema, {
+          id: 7,
+          query: {
+            case: "createPlanRequestQuery",
+            value: create(CreatePlanRequestQuerySchema, {
+              args: create(CreatePlanArgsSchema, {
+                name: "Fix bridge",
+                overview: "Two steps.",
+                plan: "1. read\n2. patch",
+              }),
+            }),
+          },
+        }),
+      },
+    })));
+    const connectEnd = encodeConnectFrame(new TextEncoder().encode("{}"), {
+      flags: CONNECT_FLAG_END_STREAM,
+    });
+
+    await withDiscoveryServer(stream => {
+      stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+      stream.end(Buffer.from(new Uint8Array([...planFrame, ...connectEnd])));
+    }, async baseUrl => {
+      const transport = createLiveCursorTransport({
+        provider: { adapter: "cursor", baseUrl, apiKey: "test-token" },
+        translatorBudget: createTestTranslatorBudget(),
+        firstFrameTimeoutMs: 2_000,
+      });
+      const messages: Array<{ type: string; text?: string }> = [];
+      try {
+        for await (const message of transport.run({
+          modelId: "composer-2",
+          conversationId: "cursor_plan_eof_test",
+          system: [],
+          messages: [{ role: "user", content: "hello" }],
+        })) {
+          messages.push(message);
+        }
+      } finally {
+        await transport.close?.();
+      }
+
+      expect(messages.some(message => message.type === "text" && message.text?.includes("Fix bridge"))).toBe(true);
       expect(messages.at(-1)).toMatchObject({ type: "done" });
     });
   });

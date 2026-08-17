@@ -747,7 +747,12 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
           error: `cursor discovery ${live.error}${live.detail ? `: ${live.detail}` : ""}`,
         });
       }
-      return jsonResponse({ ok: true, latencyMs, message: `Connected. ${live.models.length} models.` });
+      return jsonResponse({
+        ok: true,
+        latencyMs,
+        models: live.models.length,
+        message: `Connected. ${live.models.length} models.`,
+      });
     }
     const project = prov.project ?? snapshot?.projectId;
     if (antigravity && !project) {

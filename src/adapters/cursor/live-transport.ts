@@ -1106,7 +1106,10 @@ class LiveCursorTransport implements CursorTransport {
       debugProviderDiagnostic("cursor", "interaction-query", { id: query.id, queryCase: query.query.case ?? "unknown", reply: plan.replyCase });
       this.stream.write(encodeClientMessage({ message: { case: "interactionResponse", value: plan.response } }));
       if (!state.terminated) {
-        if (plan.planText) push({ type: "text", text: plan.planText });
+        if (plan.planText) {
+          this.sawAssistantText = true;
+          push({ type: "text", text: plan.planText });
+        }
         push({ type: "heartbeat" });
       }
       return;

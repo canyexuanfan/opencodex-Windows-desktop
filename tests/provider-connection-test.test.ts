@@ -70,7 +70,7 @@ describe("POST /api/providers/test (WP040 connectivity probe)", () => {
 
     const { body } = await probe(config, "cursor");
 
-    expect(body).toMatchObject({ ok: true, message: "Connected. 2 models." });
+    expect(body).toMatchObject({ ok: true, models: 2, message: "Connected. 2 models." });
     expect(calls).toEqual([{ apiKey: "cursor-access-token", baseUrl: "https://api2.cursor.sh" }]);
   });
 
