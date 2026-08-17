@@ -129,7 +129,7 @@ describe("multiAgentGuidanceText", () => {
 
     for (const state of ["stale", "unknown"] as const) {
       const text = await multiAgentGuidanceText(parsed, options, {
-        collectCatalogState: () => ({ state }),
+        collectCatalogState: async () => ({ state }),
       });
       // #1395: withhold OpenCodex's disk-derived claims, but do not prohibit
       // options the active spawn_agent tool advertises — the global catalog

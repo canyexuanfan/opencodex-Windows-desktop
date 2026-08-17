@@ -260,7 +260,7 @@ separately by `ocx doctor`. `stale` clears only after every detected Codex app-s
 the final catalog write; it does not necessarily clear `unknown`.
 
 On Windows, this advisory check uses asynchronous PowerShell/CIM discovery on the v2 request path.
-Concurrent cold checks share one in-flight discovery and successful results are cached briefly. A
+Concurrent cold checks share one in-flight discovery and results are cached briefly. A
 slow or failing CIM query can delay or suppress only OpenCodex-authored model guidance; it does not
 block the Bun event loop, `/healthz`, or unrelated proxy traffic. Explicit CLI/service lifecycle
 operations retain the synchronous, fail-closed process collector because they may signal processes.

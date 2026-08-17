@@ -919,7 +919,12 @@ export async function collectCodexAppServerCatalogStateForRequest(
   return flight.promise;
 }
 
-/** Test hook: drop the memoized catalog state. */
+/**
+ * Drop memoized catalog state after a relevant catalog/cache write and before
+ * the post-write state read. Advancing the generation prevents an older
+ * in-flight Windows CIM refresh from publishing its pre-write result after the
+ * write has completed.
+ */
 export function resetCodexAppServerCatalogStateCache(): void {
   catalogStateCache = null;
   requestCatalogStateGeneration += 1;

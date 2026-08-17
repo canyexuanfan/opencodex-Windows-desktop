@@ -161,6 +161,33 @@ describe("collectCodexAppServerCatalogState (#857)", () => {
     resetCodexAppServerCatalogStateCache();
   });
 
+  test("Windows request collection briefly caches failed CIM enumeration (#1852)", async () => {
+    resetCodexAppServerCatalogStateCache();
+    let calls = 0;
+    let now = 1_000;
+    const io = {
+      platform: "win32" as const,
+      now: () => now,
+      listSnapshotsAsync: async () => {
+        calls += 1;
+        throw new Error("windows_enum_incomplete");
+      },
+      catalogMtimeMs: () => 1_000,
+    };
+
+    await expect(collectCodexAppServerCatalogStateForRequest(io)).resolves.toMatchObject({
+      state: "unknown",
+    });
+    now += 10;
+    await expect(collectCodexAppServerCatalogStateForRequest(io)).resolves.toMatchObject({
+      state: "unknown",
+    });
+    // Failure is advisory and fail-closed, but caching it briefly prevents a
+    // broken CIM provider from spawning one PowerShell process per request.
+    expect(calls).toBe(1);
+    resetCodexAppServerCatalogStateCache();
+  });
+
   test("unrelated processes never enter the comparison", () => {
     const status = collectCodexAppServerCatalogState({
       listSnapshots: () => [
