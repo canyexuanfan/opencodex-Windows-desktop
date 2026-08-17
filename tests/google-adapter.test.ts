@@ -382,4 +382,44 @@ describe("google adapter — direct -tiered wire renames", () => {
       expect(optOutRequest.body).toBe(defaultRequest.body);
     }
   });
+
+  // The test above compares the two settings against each other, which stays true even
+  // if Vertex stopped preserving the requested id — both sides would be wrong together.
+  // These two assert what Vertex actually sends, so a regression in Vertex's wire id or
+  // its identity line fails here instead of reaching a user.
+  //
+  // An ablation puts the `googleMode === "vertex"` arm itself in its place: deleting it
+  // leaves all 24 tests green, because Vertex builds its own URL from `parsed.modelId`
+  // (see the `aiplatform.googleapis.com` paths) and `identityModelId` only special-cases
+  // Cloud Code Assist, so `routedModelId` never reaches Vertex either way. The arm is
+  // defensive, not load-bearing — worth keeping as a guard against a future refactor
+  // that routes Vertex through the shared URL builder, but no test can prove it fires
+  // today, and pretending otherwise would be the kind of unfalsifiable coverage this
+  // comment exists to prevent.
+  test("Vertex sends the requested model id, never the -tiered rename", async () => {
+    const vertexProvider = { ...provider, googleMode: "vertex" as const };
+    for (const modelId of ["gemini-3.7-flash", "gemini-3.6-flash"]) {
+      for (const renames of [undefined, true, false]) {
+        const adapter = createGoogleAdapter(
+          renames === undefined ? vertexProvider : { ...vertexProvider, directGeminiWireRenames: renames },
+        );
+        const { url } = await adapter.buildRequest(renamedParsed(modelId));
+        expect(url).toContain(`/models/${modelId}:generateContent`);
+        expect(url).not.toContain("-tiered");
+      }
+    }
+  });
+
+  test("Vertex identity names the requested model, not a renamed wire id", async () => {
+    const vertexProvider = { ...provider, googleMode: "vertex" as const };
+    for (const modelId of ["gemini-3.7-flash", "gemini-3.6-flash"]) {
+      const request = await createGoogleAdapter(vertexProvider).buildRequest(identityParsed(modelId));
+      const body = JSON.parse(request.body) as {
+        systemInstruction?: { parts?: Array<{ text?: string }> };
+      };
+      const systemText = body.systemInstruction?.parts?.[0]?.text ?? "";
+      expect(systemText).toContain(`powered by the ${modelId}`);
+      expect(systemText).not.toContain("-tiered");
+    }
+  });
 });
