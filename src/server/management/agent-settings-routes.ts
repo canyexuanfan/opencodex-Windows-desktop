@@ -31,7 +31,7 @@ import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
 import { routedSlug, slugEquals } from "../../providers/slug-codec";
 import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../../providers/quota";
-import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
+import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
 import { clearThreadAccountMap } from "../../codex/routing";
 import { primeCodexPoolQuotas } from "../../codex/auth-api";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../../providers/context-cap";
@@ -976,7 +976,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       if (isDisabled(m.provider, m.id)) continue;
       aliases.push({ id: claudeCodeAlias(m.provider, m.id), display_name: `${m.id} (${m.provider})` });
     }
-    const contextWindows = buildClaudeContextWindows([...visibleNativeSlugs(config)], models);
+    const contextWindows = buildClaudeContextWindows([...visibleNativeSlugs(config)], models, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID));
     const webSearchOverride = config.claudeCode?.webSearchSidecar;
     const visionOverride = config.claudeCode?.visionSidecar;
     // Auto is a RESOLUTION, recomputed per request — never stored state. Detection is

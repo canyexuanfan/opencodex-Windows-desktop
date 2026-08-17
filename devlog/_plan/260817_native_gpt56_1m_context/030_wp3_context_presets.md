@@ -45,8 +45,17 @@ spark는 100k에 남는다. **지원 모델 gating 코드가 필요 없다.**
 
 ### 2. `gui/src/pages/Models.tsx` (MODIFY)
 
-기존 cap 셀렉트를 그대로 쓴다. 추가 로직 없음.
-셀렉트는 이미 `CUSTOM_OPTION`으로 임의 값 입력도 지원한다(:1123-1136).
+그룹에 따라 옵션 목록을 고른다 (R7#3):
+
+```ts
+const capOptions = nativeProviderGroup ? NATIVE_CAP_OPTIONS : CAP_OPTIONS;
+const capOptionSet = nativeProviderGroup ? NATIVE_CAP_OPTION_SET : CAP_OPTION_SET;
+```
+
+:1113-1115의 "저장된 값이 목록에 없으면 옵션으로 삽입" 조건이 현재 `CAP_OPTION_SET`을
+하드코딩한다. 이를 `capOptionSet`으로 바꾼다. 그러지 않으면 네이티브 cap을 기본값 350k로
+켰을 때 350k가 선택되어 있는데 옵션 목록에는 없어 트리거가 빈 값을 보인다.
+셀렉트는 이미 `CUSTOM_OPTION`으로 임의 값 입력을 지원한다(:1123-1136).
 
 ### 3. `gui/src/i18n/*.ts` (MODIFY)
 

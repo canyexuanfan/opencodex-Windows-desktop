@@ -28,7 +28,7 @@ import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
 import { routedSlug, slugEquals } from "../../providers/slug-codec";
 import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../../providers/quota";
-import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
+import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
 import { clearThreadAccountMap } from "../../codex/routing";
 import { primeCodexPoolQuotas } from "../../codex/auth-api";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../../providers/context-cap";
@@ -196,7 +196,7 @@ export async function fetchGrokCandidateModels(config: OcxConfig): Promise<GrokC
   const routed = filterCatalogVisibleModels(await fetchAllModels(config), config);
   return [
     ...visibleNativeSlugs(config).map(id => {
-      const contextWindow = nativeOpenAiContextWindow(id);
+      const contextWindow = nativeOpenAiContextWindow(id, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID));
       return { id, native: true, ...(contextWindow !== undefined ? { contextWindow } : {}) };
     }),
     ...routed.map(m => ({
@@ -229,7 +229,7 @@ export async function buildClaudeDesktopState(config: OcxConfig, stored?: OcxCla
     // Native rows carry their real context window from the same accessor the Grok sync
     // uses — otherwise Sol's 372k and gpt-5.5's 272k render as blank on Desktop.
     ...desktopVisibleNativeSlugs(config).map(id => {
-      const contextWindow = nativeOpenAiContextWindow(id);
+      const contextWindow = nativeOpenAiContextWindow(id, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID));
       return { route: `native/${id}`, label: `${id} (native)`,
         ...(contextWindow !== undefined ? { contextWindow } : {}) };
     }),

@@ -68,7 +68,7 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     expect(rows.find(r => r.slug === "gpt-5.6-sol")?.disabled).toBe(true);
     expect(rows.find(r => r.slug === "gpt-5.5")?.disabled).toBe(false);
     // Known context metadata rides along for the dashboard.
-    expect(rows.find(r => r.slug === "gpt-5.6-sol")?.contextWindow).toBe(372_000);
+    expect(rows.find(r => r.slug === "gpt-5.6-sol")?.contextWindow).toBe(1_050_000);
   });
 
   test("nativeModelRows applies providerContextCaps.openai as a ceiling (#1430)", () => {
@@ -82,7 +82,7 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     expect(rows.find(r => r.slug === "gpt-5.5")?.contextWindow).toBe(272_000);
     // A cap for another provider leaves natives untouched.
     const other = nativeModelRows({ providerContextCaps: { "openai-apikey": 128_000 } });
-    expect(other.find(r => r.slug === "gpt-5.6-sol")?.contextWindow).toBe(372_000);
+    expect(other.find(r => r.slug === "gpt-5.6-sol")?.contextWindow).toBe(1_050_000);
   });
 
   test("native aliases suppress their native dashboard row and activate Desktop allowlist pruning", () => {
@@ -330,9 +330,9 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     applyNativeOpenAiContextOverride(malformed);
     applyNativeOpenAiContextOverride(unmarked);
     expect(trusted).toMatchObject({
-      context_window: 372_000,
-      max_context_window: 372_000,
-      auto_compact_token_limit: 334_800,
+      context_window: 1_050_000,
+      max_context_window: 1_050_000,
+      auto_compact_token_limit: 922_000,
     });
     expect(malformed).toMatchObject({
       context_window: 128_000,

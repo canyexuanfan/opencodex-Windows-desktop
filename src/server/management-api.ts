@@ -28,7 +28,7 @@ import { deriveProviderPresets } from "../providers/derive";
 import { providerCodexAccountMode } from "../providers/registry";
 import { routedSlug, slugEquals } from "../providers/slug-codec";
 import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../providers/quota";
-import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
+import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../providers/openai-tiers";
 import { clearThreadAccountMap } from "../codex/routing";
 import { primeCodexPoolQuotas } from "../codex/auth-api";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../providers/context-cap";
@@ -205,7 +205,7 @@ export async function handleManagementAPI(
           import("../claude/context-windows"),
           import("../codex/catalog"),
         ]);
-        injectClaudeAgentDefs(config, buildClaudeContextWindows([...visibleNativeSlugs(config)], models));
+        injectClaudeAgentDefs(config, buildClaudeContextWindows([...visibleNativeSlugs(config)], models, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID)));
       } catch {
         // Keep routes available through a provider-discovery blip. A later
         // launch-time sync restores any context markers missing from this pass.

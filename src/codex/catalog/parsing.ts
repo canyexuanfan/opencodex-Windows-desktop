@@ -266,6 +266,21 @@ export function isNativeOpenAiEntry(entry: RawEntry): boolean {
   return typeof entry.slug === "string" && !entry.slug.includes("/");
 }
 
+/**
+ * Auto-compaction threshold for a native row.
+ *
+ * The usual rule is 90% of the window, but a model whose measured input ceiling sits below
+ * that (GPT-5.6: 922,000 against a 1,050,000 window, where 90% would be 945,000) has to
+ * clamp to the ceiling instead — otherwise the client keeps filling until upstream answers
+ * `context_length_exceeded` and compaction never gets a chance to run.
+ */
+function nativeAutoCompactLimit(contextWindow: number, maxInputTokens: number | undefined, contextCap?: number): number {
+  const ninety = Math.floor(contextWindow * 0.9);
+  if (typeof maxInputTokens !== "number" || maxInputTokens <= 0) return ninety;
+  const cappedMaxInput = applyProviderContextCap(maxInputTokens, contextCap) ?? maxInputTokens;
+  return Math.min(ninety, cappedMaxInput, contextWindow);
+}
+
 export function applyNativeOpenAiContextOverride(entry: RawEntry, contextCap?: number): void {
   const nativeSlug = trustedAccountBoundNativeCatalogSlug(entry)
     ?? (isNativeOpenAiEntry(entry) ? entry.slug as string : undefined);
@@ -275,7 +290,7 @@ export function applyNativeOpenAiContextOverride(entry: RawEntry, contextCap?: n
     if (typeof override.contextWindow === "number") {
       const contextWindow = applyProviderContextCap(override.contextWindow, contextCap) ?? override.contextWindow;
       entry.context_window = contextWindow;
-      entry.auto_compact_token_limit = Math.floor(contextWindow * 0.9);
+      entry.auto_compact_token_limit = nativeAutoCompactLimit(contextWindow, override.maxInputTokens, contextCap);
     }
     if (typeof override.maxContextWindow === "number") {
       entry.max_context_window = applyProviderContextCap(override.maxContextWindow, contextCap) ?? override.maxContextWindow;
@@ -288,7 +303,7 @@ export function applyNativeOpenAiContextOverride(entry: RawEntry, contextCap?: n
   const cappedContext = applyProviderContextCap(currentContext, contextCap);
   if (cappedContext !== currentContext && typeof cappedContext === "number") {
     entry.context_window = cappedContext;
-    entry.auto_compact_token_limit = Math.floor(cappedContext * 0.9);
+    entry.auto_compact_token_limit = nativeAutoCompactLimit(cappedContext, override?.maxInputTokens, contextCap);
   }
   const currentMax = typeof entry.max_context_window === "number" ? entry.max_context_window : undefined;
   const cappedMax = applyProviderContextCap(currentMax, contextCap);

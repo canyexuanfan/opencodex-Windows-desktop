@@ -191,6 +191,7 @@ function collectDesktop3pModels(
   nativeSlugs: string[],
   routedModels: Array<Desktop3pRoutedModel>,
   profile?: OcxClaudeDesktopProfile,
+  nativeContextCap?: number,
 ): { models: Desktop3pModelEntry[]; registry: Map<string, string> } {
   const registry = new Map<string, string>();
   const models: Desktop3pModelEntry[] = [];
@@ -199,7 +200,7 @@ function collectDesktop3pModels(
     // Desktop DTO uses, so a native 1M/372k model resolves identically in the written
     // config and on the dashboard.
     ...nativeSlugs.map(id => {
-      const contextWindow = nativeOpenAiContextWindow(id);
+      const contextWindow = nativeOpenAiContextWindow(id, nativeContextCap);
       return { provider: "native", id, ...(contextWindow !== undefined ? { contextWindow } : {}) };
     }),
     ...routedModels,
@@ -292,8 +293,9 @@ export function buildDesktop3pRegistry(
   nativeSlugs: string[],
   routedModels: Array<Desktop3pRoutedModel>,
   profile?: OcxClaudeDesktopProfile,
+  nativeContextCap?: number,
 ): Map<string, string> {
-  const { registry } = collectDesktop3pModels(nativeSlugs, routedModels, profile);
+  const { registry } = collectDesktop3pModels(nativeSlugs, routedModels, profile, nativeContextCap);
   desktop3pRegistry = registry;
   return registry;
 }
@@ -303,8 +305,9 @@ export function generateDesktop3pModels(
   nativeSlugs: string[],
   routedModels: Array<Desktop3pRoutedModel>,
   profile?: OcxClaudeDesktopProfile,
+  nativeContextCap?: number,
 ): Desktop3pModelEntry[] {
-  const { models, registry } = collectDesktop3pModels(nativeSlugs, routedModels, profile);
+  const { models, registry } = collectDesktop3pModels(nativeSlugs, routedModels, profile, nativeContextCap);
   desktop3pRegistry = registry;
   return models;
 }

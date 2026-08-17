@@ -119,7 +119,8 @@ import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } f
 import type { DataPlaneAdmission } from "../auth-cors";
 import { createTranslatorBudget, isTranslatorBudgetExceededError, type TranslatorBudget } from "../../lib/translator-budget";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
-import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
+import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
+import { providerContextCap } from "../../providers/context-cap";
 import { SERVICE_TIER_ADAPTERS, serviceTierSupportForModel } from "../../providers/service-tier";
 import {
   RequestPacingQueueOverloadError,
@@ -1993,7 +1994,7 @@ async function handleResponsesInner(
   // refusing the turn that shrinks the context would deadlock the client against the very
   // limit this gate reports — it would be told to compact and then denied the compaction.
   if (parsed._compactionRequest !== true) {
-    const inputAdmission = checkInputAdmission(parsed, route.provider, route.providerName, parsed.modelId);
+    const inputAdmission = checkInputAdmission(parsed, route.provider, route.providerName, parsed.modelId, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID));
     if (!inputAdmission.admitted) {
       // #1524: this is a LOCAL preflight refusal, not an upstream verdict. A policy or combo
       // fallback must be able to skip this candidate and try one whose context window fits,
