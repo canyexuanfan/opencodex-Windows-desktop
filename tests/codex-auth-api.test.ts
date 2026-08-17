@@ -3533,6 +3533,7 @@ describe("codex-auth API", () => {
 
   test("Codex OAuth login responses preserve actionable OAuth errors", async () => {
     const oauth = await import("../src/oauth");
+    const { OAuthMutationBusyError } = await import("../src/oauth/store");
     const startSpy = spyOn(oauth, "startLoginFlow");
     const cases: Array<{ error: Error; expected: string }> = [
       {
@@ -3546,6 +3547,10 @@ describe("codex-auth API", () => {
       {
         error: new oauth.OAuthTokenRefreshStaleError(),
         expected: "OAuth token refresh owner became stale",
+      },
+      {
+        error: new OAuthMutationBusyError(),
+        expected: "OAuth mutation queue is busy",
       },
     ];
     try {
@@ -3620,6 +3625,7 @@ describe("codex-auth API", () => {
 
   test("Codex OAuth login status preserves actionable late OAuth errors", async () => {
     const oauth = await import("../src/oauth");
+    const { OAuthMutationBusyError } = await import("../src/oauth/store");
     const openUrlMod = await import("../src/lib/open-url");
     const originalLogin = oauth.OAUTH_PROVIDERS.chatgpt.login;
     const openSpy = spyOn(openUrlMod, "openUrl").mockImplementation(() => {});
@@ -3643,6 +3649,10 @@ describe("codex-auth API", () => {
       {
         error: new oauth.OAuthTokenRefreshStaleError(),
         expected: "OAuth token refresh owner became stale",
+      },
+      {
+        error: new OAuthMutationBusyError(),
+        expected: "OAuth mutation queue is busy",
       },
     ];
     try {
