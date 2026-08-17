@@ -321,7 +321,7 @@ function contentText(message: OcxMessage): string {
     .map(part => {
       if (part.type === "text") return part.text;
       if (part.type === "thinking") return part.thinking;
-      if (part.type === "image") return `[image input unsupported by Cursor adapter phase 3: ${part.detail ?? "auto"}]`;
+      if (part.type === "image") return `[image produced by this tool, omitted from Cursor text replay: ${part.detail ?? "auto"}]`;
       return undefined;
     })
     .filter((value): value is string => typeof value === "string" && value.length > 0)
@@ -331,20 +331,8 @@ function contentText(message: OcxMessage): string {
 function contentToText(content: OcxToolResultMessage["content"]): string {
   if (typeof content === "string") return content;
   return content
-    .map(part => part.type === "text" ? part.text : `[image input unsupported by Cursor adapter phase 3: ${part.detail ?? "auto"}]`)
+    .map(part => part.type === "text" ? part.text : `[image produced by this tool, omitted from Cursor text replay: ${part.detail ?? "auto"}]`)
     .join("\n");
-}
-
-/**
- * Fraction of the per-blob admission ceiling an image may occupy. A `ConversationStep` is stored
- * as ONE blob (see `toolCallStep`), so the image shares its entry with the tool call's arguments,
- * text, and protobuf framing. Budgeting the whole ceiling would let a near-limit text result plus
- * an admitted image push the step over admission and fail a request that works today.
- */
-const IMAGE_STEP_BUDGET_FRACTION = 0.5;
-
-function imageBudgetBytes(): number {
-  return Math.floor(cursorBlobMaxEntryBytes() * IMAGE_STEP_BUDGET_FRACTION);
 }
 
 const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
@@ -377,6 +365,16 @@ function imagePlaceholder(reason: string): string {
   return `[image omitted from Cursor replay: ${reason}]`;
 }
 
+/** How many parts of this result are inline images we could actually send. */
+function inlineImageCount(message: OcxToolResultMessage): number {
+  const content = message.content;
+  if (typeof content === "string") return 0;
+  return content.reduce(
+    (count, part) => count + (part.type === "image" && decodeInlineImage(part.imageUrl) ? 1 : 0),
+    0,
+  );
+}
+
 /**
  * Build the wire content items for a tool result, preserving part order.
  *
@@ -385,14 +383,18 @@ function imagePlaceholder(reason: string): string {
  * Flattening them to placeholder text blinded every screenshot-returning tool (Computer Use,
  * browser QA) that Codex routes through this path.
  */
-function toolResultContentItems(message: OcxToolResultMessage) {
+function toolResultContentItems(message: OcxToolResultMessage, maxImages = Number.POSITIVE_INFINITY) {
   const content = message.content;
   if (typeof content === "string") {
     return [create(McpToolResultContentItemSchema, {
       content: { case: "text" as const, value: create(McpTextContentSchema, { text: content }) },
     })];
   }
-  let remaining = imageBudgetBytes();
+  // Images are dropped OLDEST first when the step must shrink: the most recent screenshot is the
+  // one the model is reasoning about, so it is the last to go.
+  const totalImages = inlineImageCount(message);
+  const allowed = Math.max(0, Math.min(totalImages, maxImages));
+  let seen = 0;
   return content.map(part => {
     if (part.type === "text") {
       return create(McpToolResultContentItemSchema, {
@@ -405,14 +407,14 @@ function toolResultContentItems(message: OcxToolResultMessage) {
         content: { case: "text" as const, value: create(McpTextContentSchema, { text: imagePlaceholder("not an inline data URL") }) },
       });
     }
-    if (decoded.bytes.byteLength > remaining) {
+    seen++;
+    if (seen <= totalImages - allowed) {
       return create(McpToolResultContentItemSchema, {
         content: { case: "text" as const, value: create(McpTextContentSchema, {
-          text: imagePlaceholder(`${decoded.bytes.byteLength} bytes exceeds the remaining step budget`),
+          text: imagePlaceholder(`${decoded.bytes.byteLength} bytes did not fit the step's blob admission limit`),
         }) },
       });
     }
-    remaining -= decoded.bytes.byteLength;
     return create(McpToolResultContentItemSchema, {
       content: { case: "image" as const, value: create(McpImageContentSchema, {
         data: decoded.bytes,
@@ -449,7 +451,7 @@ function toolCallStep(
   const args: Record<string, Uint8Array> = {};
   for (const [key, value] of Object.entries(part.arguments ?? {})) args[key] = argBytes(value);
   const toolName = namespacedToolName(part.namespace, part.name);
-  return storeCursorBlob(toBinary(ConversationStepSchema, create(ConversationStepSchema, {
+  const serialize = (maxImages: number): Uint8Array => toBinary(ConversationStepSchema, create(ConversationStepSchema, {
     message: {
       case: "toolCall",
       value: create(ToolCallSchema, {
@@ -463,21 +465,34 @@ function toolCallStep(
               providerIdentifier: OCX_RESPONSES_TOOL_PROVIDER,
               args,
             }),
-            ...(result ? { result: toolResultPart(result) } : {}),
+            ...(result ? { result: toolResultPart(result, maxImages) } : {}),
           }),
         },
       }),
     },
-  })), requestScope);
+  }));
+
+  // A step is stored as ONE blob, so its images share an entry with the call's arguments, text,
+  // mime strings, and protobuf framing. A byte budget over decoded images alone cannot bound that
+  // (an audit reproduced a 448-byte-argument call whose 460-byte image pushed a previously
+  // admitted step past the ceiling). Measure the real serialized size instead, then drop images —
+  // oldest first, so the most recent screenshot survives — until the step fits.
+  const limit = cursorBlobMaxEntryBytes();
+  const imageCount = result ? inlineImageCount(result) : 0;
+  let encoded = serialize(imageCount);
+  for (let allowed = imageCount - 1; allowed >= 0 && encoded.byteLength > limit; allowed--) {
+    encoded = serialize(allowed);
+  }
+  return storeCursorBlob(encoded, requestScope);
 }
 
-function toolResultPart(message: OcxToolResultMessage) {
+function toolResultPart(message: OcxToolResultMessage, maxImages?: number) {
   return create(McpToolResultSchema, {
     result: {
       case: "success",
       value: create(McpSuccessSchema, {
         isError: message.isError,
-        content: toolResultContentItems(message),
+        content: toolResultContentItems(message, maxImages),
       }),
     },
   });

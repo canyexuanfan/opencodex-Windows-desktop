@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { create, fromBinary } from "@bufbuild/protobuf";
-import { handleCursorNativeKv } from "../src/adapters/cursor/native-exec";
+import { handleCursorNativeKv, setCursorBlobLimitsForTests } from "../src/adapters/cursor/native-exec";
 import { encodeCursorRunRequest } from "../src/adapters/cursor/protobuf-request";
 import {
   AgentClientMessageSchema,
@@ -128,23 +128,20 @@ describe("Cursor tool-result image passthrough", () => {
     expect(items![0].content.case === "text" ? items![0].content.value.text : "").toContain("image omitted");
   });
 
-  test("images are admitted until the step budget is exhausted, then degrade", () => {
-    // Two images that each fit alone but cannot both fit: the budget is a fraction of the per-blob
-    // admission ceiling, because one ConversationStep is stored as one blob.
-    const bigBytes = new Uint8Array(5 * 1024 * 1024).fill(7);
-    const bigUrl = `data:image/png;base64,${Buffer.from(bigBytes).toString("base64")}`;
+  test("two images that both fit the default ceiling are both sent as bytes", () => {
+    // At the production limit these are comfortably admissible, so nothing degrades. The
+    // degradation boundary is exercised against the real admission limit in the suite below,
+    // not against a decoded-byte heuristic.
+    const bytesA = new Uint8Array(4096).fill(7);
+    const url = `data:image/png;base64,${Buffer.from(bytesA).toString("base64")}`;
     const items = toolResultItems(request([
-      { type: "image", imageUrl: bigUrl },
-      { type: "image", imageUrl: bigUrl },
+      { type: "image", imageUrl: url },
+      { type: "image", imageUrl: url },
     ]));
 
     expect(items).toBeDefined();
     expect(items!.length).toBe(2);
-    const cases = items!.map(i => i.content.case);
-    // First fits, second is over the remaining budget.
-    expect(cases[0]).toBe("image");
-    expect(cases[1]).toBe("text");
-    expect(items![1].content.case === "text" ? items![1].content.value.text : "").toContain("exceeds the remaining step budget");
+    expect(items!.map(i => i.content.case)).toEqual(["image", "image"]);
   });
 
   test("a text-only tool result is byte-identical to the pre-change encoding", () => {
@@ -158,5 +155,89 @@ describe("Cursor tool-result image passthrough", () => {
     expect(a![0].content.case).toBe("text");
     expect(a![0].content.case === "text" ? a![0].content.value.text : "").toBe("only text");
     expect(b![0].content.case === "text" ? b![0].content.value.text : "").toBe("only text");
+  });
+});
+
+describe("Cursor tool-result image admission safety", () => {
+  // The audit's exact regression: a step whose arguments already fill most of the per-blob
+  // ceiling. Adding real image bytes must never turn a request that is admitted today into a
+  // CursorBlobAdmissionError. Budgeting decoded image bytes alone cannot guarantee that, because
+  // the step also carries arguments, text, mime strings, and protobuf framing in the SAME blob.
+  test("a near-limit tool call still encodes when an image is attached", () => {
+    setCursorBlobLimitsForTests({ maxEntryBytes: 1024 });
+    try {
+      const bigArg = "x".repeat(448);
+      const imageBytes = new Uint8Array(460).fill(9);
+      const rawMessages: OcxMessage[] = [
+        { role: "user", content: "go", timestamp: 1 },
+        {
+          role: "assistant",
+          model: "cursor/auto",
+          timestamp: 2,
+          content: [{ type: "toolCall", id: "call_big", name: "js", namespace: "mcp__node_repl", arguments: { code: bigArg } }],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "call_big",
+          toolName: "js",
+          toolNamespace: "mcp__node_repl",
+          content: [{ type: "image", imageUrl: `data:image/png;base64,${Buffer.from(imageBytes).toString("base64")}` }],
+          isError: false,
+          timestamp: 3,
+        },
+      ];
+
+      // Must not throw: the step degrades its image rather than failing admission.
+      const bytes = encodeCursorRunRequest({
+        modelId: "composer-2.5",
+        conversationId: "cursor_admission_test",
+        system: ["s"],
+        messages: [{ role: "tool", content: "[tool_result]" }],
+        rawMessages,
+      });
+
+      const items = toolResultItems(bytes);
+      expect(items).toBeDefined();
+      // The image did not fit alongside the arguments, so it degraded to a placeholder
+      // instead of blowing the blob limit.
+      expect(items!.every(i => i.content.case === "text")).toBe(true);
+    } finally {
+      setCursorBlobLimitsForTests();
+    }
+  });
+
+  test("an image that comfortably fits the limit is still sent as bytes", () => {
+    setCursorBlobLimitsForTests({ maxEntryBytes: 64 * 1024 });
+    try {
+      const items = toolResultItems(request([
+        { type: "image", imageUrl: PNG_DATA_URL },
+      ]));
+      expect(items).toBeDefined();
+      expect(items![0].content.case).toBe("image");
+    } finally {
+      setCursorBlobLimitsForTests();
+    }
+  });
+
+  test("when several images cannot all fit, the NEWEST is the one retained", () => {
+    setCursorBlobLimitsForTests({ maxEntryBytes: 8 * 1024 });
+    try {
+      const older = new Uint8Array(5 * 1024).fill(1);
+      const newer = new Uint8Array(5 * 1024).fill(2);
+      const items = toolResultItems(request([
+        { type: "image", imageUrl: `data:image/png;base64,${Buffer.from(older).toString("base64")}` },
+        { type: "image", imageUrl: `data:image/png;base64,${Buffer.from(newer).toString("base64")}` },
+      ]));
+
+      expect(items).toBeDefined();
+      expect(items!.length).toBe(2);
+      // Oldest degrades first; the most recent screenshot is what the model is reasoning about.
+      expect(items![0].content.case).toBe("text");
+      expect(items![1].content.case).toBe("image");
+      if (items![1].content.case !== "image") throw new Error("expected image");
+      expect(Array.from(items![1].content.value.data)).toEqual(Array.from(newer));
+    } finally {
+      setCursorBlobLimitsForTests();
+    }
   });
 });
