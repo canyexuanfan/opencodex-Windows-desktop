@@ -906,7 +906,7 @@ describe("stateless Responses upstreams get no stateful parameters", () => {
     expect(body.input).toEqual(input);
   });
 
-  test("DeepSeek fails closed when a collected call has no matching result", () => {
+  test("DeepSeek synthesizes a placeholder result when a collected call has no matching result", () => {
     const callA = { type: "function_call", call_id: "call_a", name: "read_file", arguments: "{}" };
     const callB = { type: "function_call", call_id: "call_b", name: "read_file", arguments: "{}" };
     const outputB = { type: "function_call_output", call_id: "call_b", output: "B" };
@@ -914,7 +914,14 @@ describe("stateless Responses upstreams get no stateful parameters", () => {
     const input = [callA, callB, injected, outputB];
 
     const body = buildBody(deepseekProvider(), { input }) as { input: unknown[] };
-    expect(body.input).toEqual(input);
+    const repaired = body.input as Array<Record<string, unknown>>;
+    const callAIndex = repaired.findIndex(item => (item as { call_id?: string }).call_id === "call_a");
+    const synthesized = repaired[callAIndex + 1] as Record<string, unknown>;
+    expect(synthesized.type).toBe("function_call_output");
+    expect(synthesized.call_id).toBe("call_a");
+    expect(String(synthesized.output)).toContain("no tool result was recorded");
+    // The real result for call_b survives untouched.
+    expect(repaired.some(item => (item as { type?: string }).type === "function_call_output" && (item as { call_id?: string }).call_id === "call_b" && (item as { output?: unknown }).output === "B")).toBe(true);
   });
 
   test("DeepSeek fails closed when a collected call/result pair is backwards", () => {

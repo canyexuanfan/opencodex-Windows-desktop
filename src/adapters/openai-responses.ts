@@ -572,6 +572,12 @@ function toolOutputText(output: unknown): string {
  * expansion misses (proxy restart, unrecorded prior turn), previous_response_id is stripped
  * (the ChatGPT backend rejects it), so the delta may carry items that reference now-absent
  * prior items and 400 upstream:
+ * - `function_call`/`local_shell_call`/`custom_tool_call` without their paired output item
+ *   ("No tool output found for tool call <call_id>"). A stateless upstream cannot resolve
+ *   the pair from its own storage, so a placeholder output is synthesized right after the
+ *   call to keep the turn continuable without pretending the result was real. Gated on
+ *   `synthesizeMissingCallOutputs` (stateless wires); forward replay keeps the prior
+ *   fail-closed behavior.
  * - `function_call_output`/`custom_tool_call_output` without their paired call item
  *   ("No tool call found for function call output with call_id ..."). Converted to user
  *   messages so the result text survives. `function_call_output` also pairs with
@@ -608,16 +614,20 @@ function backfillWebSearchQueries(body: unknown): unknown {
   return changed ? { ...body, input } : body;
 }
 
-function repairOrphanedInputItems(body: unknown, dropReasoning: boolean): unknown {
+function repairOrphanedInputItems(body: unknown, dropReasoning: boolean, synthesizeMissingCallOutputs = false): unknown {
   if (!isPlainObject(body) || !Array.isArray(body.input)) return body;
   const input = body.input;
 
   const functionCallIds = new Set<string>();
   const customCallIds = new Set<string>();
+  const functionOutputIds = new Set<string>();
+  const customOutputIds = new Set<string>();
   for (const item of input) {
     if (!isPlainObject(item) || typeof item.call_id !== "string") continue;
     if (item.type === "function_call" || item.type === "local_shell_call") functionCallIds.add(item.call_id);
     else if (item.type === "custom_tool_call") customCallIds.add(item.call_id);
+    else if (item.type === "function_call_output") functionOutputIds.add(item.call_id);
+    else if (item.type === "custom_tool_call_output") customOutputIds.add(item.call_id);
   }
 
   let changed = false;
@@ -639,6 +649,24 @@ function repairOrphanedInputItems(body: unknown, dropReasoning: boolean): unknow
         });
         continue;
       }
+    }
+    const isFnCall = item.type === "function_call" || item.type === "local_shell_call";
+    const isCustomCall = item.type === "custom_tool_call";
+    if (isFnCall || isCustomCall) {
+      repaired.push(item);
+      if (synthesizeMissingCallOutputs) {
+        const callId = typeof item.call_id === "string" ? item.call_id : "";
+        const hasOutput = isFnCall ? functionOutputIds.has(callId) : customOutputIds.has(callId);
+        if (!hasOutput && callId) {
+          changed = true;
+          const name = typeof item.name === "string" && item.name.length > 0 ? item.name : callId;
+          const text = `[ocx] no tool result was recorded for "${name}"; execution status unknown — do not treat this as success, failure, or user-provided input.`;
+          repaired.push(isFnCall
+            ? { type: "function_call_output", call_id: callId, output: text }
+            : { type: "custom_tool_call_output", call_id: callId, output: text });
+        }
+      }
+      continue;
     }
     repaired.push(item);
   }
@@ -1375,7 +1403,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       // backend gets — dropping previous_response_id is not much use if the body that
       // reaches the wire is unparseable.
       if (forward || stateless) {
-        outBody = repairOrphanedInputItems(outBody, unexpandedMiss);
+        outBody = repairOrphanedInputItems(outBody, unexpandedMiss, stateless);
       }
       if (provider.requiresAdjacentResponsesToolResults === true) {
         outBody = normalizeResponsesToolResultAdjacency(outBody);
