@@ -2,6 +2,7 @@ import type { Server } from "bun";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse, type ResponsesTerminalStatus } from "../../bridge";
 import { formatPassthroughUpstreamError } from "./passthrough-error";
 import { checkInputAdmission } from "./input-admission";
+import { nativeContextLimits } from "../../codex/catalog";
 import { describeUpstreamConnectFailure } from "./upstream-error";
 import {
   getConfigPath,
@@ -1994,7 +1995,7 @@ async function handleResponsesInner(
   // refusing the turn that shrinks the context would deadlock the client against the very
   // limit this gate reports — it would be told to compact and then denied the compaction.
   if (parsed._compactionRequest !== true) {
-    const inputAdmission = checkInputAdmission(parsed, route.provider, route.providerName, parsed.modelId, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID));
+    const inputAdmission = checkInputAdmission(parsed, route.provider, route.providerName, parsed.modelId, nativeContextLimits(config));
     if (!inputAdmission.admitted) {
       // #1524: this is a LOCAL preflight refusal, not an upstream verdict. A policy or combo
       // fallback must be able to skip this candidate and try one whose context window fits,
