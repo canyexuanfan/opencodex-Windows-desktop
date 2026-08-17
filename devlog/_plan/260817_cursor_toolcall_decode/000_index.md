@@ -153,3 +153,36 @@ corrected predicate was right about `turnEnded` and the synthetic finalize, and
 still wrong about mapper errors. Rounds 2 and 3 had both already blessed `010`.
 
 Trajectory: 10 -> 7 -> 5 -> 1 blocker plus 4 refinements.
+
+### Round 5 — the round that changed the phase
+
+Round 5 was asked to verify the round-4 blocker fix. It returned **FAIL with a
+new blocker**, and the finding reframed `010` entirely:
+
+The duplicate-terminal defect is **not something this phase would introduce.**
+It already ships on `dev`. A mapper error from `recordToolCall`/`commitToolCall`
+does not set `state.terminated` (`protobuf-events.ts:1100-1169`), so a later real
+`turnEnded` passes the guard at `:1231` and emits a SECOND terminal at
+`:1361-1376`. The same split exists for a mapper error followed by a Connect,
+socket, abort, or budget failure: the queued error is yielded
+(`live-transport.ts:611-623`), then `cursor.ts:180` emits the failure as another.
+
+Widening the EOF predicate would therefore have made this phase's own tests pass
+while two live instances of the same bug continued shipping next door.
+
+| # | Finding | Resolution |
+|---|---------|------------|
+| 1 **BLOCKER** | Terminal ownership is incomplete across the whole turn, not just at EOF; two pre-existing duplicate-terminal paths | phase reframed around the invariant *exactly one terminal per turn*; the flag is consulted at three sites (EOF branch, message dispatch, failure throw); tests 7 and 8 added and must be shown red on the unmodified tree |
+| 2 | The flag cannot be set from `cursor.ts` without threading new state through `runCursorTurnWithRetry` (`transport.ts:5-14`) | seam moved to the transport's own `push` (`live-transport.ts:531-535`), where queue admission guarantees delivery |
+| 3 | All six tests were constructible but none covered the blocker; fixtures named | fixtures adopted into `010`; tests 7 and 8 added for the pre-existing paths |
+| 4 | Test 3 cannot isolate the `expectedClose` conjunct, since its setup necessarily emits an error | kept as a path regression with that limitation stated, not as proof of that term |
+
+**Why five rounds was not excessive.** Each round found a defect the previous
+round had blessed: rounds 2 and 3 both declared `010` coherent and
+regression-free, round 4 found it could double-error, and round 5 found the
+double-error was already in production. The trajectory 10 -> 7 -> 5 -> 1 -> 1 is
+not converging noise; the count fell while the severity of what was found rose.
+
+Scope note: `010` now fixes a defect that predates this unit. That is an
+expansion beyond the original F1, adopted deliberately because the narrow fix
+would have been indistinguishable from a real one while leaving the class alive.
