@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
 import { createRegisteredAdapter } from "../src/adapters/registry";
 import {
   stripClinePassDeepSeekV4ToolReplayNarration,
@@ -72,12 +73,16 @@ function parsedWithHybridToolTurn(modelId: string): OcxParsedRequest {
   };
 }
 
-async function outboundMessages(modelId: string): Promise<Array<Record<string, unknown>>> {
-  const adapter = createRegisteredAdapter(provider);
-  const request = await adapter.buildRequest(parsedWithHybridToolTurn(modelId), {
+function incoming() {
+  return {
     headers: new Headers(),
     translatorBudget: createTestTranslatorBudget(),
-  });
+  };
+}
+
+async function outboundMessages(modelId: string): Promise<Array<Record<string, unknown>>> {
+  const adapter = createRegisteredAdapter(provider);
+  const request = await adapter.buildRequest(parsedWithHybridToolTurn(modelId), incoming());
   const body = JSON.parse(request.body) as { messages?: Array<Record<string, unknown>> };
   return body.messages ?? [];
 }
@@ -106,12 +111,12 @@ describe("ClinePass DeepSeek V4 tool-call history replay", () => {
     expect(finalAssistant).toBeDefined();
   });
 
-  test("leaves hybrid assistant content unchanged for non-target models", async () => {
-    const messages = await outboundMessages("cline-pass/not-deepseek-v4");
-    const toolTurn = messages.find(message => Array.isArray(message.tool_calls));
+  test("leaves non-target OpenAI-chat requests byte-identical", async () => {
+    const parsed = parsedWithHybridToolTurn("cline-pass/not-deepseek-v4");
+    const plainRequest = await createOpenAIChatAdapter(provider).buildRequest(parsed, incoming());
+    const wrappedRequest = await createRegisteredAdapter(provider).buildRequest(parsed, incoming());
 
-    expect(toolTurn?.content).toContain("I should inspect the repository first.");
-    expect(toolTurn?.content).toContain("Let me run that now.");
+    expect(wrappedRequest.body).toBe(plainRequest.body);
   });
 
   test("keeps reasoning metadata when stripping a target tool turn", () => {
