@@ -235,7 +235,13 @@ describe("collectProjectCodexConfigWarnings", () => {
     writeFileSync(codexConfigPath, `model_provider = "opencodex-retry"`);
     writeFileSync(projectConfigPath, `model_provider = "anthropic"`);
 
-    expect(discoverProjectCodexConfigPaths({ cwd: nestedCwd, codexConfigPath }))
+    // Bound the walk to the fixture. On Windows the OS temp directory lives under
+    // C:\Users\<user>, so an unbounded 12-parent walk climbs out of the fixture and
+    // finds the developer's REAL ~/.codex/config.toml -- which the identity check
+    // cannot exclude, because it is a genuinely different file from the fixture's
+    // codexConfigPath. The assertion is about not rediscovering the global config
+    // through a parent walk, not about how far the walk may travel.
+    expect(discoverProjectCodexConfigPaths({ cwd: nestedCwd, codexConfigPath, maxWalkParents: 3 }))
       .toEqual([projectConfigPath]);
   });
 

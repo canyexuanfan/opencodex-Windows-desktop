@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync, existsSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * The proxy core must not reach Compatibility Lab.
@@ -25,7 +26,12 @@ const PROTECTED = [
   "src/server/management-api.ts",
 ] as const;
 
-const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
+// `fileURLToPath`, not `URL.pathname`: on Windows the latter yields "/C:/...", and
+// resolving that against the cwd produced "C:\\C:\\..." -- so every guard below threw
+// ENOENT instead of reading a file. A boundary test that cannot open its own sources
+// reports a broken path as a failure and would report a real Lab import the same way,
+// which means it was proving nothing on this platform.
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
  * Runtime imports only: `import type` is erased and costs nothing at runtime.
@@ -74,11 +80,16 @@ function firstLabPath(entry: string): string[] | null {
       const next = resolveSpec(spec, current);
       if (!next || previous.has(next)) continue;
       previous.set(next, current);
-      if (next.includes("/src/lab/")) {
+      // Compare on a slash-normalized path: `resolve`/`join` produce backslashes on
+      // Windows, so a literal "/src/lab/" test silently matched nothing there and the
+      // guard reported clean for every possible violation.
+      if (next.replaceAll("\\", "/").includes("/src/lab/")) {
         const chain: string[] = [];
         let node: string | null = next;
         while (node) {
-          chain.push(node.slice(repoRoot.length + 1));
+          // Repository-relative and slash-spelled, so the printed chain reads the same
+          // on every platform and callers can match it without knowing the separator.
+          chain.push(node.slice(repoRoot.length + 1).replaceAll("\\", "/"));
           node = previous.get(node) ?? null;
         }
         return chain.reverse();
