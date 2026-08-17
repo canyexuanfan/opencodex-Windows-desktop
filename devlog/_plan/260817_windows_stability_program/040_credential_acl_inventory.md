@@ -9,8 +9,9 @@ This phase produces an inventory. Where it lands depends on what it finds.
 
 Enumerate every path that writes a credential, token, OAuth refresh token, or
 session secret. Starting points: `src/config.ts` (chmod sites at 221, 316, 450,
-1713, 2683, and **3937** — the invalid-config backup, which copies the whole
-config including any secrets in it; dir sites 1704, 2632), `src/oauth/store.ts`,
+1713, 2683, and **3942** — the invalid-config backup (inside
+`backupInvalidConfig`, declared at 3937), which copies the whole config
+including any secrets it held; dir sites 1704, 2632), `src/oauth/store.ts`,
 `src/service.ts:189` and `:386`, `src/lab/artifacts/secure-fs.ts`,
 `src/adapters/google-antigravity-replay.ts:251`.
 
