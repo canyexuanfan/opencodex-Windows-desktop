@@ -43,7 +43,7 @@ nothing is safe; claiming nothing runs is not), but it must be stated, not disco
 |------|--------|
 | `src/codex/app-server-processes.ts` | `-ErrorAction Stop` on the top-level query at `:364`, wrapped so a failure emits `__OCX_ENUM_INCOMPLETE__`; comment the restart-path consequence at `:427` |
 | `src/codex/app-server-processes.ts` | `CATALOG_STATE_TTL_MS` (5_000, uniform today) must not cache `unknown`/`not_running` for the full TTL |
-| `tests/codex-app-server-processes.test.ts` | regression for a failing **top-level** CIM query (the existing test only rejects the injected callback); TTL behavior per state |
+| `tests/codex-app-server-processes.test.ts` | regression for a top-level CIM query that returns **cleanly empty** (see the wording note below for what existing coverage does and does not reach); TTL behavior per state |
 
 ## Accept criteria (with activation)
 
