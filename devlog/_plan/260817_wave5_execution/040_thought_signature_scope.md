@@ -133,3 +133,47 @@ requirement, and the exact caller locations. Terminal outcome for this cycle:
 blocked the naive version is written down, but landing it means touching the
 streaming emit path, which deserves a maintainer's call on scheduling rather than an
 agent slipping it into a wave.
+## Amendment after the WP4 audit — the destination half landed
+
+The reviewer pushed back on deferring the whole key-scope fix, and was right. The
+restart-stability blocker binds to the **credential** component only:
+`provider.baseUrl` is configuration, stable across restarts by construction, and the
+only reason today's `providerDestinationIdentity` is unstable is that it runs through
+the random-keyed HMAC. A plain digest of the same normalized URL is equally
+non-reversible here. This document already sanctioned that fallback — *"scope the fix
+to destination only"* — and then deferred the branch it had pre-authorized.
+
+Landed in `ebab9d253`:
+
+- `durableReplayDestinationIdentity()` beside the process-local form (not replacing it —
+  the in-memory cache is right to prefer the random-keyed version).
+- `providerDestinationDurableIdentity` threaded through the identity type and `core.ts`.
+- The durable `keyFor` includes it, closing cross-endpoint collisions under one provider name.
+- `load()` reads the store version for the first time; `STORE_VERSION = 3` drops v2
+  entries explicitly instead of letting them go dead and age out invisibly.
+
+Ablation: removing the destination component fails the new cross-endpoint test while the
+restart test stays green — the pair that matters, since the naive fix would have passed
+the first and broken the second.
+
+### Corrections to this document and to #1926
+
+The audit found four errors in what I wrote, all corrected on the issue rather than
+edited away:
+
+1. **A third call site.** `failCurrentToolCall` discards the durable promise too, at two
+   more sites, reached from six places including the stall watchdog. The writeup named
+   only `closeCurrentToolCall` and `flushToolCall`.
+2. **The `local` claim was backwards.** Those providers already never remember — `core.ts`
+   only binds `scope.current` when credential *and* destination exist. There was no
+   regression to protect against.
+3. **The version mechanism was mis-stated.** `version: 2` was written and never read, so a
+   bump would have invalidated nothing. Fixed by actually reading it.
+4. **A fourth auth mode.** Codex pool auth rides a rotating bearer — the worst
+   restart-stability story of the four, and absent from the table.
+
+And one correction to the deferral reasoning itself: the streaming call sites are already
+inside an `async` loop, so the obstacle there is the reentrancy guard, not the absence of
+an await point. The real blocker is `buildResponseJSON`, a synchronous public export with
+three callers. Awaiting a disk write per tool call would also put fsync latency on the hot
+path, which argues for a turn-end barrier rather than per-item awaits.
