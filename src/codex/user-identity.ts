@@ -183,7 +183,31 @@ export function decodeWindowsIdentityPowerShellOutputForTests(output: Uint8Array
   return decodeWindowsIdentityPowerShellOutput(output);
 }
 
+/**
+ * Per-process memo for the Windows lookups.
+ *
+ * Both values -- the effective token's SID and its known-folder local AppData --
+ * are fixed for the lifetime of a process: neither can change without a new logon
+ * token, and the lookups deliberately ignore the environment, so nothing a caller
+ * does between two calls can alter the answer. Each call otherwise spawns a fresh
+ * PowerShell, roughly 150ms for the SID and 310ms for the folder, and the
+ * coordinator asks for both on every config write and lock acquisition. That cost
+ * pushed real multi-process injection tests past their budget while proving
+ * nothing: the second spawn re-derives what the first already established.
+ *
+ * Only successful lookups are memoized, so a transient failure cannot pin the
+ * process into a permanently refusing state.
+ */
+const windowsIdentityValueCache = new Map<string, string>();
+
+/** Test-only reset so a suite can force a fresh lookup. */
+export function resetWindowsIdentityValueCacheForTests(): void {
+  windowsIdentityValueCache.clear();
+}
+
 function powershellValue(expression: string): string {
+  const memoized = windowsIdentityValueCache.get(expression);
+  if (memoized !== undefined) return memoized;
   let command: string[];
   try {
     command = windowsIdentityPowerShellCommand(expression);
@@ -206,6 +230,7 @@ function powershellValue(expression: string): string {
   if (result.exitCode !== 0) refuse("Windows effective-account lookup failed.");
   const value = decodeWindowsIdentityPowerShellOutput(result.stdout ?? Buffer.alloc(0));
   if (!value) refuse("Windows effective-account lookup returned an empty value.");
+  windowsIdentityValueCache.set(expression, value);
   return value;
 }
 
