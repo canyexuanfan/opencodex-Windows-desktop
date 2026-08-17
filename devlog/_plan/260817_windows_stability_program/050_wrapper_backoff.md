@@ -63,11 +63,22 @@ reads stale. Either add `setlocal enabledelayedexpansion` and use `!VAR!`, or
 keep the state outside the block. Changing the wrapper preamble is its own
 reviewable decision.
 
-Given four traps and an expansion-mode change, the state file is the
-**recommended** implementation rather than the fallback: a small file beside the
-wrapper holding the attempt index and last start time, trading one write per
-restart for arithmetic a reviewer can check at a glance. Decide before writing
-the batch, not during review.
+Given four traps and an expansion-mode change, prefer a state file for the
+**retry counter** — a small file beside the wrapper holding the attempt index,
+which removes the delayed-expansion problem entirely because the value is read
+fresh each iteration rather than expanded when the block is parsed.
+
+Be clear about what that does not solve. The 600-second uptime reset still needs
+an elapsed-time comparison, so the octal, padding and midnight-wrap rules above
+apply either way — a state file storing a start timestamp still has to parse and
+subtract it. The file also brings its own questions: where it lives, what happens
+when the write fails (treat as a fresh counter and keep going, never fail the
+restart), and removal on uninstall alongside the wrapper and launcher.
+
+So: state file for the counter, documented arithmetic for the uptime check, and
+if review prefers to avoid a file altogether, `setlocal enabledelayedexpansion`
+with `!VAR!` is the in-memory equivalent. Decide before writing the batch, not
+during review.
 
 ## Verify
 

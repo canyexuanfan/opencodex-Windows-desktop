@@ -27,9 +27,12 @@ The counters are process-lifetime and in-memory; they reset on restart, and that
 is acceptable because the question is "does this ever fire at all", not "how
 often per hour".
 
-Route test: extend `tests/system-routes.test.ts` with a case asserting the
-endpoint returns the snapshot shape and that a simulated retry (via the injected
-`AtomicRenameIO` from 030) increments the expected key.
+Route test: `tests/system-routes.test.ts` does not exist — current
+`handleSystemRoutes` coverage is spread across `tests/memory-watchdog.test.ts`
+(line 171) and `tests/codex-restart-route.test.ts` (line 11). Create
+`tests/system-routes.test.ts` for this endpoint: assert the snapshot shape, and
+assert that a simulated retry driven through the injected `AtomicRenameIO` from
+030 increments the expected key.
 
 **Naming constraint:** the `publisher` value is a fixed literal chosen at the
 call site. It must never be derived from a path, because a path can contain a
@@ -56,6 +59,7 @@ happen and this closes NOOP. That is a legitimate outcome.
 bun run typecheck
 bun run privacy:scan
 bun test tests/config.test.ts
+bun test tests/system-routes.test.ts
 ```
 
 ## Risk
