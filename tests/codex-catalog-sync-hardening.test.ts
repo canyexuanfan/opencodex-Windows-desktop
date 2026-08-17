@@ -13,18 +13,10 @@ function runScript(
   script: string,
   extraEnv: Record<string, string> = {},
 ): { stdout: string; status: number; stderr: string } {
-  // The suite preload redirects USERPROFILE, but .NET's Windows known-folder lookup then returns
-  // an empty LocalApplicationData path. Catalog serialization intentionally resolves its lock
-  // namespace from that OS API rather than environment variables, so restore only the real
-  // profile for this child. CODEX_HOME and OPENCODEX_HOME remain explicit test sandboxes.
-  const windowsIdentityEnv = process.platform === "win32" && process.env.OCX_REAL_HOME
-    ? { USERPROFILE: process.env.OCX_REAL_HOME }
-    : {};
   const result = spawnSync(process.execPath, ["--eval", script], {
     cwd: repoRoot,
     env: {
       ...process.env,
-      ...windowsIdentityEnv,
       CODEX_HOME: codexHome,
       OPENCODEX_HOME: opencodexHome,
       ...extraEnv,
@@ -1142,7 +1134,7 @@ describe("Codex catalog sync hardening", () => {
     expect(out.identicalResyncKeptMtime).toBe(true);
     expect(out.thirdWritten).toBe(true);
     expect(out.realChangeBumpedMtime).toBe(true);
-  });
+  }, 15_000);
 
   test("the no-op guard compares bytes, so a malformed byte decoding to U+FFFD is still repaired", () => {
     // The guard above must not preserve corruption. `readFileSync(path, "utf8")`

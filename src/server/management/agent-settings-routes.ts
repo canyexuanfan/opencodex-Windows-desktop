@@ -1010,7 +1010,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       classifierModel: config.claudeCode?.classifierModel ?? "",
       classifierFallbacks: config.claudeCode?.classifierFallbacks ?? [],
       systemEnv: config.claudeCode?.systemEnv === true,
-      autoConnectSupported: process.platform === "darwin",
+      autoConnectSupported: (ctx.deps.platform ?? process.platform) === "darwin",
       maxContextTokens: config.claudeCode?.maxContextTokens ?? null,
       alwaysEnableEffort: config.claudeCode?.alwaysEnableEffort === true,
       autoContext: config.claudeCode?.autoContext !== false,
