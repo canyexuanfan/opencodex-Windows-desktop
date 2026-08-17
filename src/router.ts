@@ -341,6 +341,15 @@ export function routedProviderConfig(providerName: string, provider: OcxProvider
       && registryEntry.requiresAdjacentResponsesToolResults !== undefined
       ? { requiresAdjacentResponsesToolResults: registryEntry.requiresAdjacentResponsesToolResults }
       : {}),
+    ...(provider.fastWire === undefined && registryEntry.fastWire !== undefined
+      ? {
+        fastWire: registryEntry.fastWire === null ? null : {
+          ...registryEntry.fastWire,
+          canonicalToWire: { ...registryEntry.fastWire.canonicalToWire },
+          ...(registryEntry.fastWire.betas ? { betas: [...registryEntry.fastWire.betas] } : {}),
+        },
+      }
+      : {}),
     ...(provider.supportsServiceTier === undefined && registryEntry.supportsServiceTier !== undefined
       ? { supportsServiceTier: registryEntry.supportsServiceTier }
       : {}),

@@ -101,6 +101,32 @@ describe("FastWire characterization: supported-route fastMode tri-state", () => 
   });
 });
 
+describe("FastWire characterization: resolved model adapter controls fast override", () => {
+  test.each([
+    { fastMode: true, expectedTier: "priority" },
+    { fastMode: false, expectedTier: undefined },
+  ])(
+    "anthropic provider overridden to openai-chat emits $expectedTier with fastMode=$fastMode",
+    async ({ fastMode, expectedTier }) => {
+      const { outboundBody } = await driveResponses({
+        provider: {
+          adapter: "anthropic",
+          baseUrl: "https://mixed-wire.example.test/v1",
+          authMode: "key",
+          apiKey: "sk-test",
+          modelAdapters: { model: "openai-chat" },
+          supportsServiceTier: true,
+          chatServiceTier: true,
+        },
+        callerTier: "flex",
+        fastMode,
+      });
+      if (expectedTier === undefined) expect(outboundBody).not.toHaveProperty("service_tier");
+      else expect(outboundBody.service_tier).toBe(expectedTier);
+    },
+  );
+});
+
 describe("FastWire characterization: unclassified support matrix", () => {
   const cells = ([true, false, undefined] as const).flatMap(fastMode =>
     (["priority", "fast", "flex"] as const).map(callerTier => ({ fastMode, callerTier }))
@@ -163,18 +189,28 @@ describe("FastWire characterization: requestedServiceTier timing", () => {
 });
 
 describe("FastWire characterization: rawBody observation point", () => {
-  test("fastMode injection is visible in parsed._rawBody when the adapter is invoked", async () => {
+  test("Responses writes the decision outbound without changing parsed._rawBody", async () => {
     let adapterRawBody: Record<string, unknown> | undefined;
-    const adapterSpy = spyOn(adapterResolveModule, "resolveAdapter").mockReturnValue({
-      name: "openai-responses",
-      passthrough: true,
-      async buildRequest(parsed) {
-        adapterRawBody = JSON.parse(JSON.stringify(parsed._rawBody)) as Record<string, unknown>;
-        throw new Error("fastwire rawBody observation complete");
-      },
-    } as ReturnType<typeof adapterResolveModule.resolveAdapter>);
+    let outboundBody: Record<string, unknown> | undefined;
+    const actualResolveAdapter = adapterResolveModule.resolveAdapter;
+    const adapterSpy = spyOn(adapterResolveModule, "resolveAdapter").mockImplementation((provider, cacheRetention) => {
+      const actualAdapter = actualResolveAdapter(provider, cacheRetention);
+      return {
+        ...actualAdapter,
+        buildRequest(parsed, incoming) {
+          adapterRawBody = parsed._rawBody as Record<string, unknown>;
+          const request = actualAdapter.buildRequest!(parsed, incoming);
+          outboundBody = JSON.parse(request.body) as Record<string, unknown>;
+          return request;
+        },
+      };
+    });
 
     try {
+      globalThis.fetch = (async () => new Response("data: [DONE]\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      })) as typeof fetch;
       const providerName = "fastwire-raw-body";
       const config = {
         port: 0,
@@ -193,11 +229,9 @@ describe("FastWire characterization: rawBody observation point", () => {
         }),
       });
 
-      await expect(handleResponses(request, config, { model: "", provider: "" }, {}))
-        .rejects.toThrow("fastwire rawBody observation complete");
-      // A1 intentionally moves fast-mode injection out of `_rawBody`; update this
-      // characterization when that observation point changes.
-      expect(adapterRawBody?.service_tier).toBe("priority");
+      await handleResponses(request, config, { model: "", provider: "" }, {});
+      expect(outboundBody?.service_tier).toBe("priority");
+      expect(adapterRawBody?.service_tier).toBe("flex");
     } finally {
       adapterSpy.mockRestore();
     }

@@ -716,6 +716,33 @@ export function requestPacingConfigError(value: unknown): string | null {
   return "requestPacing must contain enabled and a valid requestsPerMinute/minIntervalMs provider rule or model overrides";
 }
 
+const fastWireCanonicalMapSchema = z.record(
+  z.string().trim().min(1),
+  z.string().trim().min(1).max(64),
+).superRefine((mapping, ctx) => {
+  if (!Object.prototype.hasOwnProperty.call(mapping, "priority")) {
+    ctx.addIssue({ code: "custom", path: ["priority"], message: "canonicalToWire must include priority" });
+  }
+  const values = Object.values(mapping);
+  if (new Set(values).size !== values.length) {
+    ctx.addIssue({ code: "custom", message: "canonicalToWire values must be unique" });
+  }
+});
+
+const fastWireBetasSchema = z.array(z.string().trim().min(1)).max(16)
+  .superRefine((betas, ctx) => {
+    if (new Set(betas).size !== betas.length) {
+      ctx.addIssue({ code: "custom", message: "betas values must be unique" });
+    }
+  });
+
+const fastWireSchema = z.object({
+  kind: z.enum(["service-tier", "anthropic-speed"]),
+  canonicalToWire: fastWireCanonicalMapSchema,
+  foreignCallerTiers: z.enum(["verbatim", "drop"]),
+  betas: fastWireBetasSchema.optional(),
+}).strict();
+
 /**
  * Zod schema for one provider entry: known fields are validated strictly while unknown
  * fields pass through (preserved for runtime extensions).
@@ -731,6 +758,7 @@ const providerConfigSchema = z.object({
   responsesPath: z.string().min(1).optional(),
   statelessResponses: z.boolean().optional(),
   requiresAdjacentResponsesToolResults: z.boolean().optional(),
+  fastWire: fastWireSchema.nullable().optional(),
   supportsServiceTier: z.boolean().optional(),
   modelSupportsServiceTier: z.record(z.string().min(1), z.boolean()).optional(),
   preserveResponsesReasoningContent: z.boolean().optional(),
@@ -753,7 +781,17 @@ const providerConfigSchema = z.object({
     repairInvalidIds: z.boolean().optional(),
   }).strict().optional(),
   responsesSnapshotRepair: z.boolean().optional(),
-}).passthrough();
+}).passthrough().superRefine((provider, ctx) => {
+  if (provider.fastWire !== null) return;
+  const exactCapability = Object.values(provider.modelSupportsServiceTier ?? {}).some(value => value === true);
+  if (provider.supportsServiceTier === true || exactCapability) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["fastWire"],
+      message: "fastWire=null conflicts with supportsServiceTier=true",
+    });
+  }
+});
 
 const RESERVED_PROVIDER_NAMES = new Set([
   // JavaScript prototype-pollution guards.
@@ -1415,6 +1453,27 @@ const configSchema = z.object({
       });
     }
     const provider = config.providers[name];
+    if (provider.fastWire === null) {
+      const directCapability = provider.supportsServiceTier === true
+        || Object.values(provider.modelSupportsServiceTier ?? {}).some(value => value === true);
+      const registry = providerMatchesRegistryTransport(name, provider)
+        ? getProviderRegistryEntry(name)
+        : undefined;
+      const effectiveProviderCapability = provider.supportsServiceTier ?? registry?.supportsServiceTier;
+      const effectiveModelCapabilities = {
+        ...(registry?.modelSupportsServiceTier ?? {}),
+        ...(provider.modelSupportsServiceTier ?? {}),
+      };
+      const inheritedCapability = effectiveProviderCapability === true
+        || Object.values(effectiveModelCapabilities).some(value => value === true);
+      if (!directCapability && inheritedCapability) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["providers", redactSecretString(name), "fastWire"],
+          message: "fastWire=null conflicts with inherited supportsServiceTier=true",
+        });
+      }
+    }
     const openRouterRoutingError = openRouterRoutingConfigError(provider);
     if (openRouterRoutingError) {
       ctx.addIssue({

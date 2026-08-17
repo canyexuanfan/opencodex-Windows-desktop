@@ -121,7 +121,8 @@ import { createTranslatorBudget, isTranslatorBudgetExceededError, type Translato
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
 import { providerContextCap } from "../../providers/context-cap";
-import { SERVICE_TIER_ADAPTERS, serviceTierSupportForModel } from "../../providers/service-tier";
+import { fastPolicyForModel, SERVICE_TIER_ADAPTERS } from "../../providers/service-tier";
+import { canonicalFastTierMarker, decideTier, tierValueAfterDecision } from "../../providers/fastwire";
 import {
   RequestPacingQueueOverloadError,
   waitForProviderRequestSlot,
@@ -1151,23 +1152,27 @@ async function applyFinalRouteRequestNormalization(args: {
     logCtx.preserveResolvedModelFromRoute = true;
   }
 
-  // Fast mode override only where the final provider/model route explicitly documents
-  // service-tier support. The same model-scoped resolver is used by catalog generation.
-  const modelServiceTierSupport = serviceTierSupportForModel(
+  // Resolve Fast policy after the final route/wire settles. A1 records the decision on parsed
+  // options; the Responses adapter owns the final outbound body write.
+  const fastPolicy = fastPolicyForModel(
     route.provider,
     route.modelId,
     route.providerName,
     inboundWire,
   );
-  if (config.fastMode !== undefined
-    && SERVICE_TIER_ADAPTERS.has(route.provider.adapter)
-    && modelServiceTierSupport === true) {
-    const tier = config.fastMode ? "priority" : undefined;
-    if (parsed._rawBody && typeof parsed._rawBody === "object") {
-      if (tier) (parsed._rawBody as Record<string, unknown>).service_tier = tier;
-      else delete (parsed._rawBody as Record<string, unknown>).service_tier;
-    }
-    parsed.options.serviceTier = tier;
+  const modelServiceTierSupport = fastPolicy.eligibility === "eligible"
+    ? true
+    : fastPolicy.eligibility === "unclassified" ? undefined : false;
+  const callerTier = parsed.options.serviceTier;
+  const canonicalFastTier = canonicalFastTierMarker(callerTier);
+  if (canonicalFastTier !== undefined) parsed.options.canonicalFastTier = canonicalFastTier;
+  else delete parsed.options.canonicalFastTier;
+  parsed.options.tierDecision = decideTier(fastPolicy, config.fastMode);
+  parsed.options.serviceTier = tierValueAfterDecision(parsed.options.tierDecision, callerTier);
+  if (fastPolicy.capability === true && fastPolicy.fastWire === null) {
+    console.warn(
+      `[opencodex] Fast policy for ${route.providerName}/${route.modelId} has service-tier capability but no Fast wire; preserving only caller-permitted tier behavior`,
+    );
   }
   applyServiceTierGate(
     route.provider,
@@ -1582,10 +1587,10 @@ export function applyServiceTierGate(
   // model adapter as well: an explicit override to Anthropic (or another non-OpenAI wire) must
   // not carry a caller-supplied `service_tier` through a route that cannot forward it.
   if (modelId === undefined && !SERVICE_TIER_ADAPTERS.has(provider.adapter)) return;
-  const support = modelId === undefined
-    ? provider.supportsServiceTier
-    : serviceTierSupportForModel(provider, modelId, providerName, inbound);
-  if (support !== false) return;
+  const forwardCallerTier = modelId === undefined
+    ? provider.supportsServiceTier !== false
+    : fastPolicyForModel(provider, modelId, providerName, inbound).forwardCallerTier;
+  if (forwardCallerTier) return;
   if (rawBody && typeof rawBody === "object") {
     delete (rawBody as Record<string, unknown>).service_tier;
   }

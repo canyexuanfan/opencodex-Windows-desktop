@@ -449,6 +449,13 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   }
   // Registry-only metadata (never seeded into saved config): backfill straight from
   // the entry so an explicit user value stays distinguishable from the default.
+  if (prov.fastWire === undefined && entry.fastWire !== undefined) {
+    prov.fastWire = entry.fastWire === null ? null : {
+      ...entry.fastWire,
+      canonicalToWire: { ...entry.fastWire.canonicalToWire },
+      ...(entry.fastWire.betas ? { betas: [...entry.fastWire.betas] } : {}),
+    };
+  }
   if (prov.supportsServiceTier === undefined && entry.supportsServiceTier !== undefined) prov.supportsServiceTier = entry.supportsServiceTier;
   if (prov.preserveResponsesReasoningContent === undefined && entry.preserveResponsesReasoningContent !== undefined) prov.preserveResponsesReasoningContent = entry.preserveResponsesReasoningContent;
   applyReasoningSummaryDefaults(prov, entry.modelSupportsReasoningSummaries);
