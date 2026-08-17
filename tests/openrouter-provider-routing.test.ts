@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildOpenAIChatPassthroughRequest, createOpenAIChatAdapter } from "../src/adapters/openai-chat";
 import {
   openRouterRoutingConfigError,
@@ -8,6 +11,7 @@ import { clearKeyCooldowns, rotateProviderTransportOn429 } from "../src/provider
 import { routeModel } from "../src/router";
 import { providerManagementConfigError, safeConfigDTO } from "../src/server/auth-cors";
 import type { OcxConfig, OcxParsedRequest, OcxProviderConfig } from "../src/types";
+import { removeTreeWithRetry } from "./helpers/remove-tree";
 
 function provider(baseUrl: string, overrides: Partial<OcxProviderConfig> = {}): OcxProviderConfig {
   return { adapter: "openai-chat", baseUrl, apiKey: "test-key", ...overrides };
@@ -166,6 +170,9 @@ describe("OpenRouter configurable provider routing", () => {
   });
 
   test("preserves provider routing after native Chat key rotation", () => {
+    const previousHome = process.env.OPENCODEX_HOME;
+    const home = mkdtempSync(join(tmpdir(), "ocx-openrouter-routing-"));
+    process.env.OPENCODEX_HOME = home;
     clearKeyCooldowns("openrouter");
     const openrouter = provider("https://openrouter.ai/api/v1", {
       authMode: "key",
@@ -189,6 +196,9 @@ describe("OpenRouter configurable provider routing", () => {
       });
     } finally {
       clearKeyCooldowns("openrouter");
+      if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+      else process.env.OPENCODEX_HOME = previousHome;
+      removeTreeWithRetry(home);
     }
   });
 
