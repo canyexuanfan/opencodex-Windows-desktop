@@ -269,10 +269,11 @@ export function isNativeOpenAiEntry(entry: RawEntry): boolean {
 /**
  * Auto-compaction threshold for a native row.
  *
- * The usual rule is 90% of the window, but a model whose measured input ceiling sits below
- * that (GPT-5.6: 922,000 against a 1,050,000 window, where 90% would be 945,000) has to
+ * The usual rule is 90% of the window, but a row whose input ceiling sits below that has to
  * clamp to the ceiling instead — otherwise the client keeps filling until upstream answers
- * `context_length_exceeded` and compaction never gets a chance to run.
+ * `context_length_exceeded` and compaction never gets a chance to run. Native GPT-5.6 no
+ * longer trips this (922,000 window, 829,800 at 90%), but the routed and API-key rows carry
+ * the same family at a 1,050,000 window where 90% would be 945,000 — past the ceiling.
  */
 function nativeAutoCompactLimit(contextWindow: number, maxInputTokens: number | undefined, contextCap?: number): number {
   const ninety = Math.floor(contextWindow * 0.9);

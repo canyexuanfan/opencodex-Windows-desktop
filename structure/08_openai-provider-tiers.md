@@ -115,13 +115,23 @@ preserving a stale one would block every later migration.
   `daybreak-blue-latest` are distinct wire surfaces. An observed native row follows the pinned Sol
   capability metadata, but routing strips only the account selector and keeps
   `gpt-daybreak-blue-latest` byte-for-byte; it never expands the bare list or substitutes Sol.
-- GPT-5.6 rows use 1,050,000 context tokens and 922,000 max input tokens on BOTH surfaces. The
-  Codex-login side used to advertise 372,000; probing a real account showed that was wrong —
-  921,508 input tokens were accepted and 922,013 refused with `context_length_exceeded` on Sol,
-  Terra and Luna alike, which is the same 922,000 ceiling the API surface already declared.
-  The two limits stay separate fields: auto-compaction clamps to the 922,000 input ceiling rather
-  than to 90% of the window, since 945,000 would sit past what upstream accepts. Evidence:
-  `devlog/_plan/260817_native_gpt56_1m_context/001_measurement_evidence.md`.
+- The two GPT-5.6 surfaces advertise different windows on purpose. API rows use 1,050,000
+  context with 922,000 max input. Codex-login rows use 922,000 context with 829,800
+  auto-compaction.
+
+  The ceiling is the same on both — probing a real Codex-login account accepted 921,508 input
+  tokens and refused 922,013 with `context_length_exceeded` on Sol, Terra and Luna alike,
+  matching the 922,000 the API surface already declared. What differs is that a Codex-login
+  `context_window` is a spending budget, not a label: Codex fills
+  `context_window * effective_context_window_percent` (95% by default, codex-rs
+  `turn_context.rs`). Advertising 1,050,000 there spent 997,500 and blew past the ceiling.
+
+  922,000 is therefore an OPERATING CAP, the same shape upstream uses — the live catalog
+  reports 272,000 against a 872,000 `max_context_window`. It yields a 875,900-token budget
+  and keeps ~46k of headroom. Do not back-solve it from the ceiling: 970,000 would land the
+  budget at 921,500, inside the 1,840-token gap between the last success and the first
+  refusal. Evidence: `devlog/_plan/260817_native_gpt56_1m_context/001_measurement_evidence.md`
+  and `014_final_922k_with_margin.md`.
 - `*-pro` selected ids rewrite to the base wire id with `reasoning.mode: "pro"`; request logs,
   usage, model visibility, subagent state, and injection state retain the selected virtual id.
 - Compact preserves provider/selected identity but sends the base model without a reasoning object.
