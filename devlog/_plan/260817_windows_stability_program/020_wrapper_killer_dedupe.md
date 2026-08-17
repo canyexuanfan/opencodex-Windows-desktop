@@ -1,7 +1,9 @@
 # 020 — Collapse the duplicated scheduler-wrapper killer (F2)
 
-**Depends on:** 010 — that fix lands in one of the two copies, and this phase
-removes the copy. Doing them in the other order means writing the fix twice.
+**Depends on:** nothing structural. Either order works with 010: doing 020 first
+moves one flawed implementation and 010 then fixes it once. Prefer 010 first
+only because it is trivial. Both touch the same files, so sequence to avoid
+collisions (see `002`).
 
 ## Change
 

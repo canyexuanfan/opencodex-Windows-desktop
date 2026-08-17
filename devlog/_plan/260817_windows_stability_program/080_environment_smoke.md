@@ -1,8 +1,8 @@
 # 080 — Windows environment smoke coverage (F3)
 
-**Depends on:** 060 stage 1, so these run alongside a Windows leg that already
-executes. They start **non-gating** (`continue-on-error: true`) and do not wait
-for stage 3.
+**Depends on:** nothing structural. These are simplest to add alongside 060
+stage 1, once a Windows leg is already executing, and they start **non-gating**
+(`continue-on-error: true`). They do not wait for stage 3.
 
 ## Change
 
@@ -43,11 +43,24 @@ Reuse the account from job 1 without elevation. Assert the product degrades
 correctly where file symlinks throw EPERM — the suite already skips those cases
 via a `canSymlink` probe, and skipping is not the same as degrading well.
 
-### 5. Self-update end to end
+### 5. Package replacement smoke (not `ocx update`)
 
-`npm i -g @bitkyc08/opencodex@<previous>`, then update to a locally packed
-tarball of the candidate, assert the CLI and service both survive. Uses
-`npm pack`, so it needs no pre-publication registry artifact.
+`npm i -g @bitkyc08/opencodex@<previous>`, then `npm i -g` a locally packed
+tarball of the candidate, then assert the CLI still runs and the service still
+responds. This exercises **npm replacing a live global install on Windows** —
+the step that produced #1849 — and it needs no pre-publication registry
+artifact.
+
+It is deliberately **not** an `ocx update` test, and must not be described as
+one. `ocx update` resolves its target from the registry
+(`src/update/index.ts:167`) and installs `@bitkyc08/opencodex@<resolved-version>`
+(`src/update/index.ts:106`). There is no seam for injecting a local tarball, so
+the real command cannot be driven against an unpublished candidate.
+
+Covering `ocx update` itself needs one of: a published prerelease to update
+*to*, or an injection seam in `updateCommand()` for a candidate target. The
+second is a source change and belongs in the #1849 unit, not here. Until one
+exists, this job covers the npm mechanics and says so.
 
 ### 6. OneDrive-redirected profile — investigate, do not schedule
 

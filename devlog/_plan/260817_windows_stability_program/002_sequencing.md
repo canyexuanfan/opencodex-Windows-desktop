@@ -25,8 +25,9 @@ Everything else is schedulable now.
 ## Start immediately, in parallel
 
 - **060 stage 1** — highest priority despite its number. It only makes Windows
-  *run*; it blocks nothing, and every later phase wants its data. Delaying it
-  delays the unit.
+  *run*; it blocks nothing, and every later phase wants its data. Its one
+  prerequisite is the runner-policy decision inside 060, which is a decision to
+  make rather than work to schedule.
 - **010** — one line plus a widened guard.
 - **051** — crash-restart already exists, so it is testable today. Landing it
   before 050 gives the timing change a baseline.
@@ -48,7 +49,12 @@ Stated so nobody mistakes them for blockers:
   suite red today. What is true is narrower: **060 stages 3 and 4** should wait
   for the fixes, because that is when a Windows failure starts costing someone
   a merge or a release.
-- **080** starts non-gating alongside 060 stage 1 and does not wait for stage 3.
+- **080** is simplest to add once 060 stage 1 has a Windows leg running, but it
+  is not blocked by it; it starts non-gating and does not wait for stage 3.
+
+Each phase header states its own dependency line. Where a header says "sequence
+around" another phase, that is collision avoidance in shared files — `002` is
+authoritative on what is structural, and only the two links above are.
 
 ## Out of scope for this unit
 

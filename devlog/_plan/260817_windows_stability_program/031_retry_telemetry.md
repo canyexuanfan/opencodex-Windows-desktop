@@ -15,10 +15,21 @@ supplied string literal — `"config"`, `"prompt-journal"`,
 
 Export `readWindowsReplaceRetryCounters()` returning a plain snapshot object.
 
-Surface it on the existing management diagnostics route rather than inventing a
-transport. The counters are process-lifetime and in-memory; they reset on
-restart, and that is acceptable because the question being answered is "does
-this ever fire at all", not "how often per hour".
+Surface it through `handleSystemRoutes` in
+`src/server/management/system-routes.ts:49`, which is where process-level
+diagnostics already live. Add a sibling endpoint rather than extending the
+existing one: `GET /api/system/windows-replace-retries` returning
+`{ counters: { [key]: { retried, exhausted } } }`. `/api/system/memory`
+(line 51) returns a memory-shaped payload and appending unrelated counters to it
+would make both harder to consume.
+
+The counters are process-lifetime and in-memory; they reset on restart, and that
+is acceptable because the question is "does this ever fire at all", not "how
+often per hour".
+
+Route test: extend `tests/system-routes.test.ts` with a case asserting the
+endpoint returns the snapshot shape and that a simulated retry (via the injected
+`AtomicRenameIO` from 030) increments the expected key.
 
 **Naming constraint:** the `publisher` value is a fixed literal chosen at the
 call site. It must never be derived from a path, because a path can contain a

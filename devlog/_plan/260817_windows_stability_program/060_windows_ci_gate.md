@@ -1,8 +1,10 @@
 # 060 — Stage Windows back into CI (F3)
 
-**Depends on:** 010-051 for stages 3 and 4. **Stage 1 depends on nothing and
-should start immediately** — it is the source of the data 070 and the later
-stages need, and delaying it delays everything downstream.
+**Depends on:** stages 3 and 4 want 010-051 landed, because that is when a
+Windows failure starts costing someone a merge or a release. Stage 1 needs only
+the runner-policy decision below — which is a decision, not a phase, and should
+be made today. Nothing else blocks it, and delaying it delays every phase that
+wants its data.
 
 ## What "gate" can and cannot mean here
 
@@ -46,7 +48,7 @@ apply to it: assert `platform-windows` reached `success`. Without this,
 `release.yml:181-201` keeps accepting a push-event run in which Windows did
 nothing.
 
-## Runner policy — decide this before stage 1
+## Runner policy — the one decision stage 1 waits on
 
 `select-windows-runner` (`ci.yml:85`) routes to a persistent self-hosted runner
 when the repo variable `OCX_SELF_HOSTED_WINDOWS` is set, and push events are
@@ -64,9 +66,13 @@ Resolve it explicitly, one of:
    requirement with a verified-clean assertion, since a persistent runner
    carries state between runs and that is what makes a green result untrustworthy.
 
-Option 1 is the recommendation. The self-hosted comment at `ci.yml:109` already
-says the variable is an operational switch and not a security boundary; a
-release gate wants the boundary.
+Option 1 is the recommendation, and it is the only one that closes the
+contradiction outright. Option 2 narrows it rather than closing it: the existing
+cleanup step removes stale checkout files, not installed services, registry
+state, tool caches, or anything else a previous run left on the machine — and
+this product installs services and writes registry state as its normal
+behavior. The `ci.yml:109` comment already says the variable is an operational
+switch and not a security boundary; a release gate wants the boundary.
 
 ## Verify
 

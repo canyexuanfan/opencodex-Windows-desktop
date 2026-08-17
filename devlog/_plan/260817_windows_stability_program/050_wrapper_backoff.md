@@ -1,7 +1,8 @@
 # 050 — Bounded backoff for the service wrapper restart loop (F6)
 
-**Depends on:** 010 and 020 — both touch `src/service.ts` wrapper behavior, and
-this phase edits the batch script that file generates.
+**Depends on:** nothing structural. 010 and 020 also touch `src/service.ts`, so
+sequence around them to avoid collisions — that is scheduling, not dependency
+(see `002`).
 
 ## Change
 
@@ -32,16 +33,41 @@ cadence for a deterministic crash.
 Implementation constraint: this is batch, and it must stay dependency-free — no
 PowerShell inside the wrapper.
 
-The timing arithmetic needs care. `%TIME%` is locale-formatted and wraps at
-midnight, so subtracting two samples can produce a negative uptime and reset the
-backoff on a service that has been healthy for hours. Convert each sample to
-seconds-since-midnight with `set /a`, and when the difference is negative add
-86400 before comparing. `%TIME%` is also space-padded before 10:00, which breaks
-naive `set /a` — strip the pad first.
+The timing arithmetic has four separate traps, and all of them bite.
 
-If that proves fragile under review, the fallback is a small state file beside
-the wrapper holding the attempt index and last start time. It trades one file
-write per restart for arithmetic a reviewer can check at a glance.
+**Octal.** `set /a` reads a leading zero as octal, so a minute or second
+component of `08` or `09` is a hard error. Verified on this machine:
+
+```text
+C:\> set /a a=08
+Invalid number.  Numeric constants are either decimal (17),
+hexadecimal (0x11), or octal (021).
+```
+
+Every component extracted from `%TIME%` must be forced to decimal. The standard
+idiom prefixes `1` and subtracts 100: `set /a mm=1%TIME:~3,2% - 100`.
+
+**Space padding.** `%TIME%` pads the hour with a space before 10:00, so
+`%TIME:~0,2%` yields a leading space. The `1`-prefix idiom does not fix that;
+replace the space first (`set t=%TIME: =0%`) and apply the prefix trick to each
+component of `t`.
+
+**Midnight wrap.** Seconds-since-midnight goes backwards across midnight, which
+reads as negative uptime and would reset the backoff on a service healthy for
+hours. When the difference is negative, add 86400.
+
+**Delayed expansion.** The generated wrapper uses plain `setlocal`
+(`src/service.ts:1522`). Inside the parenthesized restart branch a `%VAR%`
+expands once when the block is parsed, so a counter incremented in that block
+reads stale. Either add `setlocal enabledelayedexpansion` and use `!VAR!`, or
+keep the state outside the block. Changing the wrapper preamble is its own
+reviewable decision.
+
+Given four traps and an expansion-mode change, the state file is the
+**recommended** implementation rather than the fallback: a small file beside the
+wrapper holding the attempt index and last start time, trading one write per
+restart for arithmetic a reviewer can check at a glance. Decide before writing
+the batch, not during review.
 
 ## Verify
 
