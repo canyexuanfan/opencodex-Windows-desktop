@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { buildResponseJSON } from "../src/bridge";
 import { parseRequest } from "../src/responses/parser";
 import { buildToolBridgeMaps } from "../src/server/responses";
 
@@ -188,6 +189,106 @@ describe("Responses parser", () => {
     expect([...maps.declaredToolNames]).toEqual([]);
     expect([...maps.freeformToolNames]).toEqual([]);
     expect([...maps.toolSearchToolNames]).toEqual([]);
+  });
+
+  test("accepts a unique bare selector for a namespaced custom tool and rejects ambiguity", () => {
+    const parsed = parseRequest({
+      model: "claude-opus-5",
+      input: "run it",
+      tools: [{
+        type: "namespace",
+        name: "functions",
+        tools: [{ type: "custom", name: "exec", description: "Run a command" }],
+      }],
+      tool_choice: {
+        type: "allowed_tools",
+        mode: "required",
+        tools: [{ type: "custom", name: "exec" }],
+      },
+    });
+
+    let maps = buildToolBridgeMaps(parsed);
+    expect([...maps.toolNsMap]).toEqual([
+      ["functions__exec", { namespace: "functions", name: "exec", freeform: true }],
+      ["exec", { namespace: "functions", name: "exec", freeform: true }],
+    ]);
+    expect([...maps.declaredToolNames]).toEqual(["functions__exec", "exec"]);
+    expect([...maps.freeformToolNames]).toEqual(["exec"]);
+
+    const bridged = buildResponseJSON([
+      { type: "tool_call_start", id: "call_exec", name: "exec" },
+      { type: "tool_call_delta", arguments: '{"input":"pwd"}' },
+      { type: "tool_call_end" },
+      { type: "done" },
+    ], "claude-opus-5", maps);
+    expect(bridged.status).toBe("completed");
+    expect((bridged.output as Record<string, unknown>[])[0]).toMatchObject({
+      type: "custom_tool_call",
+      call_id: "call_exec",
+      name: "exec",
+      input: "pwd",
+      status: "completed",
+    });
+
+    parsed.options.toolChoice = { name: "exec" };
+    maps = buildToolBridgeMaps(parsed);
+    expect([...maps.toolNsMap.keys()]).toEqual(["functions__exec", "exec"]);
+
+    const ambiguous = parseRequest({
+      model: "claude-opus-5",
+      input: "run it",
+      tools: [{
+        type: "namespace",
+        name: "functions",
+        tools: [{ type: "custom", name: "exec" }],
+      }, {
+        type: "namespace",
+        name: "other",
+        tools: [{ type: "custom", name: "exec" }],
+      }],
+      tool_choice: {
+        type: "allowed_tools",
+        mode: "required",
+        tools: [{ type: "custom", name: "exec" }],
+      },
+    });
+
+    const ambiguousMaps = buildToolBridgeMaps(ambiguous);
+    expect([...ambiguousMaps.declaredToolNames]).toEqual([]);
+    expect([...ambiguousMaps.toolNsMap]).toEqual([]);
+
+    const mixedKinds = parseRequest({
+      model: "claude-opus-5",
+      input: "run it",
+      tools: [{
+        type: "namespace",
+        name: "functions",
+        tools: [{ type: "custom", name: "exec" }],
+      }, {
+        type: "namespace",
+        name: "mcp__remote",
+        tools: [{ type: "function", name: "exec", parameters: { type: "object" } }],
+      }],
+    });
+    const mixedMaps = buildToolBridgeMaps(mixedKinds);
+    const customCall = buildResponseJSON([
+      { type: "tool_call_start", id: "call_custom", name: "functions__exec" },
+      { type: "tool_call_delta", arguments: '{"input":"pwd"}' },
+      { type: "tool_call_end" },
+      { type: "done" },
+    ], "claude-opus-5", mixedMaps);
+    const functionCall = buildResponseJSON([
+      { type: "tool_call_start", id: "call_function", name: "mcp__remote__exec" },
+      { type: "tool_call_delta", arguments: "{}" },
+      { type: "tool_call_end" },
+      { type: "done" },
+    ], "claude-opus-5", mixedMaps);
+    expect((customCall.output as Record<string, unknown>[])[0]?.type).toBe("custom_tool_call");
+    expect((functionCall.output as Record<string, unknown>[])[0]).toMatchObject({
+      type: "function_call",
+      name: "exec",
+      namespace: "mcp__remote",
+    });
   });
 
   test("maps hosted allowed_tools entries to their synthetic routed tool names", () => {

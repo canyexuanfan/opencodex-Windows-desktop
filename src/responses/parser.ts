@@ -203,7 +203,7 @@ function buildTools(tools: unknown[] | undefined): OcxTool[] | undefined {
       const ns = typeof t.name === "string" && !builtinFunctions ? t.name : undefined;
       for (const inner of t.tools as unknown[]) {
         if (isObj(inner) && inner.type === "function" && typeof inner.name === "string") pushFn(inner, ns);
-        else if (builtinFunctions && isObj(inner) && inner.type === "custom" && typeof inner.name === "string") pushCustom(inner);
+        else if (isObj(inner) && inner.type === "custom" && typeof inner.name === "string") pushCustom(inner, ns);
       }
     }
     else if (t.type === "custom" && typeof t.name === "string") {

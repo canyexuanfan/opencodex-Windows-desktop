@@ -246,13 +246,39 @@ export function toolChoiceAliases(tool: Pick<OcxTool, "namespace" | "name">): st
   return tool.namespace ? [wireName, `${tool.namespace}.${tool.name}`] : [wireName];
 }
 
-export function toolAllowedByChoice(tool: Pick<OcxTool, "namespace" | "name">, allowedTools: ReadonlySet<string>): boolean {
-  return toolChoiceAliases(tool).some(name => allowedTools.has(name));
+function uniqueBareToolMatch(
+  tools: readonly Pick<OcxTool, "namespace" | "name">[] | undefined,
+  name: string,
+): Pick<OcxTool, "namespace" | "name"> | undefined {
+  if (!tools) return undefined;
+  const matches = tools.filter(tool => tool.name === name);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+/**
+ * Newer Codex clients can select a tool nested in a namespace by its bare name. Resolve that
+ * shorthand only when the request contains one tool with the logical name, so an ambiguous name
+ * cannot authorize a tool from an unintended namespace.
+ */
+export function toolAllowedByChoice(
+  tool: Pick<OcxTool, "namespace" | "name">,
+  allowedTools: ReadonlySet<string>,
+  tools?: readonly Pick<OcxTool, "namespace" | "name">[],
+): boolean {
+  if (toolChoiceAliases(tool).some(name => allowedTools.has(name))) return true;
+  if (!tool.namespace || !allowedTools.has(tool.name)) return false;
+  const match = uniqueBareToolMatch(tools, tool.name);
+  return match?.namespace === tool.namespace && match.name === tool.name;
 }
 
 export function resolveToolChoiceWireName(tools: readonly Pick<OcxTool, "namespace" | "name">[] | undefined, name: string): string {
-  const match = tools?.find(tool => toolChoiceAliases(tool).includes(name));
-  return match ? namespacedToolName(match.namespace, match.name) : name;
+  const exactMatches = tools?.filter(tool => toolChoiceAliases(tool).includes(name)) ?? [];
+  if (exactMatches.length === 1) {
+    const match = exactMatches[0];
+    return namespacedToolName(match.namespace, match.name);
+  }
+  const bareMatch = uniqueBareToolMatch(tools, name);
+  return bareMatch ? namespacedToolName(bareMatch.namespace, bareMatch.name) : name;
 }
 
 /**
@@ -281,14 +307,17 @@ export function isAllowedToolChoice(value: OcxToolChoice | undefined): value is 
 /** Compile the request's tool-choice policy into a reusable advertisement/restoration predicate. */
 export function toolChoiceToolPredicate(
   choice: OcxToolChoice | undefined,
+  tools?: readonly Pick<OcxTool, "namespace" | "name">[],
 ): (tool: Pick<OcxTool, "namespace" | "name">) => boolean {
   if (!choice || choice === "auto" || choice === "required") return () => true;
   if (choice === "none") return () => false;
   if (isAllowedToolChoice(choice)) {
     const allowed = new Set(choice.allowedTools);
-    return tool => toolAllowedByChoice(tool, allowed);
+    return tool => toolAllowedByChoice(tool, allowed, tools);
   }
-  return tool => toolChoiceAliases(tool).includes(choice.name);
+  if (!tools) return tool => toolChoiceAliases(tool).includes(choice.name);
+  const selected = resolveToolChoiceWireName(tools, choice.name);
+  return tool => namespacedToolName(tool.namespace, tool.name) === selected;
 }
 
 export interface OcxRequestOptions {
