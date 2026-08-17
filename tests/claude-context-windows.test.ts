@@ -79,7 +79,7 @@ describe("claude context-window map (devlog 260712 B2)", () => {
 });
 
 describe("auto-context (devlog 260712 020 + audit 021)", () => {
-  test("resolveAutoContext: default on at 350k, valid custom, range fallback, off switches", () => {
+  test("resolveAutoContext: default on at AUTO_COMPACT_WINDOW_DEFAULT, valid custom, range fallback, off switches", () => {
     expect(resolveAutoContext(undefined)).toEqual({ enabled: true, compactWindow: AUTO_COMPACT_WINDOW_DEFAULT });
     expect(resolveAutoContext({ autoCompactWindow: 300_000 })).toEqual({ enabled: true, compactWindow: 300_000 });
     // Out-of-range config (hand-edit) falls back to the default (API rejects these).

@@ -511,7 +511,7 @@ test("PUT/GET round-trips the context/effort levers (devlog 136 B6)", async () =
 test("PUT/GET round-trips auto-context (devlog 260712 020)", async () => {
   const server = startServer(0);
   try {
-    // Defaults: on, window null (GUI shows the 350000 placeholder).
+    // Defaults: on, window null — the GUI renders the runtime default as the empty choice.
     let get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
     expect(get.autoContext).toBe(true);
     expect(get.autoCompactWindow).toBeNull();
