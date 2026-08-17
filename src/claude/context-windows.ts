@@ -71,7 +71,7 @@ function inAutoCompactRange(value: number): boolean {
  * predicate so marker and threshold never separate (audit 021 #2); an invalid
  * value disables auto marking entirely (the CLI would ignore it, leaving marked
  * sub-1M models without their safety net). Out-of-range CONFIG values fall back
- * to the 350k default (the management API rejects them; this guards hand-edits).
+ * to AUTO_COMPACT_WINDOW_DEFAULT (the management API rejects them; this guards hand-edits).
  */
 export function resolveAutoContext(claudeCode: AutoContextConfigSlice | undefined, envOverride?: string): AutoContextMode {
   if (claudeCode?.autoContext === false) return AUTO_CONTEXT_OFF;

@@ -1805,7 +1805,7 @@ export const en = {
   "claude.fastOn": "ON",
   "claude.fastOff": "OFF",
   "claude.autoContext": "Use big context automatically",
-  "claude.autoContextDesc": "Controls how far the 1M marking goes. ON: every model above 200k tokens (GPT models etc.) gets a big-context row. OFF: only true 1M models get one.",
+  "claude.autoContextDesc": "Controls how far the 1M marking goes. ON: any model whose window can host the compaction threshold gets a big-context row. OFF: only true 1M models get one.",
   "claude.autoContextInert": "Inactive because a legacy context-size value (maxContextTokens) exists in the config file. Remove it there to re-enable.",
   "claude.autoCompactWindow": "Auto-summarize point",
   "claude.autoCompactDefault": "350k (default)",

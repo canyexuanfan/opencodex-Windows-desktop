@@ -1337,7 +1337,7 @@ export const ko: Record<TKey, string> = {
   "claude.fastOn": "ON",
   "claude.fastOff": "OFF",
   "claude.autoContext": "큰 컨텍스트 자동 활용",
-  "claude.autoContextDesc": "1M 표기를 어디까지 붙일지 정합니다. 켜면 20만 토큰을 넘는 모델 전부(GPT 계열 등)에 큰 컨텍스트 행이 생기고, 끄면 진짜 1M 모델에만 생깁니다.",
+  "claude.autoContextDesc": "1M 표기를 어디까지 붙일지 정합니다. 켜면 컴팩션 기준치를 담을 수 있는 창을 가진 모델에 큰 컨텍스트 행이 생기고, 끄면 진짜 1M 모델에만 생깁니다.",
   "claude.autoContextInert": "설정 파일에 이전 방식의 컨텍스트 크기 값(maxContextTokens)이 있어 이 기능이 지금은 적용되지 않아요. 설정에서 그 값을 지우면 다시 켜집니다.",
   "claude.autoCompactWindow": "자동 요약 지점",
   "claude.autoCompactDefault": "350k (기본값)",

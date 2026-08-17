@@ -1310,7 +1310,7 @@ export const de: Record<TKey, string> = {
   "claude.fastOn": "ON",
   "claude.fastOff": "OFF",
   "claude.autoContext": "Großen Kontext automatisch nutzen",
-  "claude.autoContextDesc": "Steuert, wie weit die 1M-Markierung geht. AN: jedes Modell über 200k Tokens (GPT-Modelle usw.) erhält eine Big-Context-Zeile. AUS: nur echte 1M-Modelle.",
+  "claude.autoContextDesc": "Steuert, wie weit die 1M-Markierung geht. AN: jedes Modell, dessen Fenster den Komprimierungsschwellwert fasst, erhält eine Big-Context-Zeile. AUS: nur echte 1M-Modelle.",
   "claude.autoContextInert": "Inaktiv, weil in der Konfigurationsdatei ein alter Kontextgrößen-Wert (maxContextTokens) steht. Dort entfernen, um es wieder zu aktivieren.",
   "claude.autoCompactWindow": "Punkt für Auto-Zusammenfassung",
   "claude.autoCompactDefault": "350k (Standard)",
