@@ -192,7 +192,13 @@ async function completeMockCodexOAuth(options: {
         catalogRefreshPending?: boolean;
       };
       if (state.status !== "pending") return { startStatus: resp!.status, state };
-      await new Promise<void>(resolve => queueMicrotask(resolve));
+      // A microtask only yields to work already queued. The login flow awaits real
+      // I/O -- credential reads, the WHAM fetch -- so under load its continuation can
+      // land on the macrotask queue instead, and 500 microtask turns burn through
+      // without it ever running. The flow then hits its own 150-poll ceiling and
+      // reports "Login timed out" where the test asserts a specific error, which reads
+      // as a behavioural regression rather than a starved poller.
+      await new Promise<void>(resolve => setImmediate(resolve));
     }
     throw new Error(`Timed out waiting for Codex OAuth flow ${started.flowId}`);
   } finally {
