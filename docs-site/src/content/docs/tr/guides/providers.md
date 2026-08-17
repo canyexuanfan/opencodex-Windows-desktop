@@ -560,7 +560,7 @@ tohumlanmıştır:
 
 | Codex rotası | Tohumlanan model kimlikleri | Codex tarafından görülebilen bağlam |
 | --- | --- | --- |
-| Codex girişi (Pool veya Direct) | `gpt-5.6-*` | 372.000 |
+| Codex girişi (Pool veya Direct) | `gpt-5.6-*` | 1.050.000 |
 | OpenAI (API anahtarı) | `openai-apikey/gpt-5.6-*` artı `*-pro` | 1.050.000 (922.000 maksimum girdi) |
 | OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 1.050.000 |
 | Cursor | `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, `cursor/gpt-5.6-luna` | 1.000.000 |

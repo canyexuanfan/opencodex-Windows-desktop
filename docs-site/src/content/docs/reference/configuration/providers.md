@@ -375,7 +375,7 @@ Use `selectedModels` when discovery should still run but only selected ids shoul
 Preview GPT-5.6 fallback entries use the same mechanism. The OpenAI API-key preset seeds base and Pro
 ids with context `1050000` and max input `922000`; OpenRouter seeds `openai/gpt-5.6-sol`,
 `openai/gpt-5.6-terra`, and `openai/gpt-5.6-luna` with context `1050000`. Pool/Direct advertises
-`372000`; the synced catalog advertises `max` while keeping `xhigh` distinct.
+`1050000`; the synced catalog advertises `max` while keeping `xhigh` distinct.
 
 ```json
 {
