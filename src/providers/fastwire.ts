@@ -93,6 +93,8 @@ function resolvePolicyAdapter(
   modelId: string,
   inbound: InboundWire,
 ): { adapter: string; hardPinned: boolean } {
+  // Hard pins and configured overrides deliberately use the same exact-key semantics as
+  // resolveWireProtocolOverride(). Registry defaults alone normalize ids at their boundary.
   const hardPin = authority.hardPins[modelId];
   if (hardPin !== undefined) return { adapter: hardPin, hardPinned: true };
   if (authority.modelWireOverrideAllowed) {
@@ -159,6 +161,7 @@ export function canonicalFastTierMarker(callerTier: string | undefined): "priori
 export function decideTier(
   policy: ResolvedFastPolicy,
   fastMode: boolean | undefined,
+  callerTier: string | undefined,
 ): TierDecision {
   if (policy.capability === false) return { kind: "drop" };
   if (policy.capability === undefined) {
@@ -175,6 +178,13 @@ export function decideTier(
       : { kind: "drop" };
   }
   if (fastMode === false) return { kind: "drop" };
+  if (
+    callerTier !== undefined
+    && canonicalFastTierMarker(callerTier) === undefined
+    && policy.fastWire.foreignCallerTiers === "drop"
+  ) {
+    return { kind: "drop" };
+  }
   return { kind: "forward-caller" };
 }
 
@@ -199,6 +209,7 @@ export function hasFastWireCapabilityConflict(source: {
   readonly modelSupportsServiceTier?: unknown;
 }): boolean {
   if (source.fastWire !== null) return false;
+  if (source.supportsServiceTier === false) return false;
   if (source.supportsServiceTier === true) return true;
   return isPlainRecord(source.modelSupportsServiceTier)
     && Object.values(source.modelSupportsServiceTier).some(value => value === true);
@@ -228,7 +239,10 @@ export function fastWireDeclarationError(source: {
     return "fastWire.canonicalToWire must include priority";
   }
   const wireValues: string[] = [];
-  for (const wireValue of Object.values(value.canonicalToWire)) {
+  for (const [canonicalTier, wireValue] of Object.entries(value.canonicalToWire)) {
+    if (canonicalTier.trim().length === 0) {
+      return "fastWire.canonicalToWire keys must be nonblank strings";
+    }
     if (typeof wireValue !== "string" || wireValue.trim().length === 0 || wireValue.trim().length > 64) {
       return "fastWire.canonicalToWire values must be nonblank strings of at most 64 characters";
     }

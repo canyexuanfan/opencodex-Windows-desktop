@@ -121,6 +121,25 @@ describe("resolveFastPolicy matrix", () => {
     expect(resolveFastPolicy(authority, MODEL, "responses").adapter).toBe("openai-responses");
   });
 
+  test("hard pins and configured overrides retain exact runtime model-key semantics", () => {
+    const authority: FastPolicyAuthority = {
+      ...authorityForMatrix({
+        source: "provider-adapter",
+        declaration: "undefined",
+        overrideAllowed: true,
+        capability: "true",
+        legacyChatEligible: true,
+      }),
+      providerAdapter: "openai-responses",
+      modelAdapters: { Model: "openai-chat" },
+      hardPins: { Pinned: "anthropic" },
+    };
+    expect(resolveFastPolicy(authority, "model").adapter).toBe("openai-responses");
+    expect(resolveFastPolicy(authority, "Model").adapter).toBe("openai-chat");
+    expect(resolveFastPolicy(authority, "pinned").adapter).toBe("openai-responses");
+    expect(resolveFastPolicy(authority, "Pinned").adapter).toBe("anthropic");
+  });
+
   test("invalid configured overrides fall through to the captured registry default", () => {
     const authority: FastPolicyAuthority = {
       ...authorityForMatrix({
@@ -273,7 +292,7 @@ describe("TierDecision state machine", () => {
   test.each(tierGrid)(
     "support=$support fastMode=$fastMode caller=$callerTier",
     ({ support, fastMode, callerTier }) => {
-      const decision = decideTier(tierPolicy(support), fastMode);
+      const decision = decideTier(tierPolicy(support), fastMode, callerTier);
       const expectedValue = support === false
         ? undefined
         : support === undefined ? callerTier
@@ -298,7 +317,7 @@ describe("TierDecision state machine", () => {
       adapter: "openai-responses",
       fastWire: null,
       forwardCallerTier: true,
-    }, fastMode);
+    }, fastMode, callerTier);
     expect(decision).toEqual({ kind: "forward-caller" });
     expect(tierValueAfterDecision(decision, callerTier)).toBe(callerTier);
   });
@@ -306,6 +325,25 @@ describe("TierDecision state machine", () => {
   test.each(["Priority", "FAST", " fast "])("normalizes %s only into an internal marker", callerTier => {
     expect(canonicalFastTierMarker(callerTier)).toBe("priority");
     expect(tierValueAfterDecision({ kind: "forward-caller" }, callerTier)).toBe(callerTier);
+  });
+
+  test.each([
+    { callerTier: "priority", expected: { kind: "forward-caller" } },
+    { callerTier: "fast", expected: { kind: "forward-caller" } },
+    { callerTier: "flex", expected: { kind: "drop" } },
+    { callerTier: undefined, expected: { kind: "forward-caller" } },
+  ])("foreign-tier drop policy resolves caller=$callerTier to $expected.kind", ({ callerTier, expected }) => {
+    expect(decideTier({
+      ...tierPolicy(true),
+      fastWire: { ...SERVICE_WIRE, foreignCallerTiers: "drop" },
+    }, undefined, callerTier)).toEqual(expected);
+  });
+
+  test("unclassified capability keeps the full caller passthrough contract", () => {
+    expect(decideTier({
+      ...tierPolicy(undefined),
+      fastWire: { ...SERVICE_WIRE, foreignCallerTiers: "drop" },
+    }, true, "flex")).toEqual({ kind: "forward-caller" });
   });
 });
 
@@ -365,6 +403,11 @@ describe("FastWire config and registry validation", () => {
     expect(validateConfigCandidate(configWithFastWire(null, capability)).ok).toBe(false);
   });
 
+  test("provider-level false keeps null valid even with an exact-model true", () => {
+    expect(validateConfigCandidate(configWithFastWire(null, { provider: false, exact: true })).ok)
+      .toBe(true);
+  });
+
   test("rejects null against an inherited registry capability", () => {
     expect(validateConfigCandidate({
       port: 10100,
@@ -380,11 +423,32 @@ describe("FastWire config and registry validation", () => {
     }).ok).toBe(false);
   });
 
+  test("provider-level false closes an inherited registry capability", () => {
+    expect(validateConfigCandidate({
+      port: 10100,
+      defaultProvider: "openai-apikey",
+      providers: {
+        "openai-apikey": {
+          adapter: "openai-responses",
+          baseUrl: "https://api.openai.com/v1",
+          authMode: "key",
+          supportsServiceTier: false,
+          fastWire: null,
+        },
+      },
+    }).ok).toBe(true);
+  });
+
   test("registry validation rejects the same null/capability conflict", () => {
     expect(providerRegistryFastWireError({ fastWire: null, supportsServiceTier: true }))
       .toContain("conflicts");
     expect(providerRegistryFastWireError({ fastWire: null, modelSupportsServiceTier: { [MODEL]: true } }))
       .toContain("conflicts");
+    expect(providerRegistryFastWireError({
+      fastWire: null,
+      supportsServiceTier: false,
+      modelSupportsServiceTier: { [MODEL]: true },
+    })).toBeNull();
   });
 
   test("A1 adds no explicit registry FastWire declaration", () => {
@@ -396,7 +460,8 @@ describe("Responses TierDecision immutability", () => {
   test.each([
     { label: "set", decision: { kind: "set", value: "priority" } as TierDecision, expected: "priority" },
     { label: "drop", decision: { kind: "drop" } as TierDecision, expected: undefined },
-  ])("$label uses a shallow outbound copy", ({ decision, expected }) => {
+    { label: "forward-caller", decision: { kind: "forward-caller" } as TierDecision, expected: "flex" },
+  ])("$label preserves the caller-owned raw body", ({ decision, expected }) => {
     const rawBody = { model: MODEL, input: "ping", service_tier: "flex" };
     const original = { ...rawBody };
     const parsed: OcxParsedRequest = {

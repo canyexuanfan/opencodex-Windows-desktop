@@ -130,7 +130,11 @@ function authorityForProvider(
   const captured = capturedFastPolicyAuthorities.get(provider);
   if (captured) return captured;
   const registryTransportMatch = providerMatchesRegistryTransport(providerName, provider);
-  return buildFastPolicyAuthority(providerName, provider, registryTransportMatch);
+  const authority = buildFastPolicyAuthority(providerName, provider, registryTransportMatch);
+  // Frozen provider snapshots cannot drift, so repeated catalog/runtime projections may safely
+  // reuse the registry lookup and detached declaration maps. Mutable configs still rebuild.
+  if (Object.isFrozen(provider)) capturedFastPolicyAuthorities.set(provider, authority);
+  return authority;
 }
 
 /** Resolve the pure Fast policy for a provider/model pair. */
@@ -210,6 +214,13 @@ export function serviceTierSupportForModel(
   inbound: InboundWire = "responses",
 ): boolean | undefined {
   const policy = fastPolicyForModel(provider, modelId, providerName, inbound);
+  return serviceTierSupportFromPolicy(policy);
+}
+
+/** Compatibility projection shared by catalog, routing, and request logging. */
+export function serviceTierSupportFromPolicy(
+  policy: Pick<ResolvedFastPolicy, "eligibility">,
+): boolean | undefined {
   if (policy.eligibility === "eligible") return true;
   if (policy.eligibility === "unclassified") return undefined;
   return false;

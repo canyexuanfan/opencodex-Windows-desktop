@@ -121,8 +121,12 @@ import { createTranslatorBudget, isTranslatorBudgetExceededError, type Translato
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
 import { providerContextCap } from "../../providers/context-cap";
-import { fastPolicyForModel, SERVICE_TIER_ADAPTERS } from "../../providers/service-tier";
-import { canonicalFastTierMarker, decideTier, tierValueAfterDecision } from "../../providers/fastwire";
+import {
+  fastPolicyForModel,
+  serviceTierSupportFromPolicy,
+  SERVICE_TIER_ADAPTERS,
+} from "../../providers/service-tier";
+import { decideTier, tierValueAfterDecision, type ResolvedFastPolicy } from "../../providers/fastwire";
 import {
   RequestPacingQueueOverloadError,
   waitForProviderRequestSlot,
@@ -967,6 +971,23 @@ const UNREADABLE_ENCRYPTED_AGENT_TASK_MESSAGE =
 const MAX_UPSTREAM_JSON_BODY_BYTES = 32 * 1024 * 1024;
 const UPSTREAM_JSON_BODY_TOTAL_TIMEOUT_MS = 180_000;
 const UPSTREAM_JSON_BODY_INACTIVITY_TIMEOUT_MS = 30_000;
+const MAX_FAST_WIRE_CAPABILITY_WARNINGS = 256;
+const warnedFastWireCapabilityGaps = new Set<string>();
+
+function warnFastWireCapabilityGap(providerName: string, modelId: string): void {
+  const safeProvider = redactSecretString(providerName);
+  const safeModel = redactSecretString(modelId);
+  const key = `${safeProvider}\0${safeModel}`;
+  if (warnedFastWireCapabilityGaps.has(key)) return;
+  if (warnedFastWireCapabilityGaps.size >= MAX_FAST_WIRE_CAPABILITY_WARNINGS) {
+    const oldest = warnedFastWireCapabilityGaps.values().next().value;
+    if (oldest !== undefined) warnedFastWireCapabilityGaps.delete(oldest);
+  }
+  warnedFastWireCapabilityGaps.add(key);
+  console.warn(
+    `[opencodex] Fast policy for ${safeProvider}/${safeModel} has service-tier capability but no Fast wire; preserving only caller-permitted tier behavior`,
+  );
+}
 export const UPSTREAM_JSON_BODY_READ_OPTIONS = {
   maxBytes: MAX_UPSTREAM_JSON_BODY_BYTES,
   totalTimeoutMs: UPSTREAM_JSON_BODY_TOTAL_TIMEOUT_MS,
@@ -1160,19 +1181,12 @@ async function applyFinalRouteRequestNormalization(args: {
     route.providerName,
     inboundWire,
   );
-  const modelServiceTierSupport = fastPolicy.eligibility === "eligible"
-    ? true
-    : fastPolicy.eligibility === "unclassified" ? undefined : false;
+  const modelServiceTierSupport = serviceTierSupportFromPolicy(fastPolicy);
   const callerTier = parsed.options.serviceTier;
-  const canonicalFastTier = canonicalFastTierMarker(callerTier);
-  if (canonicalFastTier !== undefined) parsed.options.canonicalFastTier = canonicalFastTier;
-  else delete parsed.options.canonicalFastTier;
-  parsed.options.tierDecision = decideTier(fastPolicy, config.fastMode);
+  parsed.options.tierDecision = decideTier(fastPolicy, config.fastMode, callerTier);
   parsed.options.serviceTier = tierValueAfterDecision(parsed.options.tierDecision, callerTier);
   if (fastPolicy.capability === true && fastPolicy.fastWire === null) {
-    console.warn(
-      `[opencodex] Fast policy for ${route.providerName}/${route.modelId} has service-tier capability but no Fast wire; preserving only caller-permitted tier behavior`,
-    );
+    warnFastWireCapabilityGap(route.providerName, route.modelId);
   }
   applyServiceTierGate(
     route.provider,
@@ -1181,6 +1195,7 @@ async function applyFinalRouteRequestNormalization(args: {
     route.modelId,
     route.providerName,
     inboundWire,
+    fastPolicy,
   );
   if (modelServiceTierSupport === false) {
     logCtx.requestedServiceTier = undefined;
@@ -1581,6 +1596,7 @@ export function applyServiceTierGate(
   modelId?: string,
   providerName?: string,
   inbound: InboundWire = "responses",
+  resolvedPolicy?: ResolvedFastPolicy,
 ): void {
   // A direct unit caller without a model id retains the historical tri-state behavior for
   // adapters outside the OpenAI service-tier family. Once a model is known, resolve the final
@@ -1589,7 +1605,7 @@ export function applyServiceTierGate(
   if (modelId === undefined && !SERVICE_TIER_ADAPTERS.has(provider.adapter)) return;
   const forwardCallerTier = modelId === undefined
     ? provider.supportsServiceTier !== false
-    : fastPolicyForModel(provider, modelId, providerName, inbound).forwardCallerTier;
+    : (resolvedPolicy ?? fastPolicyForModel(provider, modelId, providerName, inbound)).forwardCallerTier;
   if (forwardCallerTier) return;
   if (rawBody && typeof rawBody === "object") {
     delete (rawBody as Record<string, unknown>).service_tier;

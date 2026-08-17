@@ -298,8 +298,6 @@ export interface OcxRequestOptions {
   serviceTier?: string;
   /** Final outbound tier action, resolved after the provider/model wire is settled. */
   tierDecision?: TierDecision;
-  /** Internal-only normalization marker; A1 never rewrites the caller's spelling from it. */
-  canonicalFastTier?: "priority";
   presencePenalty?: number;
   frequencyPenalty?: number;
   /** Responses prompt-cache affinity key. Passthrough preserves it via _rawBody; routed adapters do not consume it unless their upstream wire supports it. */

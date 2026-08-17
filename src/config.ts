@@ -65,9 +65,11 @@ import {
   type OcxConfig,
   type OcxApiKeyEntry,
   type OcxProviderConfig,
+  type FastWire,
   type ProviderCostOverlay,
 } from "./types";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "./providers/openai-tiers";
+import { fastWireDeclarationError, hasFastWireCapabilityConflict } from "./providers/fastwire";
 import {
   getProviderRegistryEntry,
   providerMatchesRegistryTransport,
@@ -662,12 +664,14 @@ function resolveRuntimePortPath(): string {
 }
 
 const warnedConfigFallbacks = new Set<string>();
+const warnedInheritedFastWireConflicts = new Set<string>();
 let lastWarningReconciledGeneration = 0;
 
 export function reconcileConfigWarningMemos(generation: number): number {
   if (generation <= lastWarningReconciledGeneration) return 0;
-  const removed = warnedConfigFallbacks.size;
+  const removed = warnedConfigFallbacks.size + warnedInheritedFastWireConflicts.size;
   warnedConfigFallbacks.clear();
+  warnedInheritedFastWireConflicts.clear();
   lastWarningReconciledGeneration = generation;
   return removed;
 }
@@ -716,32 +720,15 @@ export function requestPacingConfigError(value: unknown): string | null {
   return "requestPacing must contain enabled and a valid requestsPerMinute/minIntervalMs provider rule or model overrides";
 }
 
-const fastWireCanonicalMapSchema = z.record(
-  z.string().trim().min(1),
-  z.string().trim().min(1).max(64),
-).superRefine((mapping, ctx) => {
-  if (!Object.prototype.hasOwnProperty.call(mapping, "priority")) {
-    ctx.addIssue({ code: "custom", path: ["priority"], message: "canonicalToWire must include priority" });
-  }
-  const values = Object.values(mapping);
-  if (new Set(values).size !== values.length) {
-    ctx.addIssue({ code: "custom", message: "canonicalToWire values must be unique" });
-  }
-});
-
-const fastWireBetasSchema = z.array(z.string().trim().min(1)).max(16)
-  .superRefine((betas, ctx) => {
-    if (new Set(betas).size !== betas.length) {
-      ctx.addIssue({ code: "custom", message: "betas values must be unique" });
-    }
-  });
-
 const fastWireSchema = z.object({
-  kind: z.enum(["service-tier", "anthropic-speed"]),
-  canonicalToWire: fastWireCanonicalMapSchema,
-  foreignCallerTiers: z.enum(["verbatim", "drop"]),
-  betas: fastWireBetasSchema.optional(),
-}).strict();
+  kind: z.string(),
+  canonicalToWire: z.record(z.string().trim(), z.string().trim()),
+  foreignCallerTiers: z.string(),
+  betas: z.array(z.string().trim()).optional(),
+}).strict().superRefine((fastWire, ctx) => {
+  const error = fastWireDeclarationError({ fastWire });
+  if (error) ctx.addIssue({ code: "custom", message: error });
+}).transform(fastWire => fastWire as FastWire);
 
 /**
  * Zod schema for one provider entry: known fields are validated strictly while unknown
@@ -782,9 +769,7 @@ const providerConfigSchema = z.object({
   }).strict().optional(),
   responsesSnapshotRepair: z.boolean().optional(),
 }).passthrough().superRefine((provider, ctx) => {
-  if (provider.fastWire !== null) return;
-  const exactCapability = Object.values(provider.modelSupportsServiceTier ?? {}).some(value => value === true);
-  if (provider.supportsServiceTier === true || exactCapability) {
+  if (hasFastWireCapabilityConflict(provider)) {
     ctx.addIssue({
       code: "custom",
       path: ["fastWire"],
@@ -1453,27 +1438,6 @@ const configSchema = z.object({
       });
     }
     const provider = config.providers[name];
-    if (provider.fastWire === null) {
-      const directCapability = provider.supportsServiceTier === true
-        || Object.values(provider.modelSupportsServiceTier ?? {}).some(value => value === true);
-      const registry = providerMatchesRegistryTransport(name, provider)
-        ? getProviderRegistryEntry(name)
-        : undefined;
-      const effectiveProviderCapability = provider.supportsServiceTier ?? registry?.supportsServiceTier;
-      const effectiveModelCapabilities = {
-        ...(registry?.modelSupportsServiceTier ?? {}),
-        ...(provider.modelSupportsServiceTier ?? {}),
-      };
-      const inheritedCapability = effectiveProviderCapability === true
-        || Object.values(effectiveModelCapabilities).some(value => value === true);
-      if (!directCapability && inheritedCapability) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["providers", redactSecretString(name), "fastWire"],
-          message: "fastWire=null conflicts with inherited supportsServiceTier=true",
-        });
-      }
-    }
     const openRouterRoutingError = openRouterRoutingConfigError(provider);
     if (openRouterRoutingError) {
       ctx.addIssue({
@@ -2213,6 +2177,50 @@ function warnDegradedNativeSubagentConfig(rawParsed: unknown, config: OcxConfig)
 }
 
 /**
+ * Registry metadata can gain service-tier capability after a config was written. An explicit
+ * `fastWire: null` remains authoritative on load; rejecting the file would discard unrelated
+ * providers and API keys. Live writes remain strict through validateConfigCandidate().
+ */
+function inheritedFastWireConflictProviderNames(
+  config: Pick<OcxConfig, "providers">,
+): string[] {
+  const conflicts: string[] = [];
+  for (const [name, provider] of Object.entries(config.providers)) {
+    if (provider.fastWire !== null || provider.supportsServiceTier === false) continue;
+    const registry = providerMatchesRegistryTransport(name, provider)
+      ? getProviderRegistryEntry(name)
+      : undefined;
+    if (!registry) continue;
+    const effectiveProviderCapability = provider.supportsServiceTier ?? registry.supportsServiceTier;
+    const effectiveModelCapabilities = {
+      ...(registry.modelSupportsServiceTier ?? {}),
+      ...(provider.modelSupportsServiceTier ?? {}),
+    };
+    if (
+      effectiveProviderCapability === true
+      || Object.values(effectiveModelCapabilities).some(value => value === true)
+    ) {
+      conflicts.push(name);
+    }
+  }
+  return conflicts;
+}
+
+function inheritedFastWireConflictWarning(name: string): string {
+  return `providers.${redactSecretString(name)}.fastWire=null overrides service-tier capability inherited from the matching registry entry`;
+}
+
+function warnInheritedFastWireConflicts(configPath: string, config: OcxConfig): void {
+  const names = inheritedFastWireConflictProviderNames(config);
+  if (names.length === 0 || warnedInheritedFastWireConflicts.has(configPath)) return;
+  warnedInheritedFastWireConflicts.add(configPath);
+  console.warn(
+    `⚠️  config.json ${names.map(inheritedFastWireConflictWarning).join("; ")}. `
+    + "The persisted providers and API keys were preserved.",
+  );
+}
+
+/**
  * Load and validate config.json into an OcxConfig. Missing files reset to
  * defaults and clear stale overlays. Broken existing files also fall back to
  * default routing (after backup), but keep the last-good cost-overlay registry
@@ -2236,6 +2244,7 @@ export function loadConfig(): OcxConfig {
     const result = configSchema.safeParse(parsed);
     if (result.success) {
       const config = normalizeApiKeyIds(result.data as OcxConfig);
+      warnInheritedFastWireConflicts(configPath, config);
       warnDegradedStreamMode(parsed, config);
       warnDegradedHostname(parsed, config);
       warnDegradedApiKeys(parsed, config);
@@ -2260,6 +2269,7 @@ export function loadConfig(): OcxConfig {
     if (retryResult.success) {
       warnConfigRepaired(configPath, result.error);
       const config = normalizeApiKeyIds(retryResult.data as OcxConfig);
+      warnInheritedFastWireConflicts(configPath, config);
       warnDegradedHostname(parsed, config);
       warnDegradedApiKeys(parsed, config);
       warnDegradedCodexAccountPriorities(parsed, config);
@@ -2279,6 +2289,7 @@ export function loadConfig(): OcxConfig {
       {
         warnDroppedConfigSections(configPath, salvaged.dropped, salvaged.issues);
         const config = normalizeApiKeyIds(salvaged.parsed);
+        warnInheritedFastWireConflicts(configPath, config);
         warnDegradedHostname(parsed, config);
         warnDegradedApiKeys(parsed, config);
         warnDegradedCodexAccountPriorities(parsed, config);
@@ -2338,6 +2349,7 @@ function validFileConfigDiagnostics(config: OcxConfig, rawParsed: unknown): Conf
   const rawEffort = rawClaudeSubagentEffort(rawParsed);
   const normalized = normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, rawParsed), rawParsed);
   const warnings = configPlaceholderWarnings(normalized);
+  warnings.push(...inheritedFastWireConflictProviderNames(normalized).map(inheritedFastWireConflictWarning));
   warnings.push(...degradedCodexAccountPriorityWarnings(rawParsed, normalized));
   if (rawEffort !== undefined && !isClaudeSubagentEffort(rawEffort)) {
     warnings.push(`claudeCode.subagentEffort ignored: expected one of ${CLAUDE_SUBAGENT_EFFORTS.join(", ")}`);
@@ -2551,7 +2563,17 @@ export function validateConfigCandidate(value: unknown): { ok: true; config: Ocx
     ?? loopbackListenerPortError(value);
   if (boundaryError) return { ok: false, error: boundaryError };
   const result = configSchema.safeParse(value);
-  if (result.success) return { ok: true, config: normalizeApiKeyIds(result.data as OcxConfig) };
+  if (result.success) {
+    const config = normalizeApiKeyIds(result.data as OcxConfig);
+    const inheritedConflicts = inheritedFastWireConflictProviderNames(config);
+    if (inheritedConflicts.length > 0) {
+      return {
+        ok: false,
+        error: `schema_invalid: ${inheritedFastWireConflictWarning(inheritedConflicts[0]!)}`,
+      };
+    }
+    return { ok: true, config };
+  }
   return { ok: false, error: schemaDiagnosticsError(result.error) };
 }
 
