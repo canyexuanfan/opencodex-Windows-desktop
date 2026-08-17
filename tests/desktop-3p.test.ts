@@ -82,6 +82,9 @@ describe("Claude Desktop 3P models", () => {
         labelOverride: "GPT 5.6 Sol (native)",
         anthropicFamilyTier: "opus",
         isFamilyDefault: true,
+        // Sol is an authoritative 1M native now, so Desktop offers it the 1M capability.
+        supports1m: true,
+        prefer1m: true,
       },
       {
         name: "claude-opus-4-8-yrf",
@@ -168,10 +171,12 @@ describe("Claude Desktop 3P models", () => {
       "claude-opus-4-6",
       desktop3pAlias("cursor", "gpt-5.6-luna"),
     ]);
-    // supports1m ONLY where an authoritative contextWindow >= 1M was provided.
+    // supports1m ONLY where an authoritative contextWindow >= 1M was provided. The native
+    // gpt-5.6-sol row now qualifies on its own (1,050,000 measured); claude-opus-4-6 was
+    // given no window here and still must not claim the capability.
     const byName = new Map(reparsed.inferenceModels.map((m: { name: string }) => [m.name, m]));
     expect((byName.get(desktop3pAlias("cursor", "gpt-5.6-luna")) as { supports1m?: boolean }).supports1m).toBe(true);
-    expect((byName.get("claude-opus-4-8-ncb") as { supports1m?: boolean }).supports1m).toBeUndefined();
+    expect((byName.get("claude-opus-4-8-ncb") as { supports1m?: boolean }).supports1m).toBe(true);
     expect((byName.get("claude-opus-4-6") as { supports1m?: boolean }).supports1m).toBeUndefined();
     expect(resolveDesktop3pAlias("claude-opus-4-8-ncb")).toBe("native/gpt-5.6-sol");
   });
