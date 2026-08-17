@@ -84,7 +84,9 @@ export const CAP_OPTION_SET = new Set(CAP_OPTIONS);
  * window, so listing a value above the advertised one would be an inert choice.
  * Anything else goes through "Custom".
  */
-export const NATIVE_CAP_OPTIONS = [272_000, 372_000, 922_000];
+export const NATIVE_GPT56_DEFAULT_WINDOW = 272_000;
+export const NATIVE_GPT56_OPT_IN_WINDOW = 922_000;
+export const NATIVE_CAP_OPTIONS = [NATIVE_GPT56_DEFAULT_WINDOW, 372_000, NATIVE_GPT56_OPT_IN_WINDOW];
 export const NATIVE_CAP_OPTION_SET = new Set(NATIVE_CAP_OPTIONS);
 export const CUSTOM_OPTION = "custom";
 export const THREAD_OPTIONS = [4, 8, 16, 32, 64, 128, 256, 500, 1000];

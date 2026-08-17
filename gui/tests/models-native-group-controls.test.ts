@@ -60,7 +60,12 @@ test("the native group keeps its window readable with the cap switched off", asy
   expect(src).toContain("{(capOn || nativeProviderGroup) && (");
   // With the cap off the stored value is only what a future toggle would apply — the 350k
   // default — so the display falls back to the widest window the rows actually advertise.
-  expect(src).toContain("const capDisplayValue = capOn ? providerCap : (widestRowWindow ?? providerCap);");
+  // Matched as separate fragments because the expression is wrapped across lines now, and
+  // it grew a native branch: with the cap off the native group shows its default window
+  // rather than the widest advertised row. A single-line literal pinned the formatting
+  // instead of the behaviour and broke on the reflow that introduced that branch.
+  expect(src).toContain("const capDisplayValue = capOn");
+  expect(src).toContain("nativeProviderGroup ? NATIVE_GPT56_DEFAULT_WINDOW : (widestRowWindow ?? providerCap)");
   // The select is inert until the cap is actually on: showing a number is not the same as
   // offering to change one.
   expect(src).toContain("disabled={busy || !capOn}");

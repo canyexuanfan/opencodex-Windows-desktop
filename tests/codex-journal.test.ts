@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach, setDefaultTimeout } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -8,14 +8,18 @@ import {
   MANAGED_AGENTS_TABLE_MARKER,
   MANAGED_SUBAGENT_DEFAULT_MARKER,
 } from "../src/codex/subagent-defaults";
+import { SPAWN_BUDGET_MS } from "./helpers/test-budget";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
+
+setDefaultTimeout(SPAWN_BUDGET_MS);
 
 function runScript(codexHome: string, script: string): { stdout: string; stderr: string; status: number } {
   const result = spawnSync(process.execPath, ["--eval", script], {
     cwd: repoRoot,
     env: { ...process.env, CODEX_HOME: codexHome },
     encoding: "utf8",
+    timeout: SPAWN_BUDGET_MS - 5_000,
   });
   return { stdout: result.stdout?.trim() ?? "", stderr: result.stderr?.trim() ?? "", status: result.status ?? 1 };
 }

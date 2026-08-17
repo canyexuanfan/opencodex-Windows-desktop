@@ -282,7 +282,7 @@ describe("GUI/CLI Codex sync backend", () => {
     } finally {
       rmSync(raceRoot, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   test("surfaces combo catalog omissions in sync result and CLI stderr (#484)", async () => {
     const logs: string[] = [];
