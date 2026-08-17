@@ -198,7 +198,10 @@ describe("Cursor request builder", () => {
     });
 
     expect(request.messages[0]?.content).toContain("see");
-    expect(request.messages[0]?.content).toContain("image input unsupported");
+    // A USER-message image is still flattened here (this path builds the plain-text prompt).
+    // Tool-result images do reach Cursor as real McpImageContent, so the placeholder no longer
+    // claims the adapter as a whole is unable to send images.
+    expect(request.messages[0]?.content).toContain("image omitted from this Cursor text prompt");
     expect(request.messages[0]?.content).toContain("high");
   });
 
