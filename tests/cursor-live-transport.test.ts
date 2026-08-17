@@ -105,6 +105,20 @@ describe("Cursor live transport", () => {
     expect(internals.execContext.sessionId).toBe(internals.sessionId);
     await transport.close?.();
   });
+  test("honors an injected session id for Cursor Connect x-session-id", () => {
+    const transport = createLiveCursorTransport({
+      provider: { adapter: "cursor", baseUrl: "https://api2.cursor.sh", apiKey: "test-token" },
+      translatorBudget: createTestTranslatorBudget(),
+      headers: new Headers(),
+      sessionId: "cursor_from_gjc_session",
+    });
+    const internals = transport as unknown as {
+      sessionId: string;
+      execContext: { sessionId?: string };
+    };
+    expect(internals.sessionId).toBe("cursor_from_gjc_session");
+    expect(internals.execContext.sessionId).toBe("cursor_from_gjc_session");
+  });
 
   test("fails before network when no Cursor credential is configured", () => {
     const prev = process.env.OPENCODEX_CURSOR_TEST_TOKEN;

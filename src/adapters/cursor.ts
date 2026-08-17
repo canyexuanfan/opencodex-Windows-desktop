@@ -121,6 +121,7 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
               headers: incoming.headers,
               translatorBudget: incoming.translatorBudget,
               requestDeclaresFullAccess: cursorRequestDeclaresFullAccess(activeRequest),
+              sessionId: activeRequest.conversationId,
             },
             activeRequest,
             incoming.abortSignal,

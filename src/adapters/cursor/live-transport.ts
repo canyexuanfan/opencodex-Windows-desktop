@@ -432,9 +432,10 @@ class LiveCursorTransport implements CursorTransport {
  private firstFrameAt?: number;
  private firstFrameLogged = false;
   /** Stable session identifier sent as x-session-id; mirrors IDE session semantics. */
-  private readonly sessionId = crypto.randomUUID();
+  private readonly sessionId: string;
 
   constructor(private readonly input: CursorTransportFactoryInput) {
+    this.sessionId = input.sessionId?.trim() || crypto.randomUUID();
     this.translatorBudget = input.translatorBudget;
     this.token = resolveCursorToken(input.provider, input.headers);
     // Grace window before a drained client-tool turn is finalized. Small enough not to look like a

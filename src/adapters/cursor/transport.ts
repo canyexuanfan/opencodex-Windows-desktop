@@ -33,6 +33,12 @@ export interface CursorTransportFactoryInput {
    * native local exec authorization because the text is caller-controlled.
    */
   requestDeclaresFullAccess?: boolean;
+  /**
+   * Stable Cursor Connect `x-session-id`. Must survive transport rebuilds for the
+   * same GJC/OCX client thread; a fresh UUID per turn looks like a new IDE session
+   * and trips Cursor Connect resource limits.
+   */
+  sessionId?: string;
 }
 
 export type CursorTransportFactory = (input: CursorTransportFactoryInput) => CursorTransport;
