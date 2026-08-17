@@ -8,12 +8,14 @@ import { isCursorExternalWireModel } from "./discovery";
 import { debugProviderDiagnostic } from "../../lib/debug";
 import {
   createCursorBlobRequestScope,
+  cursorBlobMaxEntryBytes,
   releaseCursorBlobRequestScope,
   sealCursorBlobRequestScope,
   storeCursorBlob,
   type CursorBlobRequestScopeToken,
 } from "./native-exec";
 import { estimateTokens } from "../../lib/token-estimate";
+import { parseDataUrl } from "../image";
 import {
   AgentClientMessageSchema,
   AgentConversationTurnStructureSchema,
@@ -26,6 +28,7 @@ import {
   McpArgsSchema,
   McpSuccessSchema,
   McpTextContentSchema,
+  McpImageContentSchema,
   McpToolCallSchema,
   McpToolResultContentItemSchema,
   McpToolResultSchema,
@@ -332,6 +335,93 @@ function contentToText(content: OcxToolResultMessage["content"]): string {
     .join("\n");
 }
 
+/**
+ * Fraction of the per-blob admission ceiling an image may occupy. A `ConversationStep` is stored
+ * as ONE blob (see `toolCallStep`), so the image shares its entry with the tool call's arguments,
+ * text, and protobuf framing. Budgeting the whole ceiling would let a near-limit text result plus
+ * an admitted image push the step over admission and fail a request that works today.
+ */
+const IMAGE_STEP_BUDGET_FRACTION = 0.5;
+
+function imageBudgetBytes(): number {
+  return Math.floor(cursorBlobMaxEntryBytes() * IMAGE_STEP_BUDGET_FRACTION);
+}
+
+const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
+
+/**
+ * Decode a Codex inline image into Cursor wire bytes.
+ *
+ * `OcxImageContent.imageUrl` is either a `data:` URL or a remote https URL, so this cannot reuse
+ * the MCP helper (which takes bare base64 plus a separate mime). It layers strict validation over
+ * the shared `parseDataUrl` rather than tightening it, because Anthropic, Google, and Command Code
+ * share that parser. `Buffer.from(x, "base64")` accepts many invalid strings silently, so the
+ * charset is checked explicitly. Remote URLs are out of scope: `McpImageContent` needs bytes, and
+ * fetching here would put network IO inside request construction.
+ */
+function decodeInlineImage(imageUrl: string): { bytes: Uint8Array; mimeType: string } | undefined {
+  const parsed = parseDataUrl(imageUrl);
+  if (!parsed) return undefined;
+  const base64 = parsed.base64.trim();
+  if (base64.length === 0 || base64.length % 4 !== 0 || !BASE64_PATTERN.test(base64)) return undefined;
+  try {
+    const bytes = Uint8Array.from(Buffer.from(base64, "base64"));
+    if (bytes.length === 0) return undefined;
+    return { bytes, mimeType: parsed.mediaType || "application/octet-stream" };
+  } catch {
+    return undefined;
+  }
+}
+
+function imagePlaceholder(reason: string): string {
+  return `[image omitted from Cursor replay: ${reason}]`;
+}
+
+/**
+ * Build the wire content items for a tool result, preserving part order.
+ *
+ * Images become real `McpImageContent` — the Cursor schema has an image case on
+ * `McpToolResultContentItem`, and `native-exec-mcp.ts` already uses it for MCP-invoked tools.
+ * Flattening them to placeholder text blinded every screenshot-returning tool (Computer Use,
+ * browser QA) that Codex routes through this path.
+ */
+function toolResultContentItems(message: OcxToolResultMessage) {
+  const content = message.content;
+  if (typeof content === "string") {
+    return [create(McpToolResultContentItemSchema, {
+      content: { case: "text" as const, value: create(McpTextContentSchema, { text: content }) },
+    })];
+  }
+  let remaining = imageBudgetBytes();
+  return content.map(part => {
+    if (part.type === "text") {
+      return create(McpToolResultContentItemSchema, {
+        content: { case: "text" as const, value: create(McpTextContentSchema, { text: part.text }) },
+      });
+    }
+    const decoded = decodeInlineImage(part.imageUrl);
+    if (!decoded) {
+      return create(McpToolResultContentItemSchema, {
+        content: { case: "text" as const, value: create(McpTextContentSchema, { text: imagePlaceholder("not an inline data URL") }) },
+      });
+    }
+    if (decoded.bytes.byteLength > remaining) {
+      return create(McpToolResultContentItemSchema, {
+        content: { case: "text" as const, value: create(McpTextContentSchema, {
+          text: imagePlaceholder(`${decoded.bytes.byteLength} bytes exceeds the remaining step budget`),
+        }) },
+      });
+    }
+    remaining -= decoded.bytes.byteLength;
+    return create(McpToolResultContentItemSchema, {
+      content: { case: "image" as const, value: create(McpImageContentSchema, {
+        data: decoded.bytes,
+        mimeType: decoded.mimeType,
+      }) },
+    });
+  });
+}
+
 function toolResultToText(message: OcxToolResultMessage): string {
   return [
     "[tool_result]",
@@ -387,9 +477,7 @@ function toolResultPart(message: OcxToolResultMessage) {
       case: "success",
       value: create(McpSuccessSchema, {
         isError: message.isError,
-        content: [create(McpToolResultContentItemSchema, {
-          content: { case: "text", value: create(McpTextContentSchema, { text: contentToText(message.content) }) },
-        })],
+        content: toolResultContentItems(message),
       }),
     },
   });
