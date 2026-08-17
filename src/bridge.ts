@@ -1468,6 +1468,10 @@ function buildResponseJSONWithBudget(
   let endTurn: boolean | undefined;
   let stopReason: string | undefined;
   let cleanDone = false;
+  // Whether the adapter emitted ANY terminal (done/error/incomplete). Distinct from `cleanDone`,
+  // which is only true for a `done` without a stop reason. A buffered turn whose adapter simply
+  // stopped emitting has no terminal at all, and must not be reported as a success.
+  let sawTerminal = false;
   let compactionText = "";
   let compactionTextBytes = 0;
 
@@ -1782,15 +1786,18 @@ function buildResponseJSONWithBudget(
         break;
       case "error":
         errorEvent = e;
+        sawTerminal = true;
         usage = e.usage ?? usage;
         break;
       case "incomplete":
         incompleteEvent = e;
+        sawTerminal = true;
         endTurn = e.endTurn;
         if (e.providerState) options?.onProviderState?.(e.providerState);
         break;
       case "done":
         usage = e.usage;
+        sawTerminal = true;
         endTurn = e.endTurn;
         cleanDone = e.stopReason === undefined;
         if (e.providerState) options?.onProviderState?.(e.providerState);
@@ -1803,8 +1810,11 @@ function buildResponseJSONWithBudget(
   flushText(cleanDone && !errorEvent && !incompleteEvent ? "final_answer" : undefined);
   flushSummaryReasoning();
   flushRawReasoning();
-  // Open tool call on a failed/incomplete turn must not land as status:"completed".
-  if (currentToolCallId) flushToolCall(errorEvent || incompleteEvent ? "incomplete" : "completed");
+  // Open tool call on a failed/incomplete turn must not land as status:"completed" — and neither
+  // must one left open by a stream that stopped without any terminal at all. That case previously
+  // fell through to "completed", handing back a function_call whose arguments were half-written
+  // JSON, inside a turn also marked completed.
+  if (currentToolCallId) flushToolCall(errorEvent || incompleteEvent || !sawTerminal ? "incomplete" : "completed");
   if (batchKiroRedacted) {
     // pushOutput reserves the item itself and releases the retained raw blob it replaces.
     pushOutput({
@@ -1831,7 +1841,13 @@ function buildResponseJSONWithBudget(
     ? "failed"
     : incompleteEvent || stopReason === "max_tokens" || stopReason === "content_filter"
       ? "incomplete"
-      : "completed";
+      : sawTerminal
+        ? "completed"
+        // The adapter stopped emitting without any terminal, so the turn was cut short. Streaming
+        // already reports this as response.incomplete / adapter_eof (see the !terminated branch);
+        // defaulting the buffered path to "completed" handed callers a truncated turn — including
+        // one carrying a never-closed tool call with half-written JSON arguments — as a success.
+        : "incomplete";
   options?.onUsage?.(incompleteEvent?.usage ?? usage);
   return {
     id: responseId, object: "response",
@@ -1851,6 +1867,10 @@ function buildResponseJSONWithBudget(
       incomplete_details: { reason: "max_output_tokens" },
     } : stopReason === "content_filter" ? {
       incomplete_details: { reason: "content_filter" },
+    } : !sawTerminal ? {
+      // Same reason string the streaming path uses, so a caller sees one signal for one condition
+      // regardless of which surface it asked for.
+      incomplete_details: { reason: "adapter_eof" },
     } : {}),
     usage: responsesUsage(incompleteEvent?.usage ?? usage),
   };
