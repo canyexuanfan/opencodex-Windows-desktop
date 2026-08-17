@@ -294,3 +294,65 @@ describe("Cursor tool-result image encoding never enlarges a step", () => {
     }
   });
 });
+
+describe("Cursor no-image tool results encode exactly as before", () => {
+  // Round-3 audit: legacy flattened text parts into ONE newline-joined item, while the first
+  // pass emitted one protobuf item per part. The extra per-item framing was enough to push a
+  // previously admissible step over the blob ceiling (1020 -> 1025 bytes at a 1024 limit).
+  // These compare real serialized bytes, not decoded fields.
+  function stepBytesFor(content: unknown): number {
+    const bytes = request(content as never);
+    const msg = fromBinary(AgentClientMessageSchema, bytes);
+    const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+    let total = 0;
+    for (const turnId of run?.conversationState?.turns ?? []) {
+      const turn = fromBinary(ConversationTurnStructureSchema, blobData(turnId));
+      if (turn.turn.case !== "agentConversationTurn") continue;
+      for (const stepId of turn.turn.value.steps ?? []) total += blobData(stepId).byteLength;
+    }
+    return total;
+  }
+
+  test("multi-part text costs the same as the equivalent joined string", () => {
+    const joined = stepBytesFor("alpha\nbeta\ngamma");
+    const parts = stepBytesFor([
+      { type: "text", text: "alpha" },
+      { type: "text", text: "beta" },
+      { type: "text", text: "gamma" },
+    ]);
+
+    // One item, newline-joined — identical to the legacy encoding.
+    expect(parts).toBe(joined);
+  });
+
+  test("a text-only result never costs more than a single flattened item", () => {
+    for (const n of [1, 2, 5, 12]) {
+      const texts = Array.from({ length: n }, (_, i) => `line-${i}-${"z".repeat(40)}`);
+      const asParts = stepBytesFor(texts.map(text => ({ type: "text", text })));
+      const asString = stepBytesFor(texts.join("\n"));
+      expect(asParts).toBe(asString);
+    }
+  });
+
+  test("an empty text array still produces one item", () => {
+    const items = toolResultItems(request([]));
+    expect(items).toBeDefined();
+    expect(items!.length).toBe(1);
+    expect(items![0].content.case).toBe("text");
+  });
+
+  test("text around an image is grouped, not split per part", () => {
+    const items = toolResultItems(request([
+      { type: "text", text: "before-a" },
+      { type: "text", text: "before-b" },
+      { type: "image", imageUrl: PNG_DATA_URL },
+      { type: "text", text: "after-a" },
+      { type: "text", text: "after-b" },
+    ]));
+
+    expect(items).toBeDefined();
+    expect(items!.map(i => i.content.case)).toEqual(["text", "image", "text"]);
+    expect(items![0].content.case === "text" ? items![0].content.value.text : "").toBe("before-a\nbefore-b");
+    expect(items![2].content.case === "text" ? items![2].content.value.text : "").toBe("after-a\nafter-b");
+  });
+});

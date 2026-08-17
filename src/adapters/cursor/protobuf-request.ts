@@ -426,32 +426,49 @@ function toolResultContentItems(
   const totalImages = countImages(parts);
   const allowed = Math.max(0, Math.min(totalImages, maxImages));
   let seen = 0;
-  return parts.map(part => {
+  // Consecutive text runs are newline-joined into ONE item, exactly as the legacy encoding did.
+  // Emitting one protobuf item per part adds per-item framing, which was enough to push a
+  // previously admissible step past the blob ceiling (round-3 audit: 1020 -> 1025 bytes at a
+  // 1024 limit). A result with no images must serialize identically to before this feature.
+  const items: ReturnType<typeof create<typeof McpToolResultContentItemSchema>>[] = [];
+  let pendingText: string[] = [];
+  const flushText = () => {
+    if (pendingText.length === 0) return;
+    const text = pendingText.join("\n");
+    pendingText = [];
+    items.push(create(McpToolResultContentItemSchema, {
+      content: { case: "text" as const, value: create(McpTextContentSchema, { text }) },
+    }));
+  };
+  for (const part of parts) {
     if (part.kind === "text") {
-      return create(McpToolResultContentItemSchema, {
-        content: { case: "text" as const, value: create(McpTextContentSchema, { text: part.text }) },
-      });
+      pendingText.push(part.text);
+      continue;
     }
     if (part.kind === "undecodable") {
-      return create(McpToolResultContentItemSchema, {
-        content: { case: "text" as const, value: create(McpTextContentSchema, { text: imagePlaceholder("no inline data") }) },
-      });
+      pendingText.push(imagePlaceholder("no inline data"));
+      continue;
     }
     seen++;
     if (seen <= totalImages - allowed) {
-      return create(McpToolResultContentItemSchema, {
-        content: { case: "text" as const, value: create(McpTextContentSchema, {
-          text: imagePlaceholder(`${part.bytes.byteLength}B over step limit`),
-        }) },
-      });
+      pendingText.push(imagePlaceholder(`${part.bytes.byteLength}B over step limit`));
+      continue;
     }
-    return create(McpToolResultContentItemSchema, {
+    flushText();
+    items.push(create(McpToolResultContentItemSchema, {
       content: { case: "image" as const, value: create(McpImageContentSchema, {
         data: part.bytes,
         mimeType: part.mimeType,
       }) },
-    });
-  });
+    }));
+  }
+  flushText();
+  if (items.length === 0) {
+    items.push(create(McpToolResultContentItemSchema, {
+      content: { case: "text" as const, value: create(McpTextContentSchema, { text: "" }) },
+    }));
+  }
+  return items;
 }
 
 function toolResultToText(message: OcxToolResultMessage): string {
