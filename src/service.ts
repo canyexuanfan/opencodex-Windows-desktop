@@ -2358,7 +2358,10 @@ function killWindowsServiceWrapperProcesses(): void {
       "} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
     ].join(" ");
     spawnSync(resolveTrustedWindowsPowerShellExe(), [
-      "-NoProfile", "-NoLogo", "-NonInteractive", "-WindowStyle", "Hidden",
+      // No `-WindowStyle Hidden` here: Bun 1.3.14 can fail that direct CLI pair
+      // before the command runs (#1589). `windowsHide` below is what actually
+      // suppresses the console window, and it is sufficient.
+      "-NoProfile", "-NoLogo", "-NonInteractive",
       "-Command", ps,
     ], { stdio: "ignore", timeout: 5000, windowsHide: true });
   } catch { /* best-effort */ }
