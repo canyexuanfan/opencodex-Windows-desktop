@@ -48,5 +48,27 @@ describe("forward-mode replay keeps fail-closed behavior (no synthesized outputs
     const built = buildInput(input);
     expect(built).toEqual(input);
   });
+
+  test("forward auth with statelessResponses still does not synthesize (fail-closed guard)", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      ...provider,
+      statelessResponses: true,
+    });
+    const input = [
+      { type: "function_call", id: "fc_fwd_stateless", call_id: "call_fwd_stateless", name: "write_stdin", arguments: "{}" },
+    ];
+    const request = adapter.buildRequest({
+      modelId: "gpt-5.5",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { model: "gpt-5.5", input },
+    }, { headers: new Headers({ authorization: "Bearer caller-secret" }) });
+    const built = (JSON.parse(request.body) as { input: unknown[] }).input;
+    // Stateless upstreams strip item ids, but the guard must not synthesize an output.
+    expect(built).toHaveLength(1);
+    expect(built[0]).toMatchObject({ type: "function_call", call_id: "call_fwd_stateless" });
+    expect(JSON.stringify(request.body)).not.toContain("no tool result was recorded");
+  });
 });
 

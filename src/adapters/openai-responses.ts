@@ -576,7 +576,7 @@ function toolOutputText(output: unknown): string {
  *   ("No tool output found for tool call <call_id>"). A stateless upstream cannot resolve
  *   the pair from its own storage, so a placeholder output is synthesized right after the
  *   call to keep the turn continuable without pretending the result was real. Gated on
- *   `synthesizeMissingCallOutputs` (stateless wires); forward replay keeps the prior
+ *   `synthesizeMissingCallOutputs` (stateless AND non-forward wires); forward replay keeps
  *   fail-closed behavior.
  * - `function_call_output`/`custom_tool_call_output` without their paired call item
  *   ("No tool call found for function call output with call_id ..."). Converted to user
@@ -1403,7 +1403,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       // backend gets — dropping previous_response_id is not much use if the body that
       // reaches the wire is unparseable.
       if (forward || stateless) {
-        outBody = repairOrphanedInputItems(outBody, unexpandedMiss, stateless);
+        outBody = repairOrphanedInputItems(outBody, unexpandedMiss, stateless && !forward);
       }
       if (provider.requiresAdjacentResponsesToolResults === true) {
         outBody = normalizeResponsesToolResultAdjacency(outBody);
