@@ -170,12 +170,74 @@ const PINNED_NATIVE_CAPABILITY_ENTRIES: Map<string, RawEntry> = new Map(
   }),
 );
 
-export function nativeOpenAiContextWindow(slug: string, contextCap?: number): number | undefined {
+/**
+ * The user-owned levers that narrow a native window, carried together.
+ *
+ * Both only ever lower: the authoritative window is measured against what the upstream
+ * accepts, so a user value above it would re-create the over-advertising this unit fixed.
+ *
+ * This travels as an ARGUMENT rather than module state on purpose. `grok/sync.ts` runs in
+ * the `ocx ensure` parent process, outside the server, so an injected global would never
+ * reach it — that failure is recorded in
+ * devlog/_plan/260817_native_gpt56_1m_context/006_root_cause_replan.md. Every call site
+ * already holds a config or a cap, so passing one more field costs nothing.
+ *
+ * A bare number is still accepted for the many call sites that only know the cap.
+ */
+export interface NativeContextLimits {
+  /** `providerContextCaps.openai` */
+  readonly cap?: number;
+  /** `providers.openai.contextWindow` — a floor-wide user override. */
+  readonly providerWindow?: number;
+  /** `providers.openai.modelContextWindows` — per-model, wins over `providerWindow`. */
+  readonly modelWindows?: Readonly<Record<string, number>>;
+}
+
+export type NativeContextLimitsInput = NativeContextLimits | number | undefined;
+
+function positiveInt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+function asLimits(input: NativeContextLimitsInput): NativeContextLimits {
+  if (input === undefined) return {};
+  return typeof input === "number" ? { cap: input } : input;
+}
+
+/** Read both levers out of a config once, for call sites that hold one. */
+export function nativeContextLimits(
+  config: Pick<OcxConfig, "providers" | "providerContextCaps">,
+): NativeContextLimits {
+  const provider = config.providers?.[OPENAI_CODEX_PROVIDER_ID];
+  const modelWindows: Record<string, number> = {};
+  for (const [slug, value] of Object.entries(provider?.modelContextWindows ?? {})) {
+    const window = positiveInt(value);
+    if (window !== undefined) modelWindows[slug] = window;
+  }
+  return {
+    ...(positiveInt(providerContextCap(config, OPENAI_CODEX_PROVIDER_ID)) !== undefined
+      ? { cap: providerContextCap(config, OPENAI_CODEX_PROVIDER_ID) }
+      : {}),
+    ...(positiveInt(provider?.contextWindow) !== undefined ? { providerWindow: provider!.contextWindow } : {}),
+    ...(Object.keys(modelWindows).length > 0 ? { modelWindows } : {}),
+  };
+}
+
+/** Apply the user levers to an authoritative value. Lowering only, in a fixed order. */
+function narrowToLimits(raw: number | undefined, slug: string, input: NativeContextLimitsInput): number | undefined {
+  if (raw === undefined) return undefined;
+  const limits = asLimits(input);
+  const overlay = positiveInt(limits.modelWindows?.[slug]) ?? positiveInt(limits.providerWindow);
+  const narrowed = overlay === undefined ? raw : Math.min(raw, overlay);
+  return applyProviderContextCap(narrowed, limits.cap) ?? narrowed;
+}
+
+export function nativeOpenAiContextWindow(slug: string, limits?: NativeContextLimitsInput): number | undefined {
   const raw = NATIVE_OPENAI_CONTEXT_OVERRIDES[slug]?.contextWindow
     ?? (typeof PINNED_NATIVE_CAPABILITY_ENTRIES.get(slug)?.context_window === "number"
       ? PINNED_NATIVE_CAPABILITY_ENTRIES.get(slug)!.context_window as number
       : undefined);
-  return applyProviderContextCap(raw, contextCap) ?? raw;
+  return narrowToLimits(raw, slug, limits);
 }
 
 /**
@@ -185,12 +247,12 @@ export function nativeOpenAiContextWindow(slug: string, contextCap?: number): nu
  * A provider context cap lowers this too: a capped 272k window must not keep advertising a
  * 922k input ceiling, or the cap would be cosmetic on every input-side surface.
  */
-export function nativeOpenAiMaxInputTokens(slug: string, contextCap?: number): number | undefined {
+export function nativeOpenAiMaxInputTokens(slug: string, limits?: NativeContextLimitsInput): number | undefined {
   const raw = NATIVE_OPENAI_CONTEXT_OVERRIDES[slug]?.maxInputTokens;
   if (raw === undefined) return undefined;
-  const window = nativeOpenAiContextWindow(slug, contextCap);
-  const capped = applyProviderContextCap(raw, contextCap) ?? raw;
-  return window === undefined ? capped : Math.min(capped, window);
+  const window = nativeOpenAiContextWindow(slug, limits);
+  const narrowed = narrowToLimits(raw, slug, limits) ?? raw;
+  return window === undefined ? narrowed : Math.min(narrowed, window);
 }
 
 export function nativeInputModalities(slug: string): string[] {
@@ -303,13 +365,15 @@ export function desktopVisibleNativeSlugs(
   ]);
 }
 
-export function nativeModelRows(config: Pick<OcxConfig, "disabledModels" | "combos" | "providerContextCaps">): Array<{ slug: string; disabled: boolean; contextWindow?: number; maxInputTokens?: number }> {
+export function nativeModelRows(config: Pick<OcxConfig, "disabledModels" | "combos" | "providerContextCaps" | "providers">): Array<{ slug: string; disabled: boolean; contextWindow?: number; maxInputTokens?: number }> {
   const disabled = disabledNativeSlugs(config);
   const shadowed = configuredNativeAliasSlugs(config);
-  const openaiContextCap = providerContextCap(config, OPENAI_CODEX_PROVIDER_ID);
+  // Both user levers, not just the cap: a per-model window set from the dashboard has to show
+  // up on the row the dashboard itself renders.
+  const limits = nativeContextLimits(config);
   return NATIVE_OPENAI_MODELS.filter(slug => !shadowed.has(slug)).map(slug => {
-    const contextWindow = nativeOpenAiContextWindow(slug, openaiContextCap);
-    const maxInputTokens = nativeOpenAiMaxInputTokens(slug, openaiContextCap);
+    const contextWindow = nativeOpenAiContextWindow(slug, limits);
+    const maxInputTokens = nativeOpenAiMaxInputTokens(slug, limits);
     return {
       slug,
       disabled: disabled.has(slug),

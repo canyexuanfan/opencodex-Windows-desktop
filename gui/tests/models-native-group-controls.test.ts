@@ -66,11 +66,13 @@ test("the native group keeps its window readable with the cap switched off", asy
   expect(src).toContain("disabled={busy || !capOn}");
 });
 
-test("the native group exposes the custom-model and cap controls, but not the context modal", async () => {
+test("the native group exposes the context modal alongside the custom-model and cap controls", async () => {
   const src = await Bun.file(new URL("../src/pages/Models.tsx", import.meta.url)).text();
-  // The context-window modal saves through PATCH /api/providers, which the canonical openai
-  // seed check rejects with a 400 — so that one button stays hidden for the native group.
-  expect(src).toContain("{!nativeProviderGroup && (");
+  // The context button is no longer gated: the canonical openai seed check admits
+  // contextWindow/modelContextWindows as user-owned overlays, and the native accessors only
+  // ever narrow the measured window with them.
+  expect(src).not.toContain("{!nativeProviderGroup && (");
+  expect(src).toContain('onClick={() => openContextSettings(group)}');
   // Badge and hint follow provider identity, not row composition.
   expect(src).toContain("{nativeProviderGroup && <span");
   expect(src).toContain("{nativeProviderGroup && <p");

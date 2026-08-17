@@ -1081,16 +1081,16 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
           <span className="muted mono text-label">{t("models.active", { active: activeCount, total: rows.length })}</span>
           </button>
            <div className="row models-provider-actions">
-             {/* The context-window modal saves through PATCH /api/providers, which the canonical
-                 `openai` seed check rejects. The native group gets the cap select below instead. */}
-             {!nativeProviderGroup && (
-               <button
-                 type="button"
-                 className="btn btn-ghost btn-sm text-caption"
-                 onClick={() => openContextSettings(group)}
-                 aria-haspopup="dialog"
-               >{t("models.contextSettings")}</button>
-             )}
+             {/* Available on every card, including the native one: the canonical `openai` seed
+                 check now admits contextWindow/modelContextWindows as user-owned overlays, and
+                 the native accessors only ever narrow the measured window with them. The cap
+                 next to it is the coarser sibling — one value for the whole provider. */}
+             <button
+               type="button"
+               className="btn btn-ghost btn-sm text-caption"
+               onClick={() => openContextSettings(group)}
+               aria-haspopup="dialog"
+             >{t("models.contextSettings")}</button>
              {
               <button
                 type="button"

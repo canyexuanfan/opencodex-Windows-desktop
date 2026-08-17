@@ -10,6 +10,7 @@ import {
   disabledNativeSlugs,
   mergeCatalogEntriesForSync,
   NATIVE_OPENAI_MODELS,
+  nativeContextLimits,
   nativeModelRows,
   observedAccountBoundNativeEntries,
   observedAccountBoundNativeOpenAiSlugs,
@@ -69,6 +70,43 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     expect(rows.find(r => r.slug === "gpt-5.5")?.disabled).toBe(false);
     // Known context metadata rides along for the dashboard.
     expect(rows.find(r => r.slug === "gpt-5.6-sol")?.contextWindow).toBe(922_000);
+  });
+
+  test("a per-model window narrows the native row, and can only ever lower it", () => {
+    // The lever the dashboard's context button writes. It reaches the same accessors the cap
+    // does, so /api/models and the on-disk catalog cannot disagree about the same slug.
+    const overlay = { providers: { openai: { modelContextWindows: { "gpt-5.6-sol": 500_000 } } } } as never;
+    const rows = nativeModelRows(overlay);
+    expect(rows.find(r => r.slug === "gpt-5.6-sol")?.contextWindow).toBe(500_000);
+    // The input ceiling follows the narrowed window — advertising 922k input under a 500k
+    // window would be the same over-advertising this unit exists to fix.
+    expect(rows.find(r => r.slug === "gpt-5.6-sol")?.maxInputTokens).toBe(500_000);
+    // A sibling slug is untouched: this lever is per-model.
+    expect(rows.find(r => r.slug === "gpt-5.6-terra")?.contextWindow).toBe(922_000);
+
+    // Above the measured ceiling the overlay is inert. A user value must never widen what the
+    // upstream actually accepts.
+    const tooWide = { providers: { openai: { modelContextWindows: { "gpt-5.6-sol": 2_000_000 } } } } as never;
+    expect(nativeModelRows(tooWide).find(r => r.slug === "gpt-5.6-sol")?.contextWindow).toBe(922_000);
+
+    // provider-wide window applies to every native slug, and the cap still wins when lower.
+    const both = {
+      providers: { openai: { contextWindow: 500_000 } },
+      providerContextCaps: { openai: 350_000 },
+    } as never;
+    expect(nativeModelRows(both).find(r => r.slug === "gpt-5.6-sol")?.contextWindow).toBe(350_000);
+  });
+
+  test("the on-disk catalog entry lands at the same width as the dashboard row", () => {
+    // Regression: applyNativeOpenAiContextOverride used to re-read the static table and apply
+    // only the cap, so a saved per-model window showed up in /api/models and was written back
+    // at 922,000 in the Codex catalog.
+    const limits = { providers: { openai: { modelContextWindows: { "gpt-5.6-sol": 500_000 } } } } as never;
+    const entry: Record<string, unknown> = { slug: "gpt-5.6-sol", context_window: 922_000, max_context_window: 922_000 };
+    applyNativeOpenAiContextOverride(entry as never, nativeContextLimits(limits));
+    expect(entry.context_window).toBe(500_000);
+    expect(entry.max_context_window).toBe(500_000);
+    expect(entry.auto_compact_token_limit).toBe(450_000); // 90% of the narrowed window
   });
 
   test("the advertised native window stays inside the measured ceiling after Codex spends 95% of it", () => {
