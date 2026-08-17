@@ -157,8 +157,11 @@ describe("Cursor tool definitions", () => {
       },
     } as OcxTool);
     expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ cmd: "echo hi" }), "exec_command", execSchema)).toBe("echo hi");
-    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ command: "echo hi" }), "exec_command", execSchema)).toBeUndefined();
-    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ cmd: "", command: "echo hi" }), "exec_command", execSchema)).toBeUndefined();
+    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ command: "echo hi" }), "exec_command", execSchema)).toBe("echo hi");
+    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ cmd: "", command: "echo hi" }), "exec_command", execSchema)).toBe("echo hi");
+    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ cmd: "exec", command: "shell" }), "exec_command", execSchema)).toBe("exec");
+    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({}), "exec_command", execSchema)).toBeUndefined();
+    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ cmd: " ", command: "\t" }), "exec_command", execSchema)).toBeUndefined();
 
     const shellSchema = cursorToolArgNormalizeSchema({
       name: "shell_command",
@@ -170,7 +173,11 @@ describe("Cursor tool definitions", () => {
       },
     } as OcxTool);
     expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ command: "echo hi" }), "shell_command", shellSchema)).toBe("echo hi");
-    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ cmd: "echo hi" }), "shell_command", shellSchema)).toBeUndefined();
+    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ cmd: "echo hi" }), "shell_command", shellSchema)).toBe("echo hi");
+    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ command: "", cmd: "echo hi" }), "shell_command", shellSchema)).toBe("echo hi");
+    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ cmd: "exec", command: "shell" }), "shell_command", shellSchema)).toBe("shell");
+    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({}), "shell_command", shellSchema)).toBeUndefined();
+    expect(nonEmptyShellBridgeCommandFromArgs(JSON.stringify({ cmd: " ", command: "\t" }), "shell_command", shellSchema)).toBeUndefined();
   });
 
   test("does not alias namespaced exec_command tools", () => {
