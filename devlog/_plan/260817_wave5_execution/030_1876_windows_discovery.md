@@ -75,3 +75,38 @@ than implying platform coverage.
 
 #1876 merges after the top-level fix; #1852 closes citing the merge SHA plus the
 top-level-failure regression test.
+## Outcome (executed)
+
+DONE with one open evidence gap. Three commits:
+
+| Commit | Change |
+|--------|--------|
+| `dc1df7d44` | `-ErrorAction Stop` + outer catch on the top-level query; parse loop extracted to `parseWindowsSnapshotOutput`; `listWindowsSnapshots` takes an optional runner; the collector's fail-closed catch now covers the injected seam too |
+| `497b64338` | full-row fixture pinning every parsed field |
+| `535e3c256` | `unknown` cached for 250ms instead of the uniform 5s (accept criterion 3) |
+
+**Two defects found in my own work, both by auditing rather than by tests.**
+
+The extraction silently dropped `ProcessSnapshot.owner` and every test still
+passed — the two states these tests assert never read it, and the ownership
+decisions that do live in other modules with their own doubles. It was caught by
+diffing against `4d9738f43`, and the full-row fixture exists so the next refactor
+cannot repeat it.
+
+`collectCodexAppServerCatalogState` wrapped only the *default* enumerator in its
+try, so an injected `listSnapshots` that threw would propagate instead of
+degrading to `unknown`. No caller was broken in practice, but the regression test
+for this work-phase would have been asserting the safety of a path the seam does
+not share. Both paths now go through one catch — the shape
+`src/codex/log-guard/processes.ts` already had.
+
+**Open gap, recorded rather than implied.** There is no real-Windows evidence.
+`platform-windows` is `workflow_dispatch`-only and the aggregate accepts it as
+skipped. The reviewer's sharpest point stands: the tests drive an injected
+`runPowerShell`, so no PowerShell ever parses the emitted script, and a *syntax*
+error is not catchable by `try/catch` in the same scriptblock — it fails at parse
+time, writes to stderr (which is `stdio: "ignore"`), and leaves stdout empty,
+reintroducing precisely the fail-open this fixes. A second, milder risk: 
+`-ErrorAction Stop` promotes non-terminating CIM errors to terminating, so a benign
+per-instance error could turn a mostly-complete read into a persistent `unknown`.
+Both need a maintainer-triggered dispatch on the merged head.
