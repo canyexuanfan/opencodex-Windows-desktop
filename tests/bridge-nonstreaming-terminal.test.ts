@@ -94,3 +94,43 @@ describe("buffered turns without an adapter terminal", () => {
   });
 });
 
+describe("compaction is never installed from a truncated turn", () => {
+  // #422: a compaction item becomes REPLACEMENT HISTORY. The original guard could only see
+  // explicit error/incomplete events, so a stream that stopped without any terminal slipped
+  // past it — installing a truncated summary as the conversation's new past.
+  test("no compaction item when the adapter emitted no terminal", () => {
+    const json = buildResponseJSON(
+      [{ type: "text", text: "half a summary" }],
+      "routed/model",
+      { compaction: true },
+    );
+
+    expect(json.status).toBe("incomplete");
+    expect(json.output.some(o => (o as { type: string }).type === "compaction")).toBe(false);
+  });
+
+  test("compaction still emitted for a genuinely completed turn", () => {
+    const json = buildResponseJSON(
+      [{ type: "text", text: "a whole summary" }, { type: "done" }],
+      "routed/model",
+      { compaction: true },
+    );
+
+    expect(json.status).toBe("completed");
+    expect(json.output.some(o => (o as { type: string }).type === "compaction")).toBe(true);
+  });
+
+  test("compaction stays suppressed for explicit failure terminals", () => {
+    for (const terminal of [
+      { type: "error", message: "upstream failed" } as const,
+      { type: "incomplete", reason: "max_output_tokens" } as const,
+    ]) {
+      const json = buildResponseJSON(
+        [{ type: "text", text: "partial" }, terminal],
+        "routed/model",
+        { compaction: true },
+      );
+      expect(json.output.some(o => (o as { type: string }).type === "compaction")).toBe(false);
+    }
+  });
+});

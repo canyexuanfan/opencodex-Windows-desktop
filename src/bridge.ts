@@ -1830,6 +1830,11 @@ function buildResponseJSONWithBudget(
     options?.compaction
     && !errorEvent
     && !incompleteEvent
+    // A stream that stopped without any terminal did not complete either. The original guard
+    // could only see explicit failure events, so an adapter EOF slipped past it and installed a
+    // truncated summary as replacement history — the exact #422 hazard, reached by a route that
+    // did not exist when the guard was written.
+    && sawTerminal
     && stopReason !== "max_tokens"
     && stopReason !== "content_filter"
   ) {
