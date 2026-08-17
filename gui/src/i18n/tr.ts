@@ -1798,7 +1798,7 @@ export const tr: Record<TKey, string> = {
   "claude.autoContextDesc": "1M işaretinin ne kadar ileri gideceğini kontrol eder. AÇIK: penceresi sıkıştırma eşiğini barındırabilen her model 1M aralığı kazanır. KAPALI: yalnızca gerçek 1M modelleri alır.",
   "claude.autoContextInert": "Pasif durumdadır çünkü konfigürasyon dosyasında eski bir bağlam boyutu değeri (maxContextTokens) var. Yeniden etkinleştirmek için oradan kaldırın.",
   "claude.autoCompactWindow": "Otomatik özetleme noktası",
-  "claude.autoCompactDefault": "350k (varsayılan)",
+  "claude.autoCompactDefault": "{value} (varsayılan)",
   "claude.autoCompactWindowDesc": "Sohbet bu noktaya ulaştığında eski mesajlar özetlenir. Her modelin kendi sınırını asla aşmaz, bu nedenle 200k modeller etkilenmez.",
   "claude.autoCompactWindowWarn": "Bunu değiştirmek GPT modellerini bozabilir — bir modelin gerçek sınırından daha yüksek ayarlanırsa, sohbetler özet devreye girmeden önce hata verecektir.",
   "claude.injectAgents": "Alt ajanları otomatik kaydet",

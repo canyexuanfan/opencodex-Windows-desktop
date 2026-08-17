@@ -1340,7 +1340,7 @@ export const ko: Record<TKey, string> = {
   "claude.autoContextDesc": "1M 표기를 어디까지 붙일지 정합니다. 켜면 컴팩션 기준치를 담을 수 있는 창을 가진 모델에 큰 컨텍스트 행이 생기고, 끄면 진짜 1M 모델에만 생깁니다.",
   "claude.autoContextInert": "설정 파일에 이전 방식의 컨텍스트 크기 값(maxContextTokens)이 있어 이 기능이 지금은 적용되지 않아요. 설정에서 그 값을 지우면 다시 켜집니다.",
   "claude.autoCompactWindow": "자동 요약 지점",
-  "claude.autoCompactDefault": "350k (기본값)",
+  "claude.autoCompactDefault": "{value} (기본값)",
   "claude.autoCompactWindowDesc": "대화가 이 지점에 다다르면 오래된 내용을 자동 요약합니다. 모델마다 자기 한도를 넘지 않는 선에서만 적용되니 200k 모델은 영향받지 않아요.",
   "claude.autoCompactWindowWarn": "값을 직접 바꾸면 GPT 모델들이 제대로 동작하지 않을 수 있어요 — 모델의 실제 한도보다 크게 잡으면 요약이 되기 전에 대화가 오류로 멈춥니다.",
   "claude.injectAgents": "서브에이전트 자동 등록",
