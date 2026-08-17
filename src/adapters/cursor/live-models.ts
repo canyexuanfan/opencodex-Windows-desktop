@@ -19,6 +19,8 @@ import { GetUsableModelsResponseSchema } from "./gen/agent_pb";
 const CURSOR_GET_USABLE_MODELS_PATH = "/agent.v1.AgentService/GetUsableModels";
 const CURSOR_DISCOVERY_CLIENT_VERSION = "cli-2026.02.13-41ac335";
 const CURSOR_MODEL_DISCOVERY_MAX_BYTES = 4 * 1024 * 1024;
+type CursorUsableModelsFetcher = (opts: CursorUsableModelsOptions) => Promise<CursorUsableModelsResult>;
+let cursorUsableModelsFetcherForTests: CursorUsableModelsFetcher | null = null;
 
 export interface CursorUsableModelsOptions {
   apiKey: string;
@@ -31,6 +33,11 @@ export type CursorUsableModelsResult =
   | { ok: true; models: string[] }
   | { ok: false; error: "auth" | "http" | "transport" | "timeout" | "decode" | "empty" | "too_large"; detail?: string };
 
+/** Test-only seam for management connectivity probes; production callers retain the HTTP/2 path. */
+export function setFetchCursorUsableModelsForTests(next: CursorUsableModelsFetcher | null): void {
+  cursorUsableModelsFetcherForTests = next;
+}
+
 const RETRYABLE_DISCOVERY_ERRORS = new Set(["timeout", "transport"]);
 const DISCOVERY_RETRY_TIMEOUT_MS = 3_000;
 
@@ -42,6 +49,7 @@ const DISCOVERY_RETRY_TIMEOUT_MS = 3_000;
  * devlog 260723_cursor_context_continuity/030).
  */
 export async function fetchCursorUsableModels(opts: CursorUsableModelsOptions): Promise<CursorUsableModelsResult> {
+  if (cursorUsableModelsFetcherForTests) return cursorUsableModelsFetcherForTests(opts);
   const first = await fetchCursorUsableModelsOnce(opts);
   if (first.ok || !RETRYABLE_DISCOVERY_ERRORS.has(first.error)) return first;
   await new Promise(resolve => setTimeout(resolve, 250 + Math.floor(Math.random() * 250)));
