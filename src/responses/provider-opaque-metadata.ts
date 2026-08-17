@@ -30,7 +30,7 @@ function isObj(value: unknown): value is Record<string, unknown> {
  */
 const MAX_SIGNATURE_BYTES = 64 * 1024;
 
-function isCarryableSignature(value: unknown): value is string {
+export function isCarryableSignature(value: unknown): value is string {
   if (typeof value !== "string" || value.length === 0) return false;
   // Cheap length pre-check: UTF-8 is at most 3 bytes per UTF-16 code unit for the BMP, so this
   // skips the encode for the overwhelmingly common short case.

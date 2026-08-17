@@ -498,7 +498,7 @@ export const tr: Record<TKey, string> = {
   "models.subtitle.routing": "Politika profilleri ve simülasyon değerlendirmesi.",
   "models.subtitle": "Codex'in göreceği modelleri açıp kapatın.",
   "models.nativeGroupLabel": "Yerel OpenAI",
-  "models.nativeHint": "Doğrudan geçiş modelleri Sağlayıcılar bölümünde seçilen Havuz veya Doğrudan seçeneğini kullanır.",
+  "models.nativeHint": "Doğrudan geçiş modelleri Sağlayıcılar bölümünde seçilen Havuz veya Doğrudan seçeneğini kullanır. Buradan model eklemek, yeni bir düz passthrough kimliği değil, yönlendirilmiş bir `openai/<model>` seçici kaydeder.",
   "models.active": "{active}/{total} görünür",
   "models.workspace.providers": "Sağlayıcılar",
   "models.workspace.allProviders": "Tüm sağlayıcılar",

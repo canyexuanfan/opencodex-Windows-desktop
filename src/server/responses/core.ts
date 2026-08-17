@@ -91,6 +91,8 @@ import {
   CodexPoolAuthenticationError,
   CodexThreadAffinityExpiredError,
   headersForCodexAuthContext,
+  materializeCodexUpstreamAuth,
+  CodexMainSubstitutionUnavailableError,
   isCodexAuthContextUsable,
   resolveCodexAuthContext,
   codexProbeLeaseId,
@@ -114,9 +116,11 @@ import {
   prepareSameTarget429Wait,
 } from "../../lib/upstream-retry";
 import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "../auth-cors";
+import type { DataPlaneAdmission } from "../auth-cors";
 import { createTranslatorBudget, isTranslatorBudgetExceededError, type TranslatorBudget } from "../../lib/translator-budget";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
-import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
+import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
+import { providerContextCap } from "../../providers/context-cap";
 import { SERVICE_TIER_ADAPTERS, serviceTierSupportForModel } from "../../providers/service-tier";
 import {
   RequestPacingQueueOverloadError,
@@ -237,6 +241,13 @@ import {
 } from "../sse-payload-rewrite";
 import { restoreRoutedCustomCallsInJson } from "../../responses/custom-tool-compat";
 import { createRoutedCustomToolRestoreBlockRewrite } from "../responses-custom-tool-repair";
+import {
+  collectDeclaredWireToolNames,
+  createUndeclaredToolCallGuardBlockRewrite,
+  undeclaredToolCallMessage,
+  undeclaredToolCallName,
+  undeclaredToolCallNameInResponse,
+} from "../responses-undeclared-tool-guard";
 import { createGithubCopilotResponsesBlockRewrite } from "../github-copilot-responses-repair";
 import { responsesJsonToSseStream } from "../responses-json-events";
 import { guardTerminalEventStream } from "./terminal-guard";
@@ -457,6 +468,20 @@ type CodexPoolAccountRetryResult =
     authCtx: Extract<CodexAuthContext, { kind: "pool" | "main-pool" }>;
   };
 
+/**
+ * Workspace-denial evidence for a 403, read from the upstream body.
+ *
+ * #1789: a valid K12 credential gets 403 `codex_workspace_access_denied` on a routed prompt.
+ * Without this the account is quarantined for reauthentication, which cannot fix a workspace
+ * grant and loops forever. Fails closed: an unreadable body keeps the historical handling.
+ */
+async function codexDenialOutcomeMeta(response: Response): Promise<{ denial?: "workspace" | "entitlement" }> {
+  if (response.status !== 403) return {};
+  const { classifyCodexPreStreamRejection } = await import("../../codex/quota-rejection");
+  const rejection = await classifyCodexPreStreamRejection(response);
+  return rejection.denial ? { denial: rejection.denial } : {};
+}
+
 function codexQuotaOutcomeMeta(response: Response): {
   retryAfter: string | null;
   resetAt: string[];
@@ -521,7 +546,7 @@ async function retryCodexPoolOnAlternateAccount(
     return { kind: "no-alternate" };
   }
 
-  const quotaMeta = codexQuotaOutcomeMeta(firstResponse);
+  const quotaMeta = { ...codexQuotaOutcomeMeta(firstResponse), ...(await codexDenialOutcomeMeta(firstResponse)) };
   if (outcomeStatus === 429 || outcomeStatus === 402) {
     const { applyAccountQuotaFromUpstreamHeaders } = await import("../../codex/auth-api");
     applyAccountQuotaFromUpstreamHeaders(
@@ -734,6 +759,15 @@ export interface ConsumedComboFailure {
 
 export interface HandleResponsesOptions {
   turnAdmissionLease?: AdmissionLease;
+  /**
+   * How the caller proved data-plane admission (#1686).
+   *
+   * A bearer-presented admission secret is one of OUR OWN secrets, so a Direct turn must
+   * SUBSTITUTE the stored main credential rather than forward it. Without this fact at the
+   * decision point, Direct cannot tell an admission bearer from the user own ChatGPT bearer,
+   * which is why it refused the whole env_key flow instead of serving it.
+   */
+  admission?: DataPlaneAdmission;
   /** Called at most once after the complete client body is read and accepted for dispatch. */
   onRequestBodyRead?: () => void;
   forceEmptyResponseId?: boolean;
@@ -967,7 +1001,14 @@ async function resolveResponsesCodexAuth(
   options: HandleResponsesOptions,
 ): Promise<ResponsesAuthResolution> {
   try {
-    if (route.codexAccountMode === "direct") validateForwardAdmissionCredential(req.headers, config);
+    // #1686: a caller that proved admission with a BEARER presented one of our own secrets.
+    // Refusing it here is what made the codex-cli `env_key` contract unusable against Direct.
+    // Admitting it is only safe because the stored main credential is substituted below, so
+    // the admission secret still never leaves this process.
+    const substituteMainCredential = options.admission?.source === "bearer";
+    if (route.codexAccountMode === "direct" && !substituteMainCredential) {
+      validateForwardAdmissionCredential(req.headers, config);
+    }
     let authCtx: CodexAuthContext;
     if (route.codexAccountMode) {
       authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode, {
@@ -990,7 +1031,7 @@ async function resolveResponsesCodexAuth(
     return {
       ok: true,
       authCtx,
-      headers: headersForCodexAuthContext(req.headers, authCtx),
+      headers: materializeCodexUpstreamAuth(req.headers, authCtx, { substituteMainCredential }),
     };
   } catch (err) {
     if (err instanceof CodexAccountCooldownError) {
@@ -1023,6 +1064,13 @@ async function resolveResponsesCodexAuth(
     }
     if (err instanceof ForwardAdmissionCredentialError) {
       return { ok: false, response: formatErrorResponse(401, "authentication_error", err.message) };
+    }
+    if (err instanceof CodexMainSubstitutionUnavailableError) {
+      // Fail BEFORE any upstream I/O. The alternative is forwarding the admission secret.
+      return {
+        ok: false,
+        response: formatErrorResponse(401, "authentication_error", "No usable Codex main credential to serve this request"),
+      };
     }
     throw err;
   }
@@ -1946,11 +1994,16 @@ async function handleResponsesInner(
   // refusing the turn that shrinks the context would deadlock the client against the very
   // limit this gate reports — it would be told to compact and then denied the compaction.
   if (parsed._compactionRequest !== true) {
-    const inputAdmission = checkInputAdmission(parsed, route.provider, route.providerName, parsed.modelId);
+    const inputAdmission = checkInputAdmission(parsed, route.provider, route.providerName, parsed.modelId, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID));
     if (!inputAdmission.admitted) {
+      // #1524: this is a LOCAL preflight refusal, not an upstream verdict. A policy or combo
+      // fallback must be able to skip this candidate and try one whose context window fits,
+      // instead of treating the first incompatible candidate as the end of the chain. The
+      // distinct code is what lets the fallback layer tell the two apart -- an upstream
+      // `context_length_exceeded` still stops, because retrying it elsewhere is guesswork.
       return formatErrorResponse(
         413,
-        "request_too_large",
+        "input_admission_refused",
         `Estimated input (~${inputAdmission.estimatedTokens} tokens) is far past the context window `
           + `of ${parsed.modelId} (${inputAdmission.ceiling} tokens). Start a new session or choose a `
           + `model with a larger context window.`,
@@ -2280,6 +2333,69 @@ async function handleResponsesInner(
         if (toolBridgeMaps.freeformToolNames.has(name)) routedCustomToolNames.add(name);
       }
     }
+    // #1700: the bridged paths refuse a call to a tool the request never declared
+    // (`declaredToolNames`, src/bridge.ts). The passthrough had no equivalent, so a routed
+    // provider's top-level `apply_patch` — which under Codex code mode exists only as a nested
+    // `tools.apply_patch(...)` helper inside `exec`, never as a wire tool — reached Codex as a
+    // call it cannot execute, and the turn showed a bare `aborted` with the file untouched.
+    // Forward auth is the canonical ChatGPT backend speaking Codex's own protocol rather than a
+    // routed provider, so it keeps passing through unguarded, as it does for the rewrites above.
+    // The guard needs a catalog to compare against, so it stands down when the request carries
+    // none. That is not the same claim as "no tools means no tool may be called": a passthrough
+    // request can legitimately omit `tools` entirely and still receive a tool call the client
+    // understands — `tests/github-copilot-stream-contract.test.ts` sends `{model, input, stream}`
+    // with no tools and Copilot answers with a `custom_tool_call` for `apply_patch`. Policing an
+    // empty catalog truncates that turn. An unreadable body lands here too, since it yields no
+    // names either.
+    const outboundRequestBody = (() => {
+      try {
+        const body = JSON.parse(request.body) as unknown;
+        return body && typeof body === "object" && !Array.isArray(body) ? body : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+    const declaredWireToolNames = collectDeclaredWireToolNames(outboundRequestBody);
+    // Union with the caller's own catalog, because the outbound body is not always a complete
+    // record of it: hosted-tool preference REPLACES a client tool with its hosted form, so a
+    // request declaring `image_gen.generate` ships `{type:"image_generation"}` upstream and gets
+    // the client's name back. Widening only ever makes the guard fire less; a name declared in
+    // neither place — #1700's `apply_patch` — is still refused.
+    for (const name of toolBridgeMaps.declaredToolNames) declaredWireToolNames.add(name);
+    const undeclaredToolGuardActive = declaredWireToolNames.size > 0
+      && route.provider.authMode !== "forward";
+    // A refused turn must not seed `previous_response_id` replay. The inspection branch reads the
+    // untouched upstream stream, so it can still observe a `response.completed` the client never
+    // received; checking the payload itself rather than a flag shared with the client relay keeps
+    // this free of tee ordering races.
+    //
+    // Checking only the terminal snapshot is not enough. An upstream can announce the undeclared
+    // call in `response.output_item.added`, which trips the client guard, and then close with a
+    // `response.completed` whose `output` is empty. The client gets `response.failed`, the terminal
+    // check sees nothing undeclared, and the refused turn enters continuation state anyway. So the
+    // rejection is sticky for the whole turn, set from every parsed payload on the inspection side.
+    let inspectionSawUndeclaredTool = false;
+    const noteInspectedPayload = (payload: unknown) => {
+      // Gated on the same flag as the guard itself: with no readable catalog (or a forward-auth
+      // provider) every name looks undeclared, and flipping this would stop recording continuation
+      // state for exactly the passthrough traffic the guard deliberately stands down for.
+      if (!undeclaredToolGuardActive || inspectionSawUndeclaredTool) return;
+      if (undeclaredToolCallName(payload, declaredWireToolNames) !== undefined) {
+        inspectionSawUndeclaredTool = true;
+      }
+    };
+    const rememberPassthroughResponseChecked = rememberPassthroughResponse
+      ? (response: { id?: unknown; output?: unknown; status?: unknown }) => {
+        if (inspectionSawUndeclaredTool) return;
+        if (
+          undeclaredToolGuardActive
+          && undeclaredToolCallNameInResponse(response, declaredWireToolNames) !== undefined
+        ) {
+          return;
+        }
+        rememberPassthroughResponse(response);
+      }
+      : undefined;
     recordAdapterReasoning(logCtx, request);
     const actualHostKey = upstreamHostHealthKey(
       route.providerName,
@@ -2536,7 +2652,7 @@ async function handleResponsesInner(
    if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
       // primary was the 5h window; it now carries weekly data for GPT plans.
       // Prefer primary when present, fall back to secondary for compatibility.
-      const quotaMeta = codexQuotaOutcomeMeta(upstreamResponse);
+      const quotaMeta = { ...codexQuotaOutcomeMeta(upstreamResponse), ...(await codexDenialOutcomeMeta(upstreamResponse)) };
       const { applyAccountQuotaFromUpstreamHeaders } = await import("../../codex/auth-api");
       applyAccountQuotaFromUpstreamHeaders(
         authCtx.accountId,
@@ -2667,13 +2783,6 @@ async function handleResponsesInner(
       // injection at the block level, after payload rewrites. Defaults come
       // from the finalized OUTBOUND body — the normalized internal tool shapes
       // are not the Responses wire shapes the snapshot must mirror.
-      const snapshotDefaultsRequest = (() => {
-        try {
-          return JSON.parse(request.body) as unknown;
-        } catch {
-          return undefined;
-        }
-      })();
       const blockRewrites = [
         payloadRewrites.length > 0
           ? payloadRewriteAsBlockRewrite(composeSsePayloadRewrites(...payloadRewrites))
@@ -2685,7 +2794,12 @@ async function handleResponsesInner(
           ? createGithubCopilotResponsesBlockRewrite(translatorBudget)
           : undefined,
         snapshotRepairEnabled
-          ? createResponsesSnapshotBlockRewrite(snapshotDefaultsRequest, translatorBudget)
+          ? createResponsesSnapshotBlockRewrite(outboundRequestBody, translatorBudget)
+          : undefined,
+        // Last: every rewrite above can still rename or reshape a call item, so the guard must
+        // compare the names the client will actually receive against the declared catalog.
+        undeclaredToolGuardActive
+          ? createUndeclaredToolCallGuardBlockRewrite(declaredWireToolNames)
           : undefined,
       ].filter((rewrite): rewrite is NonNullable<typeof rewrite> => rewrite !== undefined);
       const clientBlockRewrite = blockRewrites.length > 0
@@ -2737,7 +2851,8 @@ async function handleResponsesInner(
         const inspector = createSseInspector({
           onTerminal: reportNativeTerminal,
           logCtx,
-          onCompletedResponse: rememberPassthroughResponse,
+          onCompletedResponse: rememberPassthroughResponseChecked,
+          onParsedPayload: noteInspectedPayload,
           onFirstOutput: options.onFirstOutput,
           pinCompletedResponseIdToFirstSeen: githubCopilotRepairEnabled,
         });
@@ -2788,6 +2903,7 @@ async function handleResponsesInner(
         drainBounds: { ms: 15_000, bytes: 32 * 1024 * 1024 },
         upstream,
         pinCompletedResponseIdToFirstSeen: githubCopilotRepairEnabled,
+        onParsedPayload: noteInspectedPayload,
       };
       if (recordTerminalOutcomes) {
         // A real terminal was parsed from the (teed) inspection stream — record it as the outcome
@@ -2821,7 +2937,7 @@ async function handleResponsesInner(
           () => unregisterTurn(turnAc),
           logCtx,
           () => options.onNativePassthroughCancel?.(),
-          rememberPassthroughResponse,
+          rememberPassthroughResponseChecked,
           options.onFirstOutput,
           inspectionConsumerOptions,
         );
@@ -2831,7 +2947,7 @@ async function handleResponsesInner(
           logCtx,
           turnAc.signal,
           () => unregisterTurn(turnAc),
-          rememberPassthroughResponse,
+          rememberPassthroughResponseChecked,
           options.onFirstOutput,
           inspectionConsumerOptions,
         );
@@ -2865,30 +2981,41 @@ async function handleResponsesInner(
       }
       const text = bounded.text;
       inspectResponseLogJson(logCtx, text);
-      if (rememberPassthroughResponse) {
-        try {
-          rememberPassthroughResponse(JSON.parse(text) as { id?: unknown; output?: unknown; status?: unknown });
-        } catch { /* non-JSON despite content-type; recording is best-effort */ }
-      }
       const clientJson = (() => {
         const restored = restoreRoutedCustomCallsInJson(
           restoreImageGenCallsInJson(text, imageGenCallAliases),
           routedCustomToolNames,
         );
-        const repaired = (() => {
-          if (!hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair)) return restored;
-          let outbound: unknown;
-          try {
-            outbound = JSON.parse(request.body);
-          } catch {
-            outbound = undefined;
-          }
-          return repairResponsesSnapshotJson(restored, outbound);
-        })();
+        const repaired = hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair)
+          ? repairResponsesSnapshotJson(restored, outboundRequestBody)
+          : restored;
         return parsed._responseModelId !== undefined && parsed._responseModelId !== parsed.modelId
           ? rewriteResponsesModelJson(repaired, parsed._responseModelId)
           : repaired;
       })();
+      // #1700: same fail-closed policy as the SSE relay above. Both the plain JSON answer and
+      // the reframed-SSE branch below are built from this body, so one check covers them. This
+      // runs BEFORE the continuation cache write below: a refused turn must not become state a
+      // later `previous_response_id` replay can expand from.
+      if (undeclaredToolGuardActive) {
+        const undeclared = (() => {
+          try {
+            return undeclaredToolCallNameInResponse(JSON.parse(clientJson), declaredWireToolNames);
+          } catch {
+            return undefined;
+          }
+        })();
+        if (undeclared !== undefined) {
+          return formatErrorResponse(502, "upstream_error", undeclaredToolCallMessage(undeclared));
+        }
+      }
+      if (rememberPassthroughResponseChecked) {
+        try {
+          rememberPassthroughResponseChecked(
+            JSON.parse(text) as { id?: unknown; output?: unknown; status?: unknown },
+          );
+        } catch { /* non-JSON despite content-type; recording is best-effort */ }
+      }
       // #875: the transport-neutral reliability policy forced a bounded JSON
       // upstream for a client that asked for SSE. Reframe the completed JSON
       // as the canonical terminal SSE sequence (created → output_item.done →

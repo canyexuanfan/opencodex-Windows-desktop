@@ -482,7 +482,7 @@ export const de: Record<TKey, string> = {
   "models.subtitle.routing": "Policy-Profile, Dry-Run-Auswertung und quellenbasierte Routing-Analysen.",
   "models.subtitle": "Steuere, welche Modelle Codex sieht — natives GPT-Passthrough und geroutete Anbieter, nach Anbieter gruppiert (Kopfzeile zum Einklappen anklicken). Ausgeblendete Modelle fehlen in Katalog und Auswahl, bleiben aber per genauer ID aufrufbar. Änderungen gelten bei der nächsten Codex-Runde — opencodex invalidiert Codex 5-Minuten-Modell-Cache, kein Neustart nötig.",
   "models.nativeGroupLabel": "OpenAI nativ",
-  "models.nativeHint": "Passthrough-Modelle verwenden die unter Anbieter gewählte Pool- oder Direkt-Option. Ausblenden entfernt sie aus der Codex-Auswahl (Katalogeintrag bleibt, Reaktivierung stellt exakt wieder her).",
+  "models.nativeHint": "Passthrough-Modelle verwenden die unter Anbieter gewählte Pool- oder Direkt-Option. Ausblenden entfernt sie aus der Codex-Auswahl (Katalogeintrag bleibt, Reaktivierung stellt exakt wieder her). Ein hier hinzugefügtes Modell wird als gerouteter `openai/<model>`-Selektor registriert, nicht als neue reine Passthrough-ID.",
   "models.active": "{active}/{total} sichtbar",
   "models.workspace.providers": "Anbieter",
   "models.workspace.allProviders": "Alle Anbieter",

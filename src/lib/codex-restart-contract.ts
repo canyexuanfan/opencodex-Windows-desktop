@@ -10,7 +10,7 @@
  * Scalar-only payload. A command line can contain a home directory and a username,
  * and an OS error message often embeds a path, so neither crosses this boundary.
  *
- * Design and audit history: `devlog/_plan/260815_gui_codex_restart/`.
+ * Design and audit history: `devlog/_fin/260815_gui_codex_restart/`.
  */
 
 export const CODEX_RESTART_METHOD = "POST";

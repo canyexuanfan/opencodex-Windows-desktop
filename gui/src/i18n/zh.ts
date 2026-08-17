@@ -490,7 +490,7 @@ export const zh: Record<TKey, string> = {
   "models.subtitle.routing": "策略配置、dry-run 评估，以及有据可查的路由分析。",
   "models.subtitle": "开关 Codex 可见的模型 — 原生 GPT passthrough 与已路由模型按提供方分组（点击标题可折叠）。隐藏的模型不会出现在目录和模型选择器中，但仍可按精确 id 直接调用。更改在下一个 Codex 回合生效 — opencodex 会使 Codex 的 5 分钟模型缓存失效，因此无需重启。",
   "models.nativeGroupLabel": "OpenAI 原生",
-  "models.nativeHint": "Passthrough 模型使用在提供方页面选择的账户池或直连选项。关闭后会从 Codex 选择器中隐藏（目录条目保留，重新开启即可完整恢复）。",
+  "models.nativeHint": "Passthrough 模型使用在提供方页面选择的账户池或直连选项。关闭后会从 Codex 选择器中隐藏（目录条目保留，重新开启即可完整恢复）。 在此添加模型将注册为路由的 `openai/<model>` 选择器，而不是新的裸 passthrough id。",
   "models.active": "{active}/{total} 可见",
   "models.workspace.providers": "提供方",
   "models.workspace.allProviders": "所有提供方",

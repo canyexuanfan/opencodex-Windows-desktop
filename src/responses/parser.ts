@@ -9,10 +9,12 @@ import type {
   OcxThinkingContent,
   OcxTool,
   OcxToolCall,
+  OcxReasoningReplayScopeRef,
 } from "../types";
 import { namespacedToolName } from "../types";
 import { responsesRequestSchema } from "./schema";
 import { providerMetadataFromResponsesFunctionCall } from "./provider-opaque-metadata";
+import { lookupReplayThoughtSignature } from "./thought-signature-replay";
 import { compactionItemToText } from "./compaction";
 import { previousResponseReplayPrefixLength } from "./state";
 import { decodeReasoningEnvelope } from "./reasoning-envelope";
@@ -21,6 +23,21 @@ import { extractHostedImageGeneration, IMAGE_GEN_TOOL_NAME } from "../images/syn
 
 function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Wrap a remembered proxy-side signature as provider metadata for a replayed tool call.
+ *
+ * The scope is REQUIRED for a hit. `parseRequest` runs before the route and account are
+ * chosen, so a caller that has not yet bound a replay scope gets nothing rather than a
+ * signature belonging to some other thread that happened to reuse the same `call_id`.
+ */
+function replayThoughtSignatureMetadata(
+  callId: string,
+  scope: OcxReasoningReplayScopeRef | undefined,
+): { google: { thoughtSignature: string } } | undefined {
+  const signature = lookupReplayThoughtSignature(callId, scope);
+  return signature ? { google: { thoughtSignature: signature } } : undefined;
 }
 
 type InputBlock =
@@ -165,13 +182,17 @@ function buildTools(tools: unknown[] | undefined): OcxTool[] | undefined {
       }
     }
     else if (t.type === "custom" && typeof t.name === "string") {
-      // Freeform custom tool (e.g. apply_patch). Chat models can't emit a lark grammar, so expose a
-      // function with a single string `input` carrying the raw tool body; the bridge relays the model's
-      // call back as a custom_tool_call (Codex's freeform handler rejects a function_call → fatal abort).
+      // Freeform custom tools are lowered to a single string `input` because chat models cannot
+      // emit Responses grammar payloads directly. Keep tool-specific input guidance scoped to the
+      // tool that owns it: leaking apply_patch syntax into `exec` or another freeform tool teaches
+      // routed models that the nested helper name is itself a callable top-level tool.
+      const inputDescription = t.name === "apply_patch"
+        ? "Raw tool input. For apply_patch, begin exactly with `*** Begin Patch` (no trailing `***`), then use its standard patch envelope."
+        : "Raw freeform input for this tool.";
       out.push({
         name: t.name,
         description: (t.description as string) ?? "",
-        parameters: { type: "object", properties: { input: { type: "string", description: "Raw tool input. For apply_patch, begin exactly with `*** Begin Patch` (no trailing `***`), then use its standard patch envelope." } }, required: ["input"] },
+        parameters: { type: "object", properties: { input: { type: "string", description: inputDescription } }, required: ["input"] },
         freeform: true,
       });
     }
@@ -294,7 +315,11 @@ function attachPendingReasoningToCallOwner(
 
 const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
-export function parseRequest(body: unknown): OcxParsedRequest {
+export function parseRequest(
+  body: unknown,
+  parseOptions?: { replayCacheScope?: OcxReasoningReplayScopeRef },
+): OcxParsedRequest {
+  const replayCacheScope = parseOptions?.replayCacheScope;
   const replayedInputPrefixLength = previousResponseReplayPrefixLength(body);
   const parsed = responsesRequestSchema.safeParse(body);
   if (!parsed.success) {
@@ -522,8 +547,12 @@ export function parseRequest(body: unknown): OcxParsedRequest {
         };
         // Provider-opaque metadata (e.g. a Gemini thought signature) travels with the call so a
         // history-replayed or previous_response_id turn rebuilds the same signed part instead of
-        // depending on the same-process replay cache (issue #1735).
-        const providerMetadata = providerMetadataFromResponsesFunctionCall(call);
+        // depending on the same-process replay cache (issue #1735). Real clients do not echo
+        // extra_content on replay, so fall back to the proxy-side store keyed by call_id.
+        const providerMetadata = providerMetadataFromResponsesFunctionCall(call)
+          ?? (typeof call.call_id === "string"
+            ? replayThoughtSignatureMetadata(call.call_id, replayCacheScope)
+            : undefined);
         if (providerMetadata) toolCall.providerMetadata = providerMetadata;
         assistantHolderWithReasoning().content.push(toolCall);
         continue;
@@ -531,10 +560,12 @@ export function parseRequest(body: unknown): OcxParsedRequest {
 
       if (effectiveType === "custom_tool_call") {
         const call = item as { id?: string; call_id: string; name: string; input: string };
+        const remembered = typeof call.call_id === "string" ? replayThoughtSignatureMetadata(call.call_id, replayCacheScope) : undefined;
         const toolCall: OcxToolCall = {
           type: "toolCall", id: call.call_id, name: call.name,
           arguments: { input: call.input ?? "" },
           customWireName: call.name,
+          ...(remembered ? { providerMetadata: remembered } : {}),
         };
         assistantHolderWithReasoning().content.push(toolCall);
         continue;
@@ -547,9 +578,11 @@ export function parseRequest(body: unknown): OcxParsedRequest {
         const callId = call.call_id ?? call.id;
         if (callId) {
           const command = Array.isArray(call.action?.command) ? call.action.command : [];
+          const remembered = replayThoughtSignatureMetadata(callId, replayCacheScope);
           assistantHolderWithReasoning().content.push({
             type: "toolCall", id: callId, name: "shell",
             arguments: command.length > 0 ? { command } : {},
+            ...(remembered ? { providerMetadata: remembered } : {}),
           });
         }
         continue;
@@ -568,9 +601,11 @@ export function parseRequest(body: unknown): OcxParsedRequest {
         // history stays complete (otherwise the model re-issues tool_search forever).
         const call = item as { id?: string; call_id?: string; arguments?: unknown };
         const callId = call.call_id ?? call.id ?? "";
+        const remembered = callId ? replayThoughtSignatureMetadata(callId, replayCacheScope) : undefined;
         assistantHolderWithReasoning().content.push({
           type: "toolCall", id: callId, name: "tool_search",
           arguments: isObj(call.arguments) ? call.arguments : {},
+          ...(remembered ? { providerMetadata: remembered } : {}),
         });
         continue;
       }

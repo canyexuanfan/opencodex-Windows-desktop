@@ -244,6 +244,41 @@ afterEach(async () => {
 });
 
 describe("WP13 composed toggle acceptance", () => {
+  /** RED: read the server's startup config snapshot in the /api/sync route; a hand edit made after start is lost. */
+  test("#1802: /api/sync applies the on-disk config, not the server's startup snapshot", async () => {
+    const fx = fixture();
+    fx.writeConfig({ clientIntegrations: { codex: false } });
+    const server = await fx.start();
+    try {
+      // The server is now holding a config object from startup. Edit the file out of band,
+      // exactly as a user editing config.json by hand would, so disk is strictly newer.
+      const configPath = join(fx.ocx, "config.json");
+      const onDisk = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, any>;
+      onDisk.providers["hand-edited"] = {
+        adapter: "openai-chat",
+        baseUrl: "http://127.0.0.1:2/v1",
+        apiKey: "hand-edited-key",
+        allowPrivateNetwork: true,
+        liveModels: false,
+        models: ["hand-edited-model"],
+      };
+      onDisk.modelCosts = { "fixture/fixture-model": { input: 7, output: 11 } };
+      writeFileSync(configPath, JSON.stringify(onDisk, null, 2));
+
+      const sync = await fx.request(server.runtime, "/api/sync", { method: "POST" });
+      expect(sync.status).toBe(200);
+
+      // Assert against DISK, not the response body: the failure this pins is the route
+      // persisting a stale snapshot back over the file.
+      const after = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, any>;
+      expect(after.providers["hand-edited"]).toMatchObject({ apiKey: "hand-edited-key" });
+      expect(after.modelCosts).toEqual({ "fixture/fixture-model": { input: 7, output: 11 } });
+      expect(Object.keys(after.providers)).toEqual(expect.arrayContaining(["fixture", "hand-edited"]));
+    } finally {
+      await fx.stop(server);
+    }
+  }, 45_000);
+
   /** RED: remove `shouldSyncCodexOnStart` or the under-lock desired-state read; an OFF row writes native bytes. */
   test("A-reduced: real CLI and HTTP entry points preserve an OFF Codex home", async () => {
     const fx = fixture();

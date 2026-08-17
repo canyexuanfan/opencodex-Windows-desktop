@@ -390,7 +390,7 @@ GPT-5.6 Sol/Terra/Luna заранее внесены в резервные сп�
 
 | Маршрут Codex | Предзаданные id моделей | Контекст, видимый Codex |
 | --- | --- | --- |
-| Вход Codex (Pool или Direct) | `gpt-5.6-*` | 372,000 |
+| Вход Codex (Pool или Direct) | `gpt-5.6-*` | 1,050,000 |
 | OpenAI (API key) | `openai-apikey/gpt-5.6-*` плюс `*-pro` | 1,050,000 (макс. вход 922,000) |
 | OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 1,050,000 |
 | Cursor | `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, `cursor/gpt-5.6-luna` | 1,000,000 |

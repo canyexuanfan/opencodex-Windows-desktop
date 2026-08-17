@@ -60,7 +60,9 @@ describe("invalidateCodexModelsCache write gate (#476 / #518)", () => {
     }, null, 2) + "\n");
     writeFileSync(join(codexHome, "models_cache.json"), JSON.stringify({
       models: [{
-        slug: "gpt-daybreak-blue-latest",
+        // gpt-daybreak-blue-latest is a KNOWN global native now (devlog 260816_.../011),
+        // so it can no longer stand in for an unknown observed id.
+        slug: "gpt-future-unlisted",
         visibility: "list",
         supported_in_api: true,
         shell_type: "shell_command",
@@ -75,7 +77,7 @@ describe("invalidateCodexModelsCache write gate (#476 / #518)", () => {
     const cache = JSON.parse(readFileSync(join(codexHome, "models_cache.json"), "utf8")) as {
       models: Array<Record<string, unknown>>;
     };
-    expect(cache.models.find(model => model.slug === "gpt-daybreak-blue-latest")).toMatchObject({
+    expect(cache.models.find(model => model.slug === "gpt-future-unlisted")).toMatchObject({
       visibility: "hide",
       opencodex_account_observed_native: true,
     });

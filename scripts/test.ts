@@ -16,6 +16,17 @@ export function createIsolatedTestEnvironment(
   const codexHome = join(root, ".codex");
   mkdirSync(opencodexHome, { recursive: true });
   mkdirSync(codexHome, { recursive: true });
+  if (process.platform === "win32") {
+    // A Windows sandbox has to look like a real profile, because the known-folder APIs
+    // resolve relative to USERPROFILE and .NET returns an EMPTY STRING — not an error —
+    // when the folder it computes does not exist. `resolveWindowsRuntimeRoot` asks
+    // PowerShell for `GetFolderPath(LocalApplicationData)`, so without these directories
+    // every Codex coordinator lookup refuses with "Windows effective-account lookup
+    // returned an empty value" and each refusal surfaces as an unrelated assertion in
+    // whichever suite happened to touch a Codex home.
+    mkdirSync(join(root, "AppData", "Local"), { recursive: true });
+    mkdirSync(join(root, "AppData", "Roaming"), { recursive: true });
+  }
 
   return {
     root,

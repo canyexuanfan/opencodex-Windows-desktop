@@ -13,7 +13,7 @@
  * therefore completes before `startServer` returns, inside the same synchronous turn as
  * `Bun.serve`, so no request can observe an unregistered slot.
  *
- * See devlog/_plan/260814_lab_core_decoupling/080_activation_is_synchronous.md
+ * See devlog/_fin/260814_lab_core_decoupling/080_activation_is_synchronous.md
  *
  * Startup degrades, explicit operator action reports. This asymmetry is deliberate: an
  * invalid automation config disables automation with a warning here, but the management

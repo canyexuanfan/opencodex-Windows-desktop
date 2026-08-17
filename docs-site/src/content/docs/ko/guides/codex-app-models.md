@@ -35,7 +35,7 @@ allowlist에는 추가되지 않습니다. 이와 별개로 canonical Codex 로�
 ```
 
 정확히 이 provider, endpoint, model id 조합만 고정된 Sol capability snapshot을 상속합니다. 컨텍스트는
-372,000, 자동 압축점은 334,800이며 native reasoning ladder와 Codex tool metadata도 보존됩니다. 요청의
+1,050,000, 자동 압축점은 922,000이며 native reasoning ladder와 Codex tool metadata도 보존됩니다. 요청의
 wire id는 계속 `gpt-daybreak-blue-latest`이고 Sol로 다시 쓰지 않으며 bare 행이나 계정 사용 권한을 만들지
 않습니다. 별도 과금 경로인 `openai-apikey/daybreak-blue-latest`의 1,050,000 / 922,000 한도는 Codex 로그인
 행으로 복사되지 않습니다.
@@ -59,7 +59,7 @@ Pro 가상 id, `daybreak-red-latest`, `daybreak-blue-latest`까지 정확히 열
 gpt-5.6-sol                         # Pool 또는 Direct를 통한 bare Codex 로그인 경로
 <selector>/gpt-5.6-sol              # 해당 selector에 매핑된 저장된 Codex 계정
 openai-apikey/gpt-5.6-sol           # API key
-openai/gpt-daybreak-blue-latest     # 명시적 Codex-forward custom 행 (372,000)
+openai/gpt-daybreak-blue-latest     # 명시적 Codex-forward custom 행 (1,050,000)
 <selector>/gpt-daybreak-blue-latest # 사용 가능할 때 관측되는 계정 한정 native id
 openai-apikey/daybreak-blue-latest  # 별도 API-key 경로 (1,050,000 / 922,000)
 ```
@@ -105,9 +105,9 @@ GPT-5.6에만 사용합니다. 오래된 템플릿으로 근사하지 않고 모
 
 | 경로 | 선택기 id와 카탈로그 메타데이터 |
 | --- | --- |
-| Codex 로그인(계정 한정 선택기 행 비활성) | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` 같은 bare native id를 표시하고 `codexAccountMode`에 따라 Pool 또는 Direct를 사용합니다. GPT-5.6 행의 카탈로그 창은 372,000토큰입니다. |
+| Codex 로그인(계정 한정 선택기 행 비활성) | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` 같은 bare native id를 표시하고 `codexAccountMode`에 따라 Pool 또는 Direct를 사용합니다. GPT-5.6 행의 카탈로그 창은 1,050,000토큰입니다. |
 | Codex 로그인(계정 한정 선택기 행 활성, 유효한 selector 있음) | 유효한 selector와 지원되는 native model의 각 조합마다 `<selector>/<native-openai-model>` 행을 표시합니다. 각 행은 매핑된 계정만 사용하며 bare native 행은 선택기에서 숨깁니다. Native metadata와 context window는 보존됩니다. |
-| Codex 로그인(명시적 Daybreak forward 행) | canonical `openai` provider에 정확한 `customModels` 항목이 있을 때만 `openai/gpt-daybreak-blue-latest`를 표시합니다. Daybreak wire id를 유지하고 고정된 Sol capability snapshot(컨텍스트 372,000; 자동 압축점 334,800)을 사용합니다. |
+| Codex 로그인(명시적 Daybreak forward 행) | canonical `openai` provider에 정확한 `customModels` 항목이 있을 때만 `openai/gpt-daybreak-blue-latest`를 표시합니다. Daybreak wire id를 유지하고 고정된 Sol capability snapshot(컨텍스트 1,050,000; 자동 압축점 922,000)을 사용합니다. |
 | OpenAI(API key) | 정확히 열 개의 네임스페이스 행: `gpt-5.5`, `gpt-5.6`, Sol/Terra/Luna, 세 개의 `*-pro` 가상 id, 두 Daybreak 별칭 (모두 컨텍스트 1,050,000; 최대 입력 922,000) |
 | OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` (1,050,000) |
 | Cursor | 정적 폴백에는 `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, `cursor/gpt-5.6-luna` (1,000,000)와 Grok 4.5/4.6의 일반·Fast 항목(500,000)이 들어갑니다. 4.6은 `xhigh`도 노출하며, 실시간 계정 탐색이 어떤 항목을 계속 보일지 정합니다. |

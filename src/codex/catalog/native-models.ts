@@ -12,7 +12,19 @@ const NATIVE_OPENAI_CAPABILITY_SOURCES: Readonly<Record<string, string>> = Objec
   [NATIVE_DAYBREAK_BLUE_MODEL]: "gpt-5.6-sol",
 });
 
-/** Account-scoped native ids that may inherit metadata but never enter the bare allowlist. */
+/**
+ * Native ids whose capability metadata is inherited from another pinned native row.
+ *
+ * Membership here is about METADATA INHERITANCE only, and is independent of whether the
+ * slug is also globally allowlisted in `NATIVE_OPENAI_MODELS`. `gpt-daybreak-blue-latest`
+ * is now in BOTH: it inherits Sol's capability shape AND ships as a globally supported
+ * native row (owner decision, devlog 260816_codexrs_multiagent_v2_and_history_perf/011).
+ *
+ * The maps that consume the union of these two lists (`PINNED_NATIVE_CAPABILITY_ENTRIES`,
+ * `UPSTREAM_NATIVE_ENTRIES`) are keyed by slug, so an overlapping id collapses to one
+ * entry. Catalog row generation iterates `NATIVE_OPENAI_MODELS` alone, so it still emits
+ * exactly one bare row and one row per account selector.
+ */
 export const NATIVE_OPENAI_CAPABILITY_ALIAS_MODELS = Object.freeze(
   Object.keys(NATIVE_OPENAI_CAPABILITY_SOURCES),
 );
@@ -25,10 +37,28 @@ export function nativeOpenAiCapabilitySourceSlug(slug: string): string {
   return NATIVE_OPENAI_CAPABILITY_SOURCES[slug] ?? slug;
 }
 
-/** Native OpenAI model ids that this release can route and restore with authoritative metadata. */
+/**
+ * Native OpenAI model ids that this release can route and restore with authoritative metadata.
+ *
+ * `gpt-daybreak-blue-latest` is entitlement-gated upstream: it is absent from codex-rs's
+ * bundled catalog and reaches a client only through an authenticated `/models` response.
+ * It is listed here by explicit owner decision so the row exists without waiting for an
+ * observation, because opencodex injects `model_catalog_json` and codex-rs therefore builds
+ * a `StaticModelsManager` whose refresh is a no-op — an entitled account had no way to
+ * discover it on a clean install.
+ *
+ * Accepted tradeoff: an UNENTITLED account also sees the row. Catalog sync still succeeds;
+ * selecting the model reaches the canonical OpenAI provider and the backend answers 400
+ * "model not supported for this account", which is relayed (a bare pooled route may first
+ * retry one alternate account on that exact body; a selector-qualified route is fixed and
+ * relays immediately). `disabledModels` hides the row but is NOT a runtime routing denial.
+ *
+ * Devlog: 260816_codexrs_multiagent_v2_and_history_perf/011 §4-bis.
+ */
 export const NATIVE_OPENAI_MODELS = [
   "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark",
   "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+  NATIVE_DAYBREAK_BLUE_MODEL,
 ];
 
 export const SUPPORTED_NATIVE_OPENAI_SLUGS = new Set(NATIVE_OPENAI_MODELS);

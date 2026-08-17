@@ -12,6 +12,8 @@ import { formatNamespacedModelId, formatProviderDisplayName, providerDisplaySlug
 import { readJsonIfOk, readJsonOrThrow } from "../fetch-json";
 import { readSessionListCache, writeSessionListCache } from "../session-list-cache";
 import { setClientResourceData } from "../client-resource";
+import { createBoundedFetch } from "../bounded-fetch";
+import { startVisibilityPoll } from "../visibility-poll";
 import { useDataSurface } from "../data-surface";
 import { DataSurfaceSkeleton } from "../components/data-surface";
 import ErrorBoundary from "../components/ErrorBoundary";
@@ -47,6 +49,8 @@ import {
   collectDisabledNamespaced,
   CUSTOM_OPTION,
   fmtK,
+  NATIVE_CAP_OPTIONS,
+  NATIVE_CAP_OPTION_SET,
   PAGE,
   readCollapsedProviders,
   THREAD_OPTION_SET,
@@ -97,7 +101,7 @@ function parseContextWindowDraft(raw: string): number | null | undefined {
 }
 
 export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string; restartEpoch?: number }) {
-  // Codex app-server staleness (devlog/_plan/260815_gui_codex_restart). Named
+  // Codex app-server staleness (devlog/_fin/260815_gui_codex_restart). Named
   // appServerState, not catalogState: this file already binds that name to the
   // model-catalog resource state, which is an unrelated concept. (Spelling the
   // catalog route here would register a phantom endpoint with the CLI parity
@@ -284,18 +288,21 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
   }, [models, shadowCall?.model, shadowModelOptions]);
 
   const loadShadowCall = useCallback(async () => {
+    const bounded = createBoundedFetch(15_000);
     try {
-      const r = await fetch(`${apiBase}/api/shadow-call-settings`);
+      const r = await fetch(`${apiBase}/api/shadow-call-settings`, { signal: bounded.signal });
       const data = await readJsonIfOk<ShadowCallData>(r);
       if (data) setShadowCall(data);
     } catch { /* old server / network: keep the section disabled */ }
+    finally { bounded.clear(); }
   }, [apiBase]);
 
   const loadV2 = useCallback(async () => {
     // Never let a toggle in flight be clobbered by the poll (same single-flight rule as models).
     if (v2BusyRef.current) return;
+    const bounded = createBoundedFetch(15_000);
     try {
-      const r = await fetch(`${apiBase}/api/v2`);
+      const r = await fetch(`${apiBase}/api/v2`, { signal: bounded.signal });
       if (!(r.headers.get("content-type") ?? "").includes("application/json")) { setV2(null); return; }
       const data = await readJsonIfOk<V2Status>(r);
       if (!data || typeof data.enabled !== "boolean") { setV2(null); return; }
@@ -309,6 +316,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
     } catch {
       setV2(null); // old server / network: hide the section instead of guessing
     } finally {
+      bounded.clear();
       setV2Loading(false);
     }
   }, [apiBase]);
@@ -376,7 +384,9 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
     },
     // Gated on the catalog tab: a 10-second poll that keeps running while the user
     // reads Combos or Routing is exactly the hidden work this workspace avoids.
-    { isEmpty: () => false, pollMs: 10_000, initialData: cached ?? undefined, enabled: catalogActive },
+    // Live model discovery is slow; the catalog gets a raised deadline so a slow
+    // response is never misread as a hung one.
+    { isEmpty: () => false, pollMs: 10_000, initialData: cached ?? undefined, enabled: catalogActive, deadlineMs: 60_000 },
   );
   const catalogState = catalogResource.state;
 
@@ -410,12 +420,13 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
       void loadShadowCall();
       void loadV2();
     }, 0);
-    const timer = window.setInterval(() => {
+    // Hidden tab: no timer, no /api/v2 traffic; the make-up tick refreshes on return.
+    const stop = startVisibilityPoll(() => {
       if (!v2BusyRef.current) void loadV2();
-    }, 10000);
+    }, 10_000);
     return () => {
       window.clearTimeout(timeout);
-      window.clearInterval(timer);
+      stop();
     };
   }, [catalogActive, loadShadowCall, loadV2]);
 
@@ -991,7 +1002,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
   const selectedModelMap = selectedModels ?? {};
 
   const renderGroup = (group: ProviderModelGroup<ModelRow>) => {
-    const { provider, rows, native, liveModels, discovery } = group;
+    const { provider, rows, nativeProviderGroup, liveModels, discovery } = group;
     const isCollapsed = collapsed.has(provider);
     // Final visibility, not just the disable flag: a model is visible to Codex only when the
     // provider allowlist admits it AND it is not disabled. Reading `disabled` alone made the
@@ -1006,7 +1017,20 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
     const activeCount = rows.filter(isVisible).length;
     const capOn = contextCaps[provider] !== undefined;
     const providerCap = contextCaps[provider] ?? contextCapValue;
-    const isNative = native;
+    // With the cap off, `providerCap` is only the value a future toggle would apply — for the
+    // native group that is the 350k default, which says nothing true about what Codex sees.
+    // The honest number there is the largest window the rows actually advertise.
+    const widestRowWindow = rows.reduce<number | undefined>((widest, row) => {
+      const window = typeof row.contextWindow === "number" && row.contextWindow > 0 ? row.contextWindow : undefined;
+      if (window === undefined) return widest;
+      return widest === undefined || window > widest ? window : widest;
+    }, undefined);
+    const capDisplayValue = capOn ? providerCap : (widestRowWindow ?? providerCap);
+    // The native group offers only the three windows GPT-5.6 actually has contracts for
+    // (272k live, 372k legacy, 1.05M measured); routed providers keep the generic ladder.
+    // The set has to follow the list, or a saved value outside it loses its option.
+    const capOptions = group.nativeProviderGroup ? NATIVE_CAP_OPTIONS : CAP_OPTIONS;
+    const capOptionSet = group.nativeProviderGroup ? NATIVE_CAP_OPTION_SET : CAP_OPTION_SET;
     const discoveryFailure = liveModels && discovery?.status === "failed" ? discovery : undefined;
     const q = (search[provider] ?? "").trim().toLowerCase();
     const filtered = q ? rows.filter(m => m.id.toLowerCase().includes(q)) : rows;
@@ -1044,7 +1068,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
           >
           <IconChevron style={{ width: 14, height: 14, color: "var(--muted)", transform: isCollapsed ? "none" : "rotate(90deg)", transition: "transform .12s" }} />
           <span className="text-body font-semibold">{providerDisplaySlug(provider)}</span>
-          {isNative && <span className="models-chip muted mono text-caption">{t("models.nativeGroupLabel")}</span>}
+          {nativeProviderGroup && <span className="models-chip muted mono text-caption">{t("models.nativeGroupLabel")}</span>}
          {discoveryFailure && (
            <span
              className="badge badge-amber"
@@ -1057,7 +1081,9 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
           <span className="muted mono text-label">{t("models.active", { active: activeCount, total: rows.length })}</span>
           </button>
            <div className="row models-provider-actions">
-             {!isNative && (
+             {/* The context-window modal saves through PATCH /api/providers, which the canonical
+                 `openai` seed check rejects. The native group gets the cap select below instead. */}
+             {!nativeProviderGroup && (
                <button
                  type="button"
                  className="btn btn-ghost btn-sm text-caption"
@@ -1065,13 +1091,13 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
                  aria-haspopup="dialog"
                >{t("models.contextSettings")}</button>
              )}
-             {!isNative && (
-               <button
-                 type="button"
-                 className="btn btn-ghost btn-sm text-caption"
-                 onClick={(e) => {
-                   e.stopPropagation();
-                   setCustomModalMode("add");
+             {
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm text-caption"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setCustomModalMode("add");
                    setCustomModalProvider(provider);
                    setCustomModalId("");
                    setCustomFormModelId("");
@@ -1085,31 +1111,35 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
                    setCustomError("");
                    setCustomModalOpen(true);
                  }}
-                 aria-label={t("models.customAdd")}
-                 aria-haspopup="dialog"
-               >+</button>
-             )}
+                aria-label={t("models.customAdd")}
+                aria-haspopup="dialog"
+              >+</button>
+             }
              <button type="button" className="btn btn-ghost btn-sm text-caption" disabled={busy || allOn} onClick={() => bulkToggle(true)}>{t("models.allOn")}</button>
              <button type="button" className="btn btn-ghost btn-sm text-caption" disabled={busy || allOff} onClick={() => bulkToggle(false)}>{t("models.allOff")}</button>
-             {!isNative && <>
-               <Switch on={capOn} onClick={() => toggleProviderCap(provider)} disabled={busy} label={t("models.capValue", { value: fmtK(providerCap) })} />
-               {capOn && (
+             <>
+               <Switch on={capOn} onClick={() => toggleProviderCap(provider)} disabled={busy} label={t("models.capValue", { value: fmtK(capDisplayValue) })} />
+               {/* The native group keeps the value visible with the cap off: its rows always
+                   advertise SOME window, so hiding the number leaves the card saying nothing
+                   about the context Codex will actually see. Routed providers keep the old
+                   behaviour, where an off cap genuinely means "no opinion". */}
+               {(capOn || nativeProviderGroup) && (
                  <>
                    <Select
                      // A saved cap outside CAP_OPTIONS is still a real selectable option
                      // (inserted below), so select it instead of falling back to "Custom";
                      // otherwise the trigger hides the persisted 128k value behind the
                      // custom-editor label.
-                     value={providerCapCustomOpen[provider] ? CUSTOM_OPTION : String(providerCap)}
-                     options={[
-                       ...(!CAP_OPTION_SET.has(providerCap) && !providerCapCustomOpen[provider]
-                         ? [{ value: String(providerCap), label: fmtK(providerCap) }] : []),
-                       ...CAP_OPTIONS.map(v => ({ value: String(v), label: fmtK(v) })),
-                       { value: CUSTOM_OPTION, label: t("models.custom") },
-                     ]}
+                    value={providerCapCustomOpen[provider] ? CUSTOM_OPTION : String(capDisplayValue)}
+                    options={[
+                      ...(!capOptionSet.has(capDisplayValue) && !providerCapCustomOpen[provider]
+                        ? [{ value: String(capDisplayValue), label: fmtK(capDisplayValue) }] : []),
+                      ...capOptions.map(v => ({ value: String(v), label: fmtK(v) })),
+                      { value: CUSTOM_OPTION, label: t("models.custom") },
+                    ]}
                      onChange={v => onSelectProviderCap(provider, v)}
-                     disabled={busy}
-                     label={t("models.capValue", { value: fmtK(providerCap) })}
+                     disabled={busy || !capOn}
+                     label={t("models.capValue", { value: fmtK(capDisplayValue) })}
                    />
                    {providerCapCustomOpen[provider] && (
                      <>
@@ -1129,12 +1159,12 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
                    )}
                  </>
                )}
-             </>}
+             </>
            </div>
         </div>
         {!isCollapsed && (
           <div className="models-provider-body">
-            {isNative && <p className="muted text-label models-provider-hint">{t("models.nativeHint")}</p>}
+            {nativeProviderGroup && <p className="muted text-label models-provider-hint">{t("models.nativeHint")}</p>}
             {rows.length === 0 && (
               <EmptyProviderHint liveModels={liveModels} discovery={discovery} showFailureBadge={false} />
             )}

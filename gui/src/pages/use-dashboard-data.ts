@@ -268,7 +268,9 @@ export function useDashboardData(apiBase: string) {
     usageSummary30dResourceKey(apiBase),
     [apiBase],
     (signal) => fetchDashboardUsage(apiBase, signal),
-    { enabled: overviewReady },
+    // 30d usage is documented ~5s cold; this shared key has four subscribers, so
+    // every one of them carries the same raised deadline (mount-order independent).
+    { enabled: overviewReady, deadlineMs: 60_000 },
   );
 
   const diagnosticsPoll = useKeyedClientResource(
