@@ -61,6 +61,17 @@ describe("Responses parser", () => {
     ]);
   });
 
+  test("drops Chat-shaped function tools with an empty nested name", () => {
+    const parsed = parseRequest({
+      model: "test-model",
+      input: "What time is it?",
+      tools: [{ type: "function", function: { name: "" } }],
+    });
+
+    expect(parsed.context.tools).toBeUndefined();
+    expect(parsed.context.tools?.some(tool => tool.name.length === 0) ?? false).toBe(false);
+  });
+
   test("describes the exact apply_patch freeform envelope", () => {
     const parsed = parseRequest({
       model: "xai/grok-4.5",

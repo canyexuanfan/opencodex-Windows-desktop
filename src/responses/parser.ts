@@ -171,7 +171,7 @@ function buildTools(tools: unknown[] | undefined): OcxTool[] | undefined {
   };
   for (const t of tools) {
     if (!isObj(t)) continue;
-    if (t.type === "function" && isObj(t.function) && typeof t.function.name === "string") {
+    if (t.type === "function" && isObj(t.function) && typeof t.function.name === "string" && t.function.name.length > 0) {
       pushFn(t.function as Record<string, unknown>);
       continue;
     }
