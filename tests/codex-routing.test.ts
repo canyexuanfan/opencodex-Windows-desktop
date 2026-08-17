@@ -426,6 +426,35 @@ describe("codex routing", () => {
     expect(resolveCodexAccountForThread("credential-next", config)).toBe("b");
   });
 
+
+  test("a workspace-denied 403 is not a credential failure (#1789)", () => {
+    // A K12 account whose credential validates and whose WHAM usage returns 200 still gets
+    // 403 codex_workspace_access_denied on a routed prompt. Quarantining it for reauth tells
+    // the user to re-login a credential that is already valid, and the loop repeats forever.
+    expect(classifyCodexUpstreamOutcome(403, "workspace")).toBe("workspace");
+    expect(classifyCodexUpstreamOutcome(403, "entitlement")).toBe("workspace");
+    // Without denial evidence the historical mapping stands, so the change fails safe.
+    expect(classifyCodexUpstreamOutcome(403)).toBe("credential");
+    expect(classifyCodexUpstreamOutcome(401, "workspace")).toBe("credential");
+  });
+
+  test("a workspace denial keeps the credential and does not sweep affinity (#1789)", () => {
+    const config = makeConfig();
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 20);
+    // Bind a thread to the account so we can prove its affinity is NOT swept.
+    expect(resolveCodexAccountForThread("workspace-affinity", config)).toBe("a");
+
+    recordCodexUpstreamOutcome(config, "a", 403, { denial: "workspace" });
+
+    // The credential is valid: no reauth prompt.
+    expect(isAccountNeedsReauth("a")).toBe(false);
+    // The failure is still recorded so routing can prefer a healthier account.
+    expect(getCodexUpstreamHealth("a")).toMatchObject({ consecutiveFailures: 1, lastFailureStatus: 403 });
+    // Credential quarantine sweeps thread affinity because reauth is account-wide;
+    // a workspace denial is not account-wide, so the existing binding survives.
+    expect(resolveCodexAccountForThread("workspace-affinity", config)).toBe("a");
+  });
   test("403 credential outcome quarantines the account under the conservative policy", () => {
     const config = makeConfig();
     updateAccountQuota("a", 10);
@@ -1208,6 +1237,72 @@ describe("codex routing", () => {
     });
   });
 
+
+  test("a sub-day primary window does not masquerade as the weekly quota (#1791)", () => {
+    // K12 and similar plans send a 5-hour primary plus a 7-day secondary. Folding the primary
+    // into weeklyPercent reported the 5-hour bar as weekly and discarded the real weekly
+    // reading, so the dashboard showed a window resetting every few hours and routing never
+    // saw the limit that actually gates the account.
+    expect(parseUsageQuota({
+      rate_limit: {
+        primary_window: { used_percent: 90, reset_at: 1, limit_window_seconds: 5 * 60 * 60 },
+        secondary_window: { used_percent: 20, reset_at: 2, limit_window_seconds: 7 * 24 * 60 * 60 },
+      },
+    })).toMatchObject({ weeklyPercent: 20, weeklyResetAt: 2 });
+  });
+
+  test("a sub-day primary window is KEPT as its own burst window (#1791)", () => {
+    // Not masquerading as weekly was only half the fix. The 5-hour reading is a real
+    // upstream-enforced limit -- the issue reports it at 99% remaining alongside a
+    // separate weekly limit -- so discarding it hides a window that genuinely gates
+    // the account. Both windows must survive parsing with independent resets.
+    expect(parseUsageQuota({
+      plan_type: "k12",
+      rate_limit: {
+        primary_window: { used_percent: 1, reset_at: 2000000000, limit_window_seconds: 18000 },
+        secondary_window: { used_percent: 0, reset_at: 2000586800, limit_window_seconds: 604800 },
+      },
+    })).toMatchObject({
+      shortPercent: 1,
+      shortResetAt: 2000000000,
+      shortWindowSeconds: 18000,
+      weeklyPercent: 0,
+      weeklyResetAt: 2000586800,
+    });
+  });
+
+  test("an exhausted burst window takes the account out of rotation (#1791)", () => {
+    // Upstream enforces the 5-hour window independently, so an account at 100% there is
+    // genuinely blocked even while its weekly quota is untouched. Reporting it as usable
+    // would route traffic straight into a 429.
+    const quota = parseUsageQuota({
+      plan_type: "k12",
+      rate_limit: {
+        primary_window: { used_percent: 100, reset_at: 2000000000, limit_window_seconds: 18000 },
+        secondary_window: { used_percent: 10, reset_at: 2000586800, limit_window_seconds: 604800 },
+      },
+    });
+    expect(isCodexQuotaExhausted(quota, "k12")).toBe(true);
+  });
+  test("a primary window with no declared duration is still treated as weekly (#1791)", () => {
+    // Older payloads omit limit_window_seconds entirely. Guessing there would reclassify
+    // every legacy account, so an undeclared duration keeps the historical behavior.
+    expect(parseUsageQuota({
+      rate_limit: {
+        primary_window: { used_percent: 40, reset_at: 1 },
+        secondary_window: { used_percent: 20, reset_at: 2 },
+      },
+    })).toMatchObject({ weeklyPercent: 40, weeklyResetAt: 1 });
+  });
+
+  test("a declared 7-day primary window remains the weekly quota (#1791)", () => {
+    expect(parseUsageQuota({
+      rate_limit: {
+        primary_window: { used_percent: 40, reset_at: 1, limit_window_seconds: 7 * 24 * 60 * 60 },
+        secondary_window: { used_percent: 20, reset_at: 2 },
+      },
+    })).toMatchObject({ weeklyPercent: 40, weeklyResetAt: 1 });
+  });
   test("WHAM primary window uses its explicit duration to distinguish weekly and monthly quotas", () => {
     expect(parseUsageQuota({
       plan_type: "team",

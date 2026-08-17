@@ -373,7 +373,7 @@ Utilisez `selectedModels` lorsque la découverte doit toujours s'exécuter mais 
 Les entrées de repli de l'aperçu GPT-5.6 utilisent le même mécanisme. Le préréglage à clé API OpenAI initialise les identifiants de base et Pro
 avec un contexte de `1050000` et une entrée maximale de `922000` ; OpenRouter initialise `openai/gpt-5.6-sol`,
 `openai/gpt-5.6-terra` et `openai/gpt-5.6-luna` avec le contexte `1050000`. Les modes pool et direct annoncent
-`372000` ; le catalogue synchronisé annonce `max` tout en gardant `xhigh` distinct.
+`1050000` ; le catalogue synchronisé annonce `max` tout en gardant `xhigh` distinct.
 
 ```json
 {

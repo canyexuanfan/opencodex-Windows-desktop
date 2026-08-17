@@ -266,6 +266,21 @@ export function isNativeOpenAiEntry(entry: RawEntry): boolean {
   return typeof entry.slug === "string" && !entry.slug.includes("/");
 }
 
+/**
+ * Auto-compaction threshold for a native row.
+ *
+ * The usual rule is 90% of the window, but a model whose measured input ceiling sits below
+ * that (GPT-5.6: 922,000 against a 1,050,000 window, where 90% would be 945,000) has to
+ * clamp to the ceiling instead — otherwise the client keeps filling until upstream answers
+ * `context_length_exceeded` and compaction never gets a chance to run.
+ */
+function nativeAutoCompactLimit(contextWindow: number, maxInputTokens: number | undefined, contextCap?: number): number {
+  const ninety = Math.floor(contextWindow * 0.9);
+  if (typeof maxInputTokens !== "number" || maxInputTokens <= 0) return ninety;
+  const cappedMaxInput = applyProviderContextCap(maxInputTokens, contextCap) ?? maxInputTokens;
+  return Math.min(ninety, cappedMaxInput, contextWindow);
+}
+
 export function applyNativeOpenAiContextOverride(entry: RawEntry, contextCap?: number): void {
   const nativeSlug = trustedAccountBoundNativeCatalogSlug(entry)
     ?? (isNativeOpenAiEntry(entry) ? entry.slug as string : undefined);
@@ -275,7 +290,7 @@ export function applyNativeOpenAiContextOverride(entry: RawEntry, contextCap?: n
     if (typeof override.contextWindow === "number") {
       const contextWindow = applyProviderContextCap(override.contextWindow, contextCap) ?? override.contextWindow;
       entry.context_window = contextWindow;
-      entry.auto_compact_token_limit = Math.floor(contextWindow * 0.9);
+      entry.auto_compact_token_limit = nativeAutoCompactLimit(contextWindow, override.maxInputTokens, contextCap);
     }
     if (typeof override.maxContextWindow === "number") {
       entry.max_context_window = applyProviderContextCap(override.maxContextWindow, contextCap) ?? override.maxContextWindow;
@@ -288,7 +303,7 @@ export function applyNativeOpenAiContextOverride(entry: RawEntry, contextCap?: n
   const cappedContext = applyProviderContextCap(currentContext, contextCap);
   if (cappedContext !== currentContext && typeof cappedContext === "number") {
     entry.context_window = cappedContext;
-    entry.auto_compact_token_limit = Math.floor(cappedContext * 0.9);
+    entry.auto_compact_token_limit = nativeAutoCompactLimit(cappedContext, override?.maxInputTokens, contextCap);
   }
   const currentMax = typeof entry.max_context_window === "number" ? entry.max_context_window : undefined;
   const cappedMax = applyProviderContextCap(currentMax, contextCap);
@@ -462,16 +477,15 @@ export function normalizeRoutedCatalogEntry(entry: RawEntry, parallelToolCalls =
   // tool_search round-trip (upstream codex-rs code_mode suite; live canary 2026-08-13: routed
   // kimi/k3 called tools.mcp__node_repl__js → isError:false). Stamping false here instead forces
   // every MCP declaration into exec.description — a measured 2.7x turn-1 payload regression
-  // (96,699 → 258,929 chars; devlog/_plan/260813_tool_catalog_deferral/010). So non-Cursor routed
-  // rows advertise deferred discovery; the #1522 reachability concern is covered by the code-mode
-  // path, not by paying the full-catalog tax. Cursor stays false: its runTurn transport bypasses
-  // the web-search sidecar and has no proven deferred path.
+  // (96,699 → 258,929 chars; devlog/_plan/260813_tool_catalog_deferral/010). So every routed
+  // code-mode row advertises deferred discovery. Cursor still omits hosted web-search metadata below,
+  // but disabling this separate exposure bit can inflate `exec` past Cursor's 120 KB wire cap (#1830).
   if (isCursorEntry) {
     delete entry.web_search_tool_type;
   } else {
     entry.web_search_tool_type = "text_and_image";
   }
-  entry.supports_search_tool = !isCursorEntry;
+  entry.supports_search_tool = true;
   // Cursor's transport already serializes overlapping tool calls into atomic Responses tool events.
   // Advertising parallel calls lets Codex send the same native capability bit it sends for OpenAI.
   // Opt-in providers (OcxProviderConfig.parallelToolCalls, e.g. xAI) advertise it too: the

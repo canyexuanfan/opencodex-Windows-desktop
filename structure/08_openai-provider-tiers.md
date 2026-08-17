@@ -115,8 +115,13 @@ preserving a stale one would block every later migration.
   `daybreak-blue-latest` are distinct wire surfaces. An observed native row follows the pinned Sol
   capability metadata, but routing strips only the account selector and keeps
   `gpt-daybreak-blue-latest` byte-for-byte; it never expands the bare list or substitutes Sol.
-- API GPT-5.6 rows use 1,050,000 context tokens and 922,000 max input tokens. Codex-login rows keep
-  the native 372,000-token contract.
+- GPT-5.6 rows use 1,050,000 context tokens and 922,000 max input tokens on BOTH surfaces. The
+  Codex-login side used to advertise 372,000; probing a real account showed that was wrong —
+  921,508 input tokens were accepted and 922,013 refused with `context_length_exceeded` on Sol,
+  Terra and Luna alike, which is the same 922,000 ceiling the API surface already declared.
+  The two limits stay separate fields: auto-compaction clamps to the 922,000 input ceiling rather
+  than to 90% of the window, since 945,000 would sit past what upstream accepts. Evidence:
+  `devlog/_plan/260817_native_gpt56_1m_context/001_measurement_evidence.md`.
 - `*-pro` selected ids rewrite to the base wire id with `reasoning.mode: "pro"`; request logs,
   usage, model visibility, subagent state, and injection state retain the selected virtual id.
 - Compact preserves provider/selected identity but sends the base model without a reasoning object.

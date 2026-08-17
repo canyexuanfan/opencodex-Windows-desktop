@@ -28,7 +28,7 @@ import { deriveProviderPresets } from "../providers/derive";
 import { providerCodexAccountMode } from "../providers/registry";
 import { routedSlug, slugEquals } from "../providers/slug-codec";
 import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../providers/quota";
-import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
+import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../providers/openai-tiers";
 import { clearThreadAccountMap } from "../codex/routing";
 import { primeCodexPoolQuotas } from "../codex/auth-api";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../providers/context-cap";
@@ -109,7 +109,7 @@ function pathInManagementNamespace(pathname: string, prefix: string): boolean {
  * keeps `management-api.ts` on the same footing as the three protected core files.
  *
  * Cherry-picked from @Wibias's PR #1676, which solved this before the boundary work
- * reached it. See devlog/_plan/260814_lab_core_decoupling/.
+ * reached it. See devlog/_fin/260814_lab_core_decoupling/.
  */
 async function handleRoutingProfileRoutesOnDemand(ctx: ManagementContext): Promise<Response | null> {
   if (!pathInManagementNamespace(ctx.url.pathname, "/api/routing-profiles")) return null;
@@ -174,13 +174,20 @@ export async function handleManagementAPI(
         throw new TypeError("Catalog convergence returned an invalid outcome.");
       }
       return catalogRefresh;
-    } catch {
+    } catch (error) {
+      // #1784: this used to manufacture `reason: "disk"` for every escaping error, so a
+      // programming fault and a full filesystem were indistinguishable and both reported
+      // non-retryable. Classify honestly and keep the cause allowlisted.
+      const invalidRequest = error instanceof TypeError
+        || error instanceof RangeError
+        || error instanceof SyntaxError;
       return {
         status: "failed",
-        reason: "disk",
+        reason: invalidRequest ? "request-invalid" : "internal",
         phase: convergenceInvoked ? "commit" : "gather",
         retryable: false,
         partialWrite: convergenceInvoked,
+        cause: { kind: invalidRequest ? "invalid-request" : "unknown" },
       };
     }
   }
@@ -198,7 +205,7 @@ export async function handleManagementAPI(
           import("../claude/context-windows"),
           import("../codex/catalog"),
         ]);
-        injectClaudeAgentDefs(config, buildClaudeContextWindows([...visibleNativeSlugs(config)], models));
+        injectClaudeAgentDefs(config, buildClaudeContextWindows([...visibleNativeSlugs(config)], models, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID)));
       } catch {
         // Keep routes available through a provider-discovery blip. A later
         // launch-time sync restores any context markers missing from this pass.

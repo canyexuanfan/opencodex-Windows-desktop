@@ -52,7 +52,7 @@ visibility = "list"
 
 |ルート |ピッカー ID とカタログのメタデータ |
 | --- | --- |
-| Codex ログイン (account-qualified 行が無効) | `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` などの bare native id を表示し、`codexAccountMode` に従って Pool または Direct を使用します。GPT-5.6 行のカタログ ウィンドウは 372,000 トークンです。 |
+| Codex ログイン (account-qualified 行が無効) | `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` などの bare native id を表示し、`codexAccountMode` に従って Pool または Direct を使用します。GPT-5.6 行のカタログ ウィンドウは 1,050,000 トークンです。 |
 | Codex ログイン (account-qualified 行が有効で、有効な selector あり) | 有効な selector とサポート対象 native model の各組み合わせに `<selector>/<native-openai-model>` 行を表示します。各行は対応付けられたアカウントだけを使用し、bare native 行はピッカーで非表示になります。Native metadata と context window は保持されます。 |
 | OpenAI (API キー) |正確に 8 つの名前空間行: `gpt-5.5`、`gpt-5.6`、Sol/Terra/Luna、および 3 つの `*-pro` 仮想 ID (コンテキスト 1,050,000、8 つすべての最大入力 922,000) |
 |オープンルーター | `openrouter/openai/gpt-5.6-sol`、`openrouter/openai/gpt-5.6-terra`、`openrouter/openai/gpt-5.6-luna` (1,050,000) |

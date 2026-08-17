@@ -295,7 +295,7 @@ OpenRouter 可以通过多个推理提供者来提供同一个模型。`openRout
 
 当需要继续运行发现，但只有选定 id 应该出现在 Codex 和 `/v1/models` 中时，请使用 `selectedModels`。仪表板会保留完整的已发现列表，以便之后调整允许列表。
 
-预览版 GPT-5.6 回退条目使用相同机制。OpenAI API key 预设会为基础和 Pro id 设定 `1050000` 上下文和 `922000` 最大输入；OpenRouter 会为 `openai/gpt-5.6-sol`、`openai/gpt-5.6-terra` 和 `openai/gpt-5.6-luna` 设定 `1050000` 上下文。Pool/Direct 会声明 `372000`；同步后的目录会声明 `max`，同时保留 `xhigh` 的独立性。
+预览版 GPT-5.6 回退条目使用相同机制。OpenAI API key 预设会为基础和 Pro id 设定 `1050000` 上下文和 `922000` 最大输入；OpenRouter 会为 `openai/gpt-5.6-sol`、`openai/gpt-5.6-terra` 和 `openai/gpt-5.6-luna` 设定 `1050000` 上下文。Pool/Direct 会声明 `1050000`；同步后的目录会声明 `max`，同时保留 `xhigh` 的独立性。
 
 ```json
 {

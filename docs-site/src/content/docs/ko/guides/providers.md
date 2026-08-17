@@ -349,7 +349,7 @@ Sol/Terra/Luna를 폴백 목록에 넣어 둡니다.
 
 | Codex 경로 | 미리 등록된 모델 id | Codex에 표시되는 컨텍스트 |
 | --- | --- | --- |
-| Codex 로그인(Pool 또는 Direct) | `gpt-5.6-*` | 372,000 |
+| Codex 로그인(Pool 또는 Direct) | `gpt-5.6-*` | 1,050,000 |
 | OpenAI (API key) | `openai-apikey/gpt-5.6-*`와 `*-pro` | 1,050,000 (max input 922,000) |
 | OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 1,050,000 |
 | Cursor | `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, `cursor/gpt-5.6-luna` | 1,000,000 |

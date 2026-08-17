@@ -363,9 +363,10 @@ key from the subscription overview in the [Vultr Console](https://my.vultr.com).
 the fixed Provider API host, preserves provider-native ids, and caps discovery at 256 KiB and 256 raw
 rows. `ocx login command-code` supports OAuth via browser sign-in (with optional local CLI credential
 import from `~/.commandcode/auth.json` for existing Command Code CLI users); the model catalog is
-account-scoped and comes from the authenticated discovery endpoint after login. Chat requests use the
-configured Bearer key. Create keys at
-[Command Code Studio](https://commandcode.ai/studio/).
+account-scoped and comes from the authenticated discovery endpoint after login. The Provider-API
+preset (`commandcode`) uses the active configured Bearer key for chat requests; the OAuth preset
+(`command-code`) uses the stored account bearer for authenticated discovery and chat. Create
+Provider-API keys at [Command Code Studio](https://commandcode.ai/studio/).
 
 **Command Code quota.** The dashboard and `ocx account refresh` probe Command Code's
 `/alpha/billing/credits` windows (5-hour and weekly) on the canonical
@@ -477,7 +478,7 @@ visible even while live catalogs lag:
 
 | Codex route | Seeded model ids | Codex-visible context |
 | --- | --- | --- |
-| Codex login (Pool or Direct) | `gpt-5.6-*` | 372,000 |
+| Codex login (Pool or Direct) | `gpt-5.6-*` | 1,050,000 |
 | OpenAI (API key) | `openai-apikey/gpt-5.6-*` plus `*-pro` | 1,050,000 (922,000 max input) |
 | OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 1,050,000 |
 | Cursor | `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, `cursor/gpt-5.6-luna` | 1,000,000 |
@@ -564,5 +565,5 @@ provider-specific) is already consumed.
 
 Providers with a live probe: OpenAI/Codex, Anthropic, xAI, Cursor, Kimi,
 Google Antigravity, OpenRouter, DeepSeek, ClinePass, Z.AI, MiniMax,
-Moonshot, Venice, Synthetic, DeepInfra, Neuralwatt, and any a6api-backed
+Moonshot, Venice, Synthetic, DeepInfra, Neuralwatt, Command Code, and any a6api-backed
 custom provider.

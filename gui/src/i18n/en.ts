@@ -507,7 +507,7 @@ export const en = {
   "models.subtitle.routing": "Policy profiles, dry-run evaluation, and source-backed routing analytics.",
   "models.subtitle": "Toggle which models Codex sees — native GPT passthrough and routed providers, grouped by provider (click a header to collapse). Hidden models stay off the catalog + model picker but remain directly callable by exact id. Changes apply on the next Codex turn — opencodex invalidates Codex's 5-min model cache so no restart is needed.",
   "models.nativeGroupLabel": "OpenAI native",
-  "models.nativeHint": "Passthrough models use the Pool or Direct account option selected on Providers. Toggling one off hides it from the Codex picker (the catalog entry is kept, so re-enabling restores it exactly).",
+  "models.nativeHint": "Passthrough models use the Pool or Direct account option selected on Providers. Toggling one off hides it from the Codex picker (the catalog entry is kept, so re-enabling restores it exactly). Adding a model here registers a routed `openai/<model>` selector, not a new bare passthrough id.",
   "models.active": "{active}/{total} visible",
   "models.workspace.providers": "Providers",
   "models.workspace.allProviders": "All providers",

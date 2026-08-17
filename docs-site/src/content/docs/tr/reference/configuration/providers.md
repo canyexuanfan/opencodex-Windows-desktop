@@ -424,7 +424,7 @@ korur.
 Önizleme GPT-5.6 geri dönüş girdileri aynı mekanizmayı kullanır. OpenAI API
 anahtarı önayarı temel ve Pro kimliklerini `1050000` bağlam ve `922000` maksimum
 girdi ile tohumlar; OpenRouter `openai/gpt-5.6-sol`, `openai/gpt-5.6-terra` ve
-`openai/gpt-5.6-luna`'yı `1050000` bağlam ile tohumlar. Pool/Direct `372000`
+`openai/gpt-5.6-luna`'yı `1050000` bağlam ile tohumlar. Pool/Direct `1050000`
 bildirir; senkronize edilen katalog `xhigh`'ı ayrı tutarken `max` bildirir.
 
 ```json

@@ -374,7 +374,7 @@ export const zhTW: Record<TKey, string> = {
   "prov.openaiApiSetup": "設定 API 金鑰",
   "models.subtitle": "開關 Codex 可見的模型 — 原生 GPT passthrough 與已路由模型按供應商分組（點選標題可摺疊）。已停用的模型會從目錄和模型選擇器中隱藏。更改在下一個 Codex 回合生效 — opencodex 會使 Codex 的 5 分鐘模型快取失效，因此無需重新啟動。",
   "models.nativeGroupLabel": "OpenAI 原生",
-  "models.nativeHint": "Passthrough 模型使用在供應商頁面選擇的帳號池或直連選項。關閉後會從 Codex 選擇器中隱藏（目錄條目保留，重新開啟即可完整恢復）。",
+  "models.nativeHint": "Passthrough 模型使用在供應商頁面選擇的帳號池或直連選項。關閉後會從 Codex 選擇器中隱藏（目錄條目保留，重新開啟即可完整恢復）。 在此新增模型會註冊為路由的 `openai/<model>` 選擇器，而非新的裸 passthrough id。",
   "models.active": "{active}/{total} 已啟用",
   "models.workspace.providers": "供應商",
   "models.workspace.allProviders": "所有供應商",

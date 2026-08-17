@@ -11,7 +11,10 @@ import { adapterFailureFromMessage, classifyError, CYBER_POLICY_ERROR_CODE, isCy
 import { encodeCompactionSummary } from "./responses/compaction";
 import { encodeReasoningEnvelope, type ReasoningEnvelope } from "./responses/reasoning-envelope";
 import { rememberReasoningForCall } from "./responses/reasoning-replay-cache";
-import { responsesExtraContentFromProviderMetadata } from "./responses/provider-opaque-metadata";
+import {
+  rememberAndSerializeExtraContent,
+  rememberExtraContentForReplay,
+} from "./responses/thought-signature-replay";
 import { resolveStallTimeoutSec } from "./stall-timeout";
 import { usageDisplayTotalTokens } from "./usage/totals";
 import {
@@ -606,6 +609,9 @@ export function bridgeToResponsesSSE(
             input: freeformInput(currentToolCall.args),
           });
         }
+        // Freeform tools serialize as custom_tool_call without extra_content; remember the
+        // signature server-side regardless so the replayed call can be re-signed (#1735).
+        void rememberExtraContentForReplay(currentToolCall.callId, currentToolCall.providerMetadata, replayCacheScope);
         const item = currentToolCall.toolSearch
           ? {
               type: "tool_search_call", id: currentToolCall.itemId,
@@ -624,8 +630,9 @@ export function bridgeToResponsesSSE(
               arguments: argsStr, status: "completed",
               ...(currentToolCall.namespace ? { namespace: currentToolCall.namespace } : {}),
               // Provider-opaque metadata (issue #1735) rides the item so a client that replays
-              // this history can hand the signature back on the part it belongs to.
-              ...(responsesExtraContentFromProviderMetadata(currentToolCall.providerMetadata) ?? {}),
+              // this history can hand the signature back on the part it belongs to. The proxy
+              // also remembers it server-side for clients that never echo extra_content.
+              ...(rememberAndSerializeExtraContent(currentToolCall.callId, currentToolCall.providerMetadata, replayCacheScope).extra ?? {}),
             };
         emit("response.output_item.done", { output_index: currentToolCall.outputIndex, item });
         retainFinishedItem(item as OutputItem);
@@ -643,6 +650,7 @@ export function bridgeToResponsesSSE(
       const failCurrentToolCall = () => {
         if (!currentToolCall) return;
         const argsStr = currentToolCall.args || "{}";
+        void rememberExtraContentForReplay(currentToolCall.callId, currentToolCall.providerMetadata, replayCacheScope);
         const item = currentToolCall.toolSearch
           ? {
               type: "tool_search_call", id: currentToolCall.itemId,
@@ -663,7 +671,7 @@ export function bridgeToResponsesSSE(
               // An incomplete call can still be persisted and replayed (max_output_tokens), so it
               // carries the same metadata as the completed item — otherwise SSE and buffered JSON
               // would disagree about whether the signature survives.
-              ...(responsesExtraContentFromProviderMetadata(currentToolCall.providerMetadata) ?? {}),
+              ...(rememberAndSerializeExtraContent(currentToolCall.callId, currentToolCall.providerMetadata, replayCacheScope).extra ?? {}),
             };
         emit("response.output_item.done", { output_index: currentToolCall.outputIndex, item });
         retainFinishedItem(item as OutputItem);
@@ -1576,6 +1584,9 @@ function buildResponseJSONWithBudget(
       currentToolCallArgs,
       options?.toolParameterSchemas?.get(currentToolCallName),
     );
+    // Freeform tools serialize as custom_tool_call without extra_content; remember the
+    // signature server-side regardless so the replayed call can be re-signed (#1735).
+    void rememberExtraContentForReplay(currentToolCallId, currentToolCallProviderMetadata, replayCacheScope);
     if (toolSearch) {
       pushOutput({
         type: "tool_search_call", id: `tsc_${uuid()}`,
@@ -1594,7 +1605,7 @@ function buildResponseJSONWithBudget(
         call_id: currentToolCallId, name: realName,
         arguments: coercedArgs || "{}", status,
         ...(ns ? { namespace: ns } : {}),
-        ...(responsesExtraContentFromProviderMetadata(currentToolCallProviderMetadata) ?? {}),
+        ...(rememberAndSerializeExtraContent(currentToolCallId, currentToolCallProviderMetadata, replayCacheScope).extra ?? {}),
       });
     }
     budget?.closeCall(currentToolCallId);

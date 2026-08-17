@@ -9,6 +9,8 @@ import {
   buildCursorToolGuidanceSystemNote,
   CURSOR_EXEC_COMMAND_INPUT_SCHEMA,
   cursorRequestAdvertisesApplyPatch,
+  cursorRequestUsesCodeMode,
+  isCursorCodeModeExecTool,
   cursorToolArgNormalizeSchema,
   cursorToolInputSchema,
   cursorToolWireName,
@@ -409,5 +411,74 @@ describe("Cursor tool definitions", () => {
 
     expect(allowedNote).toContain("`mcp__fs__write_file`");
     expect(allowedNote).not.toContain("`mcp__fs__read_file`");
+  });
+});
+
+describe("Cursor code mode tool guidance", () => {
+  const codeModeExec = (): OcxTool => ({
+    name: "exec",
+    description: "Run JavaScript code to orchestrate tool calls. Nested tools are available on the global `tools` object.",
+    parameters: {},
+    freeform: true,
+  });
+
+  test("detects code mode only when freeform exec has no bare shell bridge", () => {
+    expect(cursorRequestUsesCodeMode([codeModeExec()])).toBe(true);
+    expect(isCursorCodeModeExecTool(codeModeExec())).toBe(true);
+
+    // A non-freeform `exec` is not code mode.
+    expect(cursorRequestUsesCodeMode([{ name: "exec", description: "Run", parameters: {} }])).toBe(false);
+    // A bare shell bridge alongside it means the flat-catalog guidance still applies.
+    expect(cursorRequestUsesCodeMode([codeModeExec(), { name: "exec_command", description: "Run", parameters: {} }])).toBe(false);
+    expect(cursorRequestUsesCodeMode([{ name: "exec_command", description: "Run", parameters: {} }])).toBe(false);
+    expect(cursorRequestUsesCodeMode(undefined)).toBe(false);
+    // Tool choice that hides exec also hides code mode.
+    expect(cursorRequestUsesCodeMode([codeModeExec(), { name: "read_file", namespace: "mcp__fs", description: "R", parameters: {} }], { name: "read_file" })).toBe(false);
+  });
+
+  test("teaches the nested-helper contract instead of a top-level shell bridge", () => {
+    const note = buildCursorToolGuidanceSystemNote([codeModeExec()]);
+    expect(note).toBeDefined();
+    if (!note) throw new Error("Expected Cursor tool guidance note");
+
+    expect(note).toContain("is Codex code mode");
+    expect(note).toContain("V8 isolate");
+    expect(note).toContain("await tools.<name>(...)");
+    expect(note).toContain("await tools.exec_command({cmd: " + "\"" + "ls" + "\"" + "})");
+    expect(note).toContain("text(...)");
+    expect(note).toContain("There is no `require`");
+
+    // The flat-catalog shell-bridge guidance must NOT appear: naming a top-level
+    // `exec_command` in code mode sends the model after a tool that does not exist.
+    expect(note).not.toContain("is the Codex Responses shell bridge for this turn");
+    expect(note).not.toContain("mcp_opencodex-responses_shell_command");
+    expect(note).not.toContain("For file read/search/listing, use");
+  });
+
+  test("keeps other visible top-level tools callable in code mode", () => {
+    // Code mode is about how `exec` works, not a claim that the rest of the catalog is nested.
+    // A turn can advertise freeform `exec` alongside ordinary top-level tools, and describing
+    // those as non-top-level would make the model refuse tools it can actually call.
+    const note = buildCursorToolGuidanceSystemNote([
+      codeModeExec(),
+      { name: "mcp__fs__read_file", description: "Read a file", parameters: {} },
+    ]);
+    expect(note).toBeDefined();
+    if (!note) throw new Error("Expected Cursor tool guidance note");
+
+    expect(note).toContain("is Codex code mode");
+    expect(note).toContain("remains callable at the top level as usual");
+    expect(note).toContain("mcp__fs__read_file");
+    expect(note).not.toContain("they are not separate top-level tools");
+  });
+
+  test("keeps flat-catalog shell-bridge guidance when a bare bridge is advertised", () => {
+    const note = buildCursorToolGuidanceSystemNote([{ name: "exec_command", description: "Run", parameters: {} }]);
+    expect(note).toBeDefined();
+    if (!note) throw new Error("Expected Cursor tool guidance note");
+
+    expect(note).toContain("is the Codex Responses shell bridge for this turn");
+    expect(note).not.toContain("is Codex code mode");
+    expect(note).not.toContain("V8 isolate");
   });
 });

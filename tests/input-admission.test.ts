@@ -71,7 +71,7 @@ describe("resolveInputCeiling", () => {
   test("resolves the native window from static metadata for a canonical route", () => {
     // The `openai` registry entry carries no context fields, so without the native
     // fallback the gate would be inert on the default Codex route.
-    expect(resolveInputCeiling(CANONICAL_NATIVE, "openai", "gpt-5.6-sol")).toBe(372_000);
+    expect(resolveInputCeiling(CANONICAL_NATIVE, "openai", "gpt-5.6-sol")).toBe(922_000);
   });
 
   test("a custom provider merely NAMED openai does not inherit native limits", () => {

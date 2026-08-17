@@ -435,7 +435,7 @@ GPT-5.6 Sol/Terra/Luna 會預置在 provider fallback list 中，因此即使即
 
 | Codex 路由 | 預置 model id | Codex 可見 context |
 | --- | --- | --- |
-| Codex 登入（Pool 或 Direct） | `gpt-5.6-*` | 372,000 |
+| Codex 登入（Pool 或 Direct） | `gpt-5.6-*` | 1,050,000 |
 | OpenAI (API key) | `openai-apikey/gpt-5.6-*` 加 `*-pro` | 1,050,000（922,000 max input） |
 | OpenRouter | `openrouter/openai/gpt-5.6-sol`、`openrouter/openai/gpt-5.6-terra`、`openrouter/openai/gpt-5.6-luna` | 1,050,000 |
 | Cursor | `cursor/gpt-5.6-sol`、`cursor/gpt-5.6-terra`、`cursor/gpt-5.6-luna` | 1,000,000 |

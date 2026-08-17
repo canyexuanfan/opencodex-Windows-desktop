@@ -958,7 +958,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             : idsParam === "desktop"
               ? "desktop3p" as const
               : (/^claude-code\//i.test(req.headers.get("user-agent") ?? "") ? "readable" as const : "desktop3p" as const);
-          const data = buildAnthropicModelInfos([...desktopVisibleNativeSlugs(config)], goOrdered, resolveAutoContext(config.claudeCode), idStyle, activeDesktop3pAlias);
+          const data = buildAnthropicModelInfos([...desktopVisibleNativeSlugs(config)], goOrdered, resolveAutoContext(config.claudeCode), idStyle, activeDesktop3pAlias, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID));
           return jsonResponse({ data }, 200, req, policy);
         }
         if (url.searchParams.has("client_version")) {
@@ -1092,7 +1092,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => {
           let response: Response;
           try {
-            response = await handleResponsesCompact(req, config, logCtx, turnAdmissionLease);
+            response = await handleResponsesCompact(req, config, logCtx, turnAdmissionLease, admission);
           } catch {
             response = formatErrorResponse(500, "server_error", "Unexpected compact request failure");
           }
@@ -1214,6 +1214,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => {
           const response = await handleResponses(req, config, logCtx, {
             turnAdmissionLease,
+            admission,
             onRequestBodyRead: () => disableResponsesRequestTimeout(req, requestServer),
             abortSignal: req.signal,
             onFirstOutput: () => recordFirstOutput(logCtx, start),
@@ -1302,7 +1303,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           inboundProtocol: "chat",
         };
         return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => withCors(
-          await handleChatCompletions(req, config, logCtx, { requestId, start, turnAdmissionLease }),
+          await handleChatCompletions(req, config, logCtx, { requestId, start, turnAdmissionLease, admission }),
           req,
           config,
         ));
@@ -1569,6 +1570,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           try {
             let terminalRecorder: ((status: ResponsesTerminalStatus, httpStatusOverride?: number) => void) | undefined;
             const response = await handleResponses(req, config, logCtx, {
+              ...(wsAdmission ? { admission: wsAdmission } : {}),
               forceEmptyResponseId: true,
               inboundTransport: "websocket",
               abortSignal: turnAbort.signal,

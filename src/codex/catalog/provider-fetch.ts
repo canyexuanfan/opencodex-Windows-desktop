@@ -74,7 +74,7 @@ import { createAdmissionGate, ResourceAdmissionError, type AdmissionMetrics } fr
 
 import { CODEX_CUSTOM_MODEL_CATALOG_KIND, JAWCODE_CATALOG_AUGMENT_PROVIDERS, catalogModelSlug, shouldExposeRoutedModel } from "./parsing";
 import type { CatalogModel } from "./parsing";
-import { disabledNativeSlugs, hasComboTargets, isNativeOpenAiCapabilityAliasModel, nativeDefaultReasoningEffort, nativeInputModalities, nativeOpenAiContextWindow, nativeOpenAiSlugs, nativeParallelToolCalls, nativeReasoningEfforts } from "./metadata";
+import { disabledNativeSlugs, hasComboTargets, isNativeOpenAiCapabilityAliasModel, nativeDefaultReasoningEffort, nativeInputModalities, nativeOpenAiContextWindow, nativeOpenAiMaxInputTokens, nativeOpenAiSlugs, nativeParallelToolCalls, nativeReasoningEfforts } from "./metadata";
 import { deriveComboCatalogModel, normalizedOpenAiApiSignature, openAiApiCollisionWarnings, replaceLastComboCatalogOmissions, warnUncataloguedComboOnce } from "./aggregation";
 import type { ComboCatalogOmission } from "./aggregation";
 import type { CatalogGatherProviderAuthEvidence } from "./filesystem-evidence";
@@ -703,6 +703,8 @@ const COMBO_MEMBER_CONTEXT_FALLBACK = 128_000;
 
 interface ComboCatalogMemberFallback {
   readonly contextWindow?: number;
+  /** Input ceiling when it is lower than the window (native GPT-5.6: 922k under 1.05M). */
+  readonly maxInputTokens?: number;
   readonly inputModalities?: readonly string[];
   readonly reasoningEfforts?: readonly string[];
 }
@@ -744,7 +746,11 @@ export function resolveComboCatalogMember(
     if (!addMaxInput && !addModalities && !addReasoning) return member;
     return {
       ...member,
-      ...(addMaxInput ? { maxInputTokens: contextWindow } : {}),
+      // Never claim a larger input budget than the window, and prefer the model's own
+      // measured ceiling when the fallback carries one.
+      ...(addMaxInput
+        ? { maxInputTokens: Math.min(fallback.maxInputTokens ?? contextWindow!, contextWindow!) }
+        : {}),
       ...(addModalities ? { inputModalities: [...fallback.inputModalities!] } : {}),
       ...(addReasoning ? { reasoningEfforts: [...fallback.reasoningEfforts!] } : {}),
     };
@@ -765,7 +771,7 @@ export function resolveComboCatalogMember(
     }
     const maxInput = typeof existing.maxInputTokens === "number" && existing.maxInputTokens > 0
       ? Math.min(existing.maxInputTokens, capped)
-      : capped;
+      : Math.min(fallback?.maxInputTokens ?? capped, capped);
     return withFallbackMetadata({
       ...existing,
       contextWindow: capped,
@@ -790,6 +796,10 @@ export function resolveComboCatalogMember(
     : (typeof base.maxInputTokens === "number" && base.maxInputTokens > 0
       ? base.maxInputTokens
       : undefined);
+  // Kept OUT of knownMaxInput on purpose: that value doubles as a context-window fallback
+  // below, and a native alias whose input ceiling (922k) is lower than its window (1.05M)
+  // would otherwise shrink the advertised window to the input limit.
+  const fallbackMaxInput = existing || prov ? fallback?.maxInputTokens : undefined;
   // Real discovery/config values win. A native alias is the next fallback tier.
   // The generic 128k/text synthesis from #1305 remains the final fallback.
   const fallbackContext = existing || prov ? fallback?.contextWindow : undefined;
@@ -814,8 +824,11 @@ export function resolveComboCatalogMember(
     ?? (prov ? configuredReasoningEfforts(prov, target.model) : undefined)
     ?? base.reasoningEfforts
     ?? (fallback?.reasoningEfforts ? [...fallback.reasoningEfforts] : undefined);
-  const maxInputTokens = knownMaxInput !== undefined
-    ? Math.min(knownMaxInput, contextWindow)
+  // The model's own measured input ceiling still applies when discovery gave us nothing:
+  // GPT-5.6 advertises a 1.05M window but refuses input past 922k.
+  const effectiveMaxInput = knownMaxInput ?? fallbackMaxInput;
+  const maxInputTokens = effectiveMaxInput !== undefined
+    ? Math.min(effectiveMaxInput, contextWindow)
     : contextWindow;
 
   return {
@@ -1712,7 +1725,9 @@ async function gatherRoutedModelsUncached(
         id: slug,
         owned_by: "openai",
         contextWindow,
-        maxInputTokens: contextWindow,
+        // Input limit, not the total window: GPT-5.6 advertises 1,050,000 but refuses past
+        // 922,000 (measured). Falls back to the window for slugs with no separate ceiling.
+        maxInputTokens: Math.min(nativeOpenAiMaxInputTokens(slug, openaiContextCap) ?? contextWindow, contextWindow),
         inputModalities: nativeInputModalities(slug),
         reasoningEfforts: nativeReasoningEfforts(slug),
         ...(nativeParallelToolCalls(slug) ? { parallelToolCalls: true } : {}),
@@ -1730,11 +1745,15 @@ async function gatherRoutedModelsUncached(
     const combo = getCombo(config, id);
     if (!combo) continue;
     const nativeContextWindow = combo.nativeAlias && combo.alias
-      ? nativeOpenAiContextWindow(combo.alias)
+      ? nativeOpenAiContextWindow(combo.alias, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID))
+      : undefined;
+    const nativeAliasMaxInput = combo.nativeAlias && combo.alias
+      ? nativeOpenAiMaxInputTokens(combo.alias, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID))
       : undefined;
     const nativeAliasFallback = combo.nativeAlias && combo.alias && nativeContextWindow !== undefined
       ? {
         contextWindow: nativeContextWindow,
+        ...(nativeAliasMaxInput !== undefined ? { maxInputTokens: Math.min(nativeAliasMaxInput, nativeContextWindow) } : {}),
         inputModalities: nativeInputModalities(combo.alias),
         reasoningEfforts: nativeReasoningEfforts(combo.alias),
       }
@@ -1788,6 +1807,14 @@ async function gatherRoutedModelsUncached(
         ? Math.min(cm.contextWindow, nativeAliasContextWindow)
         : cm.contextWindow
       : nativeAliasContextWindow;
+    // Input ceiling for a native capability alias, clamped to whatever window we settled on
+    // above. A custom row that lowered the window must not keep the full native input budget.
+    const nativeAliasMaxInputTokens = codexForwardNativeCapabilityAlias
+      ? nativeOpenAiMaxInputTokens(cm.modelId, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID))
+      : undefined;
+    const customMaxInputTokens = nativeAliasMaxInputTokens !== undefined && customContextWindow !== undefined
+      ? Math.min(nativeAliasMaxInputTokens, customContextWindow)
+      : nativeAliasMaxInputTokens;
     const nativeAliasDefaultEffort = codexForwardNativeCapabilityAlias
       ? nativeDefaultReasoningEffort(cm.modelId)
       : undefined;
@@ -1804,6 +1831,7 @@ async function gatherRoutedModelsUncached(
         ? { displayName: cm.displayName }
         : codexForwardNativeCapabilityAlias ? { displayName: "Daybreak Blue" } : {}),
       ...(customContextWindow !== undefined ? { contextWindow: customContextWindow } : {}),
+      ...(customMaxInputTokens !== undefined ? { maxInputTokens: customMaxInputTokens } : {}),
       ...(cm.inputModalities
         ? { inputModalities: cm.inputModalities }
         : codexForwardNativeCapabilityAlias ? { inputModalities: nativeInputModalities(cm.modelId) } : {}),

@@ -301,7 +301,7 @@ OpenRouter는 하나의 모델을 여러 추론 공급자로 제공할 수 있�
 
 `selectedModels`는 발견은 계속하되, 선택된 id만 Codex와 `/v1/models`에 나타나게 하고 싶을 때 사용합니다. 대시보드는 나중에 허용 목록을 바꿀 수 있도록 발견된 전체 목록을 보관합니다.
 
-프리뷰 GPT-5.6 폴백 항목도 같은 메커니즘을 사용합니다. OpenAI API 키 프리셋은 base와 Pro id에 컨텍스트 `1050000`, 최대 입력 `922000`을 채웁니다. OpenRouter는 `openai/gpt-5.6-sol`, `openai/gpt-5.6-terra`, `openai/gpt-5.6-luna`에 컨텍스트 `1050000`을 채웁니다. Pool/Direct는 `372000`을 노출하고, 동기화된 카탈로그는 `xhigh`를 구분한 채 `max`를 노출합니다.
+프리뷰 GPT-5.6 폴백 항목도 같은 메커니즘을 사용합니다. OpenAI API 키 프리셋은 base와 Pro id에 컨텍스트 `1050000`, 최대 입력 `922000`을 채웁니다. OpenRouter는 `openai/gpt-5.6-sol`, `openai/gpt-5.6-terra`, `openai/gpt-5.6-luna`에 컨텍스트 `1050000`을 채웁니다. Pool/Direct는 `1050000`을 노출하고, 동기화된 카탈로그는 `xhigh`를 구분한 채 `max`를 노출합니다.
 
 ```json
 {

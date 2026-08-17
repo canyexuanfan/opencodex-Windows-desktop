@@ -16,7 +16,7 @@
  * mocking modules — a route test that could not stub this would really terminate
  * the developer's own Codex.
  *
- * Plan and audit history: `devlog/_plan/260815_gui_codex_restart/010_phase1_backend_endpoint.md`.
+ * Plan and audit history: `devlog/_fin/260815_gui_codex_restart/010_phase1_backend_endpoint.md`.
  */
 import {
   collectCodexAppServerCatalogState,

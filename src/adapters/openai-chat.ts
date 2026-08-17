@@ -289,10 +289,20 @@ function invalidChoicesEvent(usage?: OcxUsage): Extract<AdapterEvent, { type: "e
   };
 }
 
-function invalidToolCallsEvent(usage?: OcxUsage): Extract<AdapterEvent, { type: "error" }> {
+function invalidToolCallsEvent(
+  rawToolCalls: unknown,
+  mode: "stream" | "response",
+  usage?: OcxUsage,
+): Extract<AdapterEvent, { type: "error" }> {
+  const diagnostic = diagnoseInvalidToolCalls(rawToolCalls, mode);
+  const detail = diagnostic
+    ? ` (${diagnostic.reason}${diagnostic.callIndex !== undefined ? `; callIndex=${diagnostic.callIndex}` : ""}; valueType=${diagnostic.valueType})`
+    : "";
   return {
     type: "error",
-    message: "upstream response contained invalid tool calls",
+    status: 502,
+    errorType: "upstream_error",
+    message: `upstream response contained invalid tool calls${detail}`,
     ...(usage !== undefined ? { usage } : {}),
   };
 }
@@ -333,6 +343,83 @@ type InvalidToolCallReason =
   | "tool_call_function_name_blank"
   | "tool_call_function_arguments_invalid";
 
+type InvalidToolCallDiagnostic = {
+  reason: InvalidToolCallReason;
+  callIndex?: number;
+  valueType: string;
+};
+
+type InvalidFieldShape =
+  | {
+      kind: "object";
+      knownKeys: string[];
+      knownFieldTypes: Record<string, string>;
+      hasUnknownKeys: boolean;
+    }
+  | {
+      kind: "array";
+      length: number;
+    };
+
+const SAFE_TOOL_CALL_SHAPE_KEYS = [
+  "name",
+  "type",
+  "value",
+  "function",
+  "arguments",
+  "id",
+  "index",
+] as const;
+const SAFE_TOOL_CALL_SHAPE_KEY_SET = new Set<string>(SAFE_TOOL_CALL_SHAPE_KEYS);
+
+function structuralValueType(value: unknown): string {
+  return value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+}
+
+function invalidToolCallField(rawToolCalls: unknown, diagnostic: InvalidToolCallDiagnostic): unknown {
+  if (diagnostic.reason === "tool_calls_not_array") return rawToolCalls;
+  if (!Array.isArray(rawToolCalls) || diagnostic.callIndex === undefined) return undefined;
+
+  const rawToolCall = rawToolCalls[diagnostic.callIndex];
+  if (diagnostic.reason === "tool_call_not_object") return rawToolCall;
+  if (!isRecord(rawToolCall)) return undefined;
+  if (diagnostic.reason === "tool_call_function_not_object") return rawToolCall.function;
+
+  const rawFunction = rawToolCall.function;
+  switch (diagnostic.reason) {
+    case "tool_call_id_invalid":
+      return rawToolCall.id;
+    case "tool_call_function_name_invalid":
+      return isRecord(rawFunction) ? rawFunction.name : undefined;
+    case "tool_call_function_arguments_invalid":
+      return isRecord(rawFunction) ? rawFunction.arguments : undefined;
+    default:
+      return undefined;
+  }
+}
+
+function fingerprintInvalidField(value: unknown): InvalidFieldShape | undefined {
+  if (Array.isArray(value)) return { kind: "array", length: value.length };
+  if (!isRecord(value)) return undefined;
+
+  const knownKeys: string[] = [];
+  const knownFieldTypes: Record<string, string> = {};
+  for (const key of SAFE_TOOL_CALL_SHAPE_KEYS) {
+    if (!Object.hasOwn(value, key)) continue;
+    knownKeys.push(key);
+    knownFieldTypes[key] = structuralValueType(value[key]);
+  }
+
+  let hasUnknownKeys = false;
+  for (const key of Object.keys(value)) {
+    if (!SAFE_TOOL_CALL_SHAPE_KEY_SET.has(key)) {
+      hasUnknownKeys = true;
+      break;
+    }
+  }
+  return { kind: "object", knownKeys, knownFieldTypes, hasUnknownKeys };
+}
+
 /**
  * Streamed string fields are absent when null or undefined (#1731): OpenAI-compatible
  * streamers repeat already-sent `id`/`name`/`arguments` as null on continuation deltas.
@@ -350,7 +437,7 @@ function isInvalidStreamStringField(value: unknown): boolean {
 function diagnoseInvalidToolCalls(
   rawToolCalls: unknown,
   mode: "stream" | "response",
-): { reason: InvalidToolCallReason; callIndex?: number; valueType: string } | undefined {
+): InvalidToolCallDiagnostic | undefined {
   if (!Array.isArray(rawToolCalls)) {
     return { reason: "tool_calls_not_array", valueType: rawToolCalls === null ? "null" : typeof rawToolCalls };
   }
@@ -426,8 +513,15 @@ function diagnoseInvalidToolCalls(
 }
 
 function logInvalidToolCalls(mode: "stream" | "response", rawToolCalls: unknown): void {
+  if (!isDebugEnabled()) return;
   const diagnostic = diagnoseInvalidToolCalls(rawToolCalls, mode);
-  if (diagnostic) debugProviderDiagnostic("openai-chat", "invalid-tool-calls", { mode, ...diagnostic });
+  if (!diagnostic) return;
+  const fieldShape = fingerprintInvalidField(invalidToolCallField(rawToolCalls, diagnostic));
+  debugProviderDiagnostic("openai-chat", "invalid-tool-calls", {
+    mode,
+    ...diagnostic,
+    ...(fieldShape ? { fieldShape } : {}),
+  });
 }
 
 function developerSystemText(message: OcxMessage): string | undefined {
@@ -1184,7 +1278,6 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
 
     buildRequest(parsed: OcxParsedRequest) {
       const { url, headers, hasCredential } = openAIChatTransport(provider);
-
       const messages = messagesToChatFormat(parsed, provider);
       const tools = toolsToChatFormatForProvider(parsed, provider);
       const toolChoice = toolChoiceToChatFormat(parsed.options.toolChoice, parsed.context.tools, provider);
@@ -1479,12 +1572,12 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
             // tolerated as absent because OpenAI-compatible providers may emit it as stream padding.
             if (!Array.isArray(rawToolCalls)) {
               logInvalidToolCalls("stream", rawToolCalls);
-              return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
+              return yield* terminateWithError(invalidToolCallsEvent(rawToolCalls, "stream", pendingUsage));
             }
             for (const rawToolCall of rawToolCalls) {
               if (!isRecord(rawToolCall)) {
                 logInvalidToolCalls("stream", rawToolCalls);
-                return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
+                return yield* terminateWithError(invalidToolCallsEvent(rawToolCalls, "stream", pendingUsage));
               }
               const tc = rawToolCall as {
                 index?: number;
@@ -1499,7 +1592,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
               if (rawFunction !== undefined && rawFunction !== null) {
                 if (!isRecord(rawFunction)) {
                   logInvalidToolCalls("stream", rawToolCalls);
-                  return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
+                  return yield* terminateWithError(invalidToolCallsEvent(rawToolCalls, "stream", pendingUsage));
                 }
                 const rawName = rawFunction.name;
                 const rawArguments = rawFunction.arguments;
@@ -1508,12 +1601,12 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
                 // non-string value still fails closed before entering the accumulator.
                 if (isInvalidStreamStringField(rawName) || isInvalidStreamStringField(rawArguments)) {
                   logInvalidToolCalls("stream", rawToolCalls);
-                  return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
+                  return yield* terminateWithError(invalidToolCallsEvent(rawToolCalls, "stream", pendingUsage));
                 }
               }
               if (isInvalidStreamStringField(tc.id)) {
                 logInvalidToolCalls("stream", rawToolCalls);
-                return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
+                return yield* terminateWithError(invalidToolCallsEvent(rawToolCalls, "stream", pendingUsage));
               }
               const key = typeof tc.index === "number"
                 ? `i:${tc.index}`
@@ -1675,12 +1768,12 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         if (rawToolCalls !== undefined && rawToolCalls !== null) {
           if (!Array.isArray(rawToolCalls)) {
             logInvalidToolCalls("response", rawToolCalls);
-            return [invalidToolCallsEvent(usage)];
+            return [invalidToolCallsEvent(rawToolCalls, "response", usage)];
           }
           for (const rawToolCall of rawToolCalls) {
             if (!isRecord(rawToolCall) || !isRecord(rawToolCall.function)) {
               logInvalidToolCalls("response", rawToolCalls);
-              return [invalidToolCallsEvent(usage)];
+              return [invalidToolCallsEvent(rawToolCalls, "response", usage)];
             }
             const id = rawToolCall.id;
             const name = rawToolCall.function.name;
@@ -1691,7 +1784,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
             if (typeof id !== "string" || typeof name !== "string" || typeof args !== "string"
               || name.trim().length === 0) {
               logInvalidToolCalls("response", rawToolCalls);
-              return [invalidToolCallsEvent(usage)];
+              return [invalidToolCallsEvent(rawToolCalls, "response", usage)];
             }
             events.push({ type: "tool_call_start", id, name });
             events.push({ type: "tool_call_delta", arguments: args });

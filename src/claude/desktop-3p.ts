@@ -191,6 +191,7 @@ function collectDesktop3pModels(
   nativeSlugs: string[],
   routedModels: Array<Desktop3pRoutedModel>,
   profile?: OcxClaudeDesktopProfile,
+  nativeContextCap?: number,
 ): { models: Desktop3pModelEntry[]; registry: Map<string, string> } {
   const registry = new Map<string, string>();
   const models: Desktop3pModelEntry[] = [];
@@ -199,7 +200,7 @@ function collectDesktop3pModels(
     // Desktop DTO uses, so a native 1M/372k model resolves identically in the written
     // config and on the dashboard.
     ...nativeSlugs.map(id => {
-      const contextWindow = nativeOpenAiContextWindow(id);
+      const contextWindow = nativeOpenAiContextWindow(id, nativeContextCap);
       return { provider: "native", id, ...(contextWindow !== undefined ? { contextWindow } : {}) };
     }),
     ...routedModels,
@@ -292,8 +293,9 @@ export function buildDesktop3pRegistry(
   nativeSlugs: string[],
   routedModels: Array<Desktop3pRoutedModel>,
   profile?: OcxClaudeDesktopProfile,
+  nativeContextCap?: number,
 ): Map<string, string> {
-  const { registry } = collectDesktop3pModels(nativeSlugs, routedModels, profile);
+  const { registry } = collectDesktop3pModels(nativeSlugs, routedModels, profile, nativeContextCap);
   desktop3pRegistry = registry;
   return registry;
 }
@@ -303,8 +305,9 @@ export function generateDesktop3pModels(
   nativeSlugs: string[],
   routedModels: Array<Desktop3pRoutedModel>,
   profile?: OcxClaudeDesktopProfile,
+  nativeContextCap?: number,
 ): Desktop3pModelEntry[] {
-  const { models, registry } = collectDesktop3pModels(nativeSlugs, routedModels, profile);
+  const { models, registry } = collectDesktop3pModels(nativeSlugs, routedModels, profile, nativeContextCap);
   desktop3pRegistry = registry;
   return models;
 }
@@ -334,6 +337,7 @@ export function generateDesktop3pConfig(
   apiKey = "ocx",
   mode: Desktop3pConfigMode = "static",
   profile?: OcxClaudeDesktopProfile,
+  nativeContextCap?: number,
 ): object {
   const base = {
     inferenceProvider: "gateway",
@@ -343,14 +347,14 @@ export function generateDesktop3pConfig(
   };
   if (mode === "discovery") {
     // Build/refresh the decode registry even though no static list is emitted.
-    buildDesktop3pRegistry(nativeSlugs, routedModels, profile);
+    buildDesktop3pRegistry(nativeSlugs, routedModels, profile, nativeContextCap);
     return { ...base, modelDiscoveryEnabled: true };
   }
   return {
     ...base,
     modelDiscoveryEnabled: mode === "hybrid",
     inferenceModels: (() => {
-      const models = generateDesktop3pModels(nativeSlugs, routedModels, profile);
+      const models = generateDesktop3pModels(nativeSlugs, routedModels, profile, nativeContextCap);
       // Fail loud at the write boundary rather than ship a config Desktop rejects:
       // the output counterpart of the request-path guards.
       assertDesktop3pModelsValid(models);
@@ -554,6 +558,7 @@ export function writeDesktop3pConfig(
   apiKey?: string,
   mode: Desktop3pConfigMode = "static",
   profile?: OcxClaudeDesktopProfile,
+  nativeContextCap?: number,
 ): { written: boolean; path: string; reason?: string; fingerprint?: string } {
   const libraryPath = resolveDesktop3pConfigLibraryPath();
   const metadataPath = join(libraryPath, "_meta.json");
@@ -571,7 +576,7 @@ export function writeDesktop3pConfig(
       ? metadata.entries.map(current => current === existing ? entry : current)
       : [...metadata.entries, entry];
 
-    const configJson = JSON.stringify(generateDesktop3pConfig(port, nativeSlugs, routedModels, apiKey, mode, profile), null, 2) + "\n";
+    const configJson = JSON.stringify(generateDesktop3pConfig(port, nativeSlugs, routedModels, apiKey, mode, profile, nativeContextCap), null, 2) + "\n";
     const fingerprint = createHash("sha256").update(configJson).digest("hex").slice(0, 16);
     const { backupPath } = atomicReplaceDesktopConfig(configPath, configJson);
     try {

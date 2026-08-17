@@ -89,6 +89,10 @@ export function shouldMarkOneMillion(window: number | undefined, auto: AutoConte
 export function buildClaudeContextWindows(
   nativeSlugs: readonly string[],
   routedModels: readonly CatalogModel[],
+  // A configured providerContextCaps.openai has to reach the native rows here too. Without
+  // it the Claude surface keeps advertising the uncapped authoritative window while the
+  // Codex catalog advertises the capped one, and the two disagree about the same model.
+  nativeContextCap?: number,
 ): Record<string, number> {
   const out: Record<string, number> = {};
   const put = (key: string | null, value: number) => {
@@ -96,7 +100,7 @@ export function buildClaudeContextWindows(
     if (out[key] === undefined) out[key] = value; // first-wins (registry policy)
   };
   for (const slug of nativeSlugs) {
-    const window = nativeOpenAiContextWindow(slug);
+    const window = nativeOpenAiContextWindow(slug, nativeContextCap);
     if (typeof window !== "number" || window <= 0) continue;
     put(slug, window);
     put(desktop3pAlias("native", slug), window);

@@ -11,7 +11,7 @@ import { isCodexAccountPaused } from "./account-pause";
 import { ConfigMutationLockError } from "../config";
 import { isCodexAccountUsable } from "./account-usability";
 import { reconcileMainCodexAccountRuntimeState } from "./account-lifecycle";
-import { MAIN_CODEX_ACCOUNT_ID, getMainAccountToken } from "./main-account";
+import { MAIN_CODEX_ACCOUNT_ID, getMainAccountToken, isMainAccountTokenLive } from "./main-account";
 import { isNativeMainTrafficBlocked } from "./native-profile-startup";
 import {
   codexQuotaScopeForModel,
@@ -451,7 +451,32 @@ export function applyCodexAuthContextToProvider(
   };
 }
 
-export function headersForCodexAuthContext(headers: Headers, ctx: CodexAuthContext): Headers {
+export class CodexMainSubstitutionUnavailableError extends Error {
+  constructor() {
+    super("No usable Codex main credential to substitute for an admission bearer");
+    this.name = "CodexMainSubstitutionUnavailableError";
+  }
+}
+
+/**
+ * Build the upstream auth headers for one Codex turn.
+ *
+ * The two credential domains meet here, and only here:
+ *
+ * - `pool` / `main-pool` always OVERWRITE with the stored account credential. Whatever the
+ *   caller sent is irrelevant to what we send upstream.
+ * - `main` with an admission-bearer caller (#1686) must substitute the stored main credential.
+ *   The caller proved admission with one of OUR secrets, which must never leave the process, so
+ *   the only two acceptable outcomes are replaced-with-stored-main or fail-before-any-IO.
+ *   Silently forwarding would be the leak validateForwardAdmissionCredential exists to prevent.
+ * - `main` with a dedicated-header caller keeps the existing intentional passthrough: the bearer
+ *   there is the user's own ChatGPT credential, not ours.
+ */
+export function materializeCodexUpstreamAuth(
+  headers: Headers,
+  ctx: CodexAuthContext,
+  options: { substituteMainCredential?: boolean } = {},
+): Headers {
   const selected = new Headers();
   for (const name of FORWARD_HEADERS) {
     const value = headers.get(name);
@@ -460,8 +485,24 @@ export function headersForCodexAuthContext(headers: Headers, ctx: CodexAuthConte
   if (ctx.kind === "pool" || ctx.kind === "main-pool") {
     selected.set("authorization", `Bearer ${ctx.accessToken}`);
     selected.set("chatgpt-account-id", ctx.chatgptAccountId);
+    return selected;
+  }
+  if (ctx.kind === "main" && options.substituteMainCredential === true) {
+    const stored = getMainAccountToken();
+    // Fail BEFORE any upstream I/O. Falling through here would send the admission secret.
+    if (!stored?.accessToken || !isMainAccountTokenLive()) {
+      throw new CodexMainSubstitutionUnavailableError();
+    }
+    selected.set("authorization", `Bearer ${stored.accessToken}`);
+    if (stored.chatgptAccountId) selected.set("chatgpt-account-id", stored.chatgptAccountId);
+    return selected;
   }
   return selected;
+}
+
+/** @deprecated Prefer materializeCodexUpstreamAuth; kept for call sites without admission context. */
+export function headersForCodexAuthContext(headers: Headers, ctx: CodexAuthContext): Headers {
+  return materializeCodexUpstreamAuth(headers, ctx);
 }
 
 export function isCodexAuthContextUsable(ctx: CodexAuthContext, config: OcxConfig): boolean {
