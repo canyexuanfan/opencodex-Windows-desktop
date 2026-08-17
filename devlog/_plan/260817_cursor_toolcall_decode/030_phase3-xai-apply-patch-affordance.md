@@ -163,7 +163,12 @@ Options, ranked after two audits:
 3. **Native Responses routing.** Needs a live capability probe on both xai
    surfaces; risks OAuth transport and continuation regressions.
 
-**Chosen: (2), explicitly as an experiment**, with the identity seam as declared
+**Chosen: (2) — but CONDITIONAL on reproduction.** Nothing below is implemented
+until the measurement cycle above reproduces the symptom. If it does not, this
+phase closes NOOP with evidence and the options stay on record. Read the rest of
+this section as "what we would build IF the defect is real", not as a commitment.
+
+Chosen if reproduced: (2), explicitly as an experiment, with the identity seam as declared
 scope. If a live run still shows Grok avoiding `apply_patch`, escalate to (1)
 rather than iterating on wording.
 
@@ -184,6 +189,19 @@ rather than iterating on wording.
    provider identity, so the note survives a failover (round 3 finding 2).
 
 ## Done when
+
+**Measurement cycle (runs first).** Done when the wire is captured for an xai
+`apply_patch` request, a code-mode-disabled probe and a larger multi-file probe
+have both been run, and the outcome is recorded either as a reproduced symptom
+(then the implementation criteria below apply) or as NOOP with evidence.
+
+Harness note (round 4 finding 4): every routed catalog row is stamped
+`code_mode_only` (`src/codex/catalog/parsing.ts:424`), so the probe cannot simply
+"turn code mode off" — it needs a direct Responses request fixture or a
+controlled catalog override that exposes only the top-level freeform tool. Name
+the chosen harness before running the probe.
+
+**Implementation cycle (only if reproduced).**
 
 All seven pass, typecheck clean, suite green on `ssh lidge`, pushed — and the
 report states plainly that the behavioral claim is **unverified pending a live

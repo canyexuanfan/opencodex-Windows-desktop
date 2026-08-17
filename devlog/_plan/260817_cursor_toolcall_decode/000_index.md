@@ -18,14 +18,13 @@ session resets. This unit stops guessing and reads the wire.
 | `004` | External wire/format evidence (public reverse-engineering, vendor docs) |
 | `010` | Phase 1 — gate the clean-EOF terminal (High) |
 | `020` | Phase 2 — tool-result image passthrough (High) |
-| `030` | Phase 3 — `xai/grok-4.6` does not use `apply_patch` |
+| `030` | Phase 3 — `xai/grok-4.6` and `apply_patch`: measurement first (symptom unreproduced) |
 
 ## Findings summary
 
-Two defects are proven by source reading; a third is a proven *lossy
-conversion* whose behavioral consequence is explicitly unproven. Each gets its
-own implementation phase. Two hypotheses were **disproved** and are recorded as such, because a
-decode that only confirms its own priors is not a decode.
+Two defects are proven by source reading and get implementation phases. A third
+is a proven *lossy conversion* whose behavioral symptom did **not** reproduce in a
+live probe, so its phase begins as measurement and may close NOOP.
 
 | # | Defect | Severity | Phase |
 |---|--------|----------|-------|
@@ -133,3 +132,24 @@ Also folded: test 8's byte-identical comparison must freeze `crypto.randomUUID()
 The finding count fell 10 -> 7 -> 5 and the severity fell with it: round 3 found
 no unimplementable design, only under-specified ones. `010` has now been judged
 coherent, regression-free, and implementable by two independent reviewers.
+
+### Round 4
+
+The fourth reviewer confirmed the round-3 corrections landed correctly and that
+`010` tests 1, 2, 4, 5 are writable against current fixtures, then returned
+**FAIL with one blocker and four refinements**:
+
+| # | Finding | Resolution |
+|---|---------|------------|
+| 1 **BLOCKER** | `010` could still double-error: `recordToolCall` emits unknown-tool/limit errors WITHOUT setting `state.terminated` while leaving earlier calls open (`protobuf-events.ts:1103`, `:1107`; pinned by `tests/cursor-protobuf-events.test.ts:534`), so the EOF branch would add a second terminal via `cursor.ts:180` | predicate widened to no-terminal-of-any-kind with an explicit emitted-error flag; test 6 added |
+| 2 | `010` test 3 rationale overstated: normal synthetic suspension finalizes with an empty call set (that is test 4) | fixture clarified - reach `expectedClose` plus an open call via an error-triggered cancellation with an open sibling |
+| 3 | `030` still chose option 2 and kept implementation Done criteria despite the unreproduced symptom | option 2 made explicitly conditional on reproduction; measurement exit criteria added ahead of implementation criteria |
+| 4 | The code-mode-disabled probe has no harness: every routed catalog row is stamped `code_mode_only` (`src/codex/catalog/parsing.ts:424`) | harness must be named before probing - direct Responses fixture or controlled catalog override |
+| 5 | `000` still labelled phase 3 as does-not-use-apply_patch and claimed every finding gets an implementation phase | document map and summary corrected |
+
+Finding 1 is the one that justifies four rounds. It is the **same double-terminal
+defect round 2 caught**, surviving in a path neither of us had looked at: the
+corrected predicate was right about `turnEnded` and the synthetic finalize, and
+still wrong about mapper errors. Rounds 2 and 3 had both already blessed `010`.
+
+Trajectory: 10 -> 7 -> 5 -> 1 blocker plus 4 refinements.

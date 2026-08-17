@@ -24,6 +24,31 @@ That does not invalidate the check — it corrects its meaning. The predicate we
 need is **"was a terminal already emitted downstream?"**, and `state.terminated`
 is exactly that for both paths. The doc, not the code, was wrong.
 
+## An emitted error is also a terminal (round 4 blocker)
+
+Round 4 found the predicate above is still insufficient. `recordToolCall` can emit
+an error — unknown tool (`protobuf-events.ts:1103`) or tool-call limit exceeded
+(`:1107`) — **without** setting `state.terminated`, and while EARLIER calls stay
+open. `tests/cursor-protobuf-events.test.ts:534` pins exactly that: after the
+limit error, `openToolCalls.size` is still 2.
+
+That error already reached the bridge as `response.failed`. If the EOF branch
+then sees open calls and no `terminated`, it rejects, and `cursor.ts:180` emits a
+**second** terminal error for a turn that already failed — the same double-terminal
+defect round 2 caught in a different disguise.
+
+**Fix: track downstream terminality explicitly.** The condition for failing at EOF
+is "no terminal of ANY kind has been emitted downstream", which is broader than
+`state.terminated`. Record an emitted-error flag on the transport (or extend the
+event state to mark itself terminal when it emits an `error`), and require:
+
+```
+!expectedClose && !state.terminated && !emittedTerminalError && openToolCalls.size > 0
+```
+
+Setting `state.terminated` inside the error paths of `recordToolCall` is the
+smaller change, but it overloads a field other code reads; prefer the explicit flag
+unless implementation shows otherwise. Decide in B, and record which was chosen.
 ## Single terminal owner (audit correction)
 
 The original plan wanted to call `finalizeTurnEvents` at EOF *and* `settleFail`.
@@ -87,16 +112,20 @@ Each must fail before the change and pass after:
 1. EOF after >=1 frame with an open tool call and no terminal -> run rejects with
    `CursorStreamTruncatedError` naming the open call id.
 2. EOF after a real `turnEnded` -> still graceful, still emits `done`.
-3. EOF during `expectedClose` (client-tool suspension) with an open call -> still
-   graceful. This is the regression that would break every working Computer Use
-   turn, so it is mandatory.
+3. EOF during `expectedClose` with an open call -> still graceful. Fixture note
+   (round 4 finding 2): normal synthetic suspension finalizes with an EMPTY call
+   set, which is test 4. To get `expectedClose` together with a surviving open
+   call, construct it through an error-triggered cancellation with an open sibling.
 4. EOF after the synthetic client-tool finalize (`state.terminated` set, no
    `turnEnded`) -> still graceful. Directly guards audit finding 5.
 5. EOF after >=1 frame with **no** open call -> unchanged graceful finish,
    pinning the deliberate scope boundary above.
+6. **Mapper error + surviving open call + EOF** -> exactly ONE terminal error
+   reaches the bridge, not two. Regression guard for the round 4 blocker; build it
+   on the fixture at `tests/cursor-protobuf-events.test.ts:534`.
 
 ## Done when
 
-All five pass, `bun run typecheck` clean, cursor suite green on `ssh lidge`,
+All six pass, `bun run typecheck` clean, cursor suite green on `ssh lidge`,
 pushed. Evidence: exact command, output tail, pushed SHA.
 
