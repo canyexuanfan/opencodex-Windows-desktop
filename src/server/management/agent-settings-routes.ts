@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { CatalogModel } from "../../codex/catalog";
-import { catalogModelSlug, invalidateCodexModelsCache, nativeModelRows, uniqueCatalogModelsForPublicList } from "../../codex/catalog";
+import { catalogModelSlug, invalidateCodexModelsCache, nativeContextLimits, nativeModelRows, uniqueCatalogModelsForPublicList } from "../../codex/catalog";
 import {
   DEFAULT_SUBAGENT_MODELS,
   codexAutoStartEnabled,
@@ -207,7 +207,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
         current.apiKeys?.[0]?.key,
         "static",
         current.claudeCode.desktopProfile,
-        providerContextCap(current, OPENAI_CODEX_PROVIDER_ID),
+        nativeContextLimits(current),
       );
       if (result.written && result.fingerprint) {
         current.claudeCode = { ...current.claudeCode, desktopProfile: { ...current.claudeCode.desktopProfile, appliedFingerprint: result.fingerprint, appliedAt: new Date().toISOString() } };
@@ -886,7 +886,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
         latest.apiKeys?.[0]?.key,
         mode,
         state.profile,
-        providerContextCap(latest, OPENAI_CODEX_PROVIDER_ID),
+        nativeContextLimits(latest),
       );
       if (!result.written) return jsonResponse({ error: result.reason ?? "Claude Desktop apply failed", saved: true, path: result.path }, 500);
       // Persist applied fingerprint + timestamp so GUI can show saved-vs-applied state.
@@ -978,7 +978,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       if (isDisabled(m.provider, m.id)) continue;
       aliases.push({ id: claudeCodeAlias(m.provider, m.id), display_name: `${m.id} (${m.provider})` });
     }
-    const contextWindows = buildClaudeContextWindows([...visibleNativeSlugs(config)], models, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID));
+    const contextWindows = buildClaudeContextWindows([...visibleNativeSlugs(config)], models, nativeContextLimits(config));
     const webSearchOverride = config.claudeCode?.webSearchSidecar;
     const visionOverride = config.claudeCode?.visionSidecar;
     // Auto is a RESOLUTION, recomputed per request — never stored state. Detection is
@@ -1010,7 +1010,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       classifierModel: config.claudeCode?.classifierModel ?? "",
       classifierFallbacks: config.claudeCode?.classifierFallbacks ?? [],
       systemEnv: config.claudeCode?.systemEnv === true,
-      autoConnectSupported: process.platform === "darwin",
+      autoConnectSupported: (ctx.deps.platform ?? process.platform) === "darwin",
       maxContextTokens: config.claudeCode?.maxContextTokens ?? null,
       alwaysEnableEffort: config.claudeCode?.alwaysEnableEffort === true,
       autoContext: config.claudeCode?.autoContext !== false,

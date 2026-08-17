@@ -229,7 +229,7 @@ describe("route explainability (RI-09)", () => {
         },
       },
     }, "openai", "gpt-5.6-sol");
-    expect(evidence.contextWindow).toBe(922_000);
+    expect(evidence.contextWindow).toBe(272_000);
   });
 
   test("CLI logs explain encodes request ids and supports --json", async () => {

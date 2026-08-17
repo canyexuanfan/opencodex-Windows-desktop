@@ -192,7 +192,13 @@ async function completeMockCodexOAuth(options: {
         catalogRefreshPending?: boolean;
       };
       if (state.status !== "pending") return { startStatus: resp!.status, state };
-      await new Promise<void>(resolve => queueMicrotask(resolve));
+      // A microtask only yields to work already queued. The login flow awaits real
+      // I/O -- credential reads, the WHAM fetch -- so under load its continuation can
+      // land on the macrotask queue instead, and 500 microtask turns burn through
+      // without it ever running. The flow then hits its own 150-poll ceiling and
+      // reports "Login timed out" where the test asserts a specific error, which reads
+      // as a behavioural regression rather than a starved poller.
+      await new Promise<void>(resolve => setImmediate(resolve));
     }
     throw new Error(`Timed out waiting for Codex OAuth flow ${started.flowId}`);
   } finally {
@@ -606,6 +612,7 @@ describe("codex-auth API", () => {
       }
       return previousFetch(input);
     }) as typeof fetch;
+    let pendingRequests: ReturnType<typeof handleCodexAuthAPI>[] = [];
     try {
       const request = () => {
         const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
@@ -613,7 +620,10 @@ describe("codex-auth API", () => {
       };
       const first = request();
       const joiner = request();
-      for (let attempt = 0; attempt < 20 && requestCount === 0; attempt++) await Promise.resolve();
+      pendingRequests = [first, joiner];
+      // Credential locking crosses OS I/O on Windows, so microtask-only polling can fail before
+      // fetch starts and leave both requests running into the next test with native-main claimed.
+      for (let attempt = 0; attempt < 200 && requestCount === 0; attempt++) await Bun.sleep(10);
       expect(requestCount).toBe(1);
       release();
       const bodies = await Promise.all([first, joiner].map(async pending => {
@@ -624,6 +634,7 @@ describe("codex-auth API", () => {
       expect(bodies[1].accounts.find(account => account.id === "quota-a")?.quotaProbeSkipped).not.toBe(true);
     } finally {
       release();
+      await Promise.allSettled(pendingRequests);
       clearQuotaOwners();
     }
   });
@@ -1379,6 +1390,8 @@ describe("codex-auth API", () => {
     let markFetchStarted!: () => void;
     const fetchStarted = new Promise<void>(resolve => { markFetchStarted = resolve; });
     const fetchGate = new Promise<void>(resolve => { releaseFetch = resolve; });
+    const nativeMainDrain = acquireNativeMainProfileDrain("pool-plan-concurrent");
+    expect(nativeMainDrain).not.toBeNull();
     globalThis.fetch = (async input => {
       if (String(input) === "https://auth.openai.com/oauth/token") {
         tokenRefreshCalls += 1;
@@ -1419,6 +1432,8 @@ describe("codex-auth API", () => {
       expect(calls).toBe(1);
       expect(configCommits).toBe(1);
     } finally {
+      releaseFetch();
+      nativeMainDrain?.release();
       setPersistedConfigMutationBeforeCommitForTests(null);
     }
   });

@@ -74,7 +74,7 @@ import { createAdmissionGate, ResourceAdmissionError, type AdmissionMetrics } fr
 
 import { CODEX_CUSTOM_MODEL_CATALOG_KIND, JAWCODE_CATALOG_AUGMENT_PROVIDERS, catalogModelSlug, shouldExposeRoutedModel } from "./parsing";
 import type { CatalogModel } from "./parsing";
-import { disabledNativeSlugs, hasComboTargets, isNativeOpenAiCapabilityAliasModel, nativeDefaultReasoningEffort, nativeInputModalities, nativeOpenAiContextWindow, nativeOpenAiMaxInputTokens, nativeOpenAiSlugs, nativeParallelToolCalls, nativeReasoningEfforts } from "./metadata";
+import { disabledNativeSlugs, hasComboTargets, isNativeOpenAiCapabilityAliasModel, NATIVE_GPT56_MAX_INPUT_TOKENS, nativeContextLimits, nativeDefaultReasoningEffort, nativeInputModalities, nativeOpenAiContextWindow, nativeOpenAiMaxInputTokens, nativeOpenAiSlugs, nativeParallelToolCalls, nativeReasoningEfforts } from "./metadata";
 import { deriveComboCatalogModel, normalizedOpenAiApiSignature, openAiApiCollisionWarnings, replaceLastComboCatalogOmissions, warnUncataloguedComboOnce } from "./aggregation";
 import type { ComboCatalogOmission } from "./aggregation";
 import type { CatalogGatherProviderAuthEvidence } from "./filesystem-evidence";
@@ -1707,7 +1707,7 @@ async function gatherRoutedModelsUncached(
     // configs that will never need it.
   } else {
     const disabled = disabledNativeSlugs(config);
-    const openaiContextCap = providerContextCap(config, OPENAI_CODEX_PROVIDER_ID);
+    const openaiContextCap = nativeContextLimits(config);
     const requiredNativeComboTargets = new Set(listComboIds(config).flatMap(id => {
       const combo = getCombo(config, id);
       return combo?.targets.flatMap(target => (
@@ -1747,15 +1747,17 @@ async function gatherRoutedModelsUncached(
     const combo = getCombo(config, id);
     if (!combo) continue;
     const nativeContextWindow = combo.nativeAlias && combo.alias
-      ? nativeOpenAiContextWindow(combo.alias, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID))
+      ? nativeOpenAiContextWindow(combo.alias, nativeContextLimits(config))
       : undefined;
     const nativeAliasMaxInput = combo.nativeAlias && combo.alias
-      ? nativeOpenAiMaxInputTokens(combo.alias, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID))
+      ? (combo.alias.startsWith("gpt-5.6-") || combo.alias.includes("daybreak")
+        ? NATIVE_GPT56_MAX_INPUT_TOKENS
+        : nativeOpenAiMaxInputTokens(combo.alias) ?? nativeOpenAiContextWindow(combo.alias))
       : undefined;
     const nativeAliasFallback = combo.nativeAlias && combo.alias && nativeContextWindow !== undefined
       ? {
         contextWindow: nativeContextWindow,
-        ...(nativeAliasMaxInput !== undefined ? { maxInputTokens: Math.min(nativeAliasMaxInput, nativeContextWindow) } : {}),
+        ...(nativeAliasMaxInput !== undefined ? { maxInputTokens: nativeAliasMaxInput } : {}),
         inputModalities: nativeInputModalities(combo.alias),
         reasoningEfforts: nativeReasoningEfforts(combo.alias),
       }
@@ -1801,18 +1803,22 @@ async function gatherRoutedModelsUncached(
       && providerForCanonicalCheck !== undefined
       && isCanonicalOpenAiForwardProvider(providerForCanonicalCheck)
       && isNativeOpenAiCapabilityAliasModel(cm.modelId);
+    const customNativeLimits = {
+      ...nativeContextLimits(config),
+      ...(typeof cm.contextWindow === "number" && cm.contextWindow > 0
+        ? { modelWindows: { ...(nativeContextLimits(config).modelWindows ?? {}), [cm.modelId]: cm.contextWindow } }
+        : {}),
+    };
     const nativeAliasContextWindow = codexForwardNativeCapabilityAlias
-      ? nativeOpenAiContextWindow(cm.modelId, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID))
+      ? nativeOpenAiContextWindow(cm.modelId, customNativeLimits)
       : undefined;
     const customContextWindow = cm.contextWindow
       ? nativeAliasContextWindow !== undefined
-        ? Math.min(cm.contextWindow, nativeAliasContextWindow)
+        ? nativeAliasContextWindow
         : cm.contextWindow
       : nativeAliasContextWindow;
-    // Input ceiling for a native capability alias, clamped to whatever window we settled on
-    // above. A custom row that lowered the window must not keep the full native input budget.
     const nativeAliasMaxInputTokens = codexForwardNativeCapabilityAlias
-      ? nativeOpenAiMaxInputTokens(cm.modelId, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID))
+      ? nativeOpenAiMaxInputTokens(cm.modelId, customNativeLimits)
       : undefined;
     const customMaxInputTokens = nativeAliasMaxInputTokens !== undefined && customContextWindow !== undefined
       ? Math.min(nativeAliasMaxInputTokens, customContextWindow)

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { CatalogModel } from "../../codex/catalog";
-import { catalogModelSlug, invalidateCodexModelsCache, nativeModelRows, uniqueCatalogModelsForPublicList } from "../../codex/catalog";
+import { catalogModelSlug, invalidateCodexModelsCache, nativeContextLimits, nativeModelRows, uniqueCatalogModelsForPublicList } from "../../codex/catalog";
 import {
   DEFAULT_SUBAGENT_MODELS,
   codexAutoStartEnabled,
@@ -173,7 +173,7 @@ async function syncEnabledClientIntegrations(
         config.apiKeys?.[0]?.key,
         "static",
         config.claudeCode?.desktopProfile,
-        providerContextCap(config, OPENAI_CODEX_PROVIDER_ID),
+        nativeContextLimits(config),
       );
       out.push(r.written
         ? { client: "claude-desktop", ok: true, changed: true }
