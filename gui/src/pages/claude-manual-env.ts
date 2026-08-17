@@ -53,7 +53,9 @@ export function buildManualEnv(state: ClaudeManualEnvState): string {
     ...(marker === "proxy"
       ? ['[ -z "${CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST+x}" ] && export CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1']
       : []),
-    ...(autoCompactActive ? [`export CLAUDE_CODE_AUTO_COMPACT_WINDOW=${state.autoCompactWindow ?? 350000}`] : []),
+    // Mirrors AUTO_COMPACT_WINDOW_DEFAULT in src/claude/context-windows.ts — the copy a user
+    // pastes has to match what the runtime injects, or the manual path compacts elsewhere.
+    ...(autoCompactActive ? [`export CLAUDE_CODE_AUTO_COMPACT_WINDOW=${state.autoCompactWindow ?? 829800}`] : []),
     ...modelEnvExports,
     "claude",
   ].join("\n");
