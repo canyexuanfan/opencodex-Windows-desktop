@@ -31,7 +31,7 @@ decode that only confirms its own priors is not a decode.
 |---|--------|----------|-------|
 | F1 | A clean HTTP/2 EOF after >=1 frame settles the transport as success without `turnEnded`, so `finalizeTurnEvents` never runs and an open tool call vanishes. Non-streaming reports the truncated turn as `completed`. | High | `010` |
 | F2 | Every image part of a tool result is replaced with placeholder text, even though the Cursor protobuf has a first-class `McpImageContent` case that the adapter already uses elsewhere. | High | `020` |
-| F3 | On the `xai` path the freeform `apply_patch` contract is erased (`parser.ts:184`, `openai-chat.ts:1194`). The conversion is provably lossy; that this is *why* grok-4.6 avoids the tool is **not proven** — per-property guidance already exists (`parser.ts:189`). `030` is an experiment, not a fix. | lossy conversion proven; cause unproven | `030` |
+| F3 | On the `xai` path the freeform `apply_patch` contract is erased (`parser.ts:184`, `openai-chat.ts:1194`). The conversion is provably lossy; that this is *why* grok-4.6 avoids the tool is **not proven** — per-property guidance already exists (`parser.ts:189`). `030` is an experiment, not a fix. | lossy conversion proven; **symptom did not reproduce** in a live probe — see 030 | `030` |
 
 ### Disproved hypotheses
 

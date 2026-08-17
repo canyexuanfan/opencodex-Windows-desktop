@@ -97,6 +97,58 @@ grammar tool — only the planned live probe can settle that.
 Any option-3 evaluation must also distinguish public API-key Responses support
 from the OAuth CLI proxy (`xai-transport.ts:101`), which are different surfaces.
 
+## Live probe (2026-08-17) — the premise is now in doubt
+
+The user pointed out that `xai/grok-4.6` and `cursor/grok-4.6` are both
+spawnable as subagents, which turns this phase's central question from
+unprovable into testable. A baseline probe was run before writing any code.
+
+**Setup.** Two identical scratch directories, each with one `greet.js`. One
+subagent per provider, same prompt: change the greeting string, then report
+which tool performed the edit.
+
+**Result: both succeeded.**
+
+| Provider | Edit applied | Tool reported |
+|----------|--------------|---------------|
+| `xai/grok-4.6` | yes, verified by reading the file back | `apply_patch` |
+| `cursor/grok-4.6` | yes, verified by reading the file back | `apply_patch`, explicitly "called from `exec` via `tools.apply_patch`" |
+
+**What this does and does not establish.**
+
+- It does **not** confirm the reported symptom. On this task `xai/grok-4.6` edited
+  the file successfully and named `apply_patch` as the tool.
+- It does **not** exercise the surface this phase is about. The cursor agent
+  stated it reached `apply_patch` through **code mode** — `tools.apply_patch` nested
+  inside `exec` — which is a different path from the top-level freeform tool
+  whose grammar `parser.ts:184` erases. Code mode is exactly the case
+  `tool-catalog-nudge.ts:12-17` describes. The xai agent's bare "`apply_patch`"
+  is ambiguous between the two paths.
+- Self-reported tool names are **not wire evidence**. A model naming a tool is a
+  claim about its own behavior, not a record of what was sent. The routing
+  history DB (`~/.opencodex/routing-history.sqlite`) stopped recording at 16:00
+  local, well before the probe, so the actual request bodies were not captured.
+
+**Consequence for this phase.** The premise — that `xai/grok-4.6` does not use
+`apply_patch` — is not reproduced by the first probe that tried. Implementing a
+guidance change now would be fixing a defect that has not been demonstrated,
+and the identity seam it requires is a real cost (round 3 finding 2).
+
+**Revised first step: reproduce before repairing.** The next cycle of this phase
+is a measurement cycle, not an implementation cycle:
+
+1. Capture the wire. Re-enable request-history recording (or a scoped capture)
+   so the outgoing tool catalog and the returned call are observed, not reported.
+2. Probe with code mode **disabled**, so the top-level freeform `apply_patch` is
+   the only edit affordance. That is the surface this phase theorises about.
+3. Probe a multi-file / larger patch, where authoring the full envelope inside a
+   JSON string is materially harder than a one-line replacement.
+4. Ask the user for the failing case they actually saw, since their report is
+   the only evidence the symptom exists at all.
+
+If the symptom does not reproduce under (2) and (3), the honest outcome for this
+phase is **NOOP with evidence**, not a speculative prompt change. The options
+below stay on record for the case where it does reproduce.
 ## Decision
 
 Options, ranked after two audits:
