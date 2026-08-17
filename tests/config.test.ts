@@ -36,6 +36,25 @@ import { setTrustedWindowsSystemDirectoryResolverForTests } from "../src/lib/win
 import { AtomicWriteResidualTempError, atomicWriteFile, atomicWriteFileAsync, hardenConfigDir, hardenExistingSecret, renameAtomicFile, saveConfig } from "../src/config";
 let testDir = "";
 
+/**
+ * Windows without Developer Mode or admin cannot create a file symlink (EPERM).
+ * Detect once so the dotfiles cases below report a visible skip there rather than
+ * a spurious failure in the fixture, before the writer under test is ever called.
+ * Mirrors the probe in codex-service-manager-probe and claude-agents-inject.
+ */
+const canSymlink = (() => {
+  const dir = mkdtempSync(join(tmpdir(), "ocx-config-symlink-probe-"));
+  try {
+    symlinkSync(join(dir, "probe-target"), join(dir, "probe-link"));
+    return true;
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code === "EPERM") return false;
+    throw e;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+})();
+
 beforeEach(() => {
   testDir = mkdtempSync(join(tmpdir(), "ocx-config-"));
   process.env.OPENCODEX_HOME = testDir;
@@ -2500,7 +2519,7 @@ describe("config.ts – sync writer timeout keying (#840 refinement)", () => {
 });
 
 describe("config.ts – atomic writes preserve symlinked destinations", () => {
-  test("a symlinked destination survives the write and the real file receives it", () => {
+  test.skipIf(!canSymlink)("a symlinked destination survives the write and the real file receives it", () => {
     // Dotfiles shape: ~/.codex/config.toml -> ~/dotfiles/.codex/config.toml
     const repoDir = join(testDir, "dotfiles");
     mkdirSync(repoDir, { recursive: true });
@@ -2517,7 +2536,7 @@ describe("config.ts – atomic writes preserve symlinked destinations", () => {
     expect(readFileSync(link, "utf8")).toBe("rewritten");
   });
 
-  test("no temp file is left beside the link or its target", () => {
+  test.skipIf(!canSymlink)("no temp file is left beside the link or its target", () => {
     const repoDir = join(testDir, "dotfiles-clean");
     mkdirSync(repoDir, { recursive: true });
     const realFile = join(repoDir, "config.toml");
@@ -2549,7 +2568,7 @@ describe("config.ts – atomic writes preserve symlinked destinations", () => {
     expect(readFileSync(destination, "utf8")).toBe("fresh");
   });
 
-  test("a dangling symlink is preserved and the write is refused", () => {
+  test.skipIf(!canSymlink)("a dangling symlink is preserved and the write is refused", () => {
     const link = join(testDir, "dangling.toml");
     symlinkSync(join(testDir, "gone", "config.toml"), link);
 
@@ -2562,7 +2581,7 @@ describe("config.ts – atomic writes preserve symlinked destinations", () => {
 });
 
 describe("config.ts – async atomic writes preserve symlinked destinations", () => {
-  test("a symlinked destination survives the write and the real file receives it", async () => {
+  test.skipIf(!canSymlink)("a symlinked destination survives the write and the real file receives it", async () => {
     const repoDir = join(testDir, "dotfiles-async");
     mkdirSync(repoDir, { recursive: true });
     const realFile = join(repoDir, "config.toml");
@@ -2578,7 +2597,7 @@ describe("config.ts – async atomic writes preserve symlinked destinations", ()
     expect(readFileSync(link, "utf8")).toBe("rewritten");
   });
 
-  test("no temp file is left beside the link or its target", async () => {
+  test.skipIf(!canSymlink)("no temp file is left beside the link or its target", async () => {
     const repoDir = join(testDir, "dotfiles-async-clean");
     mkdirSync(repoDir, { recursive: true });
     const realFile = join(repoDir, "config.toml");
@@ -2601,7 +2620,7 @@ describe("config.ts – async atomic writes preserve symlinked destinations", ()
     expect(readFileSync(destination, "utf8")).toBe("second");
   });
 
-  test("a dangling symlink is preserved and the write is refused", async () => {
+  test.skipIf(!canSymlink)("a dangling symlink is preserved and the write is refused", async () => {
     const link = join(testDir, "dangling-async.toml");
     symlinkSync(join(testDir, "gone-async", "config.toml"), link);
 
