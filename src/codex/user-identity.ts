@@ -39,6 +39,31 @@ const SID_PATTERN = /^S-1-(?:\d+-)+\d+$/i;
  */
 const WINDOWS_POWERSHELL_LOOKUP_TIMEOUT_MS = 8_000;
 
+/**
+ * FOLDERID_LocalAppData, and the flag that makes the lookup ignore the caller's
+ * environment.
+ *
+ * The obvious spelling, .NET's
+ * `GetFolderPath(SpecialFolder.LocalApplicationData)`, is unusable here: on
+* Windows it resolves through `USERPROFILE`, and when the profile named there has
+ * no local AppData directory on disk it returns an EMPTY STRING rather than an
+ * error. Any
+* caller that redirected `USERPROFILE` (the test sandbox does, and so does a
+ * service account whose profile has not been materialized) therefore refused every
+ * coordinator lookup with "returned an empty value", which is the exact
+ * environment dependence this module exists to eliminate.
+ *
+ * `SHGetKnownFolderPath` with a null token and `KF_FLAG_DEFAULT_PATH` reads the
+ * known-folder registration for the effective token instead: it returns the real
+ * per-user path whether or not the directory exists, and it is unaffected by
+ * `USERPROFILE`, `LOCALAPPDATA`, `HOMEDRIVE`, or `HOMEPATH`. A non-null token argument
+* is NOT equivalent: passing (HANDLE)-1 resolves the DEFAULT USER profile
+ * (the built-in "Default" profile), which would key coordination to a namespace
+ * no real account writes to.
+*/
+const WINDOWS_LOCAL_APPDATA_FOLDER_ID = "F1B32785-6FBA-4FCF-9D55-7B8E7F157091";
+const WINDOWS_KF_FLAG_DEFAULT_PATH = "0x00000400";
+
 export class CodexUserIdentityRefusal extends Error {
   readonly code = "CODEX_USER_IDENTITY_REFUSED";
 
@@ -91,6 +116,42 @@ function windowsIdentityPowerShellSpawnOptions(): {
 /** Test-only readback of the trusted executable and static arguments (#1278). */
 export function windowsIdentityPowerShellCommandForTests(expression: string): string[] {
   return windowsIdentityPowerShellCommand(expression);
+}
+
+/**
+ * PowerShell expression yielding the effective account's local AppData path.
+ *
+ * P/Invoke rather than a .NET convenience wrapper, for the reason recorded on
+ * WINDOWS_LOCAL_APPDATA_FOLDER_ID: the wrapper follows `USERPROFILE` and answers
+ * an empty string for a profile whose directory is absent, which is precisely
+ * the environment dependence this module refuses to inherit. The type is added
+ * under a unique name per process because `Add-Type` cannot redefine one.
+ *
+ * The whole sequence is wrapped in one `$(...)` subexpression because the caller
+ * substitutes this text into `[string](<expression>)`; several statements
+ * spliced in bare would close that cast's parenthesis early and fail to parse.
+ */
+function windowsLocalAppDataExpression(): string {
+  const signature =
+    '[DllImport("shell32.dll", CharSet = CharSet.Unicode)] public static extern int '
+    + 'SHGetKnownFolderPath(ref System.Guid id, uint flags, System.IntPtr token, out System.IntPtr path);';
+  const statements = [
+    `$ocxShell = Add-Type -MemberDefinition '${signature}'`
+      + " -Name OcxKnownFolder -Namespace OcxIdentity -PassThru",
+    `$ocxFolderId = [System.Guid]'${WINDOWS_LOCAL_APPDATA_FOLDER_ID}'`,
+    "$ocxPathPtr = [System.IntPtr]::Zero",
+    "$ocxHr = $ocxShell::SHGetKnownFolderPath([ref]$ocxFolderId, "
+      + `${WINDOWS_KF_FLAG_DEFAULT_PATH}, [System.IntPtr]::Zero, [ref]$ocxPathPtr)`,
+    "if ($ocxHr -ne 0) { throw 'SHGetKnownFolderPath failed' }",
+    "try { [System.Runtime.InteropServices.Marshal]::PtrToStringUni($ocxPathPtr) }"
+      + " finally { [System.Runtime.InteropServices.Marshal]::FreeCoTaskMem($ocxPathPtr) }",
+  ];
+  return `$(${statements.join("; ")})`;
+}
+
+/** Test-only readback of the environment-independent known-folder expression. */
+export function windowsLocalAppDataExpressionForTests(): string {
+  return windowsLocalAppDataExpression();
 }
 
 /** Test-only readback of the spawn options shared by the identity lookups (#1278). */
@@ -265,9 +326,7 @@ export function probeCodexCoordinatorNamespace(identity: UserIdentity): Coordina
   }
 
   if (!SID_PATTERN.test(identity.sid)) refuse("The coordinator identity contains an invalid SID.");
-  const localAppData = powershellValue(
-    "[Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)",
-  );
+  const localAppData = powershellValue(windowsLocalAppDataExpression());
   if (!isAbsolute(localAppData)) refuse("Windows LocalAppData resolution returned a relative path.");
   const root = resolve(localAppData, "OpenCodex", "Runtime", "v1", identity.sid.toUpperCase());
   let entry;
@@ -297,9 +356,7 @@ export function probeCodexCoordinatorNamespace(identity: UserIdentity): Coordina
 
 function resolveWindowsRuntimeRoot(identity: Extract<UserIdentity, { platform: "win32" }>): string {
   if (!SID_PATTERN.test(identity.sid)) refuse("The coordinator identity contains an invalid SID.");
-  const localAppData = powershellValue(
-    "[Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)",
-  );
+  const localAppData = powershellValue(windowsLocalAppDataExpression());
   if (!isAbsolute(localAppData)) refuse("Windows LocalAppData resolution returned a relative path.");
 
   // The SID and known-folder values come from the effective token/.NET OS APIs,
