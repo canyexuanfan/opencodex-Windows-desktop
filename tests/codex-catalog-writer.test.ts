@@ -244,15 +244,25 @@ for (const mutator of mutators) {
     //
     // Unbound `some()` checks — "a temp was written, something was hardened, something
     // was published" — hold even when the three touch different files, which is the
-    // failure they exist to catch. Windows makes that the only available proof:
-    // `chmodSync` there moves the read-only flag alone and `statSync` keeps reporting
-    // 0o666, so real restriction comes from the per-user NTFS ACL, not from a mode.
+    // failure they exist to catch.
     //
     // Order matters as much as membership. Hardening lands on the temp file and
     // publishing moves that already-restricted file into place; if publish ran first,
     // the destination would sit world-readable for the width of the gap. A set-membership
     // assertion passes for that writer too, so the index comparison is what makes this a
-    // claim about the race rather than about the call list.
+    // claim about the race rather than about the call list. For the backup mutators it is
+    // the ONLY detector: `publishNoReplace` is `linkSync`, so a temp hardened after
+    // publication still shares the destination's inode — the mode check reads 0o600 and
+    // the leftover-`.tmp` check passes, while the write was briefly exposed.
+    //
+    // Scope, stated plainly: `io` is an injected seam, so what is asserted here is
+    // production's call ORDER (src/config.ts and src/codex/internal/catalog-writer.ts
+    // both run write → harden → publish). Supplying `io` bypasses the real
+    // implementations, so this proves hardening is REQUESTED on the temp before
+    // publication — not that it restricts. The Windows NTFS ACL that does the actual
+    // restricting is exercised in tests/windows-secret-acl.test.ts, and the POSIX mode
+    // below is the only half `statSync` can observe (Windows reports 0o666 whatever
+    // `chmodSync` did).
     const tempEffect = effects.find(effect => effect.startsWith("temp:"));
     expect(tempEffect).toBeDefined();
     const tempPath = tempEffect!.slice("temp:".length);
