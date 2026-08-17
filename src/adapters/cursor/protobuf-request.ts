@@ -65,6 +65,15 @@ export const CURSOR_EXTERNAL_ROOT_BLOB_LIMIT = 192;
 /** Approximate prompt-size guard; tool schemas and protocol framing consume context separately. */
 export const CURSOR_EXTERNAL_ROOT_BYTE_LIMIT = 512 * 1024;
 
+/**
+ * Action text for external-model tool-result continuations. External wire models cannot use
+ * resumeAction (Connect rejects replayed-history resumes past a few thousand tokens with
+ * resource_exhausted), so the continuation is driven as a userMessageAction; the tool results
+ * themselves are already in the history blobs.
+ */
+export const CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT =
+  "Continue: the requested tool results are provided in the conversation history above.";
+
 /** Runtime timezone for protobuf RequestContextEnv (dynamic, never hardcoded). */
 function runtimeTimeZone(): string {
   try {
@@ -577,18 +586,28 @@ function buildPreparedCursorRunRequest(
   const text = lastRole === "user" || lastRole === "developer"
     ? appendCursorGenericToolUseHint(request.tools, rawText)
     : rawText;
-  // Tool-result-only turns resume the remembered Cursor conversation with results in history.
   const lastRawIsToolResult = request.rawMessages?.at(-1)?.role === "toolResult";
-  const actionCase = !lastRawIsToolResult && text.trim().length > 0
+  // Tool-result-only turns on NATIVE models resume the remembered Cursor conversation with
+  // results in history. EXTERNAL wire models must NOT use resumeAction: after the client-tool
+  // suspend the server holds no live step, and Connect deterministically rejects external
+  // resume runs whose replayed history exceeds a few thousand tokens with resource_exhausted
+  // ("resource limit exceeded", surfaced as a 429). Verified live 2026-08-17: identical
+  // 45k-token histories pass as userMessageAction and fail as resumeAction. Results stay in
+  // the history blobs either way; the action text only tells the model to continue.
+  const externalToolContinuation = lastRawIsToolResult && isCursorExternalWireModel(request.modelId);
+  const actionCase = (externalToolContinuation || (!lastRawIsToolResult && text.trim().length > 0))
     ? "userMessageAction"
     : "resumeAction";
+  const actionText = externalToolContinuation
+    ? CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT
+    : text;
   const action = create(ConversationActionSchema, {
     action: actionCase === "userMessageAction"
       ? {
           case: "userMessageAction",
           value: create(UserMessageActionSchema, {
             userMessage: create(UserMessageSchema, {
-              text,
+              text: actionText,
               messageId: crypto.randomUUID(),
             }),
             requestContext: buildRequestContext(),
@@ -688,7 +707,7 @@ function buildPreparedCursorRunRequest(
   // tools the payload dropped — the defect that blocked PR #376.
   const modelVisibleParts = [
     ...rootPromptMessagesState.serialized,
-    ...(actionCase === "userMessageAction" ? [text] : []),
+    ...(actionCase === "userMessageAction" ? [actionText] : []),
     ...mcpToolDefs.map(modelVisibleToolText),
   ];
   return {

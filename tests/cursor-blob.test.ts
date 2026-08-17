@@ -23,6 +23,7 @@ import {
 } from "../src/lib/app-owned-memory";
 import {
   CURSOR_EXTERNAL_ROOT_BYTE_LIMIT,
+  CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT,
   CURSOR_EXTERNAL_ROOT_BLOB_LIMIT,
   CURSOR_ROUTING_LEVEL_PARAMETER_ID,
   encodeCursorRunRequest,
@@ -246,7 +247,7 @@ describe("Cursor blob handshake", () => {
     const rootBytes = (run?.conversationState?.rootPromptMessagesJson ?? [])
       .reduce((sum, id) => sum + blobData(id).byteLength, 0);
 
-    expect(run?.action?.action.case).toBe("resumeAction");
+    expect(run?.action?.action.case).toBe("userMessageAction");
     expect(rootBytes).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BYTE_LIMIT);
     expect(JSON.stringify(roots)).toContain("[Tool Result]");
     expect(JSON.stringify(roots)).toContain("truncated for Cursor external replay budget");
@@ -592,7 +593,7 @@ describe("Cursor blob handshake", () => {
     const roots = decodeRootMessages(bytes) as Array<{ role?: string; content?: unknown }>;
     const historicalUser = roots.find(root => root.role === "user");
     expect(historicalUser?.content).toEqual([{ type: "text", text: "read a file" }]);
-    expect(run?.action?.action.case).toBe("resumeAction");
+    expect(run?.action?.action.case).toBe("userMessageAction");
     expect(JSON.stringify(roots)).toContain("contents");
     expect(JSON.stringify(roots)).not.toContain("hidden reasoning");
   });
@@ -618,6 +619,37 @@ describe("Cursor blob handshake", () => {
     const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
 
     expect(run?.action?.action.case).toBe("resumeAction");
+  });
+
+  test("drives external-model tool-result continuations as userMessageAction", () => {
+    // Connect deterministically rejects external resumeAction runs whose replayed history
+    // exceeds a few thousand tokens (resource_exhausted). The continuation must be a
+    // userMessageAction; the tool results stay in the history blobs.
+    const bytes = encodeCursorRunRequest({
+      modelId: "claude-fable-5",
+      conversationId: "c-ext-cont",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "[tool_result]\ncall_id: call_1\nname: read_file\nis_error: false\noutput:\ncontents" }],
+      rawMessages: [
+        { role: "user", content: "read a file", timestamp: 1 },
+        {
+          role: "assistant",
+          model: "cursor/claude-fable-5",
+          timestamp: 2,
+          content: [{ type: "toolCall", id: "call_1", name: "read_file", arguments: { path: "a.txt" } }],
+        },
+        { role: "toolResult", toolCallId: "call_1", toolName: "read_file", content: "contents", isError: false, timestamp: 3 },
+      ],
+    });
+    const msg = fromBinary(AgentClientMessageSchema, bytes);
+    const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+
+    expect(run?.action?.action.case).toBe("userMessageAction");
+    const value = run?.action?.action.case === "userMessageAction" ? run.action.action.value : undefined;
+    expect(value?.userMessage?.text).toBe(CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT);
+    // Tool results are still replayed via history blobs.
+    const roots = decodeRootMessages(bytes) as Array<{ role?: string }>;
+    expect(JSON.stringify(roots)).toContain("contents");
   });
 });
 
