@@ -217,3 +217,49 @@ down the middle. `010` is now smaller than it was three rounds ago.
 Added to the open follow-ups: the `NGHTTP2_CANCEL` zero-terminal path
 (`live-transport.ts:619` throws, `cursor.ts:181` swallows), confirmed by a fresh
 probe to produce zero adapter events. Separate defect, separate unit.
+
+## Implementation status (2026-08-17)
+
+| Phase | Outcome | Evidence |
+|-------|---------|----------|
+| `010` clean-EOF terminal | **SHIPPED** `54f68daf5` | 7 audit rounds; red-before-green proven; lidge 608 pass/0 fail |
+| `020` tool-result images | **SHIPPED** `878b067e8..cc906b0fc` | 5 review rounds; byte-equality with `4e167fd38` verified twice; lidge 624 pass/0 fail |
+| `030` xai apply_patch | **NOT REPRODUCED** | live probe: both `xai/grok-4.6` and `cursor/grok-4.6` used `apply_patch` successfully |
+
+### What shipped for 010
+
+A framed Cursor stream that ends with no terminal while a client tool call is open
+now fails with `CursorStreamTruncatedError` instead of settling as success. Before
+this, the deferred tool call emitted nothing at all: streaming degraded to
+`response.incomplete`, and the non-streaming path returned `"completed"` for a turn
+whose tool call had silently vanished. `expectedClose` (client-tool suspend) and an
+already-emitted terminal stay graceful.
+
+### What shipped for 020
+
+Tool-result images reach Cursor as real `McpImageContent`. The final design differs
+from the original plan in three ways, each forced by a review that proved the plan
+would have broken a working request:
+
+1. **Bounding is post-serialization, not a byte budget.** A step is one blob shared
+   with the call's arguments, text, and framing, so `toolCallStep` serializes and
+   re-serializes with fewer images (oldest dropped first) until it fits the live
+   `cursorBlobMaxEntryBytes()`.
+2. **Placeholders are capped to the legacy string length.** A longer replacement text
+   could itself push a previously admissible step past the ceiling.
+3. **Consecutive text is newline-joined into one item**, as the legacy encoding did.
+   Emitting one protobuf item per part added framing that overflowed at the boundary.
+
+The net invariant, verified by two independent reviewers across 300 adversarial
+probes: **a tool result with no images serializes byte-identically to the
+pre-feature encoding.**
+
+### Why 030 did not ship
+
+A live probe spawned `xai/grok-4.6` and `cursor/grok-4.6` as subagents on the same
+edit task. Both edited the file and both reported using `apply_patch`. The symptom
+this phase was written to fix did not reproduce, so no code was written. The
+measurement cycle in `030` stands, and the phase closes NOOP unless the user
+supplies a failing case. Note the probe did not isolate the top-level freeform
+surface — the cursor agent reached `apply_patch` through code mode — so this is
+"not reproduced", not "proven absent".
