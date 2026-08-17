@@ -8,8 +8,12 @@ import {
   GetUsableModelsResponseSchema,
   InteractionQuerySchema,
   KvServerMessageSchema,
+  McpArgsSchema,
+  McpToolCallSchema,
   ModelDetailsSchema,
   TextDeltaUpdateSchema,
+  ToolCallSchema,
+  ToolCallStartedUpdateSchema,
   InteractionUpdateSchema,
 } from "../src/adapters/cursor/gen/agent_pb";
 import { CONNECT_FLAG_END_STREAM, encodeConnectFrame } from "../src/adapters/cursor/framing";
@@ -488,6 +492,73 @@ describe("Cursor live transport unexpected EOF", () => {
 
       expect(messages.some(message => message.type === "text" && message.text?.includes("Fix bridge"))).toBe(true);
       expect(messages.at(-1)).toMatchObject({ type: "done" });
+    });
+  });
+
+  test("open tool call plus clean Connect EOF emits a truncation error, not a thrown failure", async () => {
+    const startedFrame = encodeConnectFrame(toBinary(AgentServerMessageSchema, create(AgentServerMessageSchema, {
+      message: {
+        case: "interactionUpdate",
+        value: create(InteractionUpdateSchema, {
+          message: {
+            case: "toolCallStarted",
+            value: create(ToolCallStartedUpdateSchema, {
+              callId: "call_1",
+              modelCallId: "model_1",
+              toolCall: create(ToolCallSchema, {
+                tool: {
+                  case: "mcpToolCall",
+                  value: create(McpToolCallSchema, {
+                    args: create(McpArgsSchema, {
+                      name: "get_time",
+                      toolName: "get_time",
+                      toolCallId: "call_1",
+                      providerIdentifier: "opencodex-responses",
+                    }),
+                  }),
+                },
+              }),
+            }),
+          },
+        }),
+      },
+    })));
+    const connectEnd = encodeConnectFrame(new TextEncoder().encode("{}"), {
+      flags: CONNECT_FLAG_END_STREAM,
+    });
+
+    await withDiscoveryServer(stream => {
+      stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+      stream.end(Buffer.from(new Uint8Array([...startedFrame, ...connectEnd])));
+    }, async baseUrl => {
+      const transport = createLiveCursorTransport({
+        provider: { adapter: "cursor", baseUrl, apiKey: "test-token" },
+        translatorBudget: createTestTranslatorBudget(),
+        firstFrameTimeoutMs: 2_000,
+      });
+      const messages: Array<{ type: string; message?: string }> = [];
+      let failure: Error | undefined;
+      try {
+        for await (const message of transport.run({
+          modelId: "composer-2",
+          conversationId: "cursor_open_tool_eof_test",
+          system: [],
+          messages: [{ role: "user", content: "hello" }],
+          tools: [{ name: "get_time", description: "t", parameters: { type: "object", properties: {} } }],
+        })) {
+          messages.push(message);
+        }
+      } catch (err) {
+        failure = err instanceof Error ? err : new Error(String(err));
+      } finally {
+        await transport.close?.();
+      }
+
+      expect(failure).toBeUndefined();
+      expect(messages.at(-1)).toMatchObject({
+        type: "error",
+        message: expect.stringContaining("incomplete tool call"),
+      });
     });
   });
 

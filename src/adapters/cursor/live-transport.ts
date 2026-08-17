@@ -1033,6 +1033,8 @@ class LiveCursorTransport implements CursorTransport {
           settler.settleFinish();
           return;
         }
+        // Open tools fail-closed as a truncation *event* (finalizeTurnEvents), not a thrown
+        // transport error. settleFail here would hide that typed message as adapter_eof.
         if (state.openToolCalls.size > 0) {
           for (const event of finalizeTurnEvents(state)) push(event);
           releaseBacklogLease();
