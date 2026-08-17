@@ -1738,7 +1738,7 @@ export const ja: Record<TKey, string> = {
   "claude.autoContextDesc": "1M マーキングがどこまで及ぶかを制御します。オン: 圧縮しきい値を収められるウィンドウを持つモデルに大型コンテキスト行を付けます。オフ: 真の 1M モデルのみに付けます。",
   "claude.autoContextInert": "設定ファイルにレガシーのコンテキストサイズ値(maxContextTokens)が存在するため無効です。再び有効化するにはそれを削除してください。",
   "claude.autoCompactWindow": "自動要約ポイント",
-  "claude.autoCompactDefault": "350k(デフォルト)",
+  "claude.autoCompactDefault": "{value}(デフォルト)",
   "claude.autoCompactWindowDesc": "チャットがこのポイントに達すると古いメッセージが要約されます。各モデル自身の上限を超えることはないので、200k モデルは影響を受けません。",
   "claude.autoCompactWindowWarn": "これを変更すると GPT モデルが壊れる可能性があります — モデルの実際の上限より高く設定すると、要約が働く前にチャットがエラーになります。",
   "claude.injectAgents": "サブエージェントを自動登録",
