@@ -55,8 +55,31 @@ describe("non-OpenAI tool catalog nudge", () => {
     expect(note).toContain("Valid tool names for this turn are exactly `exec`, `wait`, `request_user_input`");
     expect(note).toContain("complete top-level tool-call surface");
     expect(note).toContain("nested helper APIs are not additional top-level tools");
-    expect(note).toContain("call the listed parent tool");
+    expect(note).toContain("If `exec` is listed, it is Codex code mode");
+    expect(note).toContain("await tools.<name>(...)");
+    expect(note).toContain("await tools.codex_app__list_threads({})");
+    expect(note).toContain("isolate global `ALL_TOOLS`, not `tools.ALL_TOOLS`");
+    expect(note).toContain("Do not skip an available nested helper");
+    expect(note).not.toContain("call the listed parent tool and use those helpers only inside that tool's input");
     expect(note).not.toContain("apply_patch");
+  });
+
+  test("keeps the generic nested-helper parent-tool rule when exec is not listed", () => {
+    const note = buildNonOpenAIToolCatalogNudgeFromNames(["exec_command", "mcp__fs__read_file"]);
+
+    expect(note).toContain("call the listed parent tool and use those helpers only inside that tool's input");
+    expect(note).not.toContain("If `exec` is listed, it is Codex code mode");
+    expect(note).not.toContain("tools.ALL_TOOLS");
+  });
+
+  test("detects a wire-renamed exec as code mode", () => {
+    const note = buildNonOpenAIToolCatalogNudgeFromNames(
+      ["cx_exec", "cx_wait"],
+      name => `cx_${name}`,
+    );
+
+    expect(note).toContain("If `exec` is listed, it is Codex code mode");
+    expect(note).toContain("isolate global `ALL_TOOLS`, not `tools.ALL_TOOLS`");
   });
 
   // `advertised` holds WIRE names. A provider that rewrites them (Claude OAuth `custom_`,

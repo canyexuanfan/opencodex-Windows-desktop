@@ -16,9 +16,10 @@ import {
 // `python3` heredoc edits. The sibling list in `./cursor/tool-definitions.ts` never
 // included it either.
 const NEIGHBOR_AGENT_TOOL_NAMES = ["Read", "Grep", "Glob", "Bash", "LS"] as const;
+const CODEX_CODE_MODE_EXEC_TOOL = "exec";
 
 function quoteNames(names: readonly string[]): string {
-  return names.map(name => `\`${name}\``).join(", ");
+  return names.map(name => "`" + name + "`").join(", ");
 }
 
 function uniqueNames(names: readonly string[]): string[] {
@@ -40,6 +41,13 @@ export function shouldInjectNonOpenAIToolCatalogNudge(provider: Pick<OcxProvider
   }
 }
 
+function catalogListsCodeModeExec(
+  advertised: ReadonlySet<string>,
+  toWireName: (name: string) => string,
+): boolean {
+  return advertised.has(CODEX_CODE_MODE_EXEC_TOOL) || advertised.has(toWireName(CODEX_CODE_MODE_EXEC_TOOL));
+}
+
 export function buildNonOpenAIToolCatalogNudgeFromNames(
   wireNames: readonly string[] | undefined,
   toWireName: (name: string) => string = name => name,
@@ -50,21 +58,24 @@ export function buildNonOpenAIToolCatalogNudgeFromNames(
   const advertised = new Set(names);
   // Compare in the catalog's own coordinate system. `advertised` holds WIRE names, so a
   // provider that rewrites them (Claude OAuth `custom_`, Anthropic compat `cx_`) would never
-  // match a bare neighbor name and would forbid tools the turn actually advertises — the
+  // match a bare neighbor name and would forbid tools the turn actually advertises -- the
   // catalog would list `custom_apply_patch` while the same sentence banned `apply_patch`.
   const unavailableNeighborNames = NEIGHBOR_AGENT_TOOL_NAMES.filter(
     name => !advertised.has(name) && !advertised.has(toWireName(name)),
   );
+  const codeMode = catalogListsCodeModeExec(advertised, toWireName);
 
   return [
     "Tool contract: use the current tool catalog as ground truth.",
-    `Valid tool names for this turn are exactly ${quoteNames(names)}.`,
+    "Valid tool names for this turn are exactly " + quoteNames(names) + ".",
     "These listed names are the complete top-level tool-call surface for this turn.",
     "Call only listed names with their listed argument keys; do not invent, translate, or rename tools.",
     "Names mentioned only in instructions, tool descriptions, argument descriptions, or nested helper APIs are not additional top-level tools.",
-    "If a listed tool exposes nested helpers such as a tools.* API, call the listed parent tool and use those helpers only inside that tool's input.",
+    codeMode
+      ? "If `exec` is listed, it is Codex code mode: its body is JavaScript evaluated in a V8 isolate. Nested helpers are called INSIDE that body as `await tools.<name>(...)`, for example `await tools.exec_command({cmd: \"ls\"})` or `await tools.codex_app__list_threads({})`. Absence from the top-level catalog or from `exec`'s description is not absence: deferred helpers stay callable on `tools.<name>`. Discover them from the isolate global `ALL_TOOLS`, not `tools.ALL_TOOLS`. Do not skip an available nested helper because it is omitted from the listed top-level names."
+      : "If a listed tool exposes nested helpers such as a tools.* API, call the listed parent tool and use those helpers only inside that tool's input.",
     unavailableNeighborNames.length > 0
-      ? `Do not use neighboring-agent tool names ${quoteNames(unavailableNeighborNames)} unless this turn's catalog lists those exact names.`
+      ? "Do not use neighboring-agent tool names " + quoteNames(unavailableNeighborNames) + " unless this turn's catalog lists those exact names."
       : undefined,
     "If you need shell, file search, file read, edit, or discovery behavior, choose the listed tool that provides that capability.",
     "Count a tool call only after its tool result returns; batch independent read-only calls when the runtime supports it.",
