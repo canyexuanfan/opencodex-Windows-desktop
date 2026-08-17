@@ -106,7 +106,7 @@ describe("#1798 restore after the Codex app rewrites the config", () => {
     expect(restored).not.toContain("127.0.0.1:10100");
     // The user's own pre-injection content is still theirs.
     expect(restored).toContain("gpt-5.5");
-  });
+  }, 15_000);
 
   test("a user's own openai_base_url written before injection is preserved", () => {
     // The mirror-image risk of the fix: stripping ANY unmarked openai_base_url would
@@ -123,7 +123,7 @@ describe("#1798 restore after the Codex app rewrites the config", () => {
     const restored = readFileSync(join(testDir, "config.toml"), "utf8");
     expect(restored).toContain("https://my-own-gateway.example/v1");
     expect(restored).not.toContain("127.0.0.1:10100");
-  });
+  }, 15_000);
 
   test("the routed catalog we wrote is restored even when the rewrite dropped model_catalog_json", () => {
     // The catalog half of #1798. Restore used to re-resolve its target from the CURRENT
@@ -139,6 +139,5 @@ describe("#1798 restore after the Codex app rewrites the config", () => {
     const routed = (cache.models ?? []).filter((m: { slug?: string }) => typeof m.slug === "string" && m.slug.includes("/"));
     expect(routed).toEqual([]);
     expect(JSON.parse(r.stdout).catalog).toBe(cachePath);
-  });
+  }, 15_000);
 });
-

@@ -237,7 +237,10 @@ for (const mutator of mutators) {
     );
 
     expect(readFileSync(path, "utf8")).toBe("new bytes\n");
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    // Windows exposes synthesized POSIX mode bits, so stat cannot prove that chmod took effect.
+    // The recorded harden call still proves every mutator requested the permission transition.
+    expect(effects.some(effect => effect.startsWith("harden:"))).toBe(true);
+    if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(readdirSync(targetDir).filter(name => name.endsWith(".tmp"))).toEqual([]);
     expect(effects.some(effect => effect.startsWith("temp:"))).toBe(true);
     expect(effects.some(effect => effect.startsWith(isBackup ? "publish:" : "rename:"))).toBe(true);

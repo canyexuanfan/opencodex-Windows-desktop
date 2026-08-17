@@ -10,7 +10,7 @@
  */
 import { aliasForNative, aliasForRoute } from "./alias";
 import { desktop3pAlias } from "./desktop-3p";
-import { nativeOpenAiContextWindow, type CatalogModel } from "../codex/catalog";
+import { nativeOpenAiContextWindow, type CatalogModel, type NativeContextLimitsInput } from "../codex/catalog";
 
 const ONE_MILLION = 1_000_000;
 
@@ -104,7 +104,7 @@ export function buildClaudeContextWindows(
   // A configured providerContextCaps.openai has to reach the native rows here too. Without
   // it the Claude surface keeps advertising the uncapped authoritative window while the
   // Codex catalog advertises the capped one, and the two disagree about the same model.
-  nativeContextCap?: number,
+  nativeContextCap?: NativeContextLimitsInput,
 ): Record<string, number> {
   const out: Record<string, number> = {};
   const put = (key: string | null, value: number) => {

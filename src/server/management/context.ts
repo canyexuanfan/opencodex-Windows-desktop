@@ -16,6 +16,8 @@ import type {
 } from "../../codex/app-server-restart-service";
 
 export interface ManagementApiDeps {
+  /** Platform seam for capability projections; does not alter host-level startup behavior. */
+  platform?: NodeJS.Platform;
   toggleCodexMultiAgentV2?: (enabled: boolean) => void;
   toggleDefaultModeRequestUserInput?: (enabled: boolean) => void;
   createManagementConvergeCodex?: (config: Readonly<OcxConfig>) => ConvergeCodex;

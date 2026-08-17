@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { CatalogModel } from "../codex/catalog";
-import { catalogModelSlug, invalidateCodexModelsCache, nativeModelRows, uniqueCatalogModelsForPublicList } from "../codex/catalog";
+import { catalogModelSlug, invalidateCodexModelsCache, nativeContextLimits, nativeModelRows, uniqueCatalogModelsForPublicList } from "../codex/catalog";
 import {
   DEFAULT_SUBAGENT_MODELS,
   codexAutoStartEnabled,
@@ -205,7 +205,7 @@ export async function handleManagementAPI(
           import("../claude/context-windows"),
           import("../codex/catalog"),
         ]);
-        injectClaudeAgentDefs(config, buildClaudeContextWindows([...visibleNativeSlugs(config)], models, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID)));
+        injectClaudeAgentDefs(config, buildClaudeContextWindows([...visibleNativeSlugs(config)], models, nativeContextLimits(config)));
       } catch {
         // Keep routes available through a provider-discovery blip. A later
         // launch-time sync restores any context markers missing from this pass.
