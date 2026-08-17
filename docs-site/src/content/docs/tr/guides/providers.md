@@ -17,7 +17,7 @@ bulunur.
 
 Sağlayıcılar sayfasındaki Pool/Direct seçeneğiyle yalın `gpt-5.6-sol` kullanın
 veya API için `openai-apikey/gpt-5.6-sol` kullanın. Kimlik bilgisi rotaları asla
-birbirine geri dönmez (fall through yapmaz). API rotası 1.050.000 bağlam /
+birbirine geri dönmez (fall through yapmaz). API rotası 922.000 bağlam /
 922.000 maksimum girdi meta verisi yayınlar. `sol-pro`, `terra-pro` ve
 `luna-pro` sanal kimlikleri, hat temel modeli artı `reasoning.mode: "pro"`
 kullanırken seçilen genel kimliklerini korur.
@@ -560,9 +560,9 @@ tohumlanmıştır:
 
 | Codex rotası | Tohumlanan model kimlikleri | Codex tarafından görülebilen bağlam |
 | --- | --- | --- |
-| Codex girişi (Pool veya Direct) | `gpt-5.6-*` | 1.050.000 |
-| OpenAI (API anahtarı) | `openai-apikey/gpt-5.6-*` artı `*-pro` | 1.050.000 (922.000 maksimum girdi) |
-| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 1.050.000 |
+| Codex girişi (Pool veya Direct) | `gpt-5.6-*` | 922.000 |
+| OpenAI (API anahtarı) | `openai-apikey/gpt-5.6-*` artı `*-pro` | 922.000 (922.000 maksimum girdi) |
+| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 922.000 |
 | Cursor | `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, `cursor/gpt-5.6-luna` | 1.000.000 |
 
 Yerel GPT-5.6 girdileri sabitlenmiş yukarı akış akıl yürütme merdivenlerini

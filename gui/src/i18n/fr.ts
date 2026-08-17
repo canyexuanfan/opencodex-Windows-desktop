@@ -1768,7 +1768,7 @@ export const fr: Record<TKey, string> = {
   "claude.fastOn": "ACTIVÉ",
   "claude.fastOff": "DÉSACTIVÉ",
   "claude.autoContext": "Utiliser automatiquement le grand contexte",
-  "claude.autoContextDesc": "Contrôle l’étendue du marquage 1M. ACTIVÉ : chaque modèle dépassant 200k jetons (modèles GPT, etc.) obtient une ligne de grand contexte. DÉSACTIVÉ : seuls les véritables modèles 1M en obtiennent une.",
+  "claude.autoContextDesc": "Contrôle l’étendue du marquage 1M. ACTIVÉ : tout modèle dont la fenêtre peut accueillir le seuil de compaction obtient une ligne de grand contexte. DÉSACTIVÉ : seuls les véritables modèles 1M en obtiennent une.",
   "claude.autoContextInert": "Inactif, car une ancienne valeur de taille de contexte (maxContextTokens) existe dans le fichier de configuration. Supprimez-la dans ce fichier pour réactiver l’option.",
   "claude.autoCompactWindow": "Seuil de résumé automatique",
   "claude.autoCompactDefault": "350k (par défaut)",

@@ -16,7 +16,7 @@ description: Все способы, которыми opencodex аутентиф�
 
 Используйте «голый» `gpt-5.6-sol` с опцией Pool/Direct на странице Providers или
 `openai-apikey/gpt-5.6-sol` для API. Между маршрутами учётных данных нет сквозного фолбэка.
-Маршрут API публикует метаданные: контекст 1,050,000 / максимум входных токенов 922,000. Его
+Маршрут API публикует метаданные: контекст 922,000 / максимум входных токенов 922,000. Его
 виртуальные id `sol-pro`, `terra-pro` и `luna-pro` сохраняют выбранную публичную идентичность, тогда
 как в фактическом запросе используется базовая модель плюс `reasoning.mode: "pro"`.
 
@@ -390,9 +390,9 @@ GPT-5.6 Sol/Terra/Luna заранее внесены в резервные сп�
 
 | Маршрут Codex | Предзаданные id моделей | Контекст, видимый Codex |
 | --- | --- | --- |
-| Вход Codex (Pool или Direct) | `gpt-5.6-*` | 1,050,000 |
-| OpenAI (API key) | `openai-apikey/gpt-5.6-*` плюс `*-pro` | 1,050,000 (макс. вход 922,000) |
-| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 1,050,000 |
+| Вход Codex (Pool или Direct) | `gpt-5.6-*` | 922,000 |
+| OpenAI (API key) | `openai-apikey/gpt-5.6-*` плюс `*-pro` | 922,000 (макс. вход 922,000) |
+| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 922,000 |
 | Cursor | `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, `cursor/gpt-5.6-luna` | 1,000,000 |
 
 Нативные записи GPT-5.6 сохраняют закреплённые вышестоящие шкалы уровней рассуждений (например, у

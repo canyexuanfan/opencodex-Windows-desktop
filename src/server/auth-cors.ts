@@ -493,6 +493,37 @@ function sameCanonicalProviderSeed(actual: Record<string, unknown>, expected: Oc
   return actualKeys.every(key => JSON.stringify(actual[key]) === JSON.stringify((expected as unknown as Record<string, unknown>)[key]));
 }
 
+function positiveWindowValue(value: unknown): boolean {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+/**
+ * Shape-check the two context overlays before the canonical seed comparison drops them.
+ *
+ * `null` means "clear this" and is normalized by the PATCH field mask, but this validator
+ * also runs for POST and reload, where a whole provider object lands on disk verbatim. A
+ * `null` surviving there would be a value no reader expects, so full objects must carry a
+ * real number or omit the field.
+ */
+function nativeContextOverlayError(raw: Record<string, unknown>): string | null {
+  if (Object.hasOwn(raw, "contextWindow") && !positiveWindowValue(raw.contextWindow)) {
+    return "provider openai contextWindow must be a positive safe integer";
+  }
+  if (Object.hasOwn(raw, "modelContextWindows")) {
+    const windows = raw.modelContextWindows;
+    if (typeof windows !== "object" || windows === null || Array.isArray(windows)) {
+      return "provider openai modelContextWindows must be a plain object";
+    }
+    for (const [model, value] of Object.entries(windows as Record<string, unknown>)) {
+      if (model.trim() === "") return "provider openai modelContextWindows keys must be nonblank model ids";
+      if (!positiveWindowValue(value)) {
+        return "provider openai modelContextWindows values must be positive safe integers";
+      }
+    }
+  }
+  return null;
+}
+
 /**
  * Validate a provider object arriving at the management write boundary. Returns an error
  * string, or null when the provider may be persisted. Caller-controlled names/fields are
@@ -522,6 +553,15 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
     delete canonicalCandidate.modelCosts;
     // requestPacing is a user-owned transport overlay, not part of the canonical seed.
     delete canonicalCandidate.requestPacing;
+    // Context windows are the same kind of user-owned overlay as requestPacing: the operator
+    // narrowing what their own native rows advertise. They can only ever LOWER the measured
+    // window (see nativeOpenAiContextWindow), so admitting them cannot widen what the proxy
+    // claims. Validated first — this function also guards POST/reload, where nothing
+    // normalizes the shape afterwards, so a bad value would reach disk.
+    const contextOverlayError = nativeContextOverlayError(raw);
+    if (contextOverlayError) return contextOverlayError;
+    delete canonicalCandidate.contextWindow;
+    delete canonicalCandidate.modelContextWindows;
     const canonical = seed && sameCanonicalProviderSeed(canonicalCandidate, seed);
     if (!canonical) {
       return `provider ${name} must equal the canonical built-in provider seed`;

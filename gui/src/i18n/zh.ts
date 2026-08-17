@@ -1330,7 +1330,7 @@ export const zh: Record<TKey, string> = {
   "claude.fastOn": "ON",
   "claude.fastOff": "OFF",
   "claude.autoContext": "自动利用大上下文",
-  "claude.autoContextDesc": "决定 1M 标记的范围。开：所有超过 20 万 token 的模型（GPT 系列等）都有大上下文条目；关：仅真正的 1M 模型有。",
+  "claude.autoContextDesc": "决定 1M 标记的范围。开：窗口能容纳压缩阈值的模型都有大上下文条目；关：仅真正的 1M 模型有。",
   "claude.autoContextInert": "配置文件中存在旧式上下文大小值（maxContextTokens），此功能暂不生效。删除该值即可恢复。",
   "claude.autoCompactWindow": "自动摘要触发点",
   "claude.autoCompactDefault": "350k（默认）",

@@ -525,7 +525,7 @@ export interface OcxClaudeCodeConfig {
    * (the legacy DISABLE_COMPACT pair takes rule-1 precedence in the CLI).
    */
   autoContext?: boolean;
-  /** Compact-window tokens for auto-context. Default 350_000. */
+  /** Compact-window tokens for auto-context. Default 829_800 (AUTO_COMPACT_WINDOW_DEFAULT). */
   autoCompactWindow?: number;
   /**
    * Bundled-skill content elision for ROUTED (non-Anthropic) models (devlog 260712

@@ -830,9 +830,15 @@ describe("provider management validation", () => {
       for (const [, provider] of [
         ["base", { ...canonicalDirect, baseUrl: "https://attacker.example/backend-api/codex" }],
         ["mode", { ...canonicalDirect, authMode: "key" }],
-        ["map", { ...canonicalDirect, modelContextWindows: { "gpt-5.6": 1 } }],
         ["header", { ...canonicalDirect, headers: { "x-forged": "value" } }],
         ["capability", { ...canonicalDirect, noVisionModels: ["gpt-5.6"] }],
+        // The context overlays are admitted now, but only in a shape a reader can trust.
+        ["window-shape", { ...canonicalDirect, contextWindow: "wide" }],
+        ["window-zero", { ...canonicalDirect, contextWindow: 0 }],
+        ["window-null-on-post", { ...canonicalDirect, contextWindow: null }],
+        ["map-shape", { ...canonicalDirect, modelContextWindows: [] }],
+        ["map-value", { ...canonicalDirect, modelContextWindows: { "gpt-5.6-sol": "wide" } }],
+        ["map-key", { ...canonicalDirect, modelContextWindows: { "  ": 500_000 } }],
       ] as const) {
         const response = await fetch(new URL("/api/providers", server.url), {
           method: "POST",
@@ -840,6 +846,21 @@ describe("provider management validation", () => {
           body: JSON.stringify({ name: "openai", provider }),
         });
         expect(response.status).toBe(400);
+      }
+
+      // A user narrowing their own native rows is a supported overlay, like requestPacing:
+      // the accessors only ever lower the measured window with it, so it cannot widen what
+      // the proxy advertises.
+      for (const [, provider] of [
+        ["per-model", { ...canonicalDirect, modelContextWindows: { "gpt-5.6-sol": 500_000 } }],
+        ["provider-wide", { ...canonicalDirect, contextWindow: 500_000 }],
+      ] as const) {
+        const response = await fetch(new URL("/api/providers", server.url), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "openai", provider }),
+        });
+        expect(response.status).toBe(200);
       }
 
       const acceptedCustom = await fetch(new URL("/api/providers", server.url), {

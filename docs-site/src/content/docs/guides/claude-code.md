@@ -47,7 +47,7 @@ ocx claude
 | `ANTHROPIC_BASE_URL` | `http://127.0.0.1:<port>` |
 | `ANTHROPIC_AUTH_TOKEN` | Only when the proxy requires an API key — otherwise it is NOT set, so your claude.ai login (subscription + connectors) stays active |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | `1` (native `/model` picker discovery) |
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | Auto-context compaction threshold (default `350000`); only injected when auto-context is enabled |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | Auto-context compaction threshold (default `829800`); only injected when auto-context is enabled |
 | `ANTHROPIC_MODEL` | `claudeCode.model` (optional) |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `claudeCode.tierModels.haiku ?? claudeCode.smallFastModel` (optional; legacy `ANTHROPIC_SMALL_FAST_MODEL` too) |
 | `ANTHROPIC_DEFAULT_{OPUS,SONNET,FABLE}_MODEL` | `claudeCode.tierModels.*` (optional) |
@@ -233,7 +233,7 @@ default) fixes that:
 
 1. Models whose real window is above 200k **and** at least the auto-compact threshold get the
    `[1m]` marker on their picker rows and env slots.
-2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (default `350000`, range `100000`–`1000000`) is injected so
+2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (default `829800`, range `100000`–`1000000`) is injected so
    the conversation auto-summarizes at that point.
 
 Three config states:
@@ -247,7 +247,7 @@ window breaks that model — the chat errors out before the summary can fire.
 
 Sub-1M native Anthropic models are never auto-marked. Values you export yourself always win (the
 proxy uses YOUR value to decide which models are safe to mark). Invalid hand-edited config values
-fall back to 350k.
+fall back to 829,800.
 
 ### Effective model environment
 

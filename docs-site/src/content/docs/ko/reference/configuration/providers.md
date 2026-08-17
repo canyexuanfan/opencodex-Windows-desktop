@@ -46,7 +46,7 @@ managed map을 활성화하면 privacy-safe selector를 만들고, 이후 계정
 
 ## 예약된 OpenAI 공급자
 
-`openai`와 `openai-apikey`는 고정 예약 id입니다. `openai.codexAccountMode`의 기본값은 `"pool"`이며, 메인 계정과 추가된 계정 전체에서 선택합니다. `"direct"`는 현재 호출자/메인 로그인만 사용합니다. API는 설정된 API 키 또는 키 풀만 사용합니다. 모델 이름만 쓰거나 `openai-apikey/<model>`을 사용하십시오. 다른 라우트의 자격 증명으로는 대체하지 않습니다. API GPT-5.6 행에는 1,050,000 컨텍스트 / 922,000 최대 입력 메타데이터가 들어가며, Pro 가상 id는 기본 와이어 모델로 다시 쓰면서 `reasoning.mode: "pro"`를 적용합니다.
+`openai`와 `openai-apikey`는 고정 예약 id입니다. `openai.codexAccountMode`의 기본값은 `"pool"`이며, 메인 계정과 추가된 계정 전체에서 선택합니다. `"direct"`는 현재 호출자/메인 로그인만 사용합니다. API는 설정된 API 키 또는 키 풀만 사용합니다. 모델 이름만 쓰거나 `openai-apikey/<model>`을 사용하십시오. 다른 라우트의 자격 증명으로는 대체하지 않습니다. API GPT-5.6 행에는 922,000 컨텍스트 / 922,000 최대 입력 메타데이터가 들어가며, Pro 가상 id는 기본 와이어 모델로 다시 쓰면서 `reasoning.mode: "pro"`를 적용합니다.
 
 `openaiProviderTierVersion: 2`는 현재의 단일 공급자 투영을 표시합니다. 출시된 v1 설정을 마이그레이션하기 전에 opencodex는 `config.json.pre-openai-tiers-v2.bak`를 만들고, 기존에 다른 백업이 있더라도 덮어쓰지 않으며, 알려진 레거시 네임스페이스 지정 선택 id를 bare id로 다시 씁니다.
 
@@ -301,7 +301,7 @@ OpenRouter는 하나의 모델을 여러 추론 공급자로 제공할 수 있�
 
 `selectedModels`는 발견은 계속하되, 선택된 id만 Codex와 `/v1/models`에 나타나게 하고 싶을 때 사용합니다. 대시보드는 나중에 허용 목록을 바꿀 수 있도록 발견된 전체 목록을 보관합니다.
 
-프리뷰 GPT-5.6 폴백 항목도 같은 메커니즘을 사용합니다. OpenAI API 키 프리셋은 base와 Pro id에 컨텍스트 `1050000`, 최대 입력 `922000`을 채웁니다. OpenRouter는 `openai/gpt-5.6-sol`, `openai/gpt-5.6-terra`, `openai/gpt-5.6-luna`에 컨텍스트 `1050000`을 채웁니다. Pool/Direct는 `1050000`을 노출하고, 동기화된 카탈로그는 `xhigh`를 구분한 채 `max`를 노출합니다.
+프리뷰 GPT-5.6 폴백 항목도 같은 메커니즘을 사용합니다. OpenAI API 키 프리셋은 base와 Pro id에 컨텍스트 `922000`, 최대 입력 `922000`을 채웁니다. OpenRouter는 `openai/gpt-5.6-sol`, `openai/gpt-5.6-terra`, `openai/gpt-5.6-luna`에 컨텍스트 `922000`을 채웁니다. Pool/Direct는 `922000`을 노출하고, 동기화된 카탈로그는 `xhigh`를 구분한 채 `max`를 노출합니다.
 
 ```json
 {

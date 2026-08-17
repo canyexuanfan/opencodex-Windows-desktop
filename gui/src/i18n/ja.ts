@@ -1735,7 +1735,7 @@ export const ja: Record<TKey, string> = {
   "claude.fastOn": "オン",
   "claude.fastOff": "オフ",
   "claude.autoContext": "大きなコンテキストを自動で使用",
-  "claude.autoContextDesc": "1M マーキングがどこまで及ぶかを制御します。オン: 200k トークンを超えるすべてのモデル(GPT モデルなど)に大型コンテキスト行を付けます。オフ: 真の 1M モデルのみに付けます。",
+  "claude.autoContextDesc": "1M マーキングがどこまで及ぶかを制御します。オン: 圧縮しきい値を収められるウィンドウを持つモデルに大型コンテキスト行を付けます。オフ: 真の 1M モデルのみに付けます。",
   "claude.autoContextInert": "設定ファイルにレガシーのコンテキストサイズ値(maxContextTokens)が存在するため無効です。再び有効化するにはそれを削除してください。",
   "claude.autoCompactWindow": "自動要約ポイント",
   "claude.autoCompactDefault": "350k(デフォルト)",
