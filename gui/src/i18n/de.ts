@@ -1313,7 +1313,7 @@ export const de: Record<TKey, string> = {
   "claude.autoContextDesc": "Steuert, wie weit die 1M-Markierung geht. AN: jedes Modell, dessen Fenster den Komprimierungsschwellwert fasst, erhält eine Big-Context-Zeile. AUS: nur echte 1M-Modelle.",
   "claude.autoContextInert": "Inaktiv, weil in der Konfigurationsdatei ein alter Kontextgrößen-Wert (maxContextTokens) steht. Dort entfernen, um es wieder zu aktivieren.",
   "claude.autoCompactWindow": "Punkt für Auto-Zusammenfassung",
-  "claude.autoCompactDefault": "350k (Standard)",
+  "claude.autoCompactDefault": "{value} (Standard)",
   "claude.autoCompactWindowDesc": "Ältere Nachrichten werden an diesem Punkt zusammengefasst. Das eigene Limit jedes Modells wird nie überschritten — 200k-Modelle bleiben unberührt.",
   "claude.autoCompactWindowWarn": "Eine Änderung kann GPT-Modelle stören — liegt der Wert über dem echten Modelllimit, kommt es vor der Zusammenfassung zu Fehlern.",
   "claude.injectAgents": "Subagenten automatisch registrieren",

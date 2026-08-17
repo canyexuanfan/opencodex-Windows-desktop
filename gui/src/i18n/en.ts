@@ -1808,7 +1808,7 @@ export const en = {
   "claude.autoContextDesc": "Controls how far the 1M marking goes. ON: any model whose window can host the compaction threshold gets a big-context row. OFF: only true 1M models get one.",
   "claude.autoContextInert": "Inactive because a legacy context-size value (maxContextTokens) exists in the config file. Remove it there to re-enable.",
   "claude.autoCompactWindow": "Auto-summarize point",
-  "claude.autoCompactDefault": "350k (default)",
+  "claude.autoCompactDefault": "{value} (default)",
   "claude.autoCompactWindowDesc": "Older messages are summarized when the chat reaches this point. It never exceeds each model's own limit, so 200k models are unaffected.",
   "claude.autoCompactWindowWarn": "Changing this can break GPT models — set higher than a model's real limit, chats will error before the summary kicks in.",
   "claude.injectAgents": "Auto-register subagents",

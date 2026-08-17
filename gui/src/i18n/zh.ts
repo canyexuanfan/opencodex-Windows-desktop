@@ -1333,7 +1333,7 @@ export const zh: Record<TKey, string> = {
   "claude.autoContextDesc": "决定 1M 标记的范围。开：窗口能容纳压缩阈值的模型都有大上下文条目；关：仅真正的 1M 模型有。",
   "claude.autoContextInert": "配置文件中存在旧式上下文大小值（maxContextTokens），此功能暂不生效。删除该值即可恢复。",
   "claude.autoCompactWindow": "自动摘要触发点",
-  "claude.autoCompactDefault": "350k（默认）",
+  "claude.autoCompactDefault": "{value}（默认）",
   "claude.autoCompactWindowDesc": "对话达到该点时自动摘要旧内容。不会超过各模型自身上限，因此 200k 模型不受影响。",
   "claude.autoCompactWindowWarn": "修改该值可能导致 GPT 模型异常——若超过模型真实上限，会在摘要触发前报错。",
   "claude.injectAgents": "自动注册子代理",
