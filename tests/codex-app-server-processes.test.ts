@@ -8,6 +8,7 @@ import {
   attachStaleAppServerHint,
   catalogStateTtlMs,
   collectCodexAppServerCatalogState,
+  collectCodexAppServerCatalogStateForRequest,
   formatStaleCodexAppServerWarning,
   isCodexAppServerCommandLine,
   isWindowsCodexCandidateCommandLine,
@@ -72,6 +73,92 @@ describe("collectCodexAppServerCatalogState (#857)", () => {
       catalogMtimeMs: () => null,
     });
     expect(noCatalog.state).toBe("unknown");
+  });
+
+  test("Windows request collection yields to the event loop while CIM enumeration is slow (#1852)", async () => {
+    let releaseSnapshots: ((snapshots: Array<{ pid: number; commandLine: string }>) => void) | undefined;
+    const snapshots = new Promise<Array<{ pid: number; commandLine: string }>>(resolve => {
+      releaseSnapshots = resolve;
+    });
+    const collection = collectCodexAppServerCatalogStateForRequest({
+      platform: "win32",
+      listSnapshotsAsync: () => snapshots,
+      readStartMsBatchAsync: async pids => new Map(pids.map(pid => [pid, 2_000])),
+      catalogMtimeMs: () => 1_000,
+    });
+
+    const first = await Promise.race([
+      collection.then(() => "collection"),
+      new Promise<"timer">(resolve => setTimeout(() => resolve("timer"), 10)),
+    ]);
+    expect(first).toBe("timer");
+
+    releaseSnapshots?.([{ pid: 42, commandLine: APP_SERVER_CMD }]);
+    await expect(collection).resolves.toMatchObject({ state: "fresh" });
+  });
+
+  test("Windows request collection shares one in-flight refresh and its short cache (#1852)", async () => {
+    resetCodexAppServerCatalogStateCache();
+    let calls = 0;
+    let now = 1_000;
+    const io = {
+      platform: "win32" as const,
+      now: () => now,
+      listSnapshotsAsync: async () => {
+        calls += 1;
+        await Bun.sleep(10);
+        return [{ pid: 42, commandLine: APP_SERVER_CMD }];
+      },
+      readStartMsBatchAsync: async (pids: readonly number[]) => new Map(pids.map(pid => [pid, 2_000])),
+      catalogMtimeMs: () => 1_000,
+    };
+
+    const [first, joined] = await Promise.all([
+      collectCodexAppServerCatalogStateForRequest(io),
+      collectCodexAppServerCatalogStateForRequest(io),
+    ]);
+    expect(first.state).toBe("fresh");
+    expect(joined).toBe(first);
+    expect(calls).toBe(1);
+
+    now += 4_999;
+    expect((await collectCodexAppServerCatalogStateForRequest(io)).state).toBe("fresh");
+    expect(calls).toBe(1);
+
+    now += 2;
+    expect((await collectCodexAppServerCatalogStateForRequest(io)).state).toBe("fresh");
+    expect(calls).toBe(2);
+    resetCodexAppServerCatalogStateCache();
+  });
+
+  test("cache invalidation cannot be undone by an older in-flight Windows refresh (#1852)", async () => {
+    resetCodexAppServerCatalogStateCache();
+    let calls = 0;
+    let releaseFirst: ((snapshots: Array<{ pid: number; commandLine: string }>) => void) | undefined;
+    const firstSnapshots = new Promise<Array<{ pid: number; commandLine: string }>>(resolve => {
+      releaseFirst = resolve;
+    });
+    const io = {
+      platform: "win32" as const,
+      listSnapshotsAsync: async () => {
+        calls += 1;
+        if (calls === 1) return firstSnapshots;
+        return [];
+      },
+      readStartMsBatchAsync: async (pids: readonly number[]) => new Map(pids.map(pid => [pid, 2_000])),
+      catalogMtimeMs: () => 1_000,
+    };
+
+    const staleFlight = collectCodexAppServerCatalogStateForRequest(io);
+    resetCodexAppServerCatalogStateCache();
+    releaseFirst?.([{ pid: 42, commandLine: APP_SERVER_CMD }]);
+    await expect(staleFlight).resolves.toMatchObject({ state: "fresh" });
+
+    await expect(collectCodexAppServerCatalogStateForRequest(io)).resolves.toMatchObject({
+      state: "not_running",
+    });
+    expect(calls).toBe(2);
+    resetCodexAppServerCatalogStateCache();
   });
 
   test("unrelated processes never enter the comparison", () => {
