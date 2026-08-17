@@ -6,6 +6,7 @@ import { setTrustedWindowsElevationExecutablesForTests } from "../src/lib/window
 import {
   afterCatalogWriteHandleAppServers,
   attachStaleAppServerHint,
+  catalogStateTtlMs,
   collectCodexAppServerCatalogState,
   formatStaleCodexAppServerWarning,
   isCodexAppServerCommandLine,
@@ -657,6 +658,24 @@ describe("warnIfStaleCodexAppServersAfterStartupWrite (#1046)", () => {
 
     resetCodexAppServerCatalogStateCache();
     expect(collectCodexAppServerCatalogState()).not.toBe(first);
+  });
+
+  /*
+   * An `unknown` reading is a failure to observe, not an observation. Serving it for
+   * the full window means one transient enumeration failure suppresses guidance for
+   * every call in that window and the retry that would have succeeded never runs.
+   *
+   * Scope: this asserts the POLICY the cache gate consults. The gate itself only
+   * engages on a fully-defaulted call — injecting `now` would make the call
+   * non-default and bypass the memo entirely — so there is no seam to drive a clock
+   * through, and no test here proves the gate reads this function. That is why it is
+   * one function rather than an inline ternary.
+   */
+  test("an unknown reading is cached far more briefly than a real one", () => {
+    expect(catalogStateTtlMs("unknown")).toBeLessThan(catalogStateTtlMs("fresh"));
+    expect(catalogStateTtlMs("unknown")).toBeLessThan(catalogStateTtlMs("not_running"));
+    expect(catalogStateTtlMs("fresh")).toBe(catalogStateTtlMs("stale"));
+    expect(catalogStateTtlMs("unknown")).toBeGreaterThan(0);
   });
 
   /*

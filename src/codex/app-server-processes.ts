@@ -614,6 +614,18 @@ function defaultCatalogMtimeMs(): number | null {
 // guidance calls (#857).
 let catalogStateCache: { atMs: number; status: CodexAppServerCatalogStatus } | null = null;
 const CATALOG_STATE_TTL_MS = 5_000;
+/**
+ * `unknown` is a failure to observe, not an observation, so it gets a much shorter
+ * window than a real reading. At the full 5s a single transient enumeration failure
+ * suppresses guidance for every call in that window, and the retry that would have
+ * succeeded never runs. Keeping a brief window still collapses a burst of per-turn
+ * calls into one probe, which is what the cache is for.
+ */
+const CATALOG_STATE_UNKNOWN_TTL_MS = 250;
+
+export function catalogStateTtlMs(state: CodexAppServerCatalogState): number {
+  return state === "unknown" ? CATALOG_STATE_UNKNOWN_TTL_MS : CATALOG_STATE_TTL_MS;
+}
 
 /**
  * Compare the on-disk catalog mtime against the start time of running Codex
@@ -638,7 +650,8 @@ export function collectCodexAppServerCatalogState(
   const fullyDefault = !io.listSnapshots && !io.readStartMs && !io.catalogMtimeMs
     && !io.platform && !io.getuid && !io.now;
   if (fullyDefault
-    && catalogStateCache && now - catalogStateCache.atMs < CATALOG_STATE_TTL_MS) {
+    && catalogStateCache
+    && now - catalogStateCache.atMs < catalogStateTtlMs(catalogStateCache.status.state)) {
     return catalogStateCache.status;
   }
   const compute = (): CodexAppServerCatalogStatus => {
