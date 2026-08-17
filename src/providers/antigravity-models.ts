@@ -368,7 +368,11 @@ export function parseAntigravityAvailableModels(
         || !antigravityRecord(models[id])
         || ids.length >= limit) return null;
       const baseId = id.endsWith("-tiered") ? id.slice(0, -"-tiered".length) : id;
-      if (ids.some(agentId => agentId === baseId || agentId.startsWith(`${baseId}-`))) continue;
+      if (ids.some(agentId =>
+        agentId === id
+        || agentId === baseId
+        || ANTIGRAVITY_DISCOVERY_EFFORTS.some(effort => agentId === `${baseId}-${effort}`)
+      )) continue;
       ids.push(id);
     }
   }
@@ -445,7 +449,13 @@ export function resolveAntigravityEffortWireModel(
 ): { wireModelId: string; thinkingLevel?: string } {
   const discoveredWireModelId = discoveredAntigravityWireModelId(modelId, baseUrl);
   if (discoveredWireModelId && (discoveredWireModelId !== modelId || isAntigravitySuffixModelId(modelId))) {
-    return { wireModelId: discoveredWireModelId };
+    const defaultLevel = ANTIGRAVITY_THINKING_LEVEL_MODELS[modelId];
+    return {
+      wireModelId: discoveredWireModelId,
+      ...(defaultLevel
+        ? { thinkingLevel: effort ? resolveAntigravityThinkingLevel(effort) ?? defaultLevel : defaultLevel }
+        : {}),
+    };
   }
 
   // Rule 0: retired Flash id — Google has taken the wire id offline, so route to the

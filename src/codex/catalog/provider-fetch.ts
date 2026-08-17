@@ -1361,7 +1361,6 @@ async function fetchProviderModelsWithAuth(
       return observed(models, "degraded");
     }
     if (antigravity) {
-      registerAntigravityDiscoveredWireModels(prov.baseUrl, antigravity);
       const live = antigravity.map(model => applyProviderConfigHints(name, prov, {
         id: model.id,
         provider: name,
@@ -1375,6 +1374,7 @@ async function fetchProviderModelsWithAuth(
       if (!setCached(name, forCache, Date.now(), cacheGeneration)) {
         return observed(withConfiguredRetention(configured), "degraded");
       }
+      registerAntigravityDiscoveredWireModels(prov.baseUrl, antigravity);
       markProviderDiscoveryOk(name, live.length);
       return observed(withConfiguredRetention(forCache, { warnDrops: true }), "authoritative");
     }

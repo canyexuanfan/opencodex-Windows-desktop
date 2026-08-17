@@ -169,6 +169,17 @@ describe("antigravity CCA envelope", () => {
       tieredModelIds: { flash: ["gemini-3.7-flash-tiered"] },
     })?.map(model => model.id)).toEqual(["gemini-3.7-flash"]);
     expect(parseAntigravityAvailableModels({
+      models: {
+        "gemini-3.7-flash-image": { maxTokens: 1_048_576 },
+        "gemini-3.7-flash-tiered": { maxTokens: 1_048_576 },
+      },
+      agentModelSorts: [{ groups: [{ modelIds: ["gemini-3.7-flash-image"] }] }],
+      tieredModelIds: { flash: ["gemini-3.7-flash-tiered"] },
+    })?.map(model => model.id)).toEqual([
+      "gemini-3.7-flash-image",
+      "gemini-3.7-flash",
+    ]);
+    expect(parseAntigravityAvailableModels({
       models: { "-tiered": { maxTokens: 1_048_576 } },
       agentModelSorts: [{ groups: [{ modelIds: ["-tiered"] }] }],
     })?.map(model => model.id)).toEqual(["-tiered"]);
@@ -246,6 +257,34 @@ describe("antigravity CCA envelope", () => {
       parsedWithEffort("gemini-3.5-flash-high"),
     );
     expect(JSON.parse(req.body).model).toBe("gemini-3-flash-agent");
+  });
+
+  test("preserves thinkingLevel for a display-derived tiered Flash model", async () => {
+    const payload = {
+      models: {
+        "gemini-3.7-flash-tiered": { displayName: "Gemini 3.7 Flash", maxTokens: 1_048_576 },
+      },
+      agentModelSorts: [{ groups: [{ modelIds: [] }] }],
+      tieredModelIds: { flash: ["gemini-3.7-flash-tiered"] },
+    };
+    const rows = parseAntigravityAvailableModels(payload)!;
+    expect(rows).toEqual([{
+      id: "gemini-3.7-flash",
+      wireModelId: "gemini-3.7-flash-tiered",
+      contextWindow: 1_048_576,
+    }]);
+
+    const baseUrl = "https://cca-tiered-discovery.example";
+    registerAntigravityDiscoveredWireModels(baseUrl, rows);
+    expect(resolveAntigravityEffortWireModel("gemini-3.7-flash", "high", baseUrl))
+      .toEqual({ wireModelId: "gemini-3.7-flash-tiered", thinkingLevel: "high" });
+
+    const req = await createGoogleAdapter({ ...effortProvider, baseUrl }).buildRequest(
+      parsedWithEffort("gemini-3.7-flash", "high"),
+    );
+    const envelope = JSON.parse(req.body);
+    expect(envelope.model).toBe("gemini-3.7-flash-tiered");
+    expect(envelope.request.generationConfig.thinkingConfig).toEqual({ thinkingLevel: "high" });
   });
 
   test("keeps unknown discovered tier IDs directly routable", async () => {
