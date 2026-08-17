@@ -1,7 +1,8 @@
 # 020 — Phase 2: tool-result image passthrough
 
 Answers **F2** (`002`). Severity High. One PABCD cycle.
-**Revised after an adversarial audit returned FAIL** (findings 7, 8).
+**Revised twice after adversarial audits** (round 1 findings 7-8, round 2
+findings 2 and 4).
 
 ## Problem restated
 
@@ -11,88 +12,105 @@ result with `[image input unsupported by Cursor adapter phase 3: ...]`, and
 `McpToolResultContentItem` has an `image` case (`gen/agent_pb.ts:8476`) carrying
 `data: Uint8Array` and `mimeType`.
 
-## The source format is a URL, not base64 (audit correction)
+## The source format is a URL, not base64 (round 1, finding 7)
 
-The original plan proposed reusing the MCP decoder from `native-exec-mcp.ts:115`.
-**Wrong contract.** That helper takes bare base64 plus a separate `mimeType`,
-which is the MCP block shape. A Codex tool result carries `OcxImageContent` with
-a single `imageUrl` field that is *either* a `data:` URL *or* a remote `https`
-URL (`types.ts:156`). Reusing the MCP helper would mis-decode data URLs and
-cannot represent a remote URL at all.
+`OcxImageContent` carries a single `imageUrl` that is either a `data:` URL or a
+remote `https` URL (`types.ts:156`). The MCP helper in `native-exec-mcp.ts:115`
+takes bare base64 plus a separate mime and is the wrong contract here.
 
-This phase therefore needs a `data:` URL parser, not a base64 decoder:
+## Do not tighten the shared parser (round 2, finding 4)
 
-- parse the `data:<mime>;base64,<payload>` form, taking `mimeType` from the URL
-  itself rather than a sibling field;
-- **remote `https` URLs are out of scope** — Cursor's `McpImageContent` takes
-  bytes, and fetching a remote image inside request construction would add
-  network IO to a pure encoding path. Remote URLs keep a placeholder that says so.
-- validate strictly: `Buffer.from(x, "base64")` accepts many invalid strings
-  silently, so a malformed payload must be detected by validating the base64
-  charset and decoded length before use, not by trusting the decoder to throw.
-- check `src/adapters/image.ts` first (`:8`) — if a data-URL parser already
-  exists there, extend it instead of adding a second one.
+`src/adapters/image.ts:8` already provides `parseDataUrl`, **shared by the
+Anthropic, Google, and Command Code adapters**. Tightening its return contract to
+get strict validation would silently change those adapters while this phase's
+tests only cover Cursor.
 
-## Bounding must be conversation-level (audit correction)
+Therefore: add a **new strict helper built on top of `parseDataUrl`**, local to
+this concern. It calls the shared parser, then validates the base64 charset and
+decoded length itself — `Buffer.from(x, "base64")` accepts many invalid strings
+without throwing. The shared parser is not modified.
 
-The original per-image cap was insufficient. `protobuf-request.ts:362` serializes
-the whole `ConversationStep` — text, every image, and the envelope — into **one**
-blob, and admission caps a single blob at 16 MiB (`native-exec.ts:91`). Several
-in-budget images can therefore still overflow one step, and a per-message helper
-cannot see across results to drop the oldest.
+Remote `https` URLs stay **out of scope**: `McpImageContent` needs bytes, and
+fetching inside request construction would add network IO to a pure encoding
+path. They keep a placeholder that says so.
 
-The bound must be applied where the conversation is assembled, not inside the
-per-message mapper:
+## Bounding must be serialization-aware (round 1 finding 8, round 2 finding 2)
 
-- a total decoded-image byte budget for the request, tracked in
-  `conversationTurns` as steps are built;
-- newest-first allocation: walk results from most recent backwards, admitting
-  images while budget remains, so the screenshot the model is currently reasoning
-  about survives and older ones degrade to placeholders;
-- a per-image ceiling as a cheap pre-filter, well under the step budget;
-- images never enter the external replay-root text budget (`:60`, `:122`).
+Round 1 established that a per-image cap is insufficient, because
+`protobuf-request.ts:362` serializes an entire `ConversationStep` — text, every
+image, and the envelope — into **one** blob capped at
+`BLOB_MAX_ENTRY_BYTES` (`native-exec.ts:89`).
+
+Round 2 showed the conversation-level *decoded-byte* budget still does not fix
+it: a step also carries existing arguments, text, mime strings, and protobuf
+framing (`:354-381`). A previously valid near-limit text result plus an admitted
+image can push a step over the entry limit and fail a request that used to work.
+**A budget over decoded image bytes cannot bound a serialized protobuf step.**
+
+The bound must therefore be checked **after serialization**, not predicted before
+it:
+
+- keep the newest-first conversation-level image budget as a cheap pre-filter,
+  so old screenshots degrade before new ones and most steps never approach the
+  limit;
+- after building a step, measure its serialized size; if it exceeds the entry
+  limit minus a headroom margin, degrade that step's images to placeholders
+  (newest retained last) and re-serialize;
+- a step that still does not fit after dropping every image is a pre-existing
+  text-only condition and is left to the existing admission path — this phase must
+  not change behavior for requests that carry no images.
+
+That last clause is the real acceptance boundary: **no request that works today
+may start failing because of this phase.**
 
 ## The three result paths
 
 Native-with-matching-call (lines 493-496) gains real image content. The external
 replay path (481-490) and the unmatched-native path (498-503) keep a placeholder,
-reworded to state that an image was produced and omitted, rather than the current
-"unsupported by Cursor adapter phase 3".
+reworded to state that an image was produced and omitted.
 
 ## On the `wip/cursor-tool-result-text` draft
 
 Reject for this phase. It compacts the *placeholder* rather than sending the
-image, so it does not address F2, and its text compaction is a hardcoded regex
-over accessibility output that discards real content on a guess. If AX text
-volume still hurts after images pass through, it earns its own unit with
-measurements.
+image, and its text compaction is a hardcoded regex over accessibility output
+that discards real content on a guess. If AX volume still hurts afterwards, it
+earns its own unit with measurements.
 
 ## Diff-level plan
 
+**new strict decode helper** (beside `protobuf-request.ts`, or in the cursor
+adapter directory)
+
+- `decodeInlineImage(imageUrl): { bytes: Uint8Array; mimeType: string } | undefined`,
+  implemented over `parseDataUrl` with explicit charset/length validation.
+  Returns `undefined` for remote URLs and malformed payloads; never throws.
+
 **`src/adapters/cursor/protobuf-request.ts`**
 
-- Add `toolResultContentItems(message, budget)` returning
-  `McpToolResultContentItem[]`: map parts in order; text -> `McpTextContent`;
-  image -> `McpImageContent` when the data URL parses, validates, and fits the
-  remaining budget; otherwise a placeholder text item naming why.
+- `toolResultContentItems(message, budget)` -> `McpToolResultContentItem[]`:
+  parts in order; text -> `McpTextContent`; image -> `McpImageContent` when it
+  decodes and fits; otherwise a placeholder text item naming why.
 - `toolResultPart` takes the budget and uses that array.
-- `conversationTurns` owns the budget object and allocates newest-first.
-- Keep `contentToText` for text-only paths with the reworded placeholder.
-- Preserve the `[tool_result]` envelope (`call_id`, `name`, `is_error`).
+- `conversationTurns` owns the budget, allocates newest-first, and performs the
+  post-serialization size check and degrade-and-retry described above.
 
 ## Tests (`tests/cursor-tool-result-image.test.ts`)
 
-1. A result with one text and one `data:` image part produces two items in order,
-   the second case `image` with exact decoded bytes and the mime from the URL.
-2. A string-content result still produces exactly one text item (regression).
-3. A remote `https` image URL produces a placeholder and no bytes.
-4. A malformed base64 payload produces a placeholder and does not throw.
+1. One text + one `data:` image part -> two items in order, the second case
+   `image` with exact decoded bytes and the mime from the URL.
+2. String-content result -> exactly one text item (regression).
+3. Remote `https` image URL -> placeholder, no bytes.
+4. Malformed base64 -> placeholder, no throw.
 5. Images across several results are admitted newest-first until the budget is
    exhausted; older ones become placeholders.
 6. A single oversized image is rejected by the per-image ceiling.
-7. The external replay path emits no image bytes and keeps its text budget.
+7. **Near-limit text plus an image**: the step is degraded to fit and the request
+   still succeeds — the regression guard for round 2 finding 2.
+8. A request carrying **no** images serializes byte-identically to the pre-change
+   behavior.
+9. The external replay path emits no image bytes and keeps its text budget.
 
 ## Done when
 
-All seven pass, typecheck clean, cursor suite green on `ssh lidge`, pushed.
+All nine pass, typecheck clean, cursor suite green on `ssh lidge`, pushed.
 

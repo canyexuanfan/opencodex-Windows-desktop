@@ -41,11 +41,16 @@ Relevant to long-lived Cursor streams; not itself proven to be our defect.
 
 ## Context only
 
-- gRPC/Connect require status trailers for normal completion; a body without the
-  encoded trailer must not be treated as authoritative success.
+- **Protocol principle, adjacent transport.** In gRPC over HTTP/2, status
+  trailers are required for normal completion, and Connect's gRPC-web transport
+  fails loudly when the encoded trailer is missing.
   <https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md> (primary),
-  <https://github.com/connectrpc/connect-es/issues/1115> (primary). This is the
-  protocol-level statement of exactly what F1 gets wrong.
+  <https://github.com/connectrpc/connect-es/issues/1115> (primary).
+  **Terminology caution:** this adapter speaks Connect framing with an encoded
+  end-stream envelope (`live-transport.ts:787-900`), not gRPC-web trailers, so
+  these sources supply the general principle — a body without its terminal is not
+  authoritative success — and not a statement about our exact wire. F1 rests on
+  source reading (`003`), not on these citations.
 - xAI documents Grok 4.6 tool calling over streaming and synchronous modes.
   <https://docs.x.ai/developers/tools/streaming-and-sync> (primary). No official
   changelog naming grok-4.6 as dropping tool calls was found.

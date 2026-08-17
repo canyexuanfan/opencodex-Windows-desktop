@@ -22,15 +22,16 @@ session resets. This unit stops guessing and reads the wire.
 
 ## Findings summary
 
-Three defects are proven by source reading, each with its own implementation
-phase. Two hypotheses were **disproved** and are recorded as such, because a
+Two defects are proven by source reading; a third is a proven *lossy
+conversion* whose behavioral consequence is explicitly unproven. Each gets its
+own implementation phase. Two hypotheses were **disproved** and are recorded as such, because a
 decode that only confirms its own priors is not a decode.
 
 | # | Defect | Severity | Phase |
 |---|--------|----------|-------|
 | F1 | A clean HTTP/2 EOF after >=1 frame settles the transport as success without `turnEnded`, so `finalizeTurnEvents` never runs and an open tool call vanishes. Non-streaming reports the truncated turn as `completed`. | High | `010` |
 | F2 | Every image part of a tool result is replaced with placeholder text, even though the Cursor protobuf has a first-class `McpImageContent` case that the adapter already uses elsewhere. | High | `020` |
-| F3 | `xai/grok-4.6` does not use `apply_patch`. | TBD (`030`) | `030` |
+| F3 | On the `xai` path the freeform `apply_patch` contract is erased (`parser.ts:184`, `openai-chat.ts:1194`). The conversion is provably lossy; that this is *why* grok-4.6 avoids the tool is **not proven** — per-property guidance already exists (`parser.ts:189`). `030` is an experiment, not a fix. | lossy conversion proven; cause unproven | `030` |
 
 ### Disproved hypotheses
 
@@ -75,7 +76,7 @@ corrected rather than defended:
 | 7 | `020` planned to reuse the MCP base64 decoder; `OcxImageContent` carries a `data:` or remote URL (`types.ts:156`) | data-URL parser specified, remote URLs scoped out |
 | 8 | `020`'s per-image cap cannot bound one `ConversationStep`, which is stored as a single blob | conversation-level byte budget, newest-first |
 | 9 | `030` claimed Grok gets no apply_patch guidance; `parser.ts:189` already attaches per-property guidance | root cause downgraded to "lossy conversion, cause unproven" |
-| 10 | `030`'s guidance would fire for every `openai-chat` provider and could demote a sibling edit tool | xai-scoped, suppressed when a sibling edit tool exists |
+| 10 | `030`'s guidance would fire for every `openai-chat` provider and could demote a sibling edit tool | xai-scoping attempted; round 2 finding 1 then showed the identity seam does not exist, and finding 3 showed the sibling predicate is undefinable — see the round 2 table |
 
 Findings 3, 4, 5, 9, and 10 were load-bearing: acting on the original plan would
 have produced a double-terminal bug, a test that could never pass, and a prompt
@@ -91,3 +92,23 @@ change leaking into unrelated providers.
   `protobuf-request.ts:314`) although `SelectedImage` supports blob/inline data.
   Separate capability, separate unit.
 
+### Round 2
+
+The corrected unit was submitted to a second independent adversarial reviewer,
+which confirmed the `001`/`003` corrections and found `010` coherent,
+regression-free, and implementable — then returned **FAIL with seven further
+findings** on the other documents:
+
+| # | Finding | Resolution |
+|---|---------|------------|
+| 1 | `030`'s xai-only gate is not implementable where it was placed: the adapter factory never receives a provider name (`adapters/registry.ts:15-17`, `server/adapter-resolve.ts:51-52`) | threading provider identity is now declared in-scope for `030`; its isolation test must use the **same base URL** so host sniffing cannot fake a pass |
+| 2 | `020`'s decoded-byte budget still cannot bound a serialized `ConversationStep`, so a near-limit text result plus an image could newly fail | bounding moved **after** serialization: measure, degrade images, re-serialize; added a near-limit regression test and a byte-identical no-image test |
+| 3 | "sibling edit-capable tool" has no decidable predicate (`types.ts:206-224`, `tool-catalog-nudge.ts:12-17`) | gate dropped; the note now describes call shape instead of claiming exclusivity, so no predicate is needed |
+| 4 | `020` would tighten `parseDataUrl`, which Anthropic, Google, and Command Code share (`adapters/image.ts:8`) | a new strict helper is layered **on top of** the shared parser; the shared contract is untouched |
+| 5 | `030` misstated xAI support: custom function calling is demonstrated via `/v1/responses`, and object-root schemas are still required | corrected; option 3 must also distinguish the API-key surface from the OAuth CLI proxy |
+| 6 | `000` overstated F3 as proven and recorded xai isolation as resolved | F3 downgraded above; the round-1 row now points at findings 1 and 3 |
+| 7 | `004` conflates Connect end-stream framing with gRPC-web trailers | terminology corrected in `004`; the sources are kept as protocol-principle context, not as claims about this transport |
+
+Round 2 mattered most where it was least comfortable: findings 1 and 2 each
+showed a *correction* from round 1 was itself unimplementable. That is the
+argument for auditing revisions rather than only first drafts.
