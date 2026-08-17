@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildCatalogEntries, gatherRoutedModels as gatherRoutedModelsDirect } from "../src/codex/catalog";
 import { buildModelsRequest } from "../src/oauth";
-import { clearModelCache, getStaleCached } from "../src/codex/model-cache";
-import { resolveAntigravityWireModelId } from "../src/providers/antigravity-models";
+import { captureModelCacheGeneration, clearModelCache, getStaleCached } from "../src/codex/model-cache";
+import { registerAntigravityDiscoveredWireModels, resolveAntigravityWireModelId } from "../src/providers/antigravity-models";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 import { withStubbedProviderFetch } from "./helpers/catalog-provider-fetch";
 
@@ -236,6 +236,12 @@ describe("Antigravity live model discovery", () => {
     const responseGate = new Promise<void>(resolve => { releaseResponse = resolve; });
     const fetchStarted = new Promise<void>(resolve => { markFetchStarted = resolve; });
     const baseUrl = "https://cca-stale-discovery.example";
+    const priorGeneration = captureModelCacheGeneration("google-antigravity");
+    registerAntigravityDiscoveredWireModels(baseUrl, [{ id: "stale-model", wireModelId: "old-wire-model" }], {
+      provider: "google-antigravity",
+      cacheGeneration: priorGeneration,
+    });
+    expect(resolveAntigravityWireModelId("stale-model", baseUrl)).toBe("old-wire-model");
     globalThis.fetch = (async () => {
       markFetchStarted();
       await responseGate;

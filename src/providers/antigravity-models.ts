@@ -1,4 +1,5 @@
 import { isValidModelDiscoveryModelId, MODEL_DISCOVERY_MAX_MODELS } from "./model-discovery-limits";
+import { isModelCacheGenerationCurrent } from "../codex/model-cache";
 
 // Google Antigravity (Cloud Code Assist) bundled model list.
 //
@@ -260,7 +261,12 @@ function antigravityPositiveInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
-const discoveredWireModelsByBaseUrl = new Map<string, ReadonlyMap<string, string>>();
+interface DiscoveredWireModelMapping {
+  readonly models: ReadonlyMap<string, string>;
+  readonly generation?: { provider: string; cacheGeneration: string };
+}
+
+const discoveredWireModelsByBaseUrl = new Map<string, DiscoveredWireModelMapping>();
 
 function antigravityBaseUrlKey(baseUrl: string | undefined): string | undefined {
   if (typeof baseUrl !== "string" || !baseUrl.trim()) return undefined;
@@ -279,12 +285,16 @@ function antigravityBaseUrlKey(baseUrl: string | undefined): string | undefined 
 export function registerAntigravityDiscoveredWireModels(
   baseUrl: string | undefined,
   models: readonly AntigravityAvailableModel[],
+  generation?: { provider: string; cacheGeneration: string },
 ): void {
   const key = antigravityBaseUrlKey(baseUrl);
   if (!key) return;
   const wireModels = new Map<string, string>();
   for (const model of models) wireModels.set(model.id, model.wireModelId);
-  discoveredWireModelsByBaseUrl.set(key, wireModels);
+  discoveredWireModelsByBaseUrl.set(key, {
+    models: wireModels,
+    ...(generation ? { generation } : {}),
+  });
 }
 
 function discoveredAntigravityWireModelId(
@@ -292,7 +302,15 @@ function discoveredAntigravityWireModelId(
   baseUrl: string | undefined,
 ): string | undefined {
   const key = antigravityBaseUrlKey(baseUrl);
-  return key ? discoveredWireModelsByBaseUrl.get(key)?.get(modelId) : undefined;
+  if (!key) return undefined;
+  const mapping = discoveredWireModelsByBaseUrl.get(key);
+  if (!mapping) return undefined;
+  if (mapping.generation
+    && !isModelCacheGenerationCurrent(mapping.generation.provider, mapping.generation.cacheGeneration)) {
+    discoveredWireModelsByBaseUrl.delete(key);
+    return undefined;
+  }
+  return mapping.models.get(modelId);
 }
 
 /**

@@ -1374,7 +1374,10 @@ async function fetchProviderModelsWithAuth(
       if (!setCached(name, forCache, Date.now(), cacheGeneration)) {
         return observed(withConfiguredRetention(configured), "degraded");
       }
-      registerAntigravityDiscoveredWireModels(prov.baseUrl, antigravity);
+      registerAntigravityDiscoveredWireModels(prov.baseUrl, antigravity, {
+        provider: name,
+        cacheGeneration,
+      });
       markProviderDiscoveryOk(name, live.length);
       return observed(withConfiguredRetention(forCache, { warnDrops: true }), "authoritative");
     }
