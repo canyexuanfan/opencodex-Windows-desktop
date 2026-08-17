@@ -204,10 +204,20 @@ const commandRunners: Record<string, CommandRunner> = {
   },
   sync: async deps => {
     const restartCodex = deps.args.slice(1).includes("--restart-codex");
-    const synced = await syncModelsToCodex((await deps.findLiveProxy())?.port);
+    const synced = await syncModelsToCodex(
+      (await deps.findLiveProxy())?.port,
+      undefined,
+      undefined,
+      undefined,
+      { catalogEvenWhenNotInjected: true },
+    );
     let code = 0;
     if (synced.status === "skipped") {
       console.log("Codex integration is OFF; sync skipped and no Codex files changed.");
+    } else if (synced.status === "catalog-only") {
+      // Explicit sync with the integration OFF still refreshes the catalog/cache
+      // for side profiles that consume the proxy without injection.
+      console.log(synced.message ?? "Codex integration is OFF; catalog refreshed, Codex config untouched.");
     } else if (!synced.ok) {
       code = 1;
       console.error("Codex sync did not complete. Fix the reported Codex config issue and retry.");
@@ -227,19 +237,18 @@ const commandRunners: Record<string, CommandRunner> = {
   },
   "sync-cache": async deps => {
     const restartCodex = deps.args.slice(1).includes("--restart-codex");
-    if (!shouldSyncCodexOnStart(deps.loadConfig())) {
-      console.log("Codex integration is OFF; cache sync skipped and no Codex files changed.");
-      return 0;
-    }
     const { withCatalogWriteSerialization } = await import("../codex/catalog-write-serialization");
     const { invalidateCodexModelsCacheWithPermit } = await import("../codex/catalog/sync");
     const { getCodexHome } = await import("../codex/paths");
     const owningCodexHome = getCodexHome();
+    const desiredDisabled = !shouldSyncCodexOnStart(deps.loadConfig());
     const invalidated = withCatalogWriteSerialization(owningCodexHome, permit =>
-      invalidateCodexModelsCacheWithPermit(permit, owningCodexHome));
+      invalidateCodexModelsCacheWithPermit(permit, owningCodexHome, { allowWhenDesiredDisabled: true }));
     // Only warn/restart when models_cache was actually rewritten from a readable catalog.
     if (invalidated.kind === "completed" && invalidated.value) {
       afterCatalogWriteHandleAppServers({ restart: restartCodex, log: console });
+    } else if (desiredDisabled) {
+      console.log("Codex integration is OFF; cache sync skipped (no catalog or cache write).");
     }
     return 0;
   },

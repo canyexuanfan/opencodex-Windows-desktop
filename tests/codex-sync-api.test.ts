@@ -217,6 +217,85 @@ describe("GUI/CLI Codex sync backend", () => {
     expect(injected).toBe(false);
   });
 
+  test("explicit sync refreshes the catalog when Codex integration is OFF without injecting", async () => {
+    let refreshed = 0;
+    let injected = false;
+    let refreshOptions: unknown;
+    writeFileSync(join(TEST_OCX_HOME, "config.json"), JSON.stringify({
+      ...config,
+      clientIntegrations: { codex: false },
+    }));
+    const result = await syncModelsToCodex(12345, config, null, {
+      admitCodexWrite: admittedSync,
+      refreshCodexModelCatalog: async (_config: unknown, _deps: unknown, options: unknown) => {
+        refreshed++;
+        refreshOptions = options;
+        return {
+          added: 3,
+          path: "/tmp/opencodex-catalog.json",
+          catalogExists: true,
+          catalogWritten: true,
+          cacheSynced: true,
+          comboOmissions: [],
+        };
+      },
+      injectCodexConfig: async () => {
+        injected = true;
+        throw new Error("must not inject");
+      },
+      currentExternalCodexModelProvider: () => null,
+    }, { catalogEvenWhenNotInjected: true });
+
+    expect(refreshed).toBe(1);
+    expect(refreshOptions).toEqual({ allowWhenDesiredDisabled: true });
+    expect(injected).toBe(false);
+    expect(result).toMatchObject({
+      status: "catalog-only",
+      ok: true,
+      added: 3,
+      catalogExists: true,
+      catalogWritten: true,
+      cacheSynced: true,
+      catalogPath: "/tmp/opencodex-catalog.json",
+    });
+    expect(result.message).toContain("Codex config untouched");
+  });
+
+  test("explicit sync refreshes the catalog before preserving an external provider", async () => {
+    let refreshed = 0;
+    let injectCalls = 0;
+    const result = await syncModelsToCodex(10100, config, null, {
+      admitCodexWrite: admittedSync,
+      refreshCodexModelCatalog: async () => {
+        refreshed++;
+        return {
+          added: 2,
+          path: "/tmp/opencodex-catalog.json",
+          catalogExists: true,
+          catalogWritten: true,
+          cacheSynced: true,
+          comboOmissions: [],
+        };
+      },
+      injectCodexConfig: async () => {
+        injectCalls++;
+        return { success: true, message: "external provider preserved" };
+      },
+      currentExternalCodexModelProvider: () => "custom",
+    }, { catalogEvenWhenNotInjected: true });
+
+    expect(refreshed).toBe(1);
+    expect(injectCalls).toBe(1);
+    expect(result).toMatchObject({
+      status: "applied",
+      ok: true,
+      added: 2,
+      catalogExists: true,
+      catalogWritten: true,
+      cacheSynced: true,
+    });
+  });
+
   /**
    * The lost-transition race, with a REAL second process. The caller's config
    * snapshot says ON; while provider discovery is awaited, another process

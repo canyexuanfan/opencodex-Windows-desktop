@@ -60,6 +60,13 @@ function manifest(root: string): Record<string, string> {
   return entries;
 }
 
+/** The catalog/cache artifacts an explicit side-profile sync may legitimately write while OFF. */
+function manifestWithoutCatalogArtifacts(entries: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(entries).filter(([key]) => !key.includes("opencodex-catalog") && key !== "models_cache.json"),
+  );
+}
+
 async function waitFor<T>(read: () => T | null | Promise<T | null>, label: string, timeoutMs = 10_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -289,8 +296,13 @@ describe("WP13 composed toggle acceptance", () => {
     }
   }, 45_000);
 
-  /** RED: remove `shouldSyncCodexOnStart` or the under-lock desired-state read; an OFF row writes native bytes. */
-  test("A-reduced: real CLI and HTTP entry points preserve an OFF Codex home", async () => {
+  /**
+   * RED: remove shouldSyncCodexOnStart or the under-lock desired-state read; an
+   * OFF row writes native config bytes. Explicit CLI sync/sync-cache may still
+   * refresh the catalog/cache for side profiles (catalog-only), so those two
+   * commands are compared without catalog artifacts; config/history must not move.
+   */
+  test("A-reduced: real CLI and HTTP entry points preserve an OFF Codex config/home", async () => {
     const fx = fixture();
     fx.writeConfig({ clientIntegrations: { codex: false, grok: false, "claude-desktop": false } });
     mkdirSync(join(fx.homeA, ".grok"));
@@ -299,10 +311,15 @@ describe("WP13 composed toggle acceptance", () => {
     const server = await fx.start();
     try {
       expect(manifest(fx.codex)).toEqual(before);
-      for (const argv of [["ensure"], ["sync"], ["restore"], ["sync-cache"]]) {
+      for (const argv of [["ensure"], ["restore"]]) {
         const result = await fx.runCli(argv);
         expect(result.exitCode).toBe(0);
         expect(manifest(fx.codex)).toEqual(before);
+      }
+      for (const argv of [["sync"], ["sync-cache"]]) {
+        const result = await fx.runCli(argv);
+        expect(result.exitCode).toBe(0);
+        expect(manifestWithoutCatalogArtifacts(manifest(fx.codex))).toEqual(manifestWithoutCatalogArtifacts(before));
       }
       const sync = await fx.request(server.runtime, "/api/sync", { method: "POST" });
       expect(sync.status).toBe(200);
@@ -314,7 +331,7 @@ describe("WP13 composed toggle acceptance", () => {
         expect([200, 404]).toContain(toggle.status);
         expect(toggle.body).toHaveProperty("desiredEnabled", false);
       }
-      expect(manifest(fx.codex)).toEqual(before);
+      expect(manifestWithoutCatalogArtifacts(manifest(fx.codex))).toEqual(manifestWithoutCatalogArtifacts(before));
       // P08 is intentionally the ON control: it must reach the same running
       // server through the real CLI without passing a port flag.
       const enabled = await fx.request(server.runtime, "/api/native-integrations/codex", {
