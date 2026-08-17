@@ -1750,7 +1750,9 @@ async function gatherRoutedModelsUncached(
       ? nativeOpenAiContextWindow(combo.alias, nativeContextLimits(config))
       : undefined;
     const nativeAliasMaxInput = combo.nativeAlias && combo.alias
-      ? (NATIVE_GPT56_MAX_INPUT_TOKENS)
+      ? (combo.alias.startsWith("gpt-5.6-") || combo.alias.includes("daybreak")
+        ? NATIVE_GPT56_MAX_INPUT_TOKENS
+        : nativeOpenAiMaxInputTokens(combo.alias) ?? nativeOpenAiContextWindow(combo.alias))
       : undefined;
     const nativeAliasFallback = combo.nativeAlias && combo.alias && nativeContextWindow !== undefined
       ? {
