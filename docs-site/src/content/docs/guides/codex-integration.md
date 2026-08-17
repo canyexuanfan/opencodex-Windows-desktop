@@ -279,6 +279,45 @@ enabled, also pass `x-opencodex-api-key` from `OPENCODEX_API_AUTH_TOKEN`, matchi
 provider form above. To let OpenCodex inject routing directly, first switch Codex back to its
 built-in `openai` provider and remove any user-owned root `openai_base_url`, then rerun `ocx start`.
 
+### Deferred `tool_search` troubleshooting
+
+`tool_search` is a client-executed Codex discovery tool for loading deferred MCP/app tools. It is
+not an OpenCodex feature flag, and an upstream `tool_choice: "auto"` value does not create or enable
+it. OpenCodex can relay the tool only when Codex already included a declaration like this in the
+incoming Responses request:
+
+```json
+{
+  "tools": [
+    { "type": "tool_search", "description": "Load deferred tools" }
+  ]
+}
+```
+
+For routed chat/local models, OpenCodex exposes that declaration as a normal function named
+`tool_search`. If the model calls it, OpenCodex converts the call back to a Responses
+`tool_search_call`; Codex executes the search and supplies the resulting tool definitions in a
+later `tool_search_output`. Definitions loaded that way are then available on the next model turn.
+
+Check the failure boundary before changing provider settings:
+
+1. **No `type: "tool_search"` in the incoming request:** the active Codex client/session did not
+   advertise deferred discovery. OpenCodex cannot invent the tool. Update/restart Codex and verify
+   the client's MCP/app configuration and feature availability.
+2. **The incoming declaration exists, but no `tool_search` function reaches the routed request:**
+   capture only the redacted tool-type/name list and open an OpenCodex bug. Never attach the bearer,
+   account id, conversation input, full headers, or complete request body.
+3. **The routed request contains `tool_search`, but the local model never calls it:** the relay is
+   working. Use a model/template with reliable function calling and instructions that explicitly
+   tell it to search for a needed deferred tool. LM Studio's `tool_choice: "auto"` permits tool use;
+   it does not force the model to call this function.
+4. **A call is emitted repeatedly or loaded tools never become usable:** capture the redacted
+   `tool_search_call` / `tool_search_output` item types and call ids. OpenCodex preserves both in
+   history so the model should see the completed search instead of issuing it forever.
+
+See [The parser and bridge](/reference/architecture/#the-parser) for the wire mapping. There is no
+provider-level setting that can compensate for a missing client declaration.
+
 ### Catalog troubleshooting
 
 If a model is missing from Codex, or the catalog order/visibility looks wrong, check in order:
