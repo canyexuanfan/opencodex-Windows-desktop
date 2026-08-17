@@ -5,6 +5,11 @@ export interface OcxReasoningReplayIdentity {
   providerName: string;
   /** Opaque process-local digest of the exact upstream destination. */
   providerDestinationIdentity: string;
+  /**
+   * The same destination, digested WITHOUT the process-local random key, so it can key a
+   * durable store. Absent when no base URL was resolvable.
+   */
+  providerDestinationDurableIdentity?: string;
   adapterName: string;
   modelId: string;
   /** Opaque process-local credential identity; never a raw token or API key. */
