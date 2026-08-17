@@ -21,12 +21,12 @@ function parsed(): OcxParsedRequest {
 describe("client fingerprint — helpers", () => {
   test("antigravity UA has the real IDE shape, never the literal giveaway", async () => {
     const ua = antigravityUserAgent();
-    expect(ua).toBe(`antigravity/ide/${ANTIGRAVITY_IDE_VERSION} (aidev_client; os_type=windows; arch=amd64)`);
+    expect(ua).toBe(`antigravity/ide/${ANTIGRAVITY_IDE_VERSION} (os_type=windows; arch=amd64; aidev_client; auth_method=oauth)`);
     expect(ua).not.toBe("antigravity");
   });
 
   test("antigravity UA honors an explicit version override", async () => {
-    expect(antigravityUserAgent("9.9.9")).toBe("antigravity/ide/9.9.9 (aidev_client; os_type=windows; arch=amd64)");
+    expect(antigravityUserAgent("9.9.9")).toBe("antigravity/ide/9.9.9 (os_type=windows; arch=amd64; aidev_client; auth_method=oauth)");
   });
 
   test("GOOGLE_ANTIGRAVITY_USER_AGENT env override wins over the default UA", async () => {
