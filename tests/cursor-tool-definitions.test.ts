@@ -458,6 +458,21 @@ describe("Cursor code mode tool guidance", () => {
     expect(note).not.toContain("For file read/search/listing, use");
   });
 
+  test("does not forbid a separately listed apply_patch in code mode", () => {
+    const note = buildCursorToolGuidanceSystemNote([
+      codeModeExec(),
+      { name: "apply_patch", description: "Apply a patch", parameters: {}, freeform: true },
+    ]);
+    expect(note).toBeDefined();
+    if (!note) throw new Error("Expected Cursor tool guidance note");
+
+    expect(note).toContain("is Codex code mode");
+    expect(note).toContain("remains callable at the top level as usual");
+    expect(note).toContain("`apply_patch`");
+    expect(note).not.toContain("do not call `exec_command`, `shell_command`, or `apply_patch` at the top level here");
+    expect(note).toContain("do not call `exec_command` or `shell_command` at the top level here");
+  });
+
   test("keeps other visible top-level tools callable in code mode", () => {
     // Code mode is about how `exec` works, not a claim that the rest of the catalog is nested.
     // A turn can advertise freeform `exec` alongside ordinary top-level tools, and describing

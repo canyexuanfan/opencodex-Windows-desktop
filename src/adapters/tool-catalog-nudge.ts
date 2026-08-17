@@ -41,11 +41,14 @@ export function shouldInjectNonOpenAIToolCatalogNudge(provider: Pick<OcxProvider
   }
 }
 
-function catalogListsCodeModeExec(
+function advertisedCodeModeExecName(
   advertised: ReadonlySet<string>,
   toWireName: (name: string) => string,
-): boolean {
-  return advertised.has(CODEX_CODE_MODE_EXEC_TOOL) || advertised.has(toWireName(CODEX_CODE_MODE_EXEC_TOOL));
+): string | undefined {
+  const wireName = toWireName(CODEX_CODE_MODE_EXEC_TOOL);
+  if (advertised.has(wireName)) return wireName;
+  if (advertised.has(CODEX_CODE_MODE_EXEC_TOOL)) return CODEX_CODE_MODE_EXEC_TOOL;
+  return undefined;
 }
 
 export function buildNonOpenAIToolCatalogNudgeFromNames(
@@ -63,7 +66,7 @@ export function buildNonOpenAIToolCatalogNudgeFromNames(
   const unavailableNeighborNames = NEIGHBOR_AGENT_TOOL_NAMES.filter(
     name => !advertised.has(name) && !advertised.has(toWireName(name)),
   );
-  const codeMode = catalogListsCodeModeExec(advertised, toWireName);
+  const codeModeExecName = advertisedCodeModeExecName(advertised, toWireName);
 
   return [
     "Tool contract: use the current tool catalog as ground truth.",
@@ -71,8 +74,8 @@ export function buildNonOpenAIToolCatalogNudgeFromNames(
     "These listed names are the complete top-level tool-call surface for this turn.",
     "Call only listed names with their listed argument keys; do not invent, translate, or rename tools.",
     "Names mentioned only in instructions, tool descriptions, argument descriptions, or nested helper APIs are not additional top-level tools.",
-    codeMode
-      ? "If `exec` is listed, it is Codex code mode: its body is JavaScript evaluated in a V8 isolate. Nested helpers are called INSIDE that body as `await tools.<name>(...)`, for example `await tools.exec_command({cmd: \"ls\"})` or `await tools.codex_app__list_threads({})`. Absence from the top-level catalog or from `exec`'s description is not absence: deferred helpers stay callable on `tools.<name>`. Discover them from the isolate global `ALL_TOOLS`, not `tools.ALL_TOOLS`. Do not skip an available nested helper because it is omitted from the listed top-level names."
+    codeModeExecName
+      ? "If `" + codeModeExecName + "` is listed, it is Codex code mode: its body is JavaScript evaluated in a V8 isolate. Nested helpers are called INSIDE that body as `await tools.<name>(...)`, for example `await tools.exec_command({cmd: \"ls\"})` or `await tools.codex_app__list_threads({})`. Absence from the top-level catalog or from `" + codeModeExecName + "`'s description is not absence: deferred helpers stay callable on `tools.<name>`. Discover them from the isolate global `ALL_TOOLS`, not `tools.ALL_TOOLS`. Do not skip an available nested helper because it is omitted from the listed top-level names."
       : "If a listed tool exposes nested helpers such as a tools.* API, call the listed parent tool and use those helpers only inside that tool's input.",
     unavailableNeighborNames.length > 0
       ? "Do not use neighboring-agent tool names " + quoteNames(unavailableNeighborNames) + " unless this turn's catalog lists those exact names."

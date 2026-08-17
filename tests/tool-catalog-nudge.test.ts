@@ -78,8 +78,10 @@ describe("non-OpenAI tool catalog nudge", () => {
       name => `cx_${name}`,
     );
 
-    expect(note).toContain("If `exec` is listed, it is Codex code mode");
+    expect(note).toContain("If `cx_exec` is listed, it is Codex code mode");
+    expect(note).toContain("from `cx_exec`'s description is not absence");
     expect(note).toContain("isolate global `ALL_TOOLS`, not `tools.ALL_TOOLS`");
+    expect(note).not.toContain("If `exec` is listed, it is Codex code mode");
   });
 
   // `advertised` holds WIRE names. A provider that rewrites them (Claude OAuth `custom_`,
