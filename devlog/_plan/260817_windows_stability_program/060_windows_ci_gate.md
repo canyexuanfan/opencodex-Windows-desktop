@@ -42,8 +42,8 @@ failure teaches everyone to ignore it.
 **Stage 3 — remove `continue-on-error`.** Windows failures now fail the run and
 are visible on the PR. Convention, not enforcement, per above.
 
-**Stage 4 — close the release hole.** `.github/workflows/ci.yml:771` accepts
-`skipped` for every job. Once Windows runs on push, that tolerance must not
+**Stage 4 — close the release hole.** The aggregation job accepts `skipped` for
+every job (`.github/workflows/ci.yml:769-772`). Once Windows runs on push, that tolerance must not
 apply to it: assert `platform-windows` reached `success`. Without this,
 `release.yml:181-201` keeps accepting a push-event run in which Windows did
 nothing.

@@ -9,9 +9,15 @@ This phase produces an inventory. Where it lands depends on what it finds.
 
 Enumerate every path that writes a credential, token, OAuth refresh token, or
 session secret. Starting points: `src/config.ts` (chmod sites at 221, 316, 450,
-1713, 2683; dir sites 1704, 2632), `src/oauth/store.ts`, `src/service.ts:189`
-and `:386`, `src/lab/artifacts/secure-fs.ts`,
+1713, 2683, and **3937** — the invalid-config backup, which copies the whole
+config including any secrets in it; dir sites 1704, 2632), `src/oauth/store.ts`,
+`src/service.ts:189` and `:386`, `src/lab/artifacts/secure-fs.ts`,
 `src/adapters/google-antigravity-replay.ts:251`.
+
+These are seeds, not the list. Start by re-deriving every `chmodSync` call in
+`src/` rather than trusting this enumeration — an incomplete seed list is
+exactly the false negative this phase exists to avoid, and the 3937 site was
+missed on the first pass.
 
 For each, record: the file written, whether `hardenSecretPath` (or the async
 twin) runs on **that specific write**, and whether the `chmod` is the only

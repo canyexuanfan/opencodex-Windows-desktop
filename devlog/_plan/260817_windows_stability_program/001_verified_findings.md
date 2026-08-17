@@ -54,7 +54,7 @@ Two implementations of the same operation:
 ```ts
 // src/service.ts:2337-2358 — canonical token matching scoped to THIS home
 //   (paths built 2340-2341; token boundaries enforced 2350-2355)
-// src/update/job.ts:1377-1383 (the bare -like match is line 1381)
+// src/update/job.ts:1377-1383 (the bare -like match is line 1383)
 "$pats = @('opencodex-service.cmd','opencodex-service-launcher.vbs');"
 ...
 "foreach ($p in $pats) { if ($c -like ('*' + $p + '*')) { return $true } };"
@@ -65,7 +65,7 @@ OpenCodex homes under one Windows account means a dashboard update for home A
 can terminate home B's scheduler wrapper. Any unrelated process whose command
 line contains either filename also matches.
 
-Cited precisely: the updater's bare match is `src/update/job.ts:1381`; the service copy builds canonical paths at `src/service.ts:2340-2341` and enforces token boundaries at `:2350-2355`.
+Cited precisely: the updater's bare match is `src/update/job.ts:1383`; the service copy builds canonical paths at `src/service.ts:2340-2341` and enforces token boundaries at `:2350-2355`.
 
 The drift is already measurable and runs in both directions: `update/job.ts`
 received the #1589 argv cleanup that `service.ts` missed (F1); `service.ts`
@@ -83,7 +83,8 @@ Severity: high (cross-installation process kill). Phase 020.
 if: github.event_name == 'workflow_dispatch'
 ```
 
-The aggregation job accepts `skipped` (`ci.yml:771`). The release preflight
+The aggregation job accepts `skipped` (`ci.yml:769-772` — the jq filter keeps
+only jobs that are neither `success` nor `skipped`). The release preflight
 (`release.yml:181-201`) demands a successful **push-event** `ci.yml` run —
 deliberately narrower than "any successful run for this SHA" — but
 `platform-windows` never runs on push. So the general release preflight does not require `platform-windows`, and a
@@ -91,7 +92,8 @@ release can publish without it having run.
 
 One qualification, because the stronger claim is not true: releases that touch
 `src/service.ts`, `src/cli/index.ts`, `package.json` and a few others separately
-require a green `service-lifecycle.yml` (`release.yml:224-234`), and that
+require a green `service-lifecycle.yml` (`release.yml:224-241`, enforced at
+235-239), and that
 workflow does include a Windows job. Windows is therefore not entirely absent
 from release gating - it is absent from the *suite* gate, and present only as a
 lifecycle smoke test for service-shaped changes.
@@ -132,8 +134,9 @@ widening. Phase 030 makes the primitive shared; Phase 031 adds the counters.
 ## F5 — `chmod` is load-bearing where it does nothing
 
 `src/config.ts` calls `chmodSync(target, 0o600)` at lines 221, 316, 450, 1713,
-2683 and `chmodSync(dir, 0o700)` at 1704, 2632, each wrapped in
-`catch { /* platform may ignore chmod */ }`. On Windows the call is a no-op:
+2683 and 3937, and `chmodSync(dir, 0o700)` at 1704, 2632, each wrapped in
+`catch { /* platform may ignore chmod */ }`. The 3937 site is the invalid-config
+backup, which copies the whole config including whatever secrets it held. On Windows the call is a no-op:
 the ACL is what protects the file, and `src/lib/windows-secret-acl.ts` is what
 sets it.
 

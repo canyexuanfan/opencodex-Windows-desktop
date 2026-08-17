@@ -34,9 +34,23 @@ Route test: `tests/system-routes.test.ts` does not exist — current
 assert that a simulated retry driven through the injected `AtomicRenameIO` from
 030 increments the expected key.
 
-**Naming constraint:** the `publisher` value is a fixed literal chosen at the
-call site. It must never be derived from a path, because a path can contain a
-username. `privacy:scan` is the gate that enforces this and it must stay green.
+**Naming constraint:** the `publisher` value must be a fixed literal chosen at
+the call site and never derived from a path, because a path can contain a
+username.
+
+`privacy:scan` does **not** enforce that. It is a textual scanner over file
+content (`scripts/privacy-scan.ts:187`) matching home paths, emails and token
+shapes; it cannot see that a runtime value was path-derived. Enforce it in the
+type system instead: declare a closed union
+
+```ts
+type ReplacePublisher = "config" | "prompt-journal" | "config-ownership";
+```
+
+and type the counter API to accept only that. A path-derived string then fails
+`bun run typecheck` rather than passing a scan. Add a test asserting the
+snapshot's keys are a subset of the union. Keep `privacy:scan` in the verify
+block as a backstop for the endpoint's response, not as the mechanism.
 
 ## How the evidence is actually collected
 
@@ -45,13 +59,22 @@ the collection path is explicit:
 
 - Local: run the proxy through a normal session, hit the diagnostics route,
   read the snapshot. Zero across ordinary use is itself a data point.
-- CI: assert the counters exist and stay zero during the Windows suite. A
-  non-zero `exhausted` count in CI is a defect, not telemetry.
+- CI: **not in this phase.** The counters are process-local, and the Windows
+  suite runs across four sharded runners in many short-lived processes, none of
+  which exposes an endpoint to query. Making "stayed zero across the suite" a CI
+  assertion needs a suite finalizer that aggregates per-process state and a
+  workflow step to collect it — a design of its own, not a line in this phase.
+  What CI covers here is the route test above, nothing more.
 - Field: only if a user voluntarily includes a diagnostics snapshot in a bug
   report. We do not collect this, and nothing in this phase transmits anything.
 
-If those three sources produce no evidence within a release cycle, 032 does not
-happen and this closes NOOP. That is a legitimate outcome.
+So the evidence comes from local runs and voluntary bug reports, not from CI.
+That is thinner than it first looked, and it is the honest description: this
+phase can show the counters firing, but it cannot prove a negative at scale
+without the aggregation work above.
+
+If no evidence appears within a release cycle, 032 does not happen and this
+closes NOOP. That is a legitimate outcome.
 
 ## Verify
 
