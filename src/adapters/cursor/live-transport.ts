@@ -428,6 +428,7 @@ class LiveCursorTransport implements CursorTransport {
   // close; safe to read after a stream failure because open() owns the only writer before run().
   private turnStartedAt = 0;
   private framesReceived = 0;
+  private sawAssistantText = false;
  private firstFrameAt?: number;
  private firstFrameLogged = false;
   /** Stable session identifier sent as x-session-id; mirrors IDE session semantics. */
@@ -769,6 +770,7 @@ class LiveCursorTransport implements CursorTransport {
   ): void {
     this.turnStartedAt = Date.now();
     this.framesReceived = 0;
+    this.sawAssistantText = false;
     this.firstFrameAt = undefined;
     this.firstFrameLogged = false;
     const dialHost = cursorHostLabel(this.input.provider.baseUrl || "https://api2.cursor.sh");
@@ -1026,6 +1028,23 @@ class LiveCursorTransport implements CursorTransport {
           settler.settleFail(new Error("Cursor stream ended before any response frame (unexpected EOF)"));
           return;
         }
+        if (state.terminated || this.expectedClose) {
+          releaseBacklogLease();
+          settler.settleFinish();
+          return;
+        }
+        if (state.openToolCalls.size > 0) {
+          for (const event of finalizeTurnEvents(state)) push(event);
+          releaseBacklogLease();
+          settler.settleFinish();
+          return;
+        }
+        if (this.framesReceived > 0 && this.sawAssistantText) {
+          for (const event of finalizeTurnEvents(state)) push(event);
+          releaseBacklogLease();
+          settler.settleFinish();
+          return;
+        }
         releaseBacklogLease();
         settler.settleFinish();
       }, (err) => {
@@ -1100,6 +1119,7 @@ class LiveCursorTransport implements CursorTransport {
     const awaitedNativeArgsBeforeMapping = update?.case === "toolCallCompleted"
       && state.openToolCalls.get(update.value.callId)?.awaitingNativeArgs === true;
     const mapped = mapCursorProtobufServerMessage(message, state);
+    if (mapped.some(event => event.type === "text")) this.sawAssistantText = true;
     const beganAwaitingNativeClientToolArgs = update?.case === "toolCallCompleted"
       && !awaitedNativeArgsBeforeMapping
       && state.openToolCalls.get(update.value.callId)?.awaitingNativeArgs === true;
