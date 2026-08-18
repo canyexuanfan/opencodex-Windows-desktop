@@ -301,6 +301,8 @@ export interface OcxRequestOptions {
   reasoning?: string;
   hideThinkingSummary?: boolean;
   serviceTier?: string;
+  /** Final outbound tier action, resolved after the provider/model wire is settled. */
+  tierDecision?: TierDecision;
   presencePenalty?: number;
   frequencyPenalty?: number;
   /** Responses prompt-cache affinity key. Passthrough preserves it via _rawBody; routed adapters do not consume it unless their upstream wire supports it. */
@@ -1315,6 +1317,21 @@ export interface ProviderRequestPacingConfig extends RequestPacingRule {
   models?: Record<string, RequestPacingRule>;
 }
 
+export interface FastWire {
+  kind: "service-tier" | "anthropic-speed";
+  /** Canonical tier name to upstream wire spelling. */
+  canonicalToWire: Readonly<Record<string, string>>;
+  /** Policy for non-canonical caller-provided tier values. */
+  foreignCallerTiers: "verbatim" | "drop";
+  /** Anthropic speed headers/betas reserved for the later wire implementation. */
+  betas?: readonly string[];
+}
+
+export type TierDecision =
+  | { readonly kind: "forward-caller" }
+  | { readonly kind: "drop" }
+  | { readonly kind: "set"; readonly value: string };
+
 /**
  * One configured provider entry. `authMode` (default `"key"`) decides whether same-target 429
  * retries are allowed; OAuth/forward credentials and local runtimes are never replayed.
@@ -1338,6 +1355,11 @@ export interface OcxProviderConfig {
    * as before.
    */
   modelAdapters?: Record<string, string>;
+  /**
+   * Fast-wire declaration. `null` explicitly disables adapter-derived defaults;
+   * absence derives from the final model adapter.
+   */
+  fastWire?: FastWire | null;
   baseUrl: string;
   /**
    * Optional relative resource path for key-auth openai-responses requests. Must start with `/`
@@ -1749,6 +1771,13 @@ export const MODEL_ADAPTER_OVERRIDE_ALLOWED: ReadonlySet<string> = new Set([
 const ANTHROPIC_WIRE_MODELS: Record<string, ReadonlySet<string>> = {
   "opencode-go": new Set(["minimax-m2.5", "minimax-m2.7", "minimax-m3"]),
 };
+
+/** Detached provider-local hard-pin table for pure wire-policy resolution. */
+export function captureWireAdapterHardPins(providerName: string): Readonly<Record<string, string>> {
+  const models = ANTHROPIC_WIRE_MODELS[providerName];
+  if (!models) return Object.freeze({});
+  return Object.freeze(Object.fromEntries([...models].map(modelId => [modelId, "anthropic"])));
+}
 
 /**
  * True when the upstream speaks exactly one wire for this model, so a configured
