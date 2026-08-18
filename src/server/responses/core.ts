@@ -3505,6 +3505,9 @@ async function handleResponsesInner(
           toolParameterSchemas,
           ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
           ...(routedCompaction ? { compaction: true } : {}),
+          // grok-build's strict decoder dies on the typed response.heartbeat frame; its
+          // eventsource layer tolerates comment keep-alives. Codex needs the opposite.
+          ...(logCtx.surface === "grok" ? { heartbeatStyle: "comment" as const } : {}),
           onUsage: usage => {
             // Raw adapter usage, pre wire-normalization: the bridged SSE now always carries
             // zero-default detail objects, so provenance must come from here (cache_detail_missing).
@@ -4312,6 +4315,8 @@ async function handleResponsesInner(
       toolParameterSchemas,
         ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
         ...(routedCompaction ? { compaction: true } : {}),
+        // Same grok-surface split as the runTurn branch above.
+        ...(logCtx.surface === "grok" ? { heartbeatStyle: "comment" as const } : {}),
         onUsage: usage => {
           // Raw adapter usage, pre wire-normalization (see the runTurn branch above).
           logCtx.usageFromBridge = true;

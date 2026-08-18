@@ -198,6 +198,16 @@ export function bridgeToResponsesSSE(
     declaredToolNames?: ReadonlySet<string>;
     /** Declared parameter schema per tool name; repairs integral-float integer args (#1611). */
     toolParameterSchemas?: ReadonlyMap<string, Record<string, unknown>>;
+    /**
+     * Wire keep-alive shape. Codex-rs parses at the EVENT level (timeout(idle_timeout,
+     * stream.next()) over an eventsource_stream), so an SSE comment line dispatches no event
+     * and does NOT re-arm its idle timer — the keep-alive must be a typed frame the parser
+     * ignores via its catch-all (110 RCA, 30_patch-direction.md). grok-build's strict
+     * async-openai fork is the opposite: it dies on the unknown `response.heartbeat`
+     * variant but, being eventsource-based at the byte level, its idle handling tolerates
+     * comment lines. Default stays the typed frame; the grok surface opts into comments.
+     */
+    heartbeatStyle?: "typed" | "comment";
     translatorBudget?: TranslatorBudget;
     /**
      * Conversation identity for the reasoning replay cache (issue #950).
@@ -326,12 +336,13 @@ export function bridgeToResponsesSSE(
     clearOwnedWatchdog();
   };
   // RC3 keep-alive: Codex's idle timer is timeout(idle_timeout, stream.next()) over an
-  // eventsource_stream; ANY received bytes re-arm it. An SSE comment line (a line starting
-  // with `:`) is discarded by every eventsource parser without producing an event, so it
-  // keeps the wire alive without triggering deserialization. Emit a comment line whenever the
-  // *wire* has been silent, even if invisible adapter heartbeats are still flowing (web-search
-  // buffering + raw-byte progress). Upstream activity only resets the stall watchdog. Parity
-  // with the passthrough relay's `: opencodex keepalive` (relay.ts).
+  // eventsource_stream, which parses at the EVENT level — a comment-only frame dispatches no
+  // event, so it does NOT re-arm the timer (110 RCA). The default keep-alive is therefore a
+  // typed `response.heartbeat` frame the codex-rs parser ignores via `_ => Ok(None)`. The
+  // grok surface (strict async-openai decoder that dies on unknown variants) opts into SSE
+  // comment lines instead via options.heartbeatStyle. Emit whenever the *wire* has been
+  // silent, even if invisible adapter heartbeats are still flowing (web-search buffering +
+  // raw-byte progress). Upstream activity only resets the stall watchdog.
   let upstreamActivity = false;
   let wireActivity = false;
   let beat: unknown;
@@ -398,7 +409,9 @@ export function bridgeToResponsesSSE(
         ...(endTurn !== undefined ? { end_turn: endTurn } : {}),
       });
 
-      const heartbeatFrame = encoder.encode(': opencodex heartbeat\n\n');
+      const heartbeatFrame = options?.heartbeatStyle === "comment"
+        ? encoder.encode(': opencodex heartbeat\n\n')
+        : encoder.encode('event: response.heartbeat\ndata: {"type":"response.heartbeat"}\n\n');
       let stallTicks = 0;
       const stallSec = resolveStallTimeoutSec(options?.stallTimeoutSec);
       const maxStallTicks = Math.ceil((stallSec * 1000) / heartbeatMs);

@@ -246,8 +246,10 @@ describe("bridge stream lifecycle (RC1 / RC2)", () => {
     expect(aborted).toBe(true);
   });
 
-  test("RC3: emits an SSE comment keep-alive (no response.heartbeat event) during upstream silence", async () => {
-    // heartbeatMs = 10 so the keep-alive fires quickly; hangs() goes silent after one delta.
+  test("RC3: default keep-alive is a typed response.heartbeat frame (codex idle timer re-arm)", async () => {
+    // Codex-rs parses at the EVENT level: a comment-only frame dispatches no event and does
+    // NOT re-arm timeout(idle_timeout, stream.next()) — 110 RCA. The typed frame is ignored
+    // by its catch-all (_ => Ok(None)) but still yields an event.
     const stream = bridgeToResponsesSSE(hangs(), "routed/model", undefined, undefined, undefined, undefined, 10);
     const reader = stream.getReader();
     const dec = new TextDecoder();
@@ -258,8 +260,26 @@ describe("bridge stream lifecycle (RC1 / RC2)", () => {
       if (value) text += dec.decode(value, { stream: true });
     }
     await reader.cancel();
-    // Keep-alives are SSE comment lines, not typed events: any client parser discards
-    // them without deserializing, so strict Responses decoders stay alive and quiet.
+    expect(text).toContain("event: response.heartbeat");
+    expect(text).not.toContain(": opencodex heartbeat");
+  });
+
+  test("RC3: the grok surface opts into comment keep-alives (strict decoder safety)", async () => {
+    // grok-build's async-openai fork dies on the unknown response.heartbeat variant; its
+    // eventsource layer tolerates comment lines. heartbeatStyle: "comment" preserves that.
+    const stream = bridgeToResponsesSSE(
+      hangs(), "routed/model", undefined, undefined, undefined, undefined, 10,
+      { heartbeatStyle: "comment" },
+    );
+    const reader = stream.getReader();
+    const dec = new TextDecoder();
+    let text = "";
+    for (let i = 0; i < 12; i++) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) text += dec.decode(value, { stream: true });
+    }
+    await reader.cancel();
     expect(text).toContain(": opencodex heartbeat\n\n");
     expect(text).not.toContain("event: response.heartbeat");
   });

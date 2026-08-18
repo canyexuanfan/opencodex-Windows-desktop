@@ -1318,6 +1318,11 @@ describe("codex-auth API", () => {
       id: "pool-plan-unchanged",
       email: "pool-plan-unchanged@example.com",
       plan: "plus",
+      // Provenance already stamped: steady state. The FIRST WHAM observation after the
+      // provenance feature landed performs one migration write; that case is covered by
+      // the WHAM-wins gate tests. Steady-state refreshes must stay write-free.
+      planSource: "wham",
+      planCredentialGeneration: 1,
     });
     saveConfig(structuredClone(config));
     let configCommits = 0;
