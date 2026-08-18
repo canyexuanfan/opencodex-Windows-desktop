@@ -103,6 +103,7 @@ describe("FastWire characterization: supported-route fastMode tri-state", () => 
 
   test("a capability-without-wire warning is redacted and throttled per provider/model", async () => {
     const providerName = `sk-ant-api03-${"A".repeat(40)}`;
+    const model = `model\n${"x".repeat(100)}`;
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
     const provider: OcxProviderConfig = {
       ...supportedResponsesProvider(),
@@ -110,13 +111,15 @@ describe("FastWire characterization: supported-route fastMode tri-state", () => 
     };
 
     try {
-      await driveResponses({ provider, providerName, callerTier: "flex" });
-      await driveResponses({ provider, providerName, callerTier: "flex" });
+      await driveResponses({ provider, providerName, model, callerTier: "flex" });
+      await driveResponses({ provider, providerName, model, callerTier: "flex" });
       const fastWireWarnings = warnSpy.mock.calls
         .map(call => String(call[0]))
         .filter(message => message.includes("Fast policy"));
       expect(fastWireWarnings).toHaveLength(1);
       expect(fastWireWarnings[0]).not.toContain(providerName);
+      expect(fastWireWarnings[0]).not.toContain("\n");
+      expect(fastWireWarnings[0]).not.toContain("x".repeat(65));
     } finally {
       warnSpy.mockRestore();
     }

@@ -369,6 +369,16 @@ export function serviceTierContextFromOutcome(outcome: AttemptTierOutcome): Serv
   if (outcome.canonical === "priority" && outcome.confirmation === "assumed") {
     return { requestedServiceTier: "priority" };
   }
+  // An unclassified route makes no canonical Fast claim, but its adapter can still prove that
+  // it serialized a caller tier. Preserve that wire evidence instead of discarding the legacy
+  // top-level pricing signal merely because B0 added an outcome row.
+  if (
+    outcome.fastOutcome === "unknown"
+    && outcome.wireKind === "service-tier"
+    && typeof outcome.wireValue === "string"
+  ) {
+    return { requestedServiceTier: outcome.wireValue };
+  }
   return {};
 }
 

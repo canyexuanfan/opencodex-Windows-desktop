@@ -987,8 +987,8 @@ const MAX_FAST_WIRE_CAPABILITY_WARNINGS = 256;
 const warnedFastWireCapabilityGaps = new Set<string>();
 
 function warnFastWireCapabilityGap(providerName: string, modelId: string): void {
-  const safeProvider = redactSecretString(providerName);
-  const safeModel = redactSecretString(modelId);
+  const safeProvider = sanitizeLogMetadataString(providerName) ?? "unknown";
+  const safeModel = sanitizeLogMetadataString(modelId) ?? "unknown";
   const key = `${safeProvider}\0${safeModel}`;
   if (warnedFastWireCapabilityGaps.has(key)) return;
   if (warnedFastWireCapabilityGaps.size >= MAX_FAST_WIRE_CAPABILITY_WARNINGS) {

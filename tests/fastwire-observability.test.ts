@@ -12,6 +12,8 @@ import {
   addFinalRequestLog,
   applyResponseLogMetadata,
   beginRequestAttempt,
+  inspectResponseLogJson,
+  inspectResponseLogSsePayloadParsed,
   recordAdapterTier,
   type RequestLogContext,
   type RequestLogEntry,
@@ -245,6 +247,54 @@ describe("FastWire logging and persistence", () => {
     expect(logged?.tierOutcome).toEqual(logged?.attempts?.[0]?.tierOutcome);
   });
 
+  test.each([
+    {
+      label: "JSON",
+      inspect: (logCtx: RequestLogContext) => inspectResponseLogJson(logCtx, "not-json"),
+    },
+    {
+      label: "SSE",
+      inspect: (logCtx: RequestLogContext) => {
+        inspectResponseLogSsePayloadParsed(logCtx, "not-json", undefined);
+      },
+    },
+  ])("$label inspection marks an unparseable response outcome unknown", ({ inspect }) => {
+    const tracker = createAdapterTierMetadata(
+      observation(),
+      { kind: "set", value: "priority" },
+      "service-tier",
+      "priority",
+    )!;
+    const attempt = beginRequestAttempt(1, "openai", "gpt-5.6-sol", "openai-responses");
+    const logCtx: RequestLogContext = {
+      model: "gpt-5.6-sol",
+      provider: "openai",
+      activeAttempt: attempt,
+      activeAttemptStartedAt: Date.now(),
+      attempts: [attempt],
+    };
+    recordAdapterTier(logCtx, {
+      url: "https://example.test/v1/responses",
+      method: "POST",
+      headers: {},
+      body: "{}",
+      tierLog: tracker,
+    } satisfies AdapterRequest);
+    expect(attempt.tierOutcome).toMatchObject({
+      canonical: "priority",
+      fastOutcome: "applied",
+      confirmation: "assumed",
+    });
+
+    inspect(logCtx);
+
+    expect(attempt.tierOutcome).toMatchObject({
+      fastOutcome: "unknown",
+      confirmation: "unknown",
+    });
+    expect(attempt.tierOutcome).not.toHaveProperty("canonical");
+  });
+
   test("old attempts remain valid and new outcomes survive normalization", () => {
     const oldAttempt = {
       ordinal: 1,
@@ -287,10 +337,12 @@ describe("FastWire logging and persistence", () => {
   });
 
   test("callerServiceTier is trimmed, control-filtered, redacted, and capped", () => {
-    const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789";
-    const sanitized = sanitizeLogMetadataString(` \u0000authorization: Bearer ${secret}\n${"x".repeat(80)} `);
+    const secret = ["sk", "proj", "abcdefghijklmnopqrstuvwxyz0123456789"].join("-");
+    const sanitized = sanitizeLogMetadataString(
+      ` \u0000authorization: Bearer ${secret}\n\u0085\u2028\u2029${"x".repeat(80)} `,
+    );
     expect(sanitized).not.toContain(secret);
-    expect(sanitized).not.toMatch(/[\u0000-\u001f\u007f]/);
+    expect(sanitized).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/);
     expect(sanitized?.length).toBeLessThanOrEqual(64);
 
     const normalized = normalizeUsageEntryForTest({
@@ -317,6 +369,31 @@ describe("FastWire per-attempt cost", () => {
     status: "verified",
   }];
   const usage = { inputTokens: 200_000, outputTokens: 20_000 };
+
+  test("an unknown unclassified outcome prices from the serialized caller tier", () => {
+    const outcome = {
+      wireKind: "service-tier" as const,
+      wireValue: "priority",
+      fastOutcome: "unknown" as const,
+      confirmation: "unknown" as const,
+    };
+    expect(serviceTierContextFromOutcome(outcome)).toEqual({
+      requestedServiceTier: "priority",
+    });
+
+    const estimate = estimateComboCost([
+      {
+        ordinal: 1,
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        usageStatus: "reported",
+        usage,
+        tierOutcome: outcome,
+      },
+    ], overlays, { requestedServiceTier: "priority" })!;
+    expect(estimate.priorityMultiplier).toBe(2);
+    expect(estimate.cost.total).toBeCloseTo(3.2, 9);
+  });
 
   test("combo prices each attempt from its own outcome before the top-level tier", () => {
     const attempts = [
