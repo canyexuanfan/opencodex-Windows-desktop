@@ -6,7 +6,7 @@ import type {
   TierObservationContext,
 } from "../types";
 import { MODEL_ADAPTER_OVERRIDE_ALLOWED } from "../types";
-import { redactSecretString, sanitizeLogMetadataString } from "../lib/redact";
+import { sanitizeLogMetadataString } from "../lib/redact";
 import type { InboundWire, ModelWireDefault } from "./registry";
 
 const SERVICE_TIER_ADAPTERS = new Set(["openai-chat", "openai-responses"]);
@@ -266,9 +266,8 @@ export function createAdapterTierMetadata(
     return {
       outcome,
       observeResponseServiceTier(value: unknown) {
-        if (typeof value === "string" && value.trim()) {
-          outcome.responseServiceTier = redactSecretString(value).slice(0, 64);
-        }
+        const sanitized = sanitizeLogMetadataString(value);
+        if (sanitized) outcome.responseServiceTier = sanitized;
       },
       markResponseUnparseable() {},
     };
@@ -310,7 +309,8 @@ export function createAdapterTierMetadata(
         }
         return;
       }
-      outcome.responseServiceTier = redactSecretString(value).slice(0, 64);
+      const sanitized = sanitizeLogMetadataString(value);
+      if (sanitized) outcome.responseServiceTier = sanitized;
       if (!responseCanConfirmFast) return;
       if (canonicalFromWire(context.fastWire, value) === "priority") {
         outcome.canonical = "priority";

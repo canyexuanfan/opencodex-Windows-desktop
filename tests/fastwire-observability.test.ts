@@ -357,6 +357,57 @@ describe("FastWire logging and persistence", () => {
     });
     expect(normalized.callerServiceTier).toBe(`priority${"y".repeat(56)}`);
   });
+
+  test("upstream service tiers are sanitized before live and durable logging", () => {
+    const secret = ["sk", "proj", "upstream", "A".repeat(40)].join("-");
+    const rawTier = ` authorization: Bearer ${secret}\n\u0085\u2028\u2029${"x".repeat(80)} `;
+    const expected = sanitizeLogMetadataString(rawTier)!;
+    const tracker = createAdapterTierMetadata(
+      observation({ capability: undefined, eligibility: "unclassified" }),
+      { kind: "forward-caller" },
+      "service-tier",
+      "priority",
+    )!;
+    const attempt = beginRequestAttempt(1, "openai", "gpt-5.6-sol", "openai-responses");
+    const logCtx: RequestLogContext = {
+      model: "gpt-5.6-sol",
+      provider: "openai",
+      activeAttempt: attempt,
+      activeAttemptStartedAt: Date.now(),
+      attempts: [attempt],
+    };
+    recordAdapterTier(logCtx, {
+      url: "https://example.test/v1/responses",
+      method: "POST",
+      headers: {},
+      body: "{}",
+      tierLog: tracker,
+    } satisfies AdapterRequest);
+
+    applyResponseLogMetadata(logCtx, { response: { service_tier: rawTier } });
+    expect(logCtx.responseServiceTier).toBe(expected);
+    expect(attempt.tierOutcome?.responseServiceTier).toBe(expected);
+
+    const normalized = normalizeUsageEntryForTest({
+      requestId: "ocx-upstream-tier",
+      timestamp: 1,
+      provider: "openai",
+      model: "gpt-5.6-sol",
+      responseServiceTier: rawTier,
+      tierOutcome: {
+        wireKind: "service-tier",
+        wireValue: "priority",
+        fastOutcome: "unknown",
+        confirmation: "unknown",
+        responseServiceTier: rawTier,
+      },
+      status: 200,
+      durationMs: 1,
+      usageStatus: "unreported",
+    });
+    expect(normalized.responseServiceTier).toBe(expected);
+    expect(normalized.tierOutcome?.responseServiceTier).toBe(expected);
+  });
 });
 
 describe("FastWire per-attempt cost", () => {

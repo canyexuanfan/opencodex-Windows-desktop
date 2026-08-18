@@ -13,7 +13,7 @@ import type { AttemptTierOutcome, OcxUsage } from "../types";
 import { normalizeRouteDecisionTrace, type RouteDecisionTraceV1 } from "../routing/trace";
 import type { AdapterRequest } from "../adapters/base";
 import type { AdapterTierMetadata } from "../providers/fastwire";
-import { redactSecretString } from "../lib/redact";
+import { redactSecretString, sanitizeLogMetadataString } from "../lib/redact";
 import {
   appendUsageEntry,
   isKnownAdmissionKind,
@@ -594,7 +594,8 @@ export function applyResponseLogMetadata(logCtx: RequestLogContext, payload: unk
   ) logCtx.resolvedModel = model;
   const serviceTier = (source as { service_tier?: unknown }).service_tier;
   if (typeof serviceTier === "string" && serviceTier.trim()) {
-    logCtx.responseServiceTier = serviceTier;
+    const sanitized = sanitizeLogMetadataString(serviceTier);
+    if (sanitized) logCtx.responseServiceTier = sanitized;
     logCtx.activeTierMetadata?.observeResponseServiceTier(serviceTier);
   } else if (Object.prototype.hasOwnProperty.call(source, "service_tier")) {
     logCtx.activeTierMetadata?.observeResponseServiceTier(serviceTier);

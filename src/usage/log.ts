@@ -286,6 +286,8 @@ function normalizeAttemptTierOutcome(raw: unknown): AttemptTierOutcome | null {
   if ("callerFastSuppressedByConfig" in outcome
     && typeof outcome.callerFastSuppressedByConfig !== "boolean") return null;
   if ("responseServiceTier" in outcome && typeof outcome.responseServiceTier !== "string") return null;
+  const wireValue = sanitizeLogMetadataString(outcome.wireValue);
+  const responseServiceTier = sanitizeLogMetadataString(outcome.responseServiceTier);
   return {
     ...(outcome.canonical === "priority" ? { canonical: "priority" as const } : {}),
     ...(outcome.wireKind === null || outcome.wireKind === "service-tier" || outcome.wireKind === "anthropic-speed"
@@ -293,7 +295,7 @@ function normalizeAttemptTierOutcome(raw: unknown): AttemptTierOutcome | null {
       : {}),
     ...(outcome.wireValue === null
       ? { wireValue: null }
-      : typeof outcome.wireValue === "string" ? { wireValue: capMetadataString(outcome.wireValue) } : {}),
+      : wireValue ? { wireValue } : {}),
     fastOutcome: outcome.fastOutcome as AttemptTierOutcome["fastOutcome"],
     ...(typeof outcome.fastDowngradeReason === "string"
       ? { fastDowngradeReason: outcome.fastDowngradeReason as NonNullable<AttemptTierOutcome["fastDowngradeReason"]> }
@@ -303,9 +305,7 @@ function normalizeAttemptTierOutcome(raw: unknown): AttemptTierOutcome | null {
       ? { callerFastSuppressedByConfig: outcome.callerFastSuppressedByConfig }
       : {}),
     confirmation: outcome.confirmation as AttemptTierOutcome["confirmation"],
-    ...(typeof outcome.responseServiceTier === "string"
-      ? { responseServiceTier: capMetadataString(outcome.responseServiceTier) }
-      : {}),
+    ...(responseServiceTier ? { responseServiceTier } : {}),
   };
 }
 
@@ -426,6 +426,7 @@ function normalizeUsageEntry(entry: PersistedUsageEntry): PersistedUsageEntry {
   const attempts = normalizedAttempts(entry.attempts);
   const tierOutcome = entry.tierOutcome ? normalizeAttemptTierOutcome(entry.tierOutcome) : undefined;
   const callerServiceTier = sanitizeLogMetadataString(entry.callerServiceTier);
+  const responseServiceTier = sanitizeLogMetadataString(entry.responseServiceTier);
   const routeDecision = entry.routeDecision
     ? normalizeRouteDecisionTrace(entry.routeDecision)
     : undefined;
@@ -482,9 +483,7 @@ function normalizeUsageEntry(entry: PersistedUsageEntry): PersistedUsageEntry {
     ...(typeof entry.modelSupportsServiceTier === "boolean"
       ? { modelSupportsServiceTier: entry.modelSupportsServiceTier }
       : {}),
-    ...(typeof entry.responseServiceTier === "string" && entry.responseServiceTier
-      ? { responseServiceTier: capMetadataString(entry.responseServiceTier) }
-      : {}),
+    ...(responseServiceTier ? { responseServiceTier } : {}),
     ...(tierOutcome ? { tierOutcome } : {}),
     status: entry.status,
     durationMs: entry.durationMs,
