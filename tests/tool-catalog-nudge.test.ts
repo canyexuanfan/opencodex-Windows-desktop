@@ -49,13 +49,24 @@ describe("non-OpenAI tool catalog nudge", () => {
     expect(buildNonOpenAIToolCatalogNudgeForTools(tools)).not.toContain("apply_patch");
   });
 
+  const codeModeExec = (): OcxTool => ({
+    name: "exec",
+    freeform: true,
+    description: "Run JavaScript in a V8 isolate.",
+    parameters: {},
+  } as OcxTool);
+
   test("defines nested helper names as non-callable unless separately listed", () => {
-    const note = buildNonOpenAIToolCatalogNudgeFromNames(["exec", "wait", "request_user_input"]);
+    const note = buildNonOpenAIToolCatalogNudgeForTools([
+      codeModeExec(),
+      { name: "wait", parameters: {} } as OcxTool,
+      { name: "request_user_input", parameters: {} } as OcxTool,
+    ]);
 
     expect(note).toContain("Valid tool names for this turn are exactly `exec`, `wait`, `request_user_input`");
     expect(note).toContain("complete top-level tool-call surface");
     expect(note).toContain("nested helper APIs are not additional top-level tools");
-    expect(note).toContain("If `exec` is listed, it is Codex code mode");
+    expect(note).toContain("`exec` is Codex code mode");
     expect(note).toContain("await tools.<name>(...)");
     expect(note).toContain("await tools.codex_app__list_threads({})");
     expect(note).toContain("isolate global `ALL_TOOLS`, not `tools.ALL_TOOLS`");
@@ -68,20 +79,58 @@ describe("non-OpenAI tool catalog nudge", () => {
     const note = buildNonOpenAIToolCatalogNudgeFromNames(["exec_command", "mcp__fs__read_file"]);
 
     expect(note).toContain("call the listed parent tool and use those helpers only inside that tool's input");
-    expect(note).not.toContain("If `exec` is listed, it is Codex code mode");
+    expect(note).not.toContain("is Codex code mode");
     expect(note).not.toContain("tools.ALL_TOOLS");
   });
 
   test("detects a wire-renamed exec as code mode", () => {
-    const note = buildNonOpenAIToolCatalogNudgeFromNames(
-      ["cx_exec", "cx_wait"],
-      name => `cx_${name}`,
+    const note = buildNonOpenAIToolCatalogNudgeForTools(
+      [codeModeExec(), { name: "wait", parameters: {} } as OcxTool],
+      undefined,
+      tool => `cx_${tool.name}`,
     );
 
-    expect(note).toContain("If `cx_exec` is listed, it is Codex code mode");
+    expect(note).toContain("`cx_exec` is Codex code mode");
     expect(note).toContain("from `cx_exec`'s description is not absence");
     expect(note).toContain("isolate global `ALL_TOOLS`, not `tools.ALL_TOOLS`");
-    expect(note).not.toContain("If `exec` is listed, it is Codex code mode");
+  });
+
+  // The three cases the #1895 review named. Code mode is a semantic shape, not the name `exec`:
+  // a structured `exec` runs a shell string, and `exec` beside a visible shell bridge is the
+  // flat-catalog shape. Telling either of those turns that `exec` takes JavaScript and that
+  // shell is nested-only is actively wrong — the model then sends the wrong arguments or
+  // avoids a legitimate top-level execution tool.
+  test("a structured tool named exec is NOT code mode", () => {
+    const note = buildNonOpenAIToolCatalogNudgeForTools([
+      { name: "exec", freeform: false, parameters: {} } as OcxTool,
+      { name: "mcp__fs__read_file", parameters: {} } as OcxTool,
+    ]);
+
+    expect(note).not.toContain("is Codex code mode");
+    expect(note).not.toContain("tools.ALL_TOOLS");
+    expect(note).toContain("call the listed parent tool and use those helpers only inside that tool's input");
+  });
+
+  test("freeform exec beside a visible shell bridge is NOT code mode", () => {
+    for (const bridge of ["exec_command", "shell_command"]) {
+      const note = buildNonOpenAIToolCatalogNudgeForTools([
+        codeModeExec(),
+        { name: bridge, parameters: {} } as OcxTool,
+      ]);
+
+      expect(note).not.toContain("is Codex code mode");
+      expect(note).toContain("call the listed parent tool and use those helpers only inside that tool's input");
+    }
+  });
+
+  test("a transformed freeform exec still receives code-mode guidance", () => {
+    const note = buildNonOpenAIToolCatalogNudgeForTools(
+      [codeModeExec()],
+      undefined,
+      tool => `custom_${tool.name}`,
+    );
+
+    expect(note).toContain("`custom_exec` is Codex code mode");
   });
 
   // `advertised` holds WIRE names. A provider that rewrites them (Claude OAuth `custom_`,
