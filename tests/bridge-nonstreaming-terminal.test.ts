@@ -265,7 +265,8 @@ describe("truncated-stop-reason classifier", () => {
   test("matches every adapter vocabulary case-insensitively", () => {
     for (const reason of [
       "max_tokens", "content_filter",              // canonical
-      "length", "content-filter", "error",          // Command Code / AI SDK
+      "length", "content-filter",                   // Command Code / AI SDK
+      "pause_turn",                                 // Anthropic: turn needs continuation
       "refusal", "model_context_window_exceeded",   // Anthropic
       "MAX_TOKENS", "SAFETY", "MALFORMED_FUNCTION_CALL", "IMAGE_SAFETY", "LANGUAGE", // Gemini
       "Safety", "safety",                           // mixed case must not slip through
@@ -287,5 +288,25 @@ describe("truncated-stop-reason classifier", () => {
     expect(truncationReasonFor("refusal")).toBe("content_filter");
     expect(truncationReasonFor("SAFETY")).toBe("content_filter");
     expect(truncationReasonFor("end_turn")).toBeUndefined();
+  });
+});
+
+describe("Command Code finishReason error is a failure, not a stop", () => {
+  test("an error finish reason produces an adapter error terminal", () => {
+    // The AI SDK's "error" means generation FAILED upstream. As a done+stopReason it either read
+    // as a clean completion or, once classified, mislabelled an upstream error as a content
+    // filter — rejecting it from the replay cache for the wrong reason.
+    expect(isTruncatedStopReason("error")).toBe(false);
+  });
+
+  test("a turn that failed upstream reports failed, not incomplete", () => {
+    const json = buildResponseJSON([
+      { type: "text", text: "partial" },
+      { type: "error", message: 'Command Code upstream ended the turn with finishReason "error"', status: 502, errorType: "upstream_error" },
+    ], "routed/model", { compaction: true });
+
+    expect(json.status).toBe("failed");
+    // A failed turn must not install replacement history either.
+    expect((json.output as { type: string }[]).some(o => o.type === "compaction")).toBe(false);
   });
 });

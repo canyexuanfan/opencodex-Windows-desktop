@@ -26,11 +26,14 @@ const TRUNCATED_STOP_REASONS = new Map<string, TruncationKind>([
   // raw OpenAI / Command Code (AI SDK) finish reasons
   ["length", "max_output_tokens"],
   ["content-filter", "content_filter"],
-  ["error", "content_filter"],
   // raw Anthropic stop reasons
   ["max_output_tokens", "max_output_tokens"],
   ["model_context_window_exceeded", "max_output_tokens"],
   ["refusal", "content_filter"],
+  // Anthropic documents `pause_turn` as a long-running turn that the client is expected to
+  // CONTINUE. Whatever was produced so far is by definition unfinished, so it must not be
+  // installed as replacement history.
+  ["pause_turn", "max_output_tokens"],
   // raw Gemini / Vertex finish reasons
   ["malformed_function_call", "content_filter"],
   ["malformed_response", "content_filter"],
@@ -55,4 +58,3 @@ export function truncationReasonFor(stopReason: string | undefined): TruncationK
 export function isTruncatedStopReason(stopReason: string | undefined): boolean {
   return truncationReasonFor(stopReason) !== undefined;
 }
-
