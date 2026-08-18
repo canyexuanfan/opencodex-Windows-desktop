@@ -84,8 +84,10 @@ anything.
        git branch cursor-call-wire   <PR1_TIP>
        git branch cursor-call-cancel <PR2_TIP>
 
-3. Prove the stack mechanically — all four must pass:
+3. Prove the stack mechanically — all three ancestry assertions plus the count
+   identity must pass:
 
+       git merge-base --is-ancestor "$VERIFIED_BASE" cursor-call-wire   # exit 0
        git merge-base --is-ancestor cursor-call-wire cursor-call-cancel   # exit 0
        git merge-base --is-ancestor cursor-call-cancel cursor-call        # exit 0
        git rev-list --count "$VERIFIED_BASE"..cursor-call-wire
@@ -93,6 +95,14 @@ anything.
        git rev-list --count cursor-call-cancel..cursor-call
        # the counts must sum to:
        git rev-list --count "$VERIFIED_BASE"..cursor-call
+
+   The FIRST assertion is not redundant (audit `r8`): `rev-list --count A..B` counts
+   commits reachable from B and not A even when A is not an ancestor of B, so the
+   three counts can sum correctly while the bottom of the stack does not actually sit
+   on the verified base. Demonstrated: against `dev` at `1645bb924`,
+   `git merge-base --is-ancestor 1645bb924 dfb6fb884` exits 1 while the counts still
+   add up. Only the ancestry chain `VERIFIED_BASE → wire → cancel → tip`, together
+   with the counts, establishes the partition.
 
 4. Push the two new branches and open the PRs bottom-up.
 
@@ -127,11 +137,11 @@ gh pr view <n> --json body
 ```
 
 PR1 base `dev`; PR2 base `cursor-call-wire`; PR3 base `cursor-call-cancel`; step 3's
-four checks recorded; all three template sections non-thin in each.
+ancestry chain and count identity recorded; all three template sections non-thin in
+each.
 
 ## Fallback
 
 If step 3 fails — which would mean the rebase did not preserve order as expected —
 open ONE PR from `cursor-call` to `dev` and say why in the body. Do not invent a
 sixth splitting scheme.
-
