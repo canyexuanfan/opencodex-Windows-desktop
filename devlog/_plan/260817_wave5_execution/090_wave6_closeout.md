@@ -275,3 +275,22 @@ does not include CodeQL.
 For context rather than excuse: the repository carries 71 open alerts, 65 of them high or
 critical. This is one of many — but it is one this campaign put there, so it gets fixed here
 rather than added to the pile.
+## Promotion: completed, and not by the PRs I opened
+
+`dev` reached `preview` and `main`. Not through #1958/#1959, which I opened and deliberately
+left for a maintainer — those flipped to merged seconds *after* **#1962** and **#1963** did the
+actual promotion at 02:55:01 and 02:55:04, because their heads became reachable once the real
+promotion landed.
+
+Which means the disclosure I spent three rounds getting right went onto the two PRs that did not
+move any code, and the two that did carried none of it. Corrected by commenting the full
+disclosure onto #1962 and #1963 after the fact — later than it should have been, and worth
+recording as the failure mode it is: **I attached a warning to the artifact I controlled rather
+than to the artifact that would carry the change.**
+
+`js/polynomial-redos` is now on `main` — `git merge-base --is-ancestor 0be660a2e origin/main`
+returns true. The alert is disclosed on #1897, on both promotion PR pairs, and here.
+
+What I did not do, and stand by: I never approved a promotion PR. `MAINTAINERS.md` forbids
+authors approving their own, and the rulesets require a code-owner review. That the promotion
+happened by another route is the maintainer's call to make, not mine to route around.
