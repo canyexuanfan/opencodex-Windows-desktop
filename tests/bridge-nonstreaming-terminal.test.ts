@@ -134,3 +134,50 @@ describe("compaction is never installed from a truncated turn", () => {
     }
   });
 });
+
+describe("streaming compaction respects the same #422 guard", () => {
+  async function streamCompaction(events: AdapterEvent[]): Promise<{ hasCompaction: boolean; terminals: string[] }> {
+    async function* source(): AsyncGenerator<AdapterEvent> {
+      for (const e of events) yield e;
+    }
+    const text = await new Response(bridgeToResponsesSSE(
+      source(), "routed/model", undefined, undefined, undefined, undefined, 2_000, { compaction: true },
+    )).text();
+    return { hasCompaction: text.includes('"type":"compaction"'), terminals: terminalEventNames(text) };
+  }
+
+  const delta = (t: string) => ({ type: "text_delta", text: t }) as AdapterEvent;
+
+  test("a max_tokens turn ships no compaction item", async () => {
+    // Streaming emitted the item BEFORE reading stopReason, so a truncated summary was installed
+    // as replacement history and the turn then declared itself incomplete.
+    const { hasCompaction, terminals } = await streamCompaction([
+      delta("half a summary"),
+      { type: "done", stopReason: "max_tokens" },
+    ]);
+
+    expect(hasCompaction).toBe(false);
+    expect(terminals).toEqual(["response.incomplete"]);
+  });
+
+  test("a content_filter turn ships no compaction item", async () => {
+    const { hasCompaction, terminals } = await streamCompaction([
+      delta("half a summary"),
+      { type: "done", stopReason: "content_filter" },
+    ]);
+
+    expect(hasCompaction).toBe(false);
+    expect(terminals).toEqual(["response.incomplete"]);
+  });
+
+  test("a clean compaction turn still ships exactly one compaction item", async () => {
+    // codex-rs takes the first compaction item and fatals on zero, so suppression must not widen.
+    const { hasCompaction, terminals } = await streamCompaction([
+      delta("a whole summary"),
+      { type: "done" },
+    ]);
+
+    expect(hasCompaction).toBe(true);
+    expect(terminals).toEqual(["response.completed"]);
+  });
+});

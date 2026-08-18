@@ -1154,7 +1154,11 @@ export function bridgeToResponsesSSE(
               // After every close above, so the blob lands AFTER the assistant message it belongs
               // to and the parser's backwards pairing finds it.
               flushKiroRedactedReasoning();
-              if (options?.compaction) {
+              // Truncated turns must never install replacement history (#422). The buffered path
+              // has always checked this; streaming emitted the item BEFORE reading stopReason, so
+              // a max_tokens/content_filter turn shipped a half-written summary and then declared
+              // itself incomplete — the same hazard, one branch over.
+              if (options?.compaction && event.stopReason !== "max_tokens" && event.stopReason !== "content_filter") {
                 // Exactly one compaction item per turn; codex-rs takes the first and fatals on 0.
                 const item = {
                   type: "compaction", id: `cmp_${uuid()}`,
