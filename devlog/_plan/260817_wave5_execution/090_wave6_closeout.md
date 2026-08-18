@@ -197,7 +197,8 @@ Promoted through PRs, since `preview` and `main` both carry protection rulesets:
 | 5C | #1900, #1895 (via #1951), #1953 |
 | 5D | #1897, #1891, #1955, #1960, #1961 |
 
-Issues closed: **#1894, #1843, #1899**.
+Issues closed: **#1894 and #1843**. (#1899 is a *pull request* closed unmerged, superseded by
+#1923 — it belongs in the PR column, not the issue count. Two issues closed, not three.)
 
 Four of those PRs did not exist when the campaign started. They came out of auditing the plan
 rather than executing it: #1951 and #1953 (code mode decided by tool semantics rather than the
@@ -242,3 +243,26 @@ That is a real gap in the local-verification substitute, not a one-off.
 Severity in context: the input is a configured `baseUrl`, so exploitation needs a hostile or
 careless config rather than attacker-controlled traffic. Worth fixing, not urgent. Separately,
 the repository carries **71** open alerts that genuinely predate this work.
+### CodeQL alert this campaign introduced — found post-promotion, fixed
+
+The final audit found a high-severity CodeQL alert that **this campaign added and promoted**:
+alert #87, `js/polynomial-redos`, at `src/providers/antigravity-models.ts:273`, introduced by
+`0be660a2e` via #1897 and now on `main`.
+
+`baseUrl.trim().replace(/\/+$/, "")` backtracks polynomially on a long run of trailing slashes.
+The input is provider config rather than hostile traffic, so the practical risk is low — but
+"not hostile today" is a property of the caller, not of the function, and a linear scan costs
+nothing. Replaced with `stripTrailingSlashes`, verified byte-identical to the regex across the
+edge cases (empty string, all-slashes, no trailing slash, interior slashes).
+
+**The root cause is a process one and belongs in the record.** #1897 merged on local focused
+tests plus `tsc`. That substitutes for CI on the axis it covers — behavior — and silently skips
+the axis it does not: static analysis. Waiting for full CI would have surfaced this before it
+reached `main`. The instruction for this run was to stop waiting on per-PR CI and gate once at
+the end, which is a reasonable trade for speed; the honest accounting is that it traded away
+exactly this class of finding, and the end-gate I ran (`bun test`, `typecheck`, `privacy:scan`)
+does not include CodeQL.
+
+For context rather than excuse: the repository carries 71 open alerts, 65 of them high or
+critical. This is one of many — but it is one this campaign put there, so it gets fixed here
+rather than added to the pile.
