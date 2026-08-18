@@ -217,3 +217,32 @@ That is also the honest answer to "is the sponsorship refusal over-cautious": I 
 because reviewing *someone else's* auth change is the maintainer act the label records — but a
 one-line auth fix I wrote and verified myself is exactly the case where a maintainer sponsors
 their own work, so it ships.
+### #1891 landed after all
+
+The hold expired four minutes after I wrote it. The gate bot marked #1891 `review-ready` at
+02:10:50Z — the author rebased onto `9eb3a101a` and ticked all four boxes — so the checklist
+block described above and in my PR comments was accurate when posted and false shortly after.
+
+Merged as `5c66ad205`, verified as an ancestor of `origin/dev`. No file overlap with #1955
+(`src/adapters/` vs `src/oauth/`), so nothing conflicted.
+
+Wave 5D final state: **#1897 and #1891 and the #1955 fix landed; #1889 alone remains**, blocked
+on maintainer sponsorship of an auth surface.
+
+### Full-suite result and the one failure
+
+`bun test --isolate tests` on the merged tree: **12805 pass, 10 skip, 1 fail** across 826 files.
+
+The failure is `Codex autostart shim > Unix shim permits a real Codex process to start a new
+child invocation`, failing with `status 126` — permission denied on exec. It is **environmental
+and pre-existing**, established three ways rather than assumed:
+
+1. it reproduces solo, so it is not cross-test interference;
+2. it fails identically at the campaign baseline `1208bd25c`, which predates every change in
+   this campaign;
+3. all four `test 1/4..4/4` shards passed in the dev CI run for `9eb3a101a`.
+
+The test writes a shim into a temp directory, `chmod 0755`s it, and `spawnSync`s it. 126 is the
+shell's "found but not executable" — this sandbox blocks execution from that path. Recording it
+rather than skipping it: the right fix is an environment note, not a test change, and it is
+outside this campaign's scope.
