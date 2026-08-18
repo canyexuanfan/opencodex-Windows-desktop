@@ -223,6 +223,7 @@ import {
 } from "../responses-item-id-repair";
 import {
   createReasoningSummaryChannelPayloadRewrite,
+  rewriteReasoningSummaryInJsonString,
   routeUsesContentChannelReasoning,
 } from "../responses-reasoning-summary-rewrite";
 import {
@@ -3048,9 +3049,15 @@ async function handleResponsesInner(
         const repaired = hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair)
           ? repairResponsesSnapshotJson(restored, outboundRequestBody)
           : restored;
-        return parsed._responseModelId !== undefined && parsed._responseModelId !== parsed.modelId
+        const modelRewritten = parsed._responseModelId !== undefined && parsed._responseModelId !== parsed.modelId
           ? rewriteResponsesModelJson(repaired, parsed._responseModelId)
           : repaired;
+        // The bounded-JSON answer bypasses the SSE payload rewrite, so content-
+        // channel reasoning needs the same normalization here for the plain
+        // JSON answer and every reframed-SSE variant built from clientJson.
+        return routeUsesContentChannelReasoning(route.provider, route.modelId)
+          ? rewriteReasoningSummaryInJsonString(modelRewritten)
+          : modelRewritten;
       })();
       // #1700: same fail-closed policy as the SSE relay above. Both the plain JSON answer and
       // the reframed-SSE branch below are built from this body, so one check covers them. This

@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   createReasoningSummaryChannelPayloadRewrite,
   routeUsesContentChannelReasoning,
+  rewriteReasoningSummaryInJson,
+  rewriteReasoningSummaryInJsonString,
 } from "../src/server/responses-reasoning-summary-rewrite";
 
 const rewrite = createReasoningSummaryChannelPayloadRewrite();
@@ -107,7 +109,7 @@ describe("responses reasoning summary channel rewrite", () => {
     }
   });
 
-  test("keeps an empty reasoning item without inventing a summary", () => {
+  test("leaves a reasoning item without content text untouched", () => {
     expect(apply({
       type: "response.output_item.done",
       output_index: 0,
@@ -115,11 +117,11 @@ describe("responses reasoning summary channel rewrite", () => {
     })).toEqual({
       type: "response.output_item.done",
       output_index: 0,
-      item: { type: "reasoning", id: "rs_1", status: "completed", summary: [] },
+      item: { type: "reasoning", id: "rs_1", status: "completed", content: [], summary: [] },
     });
   });
 
-  test("preserves an existing summary when content is empty", () => {
+  test("preserves a summary-channel reasoning item as-is", () => {
     expect(apply({
       type: "response.output_item.done",
       output_index: 0,
@@ -137,9 +139,70 @@ describe("responses reasoning summary channel rewrite", () => {
         type: "reasoning",
         id: "rs_1",
         status: "completed",
+        content: [],
         summary: [{ type: "summary_text", text: "already summarized" }],
       },
     });
+  });
+
+  test("rewrites reasoning items inside a bare completed response document", () => {
+    const doc = {
+      id: "resp_1",
+      object: "response",
+      status: "completed",
+      output: [
+        {
+          type: "reasoning",
+          id: "rs_1",
+          status: "completed",
+          content: [{ type: "reasoning_text", text: "thinking" }],
+          summary: [],
+        },
+        { type: "message", id: "msg_1", status: "completed", content: [{ type: "output_text", text: "OK" }] },
+      ],
+    };
+    const result = rewriteReasoningSummaryInJson(doc) as { output: Record<string, unknown>[] };
+    expect(result.output[0]).toEqual({
+      type: "reasoning",
+      id: "rs_1",
+      status: "completed",
+      summary: [{ type: "summary_text", text: "thinking" }],
+    });
+    expect(result.output[1]).toEqual(doc.output[1]);
+  });
+
+  test("rewrites reasoning items inside an SSE completed event document", () => {
+    const doc = {
+      type: "response.completed",
+      response: {
+        id: "resp_1",
+        status: "completed",
+        output: [
+          {
+            type: "reasoning",
+            id: "rs_1",
+            status: "completed",
+            content: [{ type: "reasoning_text", text: "thinking" }],
+            summary: [],
+          },
+        ],
+      },
+    };
+    const result = rewriteReasoningSummaryInJson(doc) as { response: { output: Record<string, unknown>[] } };
+    expect(result.response.output[0]).toEqual({
+      type: "reasoning",
+      id: "rs_1",
+      status: "completed",
+      summary: [{ type: "summary_text", text: "thinking" }],
+    });
+  });
+
+  test("string-level rewrite leaves summary-channel documents untouched", () => {
+    const doc = JSON.stringify({
+      id: "resp_1",
+      output: [{ type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "already summarized" }] }],
+    });
+    expect(rewriteReasoningSummaryInJsonString(doc)).toBe(doc);
   });
 
   test("malformed payloads pass through unchanged", () => {
@@ -157,6 +220,17 @@ describe("routeUsesContentChannelReasoning", () => {
     expect(routeUsesContentChannelReasoning(
       { preserveReasoningContentModels: ["deepseek-v4-flash"] },
       "deepseek-v4-flash",
+    )).toBe(true);
+  });
+
+  test("model matching is case-insensitive on both sides", () => {
+    expect(routeUsesContentChannelReasoning(
+      { preserveReasoningContentModels: ["DeepSeek-V4-Flash"] },
+      "deepseek-v4-flash",
+    )).toBe(true);
+    expect(routeUsesContentChannelReasoning(
+      { preserveReasoningContentModels: ["deepseek-v4-flash"] },
+      "DeepSeek-V4-Flash",
     )).toBe(true);
   });
 

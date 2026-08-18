@@ -35,14 +35,12 @@ function reasoningTextOf(item: Record<string, unknown>): string {
 function reasoningItemToSummaryShape(item: Record<string, unknown>): Record<string, unknown> {
   if (item.type !== "reasoning") return item;
   const text = reasoningTextOf(item);
+  // Items that already use the summary channel (or carry no content text at
+  // all) are left untouched: rewriting them could clear a valid summary.
+  if (text.length === 0) return item;
   const next: Record<string, unknown> = { ...item };
   delete next.content;
-  // Preserve an existing summary when the item carries no content-channel text
-  // (a future upstream may emit both channels); only synthesize the summary
-  // from content when content is actually present.
-  next.summary = text.length > 0
-    ? [{ type: "summary_text", text }]
-    : (Array.isArray(next.summary) ? next.summary : []);
+  next.summary = [{ type: "summary_text", text }];
   return next;
 }
 
@@ -84,6 +82,7 @@ function rewritePayload(payload: Record<string, unknown>): Record<string, unknow
           changed = true;
         }
       }
+      // SSE event shape: {type: "response.completed", response: {output}}.
       const response = isPlainObject(next.response) ? { ...next.response } : null;
       if (response && Array.isArray(response.output)) {
         const output = response.output.map(item => {
@@ -96,6 +95,17 @@ function rewritePayload(payload: Record<string, unknown>): Record<string, unknow
           response.output = output;
           next.response = response;
         }
+      }
+      // Bare response document shape (non-streaming passthrough):
+      // {object: "response", output: [...]}.
+      if (Array.isArray(next.output)) {
+        const output = next.output.map(item => {
+          if (!isPlainObject(item) || item.type !== "reasoning") return item;
+          const rewritten = reasoningItemToSummaryShape(item);
+          if (rewritten !== item) changed = true;
+          return rewritten;
+        });
+        if (changed) next.output = output;
       }
       return changed ? next : null;
     }
@@ -118,6 +128,31 @@ export function createReasoningSummaryChannelPayloadRewrite(): SsePayloadRewrite
 }
 
 /**
+ * Object-level variant for the non-streaming passthrough: the bounded-JSON
+ * relay bypasses the SSE payload rewrite, so reasoning items inside a full
+ * Responses JSON document need the same normalization before plain JSON
+ * serialization or forced JSON-to-SSE reframing. Returns the same reference
+ * when nothing changed.
+ */
+export function rewriteReasoningSummaryInJson(value: unknown): unknown {
+  if (!isPlainObject(value)) return value;
+  const rewritten = rewritePayload(value);
+  return rewritten !== null ? rewritten : value;
+}
+
+/** String-level variant of {@link rewriteReasoningSummaryInJson}. */
+export function rewriteReasoningSummaryInJsonString(json: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return json;
+  }
+  const rewritten = rewriteReasoningSummaryInJson(parsed);
+  return rewritten === parsed ? json : JSON.stringify(rewritten);
+}
+
+/**
  * True when a routed native-Responses provider emits content-channel reasoning
  * (raw `reasoning_text`) instead of the summary channel. DeepSeek's
  * `/responses` endpoint is the current example: it ships raw thinking with an
@@ -130,5 +165,7 @@ export function routeUsesContentChannelReasoning(
 ): boolean {
   if (provider.statelessResponses === true) return true;
   const preserved = provider.preserveReasoningContentModels;
-  return Array.isArray(preserved) && preserved.some(id => id === modelId || id === modelId.toLowerCase());
+  const normalizedModelId = modelId.toLowerCase();
+  return Array.isArray(preserved)
+    && preserved.some(id => id.toLowerCase() === normalizedModelId);
 }
