@@ -57,7 +57,7 @@ import { injectionDebugLog } from "../../lib/injection-debug-log";
 import { resolveClientRetryAfter } from "../../lib/retry-after";
 import { enrichOpenCodeZenRateLimitMessage } from "../../providers/opencode-zen-rate-limit";
 import { modelInList, namespacedToolName } from "../../types";
-import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig, OcxProviderContinuationState, OcxUsage } from "../../types";
+import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig, OcxProviderContinuationState, OcxUsage, TierDecision } from "../../types";
 import {
   forceRefreshOAuthAccessSnapshot,
   getOAuthCredentialApiBaseUrl,
@@ -1596,16 +1596,15 @@ function finalizeOwnedTranslatorBudget(response: Response, budget: TranslatorBud
  * Service-tier capability gate, applied after the final route/wire is settled. A
  * provider explicitly documented as NOT supporting `service_tier` must never
  * receive it: strip the field and clear the logging value even when the caller
- * supplied one (fail closed). Tri-state contract: `true` supports (injection
- * allowed, caller values preserved), `false` strips, and an UNCLASSIFIED custom
- * provider (`undefined`) preserves caller-supplied values but never gets an
- * injection — deleting the caller's field there would silently change their
- * request against a gateway we know nothing about.
+ * supplied one (fail closed). A policy-produced canonical Fast decision has
+ * already passed capability validation and cannot be vetoed by Chat's caller
+ * forwarding permission. On unclassified routes every caller tier remains subject
+ * to `forwardCallerTier`.
  */
 export function applyServiceTierGate(
   provider: OcxProviderConfig,
   rawBody: unknown,
-  options: { serviceTier?: string },
+  options: { serviceTier?: string; tierDecision?: TierDecision },
   modelId?: string,
   providerName?: string,
   inbound: InboundWire = "responses",
@@ -1625,11 +1624,14 @@ export function applyServiceTierGate(
   const rawTier = rawBody && typeof rawBody === "object"
     ? (rawBody as Record<string, unknown>).service_tier
     : undefined;
+  const canonicalDecision = options.tierDecision?.kind === "set";
+  const callerTierIsForeign = rawTier !== undefined
+    && (typeof rawTier !== "string" || canonicalFastTierMarker(rawTier) === undefined);
   const dropForeignCallerTier = policy?.capability === true
     && policy.fastWire?.kind === "service-tier"
     && policy.fastWire?.foreignCallerTiers === "drop"
-    && typeof rawTier === "string"
-    && canonicalFastTierMarker(rawTier) === undefined;
+    && callerTierIsForeign;
+  if (policy && policy.capability !== false && canonicalDecision) return;
   if (forwardCallerTier && !dropForeignCallerTier) return;
   if (rawBody && typeof rawBody === "object") {
     delete (rawBody as Record<string, unknown>).service_tier;

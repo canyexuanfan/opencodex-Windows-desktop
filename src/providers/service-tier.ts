@@ -171,16 +171,13 @@ export function supportsServiceTierForModel(
   return resolveFastPolicy(authority, modelId).capability;
 }
 
-/** A1 name retained for the legacy Chat serializer gate. */
-export function canSerializeServiceTierForChatModel(
+/** Whether a Chat route may forward an arbitrary caller tier rather than canonical Fast. */
+export function canForwardForeignServiceTierForChatModel(
   provider: Pick<OcxProviderConfig, "supportsServiceTier" | "modelSupportsServiceTier" | "chatServiceTier">,
   modelId: string,
 ): boolean {
-  const exact = supportsServiceTierForModel({
-    modelSupportsServiceTier: provider.modelSupportsServiceTier,
-  }, modelId);
-  if (provider.supportsServiceTier === false || exact === false) return false;
-  return provider.chatServiceTier === true || exact === true;
+  const capability = supportsServiceTierForModel(provider, modelId);
+  return capability !== false && provider.chatServiceTier === true;
 }
 
 /** Final adapter selected by the Fast policy's four-level wire resolver. */

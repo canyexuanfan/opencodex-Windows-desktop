@@ -124,13 +124,6 @@ function resolvePolicyAdapter(
   return { adapter: authority.providerAdapter, hardPinned: false };
 }
 
-/** A1's retained Chat serializer gate (`chatServiceTier || exact model true`). */
-export function legacyChatEligibility(authority: FastPolicyAuthority, modelId: string): boolean {
-  const exact = exactModelValue(authority.capability.models, modelId);
-  if (authority.capability.provider === false || exact === false) return false;
-  return authority.capability.chatServiceTier === true || exact === true;
-}
-
 export function resolveFastPolicy(
   authority: FastPolicyAuthority,
   modelId: string,
@@ -145,12 +138,16 @@ export function resolveFastPolicy(
     ? defaultFastWireForAdapter(adapter)
     : authority.fastWireDeclaration;
   const wireAvailable = fastWire !== null && FAST_WIRE_ADAPTERS[fastWire.kind].has(adapter);
-  const chatEligible = adapter !== "openai-chat" || legacyChatEligibility(authority, modelId);
   // Explicit null disables Fast injection, but the defensive true+null branch still preserves
   // a caller tier on an existing OpenAI service-tier wire.
   const callerWireAvailable = wireAvailable
     || (fastWire === null && SERVICE_TIER_ADAPTERS.has(adapter));
-  const forwardCallerTier = capability !== false && callerWireAvailable && chatEligible;
+  // On classified routes this permission applies only to a caller's foreign tier: proxy-owned
+  // canonical Fast has already passed capability validation. On unclassified routes every caller
+  // tier still needs the final wire's forwarding permission.
+  const forwardCallerTier = capability !== false
+    && callerWireAvailable
+    && (adapter !== "openai-chat" || authority.capability.chatServiceTier === true);
 
   let eligibility: ResolvedFastPolicy["eligibility"];
   if (capability === false) eligibility = "capability-unsupported";
@@ -159,7 +156,6 @@ export function resolveFastPolicy(
       ? "pin-unavailable"
       : "wire-unavailable";
   }
-  else if (!chatEligible) eligibility = "capability-unsupported";
   else if (capability === undefined) eligibility = "unclassified";
   else eligibility = "eligible";
 
@@ -313,7 +309,7 @@ export function createAdapterTierMetadata(
   };
 }
 
-/** Pure A1 tier state machine. It never changes a caller spelling on inherit. */
+/** Pure tier state machine. B1 normalizes canonical Fast on classified inherit routes. */
 export function decideTier(
   policy: ResolvedFastPolicy,
   fastMode: boolean | undefined,
@@ -334,9 +330,16 @@ export function decideTier(
       : { kind: "drop" };
   }
   if (fastMode === false) return { kind: "drop" };
+  const callerCanonicalFast = canonicalFastTierMarker(callerTier);
+  if (callerCanonicalFast !== undefined) {
+    const value = policy.fastWire.canonicalToWire[callerCanonicalFast];
+    return typeof value === "string" && value.length > 0
+      ? { kind: "set", value }
+      : { kind: "drop" };
+  }
+  if (callerTier !== undefined && !policy.forwardCallerTier) return { kind: "drop" };
   if (
     callerTier !== undefined
-    && canonicalFastTierMarker(callerTier) === undefined
     && policy.fastWire.foreignCallerTiers === "drop"
   ) {
     return { kind: "drop" };

@@ -1419,14 +1419,14 @@ export interface OcxProviderConfig {
    */
   requiresAdjacentResponsesToolResults?: boolean;
   /**
-   * Provider fallback for the OpenAI `service_tier` parameter. On Responses routes this
-   * is the complete wire opt-in; Chat routes additionally require `chatServiceTier` or an
-   * exact-model true declaration.
-   * Tri-state: `true` lets fast mode inject/remove the field (an unset
-   * fast mode preserves a caller-supplied value); `false` strips the field and
+   * Provider fallback for canonical Fast capability over an OpenAI `service_tier` wire.
+   * This pure tri-state feeds catalog publication, routing eligibility, compatibility
+   * fingerprints, and proxy-owned canonical Fast injection on both Responses and Chat routes.
+   * Tri-state: `true` lets fast mode inject/remove the canonical field; `false` strips it and
    * never injects, because an upstream documented as not supporting the parameter
-   * must not receive it; absent (`undefined`) leaves the provider unclassified —
-   * caller-supplied values are preserved untouched, and fast mode never injects.
+   * must not receive it; absent (`undefined`) leaves the provider unclassified — fast mode never
+   * injects or translates, and caller values pass only under the final wire's forwarding permission.
+   * On Chat, that CallerTierForward permission is `chatServiceTier`; Responses retains passthrough.
    * An explicit config value always wins over the registry default.
    */
   supportsServiceTier?: boolean;
@@ -1643,13 +1643,16 @@ export interface OcxProviderConfig {
    */
   promptCacheKey?: boolean;
   /**
-   * Opt-in: forward `service_tier` to the upstream `/chat/completions` body.
+   * Opt-in: forward caller `service_tier` values to the upstream `/chat/completions` body.
+   * On a classified route it governs foreign values (for example `flex`), not proxy-owned
+   * canonical Fast after capability validation. On an unclassified route it governs every caller
+   * value, including canonical spellings, because no Fast capability has been validated.
    * OpenAI-specific extension with the same hazard as `promptCacheKey` — strict backends
    * reject unknown fields, and 66 registry providers share the `openai-chat` adapter, so a
    * caller-supplied `service_tier` would otherwise turn working requests into upstream 400s.
-   * Exact models may opt in through `modelSupportsServiceTier` instead; provider-level
-   * `supportsServiceTier: false` remains a global denial. Default off; only enable for
-   * providers that document this parameter on the chat wire.
+   * Exact-model `true` enables canonical Fast capability but does not grant foreign-tier
+   * forwarding; provider-level `supportsServiceTier: false` remains a global denial. Default off;
+   * only enable for providers that document this parameter on the chat wire.
    */
   chatServiceTier?: boolean;
   /**

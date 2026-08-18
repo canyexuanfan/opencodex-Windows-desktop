@@ -168,10 +168,12 @@ describe("FastWire characterization: unclassified support matrix", () => {
 });
 
 describe("FastWire characterization: exact-model Chat tier forwarding", () => {
+  // FastWire #1886 B1 capability semantic migration: exact capability no longer grants
+  // permission to forward a caller's foreign Chat tier.
   test.each(["flex", "turbo-x"])(
-    "exact model true forwards foreign caller tier %s without chatServiceTier",
+    "exact model true drops foreign caller tier %s without chatServiceTier",
     async callerTier => {
-      const { outboundBody } = await driveResponses({
+      const { outboundBody, logCtx } = await driveResponses({
         provider: {
           adapter: "openai-chat",
           baseUrl: "https://chat.example.test/v1",
@@ -181,9 +183,107 @@ describe("FastWire characterization: exact-model Chat tier forwarding", () => {
         },
         callerTier,
       });
-      expect(outboundBody.service_tier).toBe(callerTier);
+      expect(outboundBody).not.toHaveProperty("service_tier");
+      expect(logCtx.tierOutcome).toMatchObject({
+        callerTierDropped: true,
+        fastOutcome: "not-requested",
+      });
+      expect(logCtx.tierOutcome?.canonical).toBeUndefined();
     },
   );
+
+  test("chatServiceTier still forwards an exact model's foreign caller tier", async () => {
+    const { outboundBody } = await driveResponses({
+      provider: {
+        adapter: "openai-chat",
+        baseUrl: "https://chat.example.test/v1",
+        authMode: "key",
+        apiKey: "sk-test",
+        modelSupportsServiceTier: { model: true },
+        chatServiceTier: true,
+      },
+      callerTier: "flex",
+    });
+    expect(outboundBody.service_tier).toBe("flex");
+  });
+
+  test("exact model capability translates canonical caller Fast without foreign-tier permission", async () => {
+    const { outboundBody, logCtx } = await driveResponses({
+      provider: {
+        adapter: "openai-chat",
+        baseUrl: "https://chat.example.test/v1",
+        authMode: "key",
+        apiKey: "sk-test",
+        modelSupportsServiceTier: { model: true },
+      },
+      callerTier: "fast",
+    });
+    expect(outboundBody.service_tier).toBe("priority");
+    expect(logCtx.tierOutcome).toMatchObject({
+      canonical: "priority",
+      fastOutcome: "applied",
+    });
+  });
+});
+
+describe("FastWire B1: Chat capability and canonical inherit", () => {
+  test.each([
+    { supportsServiceTier: true, expectedTier: "priority", expectedOutcome: "applied" },
+    { supportsServiceTier: false, expectedTier: undefined, expectedOutcome: "downgraded" },
+  ] as const)(
+    "provider capability=$supportsServiceTier controls canonical Fast injection without chatServiceTier",
+    async ({ supportsServiceTier, expectedTier, expectedOutcome }) => {
+      const { outboundBody, logCtx } = await driveResponses({
+        provider: {
+          adapter: "openai-chat",
+          baseUrl: "https://chat-capability.example.test/v1",
+          authMode: "key",
+          apiKey: "sk-test",
+          supportsServiceTier,
+        },
+        fastMode: true,
+      });
+      if (expectedTier === undefined) expect(outboundBody).not.toHaveProperty("service_tier");
+      else expect(outboundBody.service_tier).toBe(expectedTier);
+      expect(logCtx.tierOutcome?.fastOutcome).toBe(expectedOutcome);
+    },
+  );
+
+  test.each(["fast", "FAST", "priority"])(
+    "supported Chat route normalizes inherited caller %s to priority",
+    async callerTier => {
+      const { outboundBody, logCtx } = await driveResponses({
+        provider: {
+          adapter: "openai-chat",
+          baseUrl: "https://chat-capability.example.test/v1",
+          authMode: "key",
+          apiKey: "sk-test",
+          supportsServiceTier: true,
+        },
+        callerTier,
+      });
+      expect(outboundBody.service_tier).toBe("priority");
+      expect(logCtx.tierOutcome).toMatchObject({
+        canonical: "priority",
+        fastOutcome: "applied",
+      });
+    },
+  );
+
+  test("unclassified Chat route drops caller fast without CallerTierForward", async () => {
+    const { outboundBody, logCtx } = await driveResponses({
+      provider: {
+        adapter: "openai-chat",
+        baseUrl: "https://chat-unclassified.example.test/v1",
+        authMode: "key",
+        apiKey: "sk-test",
+      },
+      callerTier: "fast",
+    });
+    expect(outboundBody).not.toHaveProperty("service_tier");
+    expect(logCtx.tierOutcome).toMatchObject({ fastOutcome: "unknown" });
+    expect(logCtx.tierOutcome?.canonical).toBeUndefined();
+  });
 });
 
 describe("FastWire characterization: requestedServiceTier timing", () => {

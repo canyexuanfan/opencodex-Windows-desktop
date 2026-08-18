@@ -12,8 +12,12 @@ import { identifyRoutedModel } from "./identity";
 import { peekReasoningForCall } from "../responses/reasoning-replay-cache";
 import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalogNudge } from "./tool-catalog-nudge";
 import { openRouterProviderPayload, resolveOpenRouterRouting } from "../providers/openrouter-routing";
-import { canSerializeServiceTierForChatModel } from "../providers/service-tier";
 import {
+  canForwardForeignServiceTierForChatModel,
+  supportsServiceTierForModel,
+} from "../providers/service-tier";
+import {
+  canonicalFastTierMarker,
   createAdapterTierMetadata,
 } from "../providers/fastwire";
 import { openaiChatCompletionsUrl } from "./openai-chat-url";
@@ -1290,17 +1294,20 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         messages,
         stream: parsed.stream,
       };
-      // Preserve a caller-selected service tier for OpenAI-compatible chat gateways. The
-      // request pipeline deliberately does not inject fast mode for this adapter, but dropping
-      // an explicit value here makes the Responses parser's serviceTier projection ineffective.
-      //
-      // Opt-in, like `prompt_cache_key` directly below: `service_tier` is an OpenAI-specific
-      // extension and 66 registry providers share this adapter. A provider-wide Chat opt-in
-      // authorizes undeclared models; an exact model declaration can authorize or deny one
-      // model. Provider-level false remains fail-closed.
-      if (canSerializeServiceTierForChatModel(provider, parsed.modelId)
-        && parsed.options.serviceTier !== undefined) {
-        body.service_tier = parsed.options.serviceTier;
+      // A policy-produced canonical decision has already passed capability validation. Without
+      // that decision, a canonical caller value still requires an explicit true capability;
+      // unclassified Chat routes remain behind the caller-forwarding opt-in.
+      const serviceTier = parsed.options.serviceTier;
+      const tierDecision = parsed.options.tierDecision;
+      const callerCanonicalFast = canonicalFastTierMarker(serviceTier) !== undefined;
+      const callerTierForwardAllowed = canForwardForeignServiceTierForChatModel(provider, parsed.modelId);
+      const canonicalFastCapability = callerCanonicalFast
+        && supportsServiceTierForModel(provider, parsed.modelId) === true;
+      const canSerializeServiceTier = tierDecision?.kind === "set"
+        || tierDecision?.kind === "forward-caller"
+        || (tierDecision === undefined && (callerTierForwardAllowed || canonicalFastCapability));
+      if (canSerializeServiceTier && serviceTier !== undefined) {
+        body.service_tier = serviceTier;
       }
       if (modelInList(provider.reasoningSplitModels, parsed.modelId)) body.reasoning_split = true;
       const maxTokens = resolveMaxTokens(provider, parsed);

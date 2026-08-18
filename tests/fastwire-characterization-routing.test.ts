@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { applyProviderConfigHints } from "../src/codex/catalog";
 import { applyCatalogModelMetadata } from "../src/codex/catalog/effort";
 import type { CatalogModel, RawEntry } from "../src/codex/catalog/parsing";
 import { candidateCapabilityEvidence } from "../src/routing/capability";
@@ -7,7 +8,9 @@ import { evaluatePolicyProfile } from "../src/routing/evaluator";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 
 describe("FastWire characterization: routing profile service-tier evidence", () => {
-  test("require.serviceTier sees supportsServiceTier=true plus chatServiceTier=false as unsupported", () => {
+  // FastWire #1886 B1 capability semantic migration: Chat caller-forward permission no longer
+  // downgrades the provider/model capability seen by routing.
+  test("require.serviceTier accepts supportsServiceTier=true without chatServiceTier", () => {
     const provider: OcxProviderConfig = {
       adapter: "openai-chat",
       baseUrl: "https://chat-no-tier.example.test/v1",
@@ -29,22 +32,48 @@ describe("FastWire characterization: routing profile service-tier evidence", () 
     } as OcxConfig;
     const capability = candidateCapabilityEvidence(config, "chat-no-tier", "model");
 
-    expect(capability.serviceTier).toBe("unsupported");
+    expect(capability.serviceTier).toBe("supported");
     const result = evaluatePolicyProfile(config, "fast", {}, [{
       provider: "chat-no-tier",
       model: "model",
       capability,
     }]);
     expect(result.candidates[0]).toMatchObject({
-      eligible: false,
+      eligible: true,
       requirements: [{
         id: "service-tier",
         expected: "supported",
-        actual: "unsupported",
-        outcome: "unsatisfied",
+        actual: "supported",
+        outcome: "satisfied",
       }],
     });
-    expect(result.selectedIndex).toBeNull();
+    expect(result.selectedIndex).toBe(0);
+  });
+
+  test("supportsServiceTier=false remains ineligible without chatServiceTier", () => {
+    const provider: OcxProviderConfig = {
+      adapter: "openai-chat",
+      baseUrl: "https://chat-no-tier.example.test/v1",
+      supportsServiceTier: false,
+    };
+    const config = {
+      port: 0,
+      defaultProvider: "chat-no-tier",
+      providers: { "chat-no-tier": provider },
+      routingProfiles: {
+        fast: {
+          candidates: [{ provider: "chat-no-tier", model: "model" }],
+          require: { serviceTier: "supported" },
+        },
+      },
+    } as OcxConfig;
+    const capability = candidateCapabilityEvidence(config, "chat-no-tier", "model");
+    expect(capability.serviceTier).toBe("unsupported");
+    expect(evaluatePolicyProfile(config, "fast", {}, [{
+      provider: "chat-no-tier",
+      model: "model",
+      capability,
+    }]).selectedIndex).toBeNull();
   });
 });
 
@@ -65,6 +94,24 @@ describe("FastWire characterization: compatibility fingerprint projection", () =
       provider: {
         adapter: "openai-responses",
         baseUrl: "https://unsupported.example.test/v1",
+        supportsServiceTier: false,
+      },
+    },
+    {
+      label: "chat-supported-without-caller-forward",
+      expected: true,
+      provider: {
+        adapter: "openai-chat",
+        baseUrl: "https://chat-supported.example.test/v1",
+        supportsServiceTier: true,
+      },
+    },
+    {
+      label: "chat-explicitly-unsupported",
+      expected: false,
+      provider: {
+        adapter: "openai-chat",
+        baseUrl: "https://chat-unsupported.example.test/v1",
         supportsServiceTier: false,
       },
     },
@@ -129,4 +176,32 @@ describe("FastWire characterization: catalog service-tier bytes", () => {
     expect(entry).not.toHaveProperty("service_tiers");
     expect(entry).not.toHaveProperty("additional_speed_tiers");
   });
+
+  test.each([
+    { supportsServiceTier: true, publishesFast: true },
+    { supportsServiceTier: false, publishesFast: false },
+  ])(
+    "Chat provider capability=$supportsServiceTier publishes Fast=$publishesFast without chatServiceTier",
+    ({ supportsServiceTier, publishesFast }) => {
+      const provider: OcxProviderConfig = {
+        adapter: "openai-chat",
+        baseUrl: "https://chat-catalog.example.test/v1",
+        supportsServiceTier,
+      };
+      const model = applyProviderConfigHints("chat-catalog", provider, {
+        id: "model",
+        provider: "chat-catalog",
+      });
+      const entry: RawEntry = {};
+      applyCatalogModelMetadata(entry, model);
+      expect(model.supportsServiceTier).toBe(supportsServiceTier);
+      if (publishesFast) {
+        expect(entry.service_tiers).toEqual([expect.objectContaining({ id: "priority", name: "Fast" })]);
+        expect(entry.additional_speed_tiers).toEqual(["fast"]);
+      } else {
+        expect(entry).not.toHaveProperty("service_tiers");
+        expect(entry).not.toHaveProperty("additional_speed_tiers");
+      }
+    },
+  );
 });
