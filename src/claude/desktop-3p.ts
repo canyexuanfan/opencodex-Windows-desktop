@@ -10,7 +10,7 @@ import {
   renderDesktopProfile,
   type DesktopProfileModel,
 } from "./desktop-profile";
-import { nativeOpenAiContextWindow } from "../codex/catalog";
+import { nativeOpenAiContextWindow, type NativeContextLimitsInput } from "../codex/catalog";
 import { assertDesktop3pModelsValid } from "./desktop-3p-guard";
 
 export interface Desktop3pModelEntry {
@@ -191,7 +191,7 @@ function collectDesktop3pModels(
   nativeSlugs: string[],
   routedModels: Array<Desktop3pRoutedModel>,
   profile?: OcxClaudeDesktopProfile,
-  nativeContextCap?: number,
+  nativeContextCap?: NativeContextLimitsInput,
 ): { models: Desktop3pModelEntry[]; registry: Map<string, string> } {
   const registry = new Map<string, string>();
   const models: Desktop3pModelEntry[] = [];
@@ -293,7 +293,7 @@ export function buildDesktop3pRegistry(
   nativeSlugs: string[],
   routedModels: Array<Desktop3pRoutedModel>,
   profile?: OcxClaudeDesktopProfile,
-  nativeContextCap?: number,
+  nativeContextCap?: NativeContextLimitsInput,
 ): Map<string, string> {
   const { registry } = collectDesktop3pModels(nativeSlugs, routedModels, profile, nativeContextCap);
   desktop3pRegistry = registry;
@@ -305,7 +305,7 @@ export function generateDesktop3pModels(
   nativeSlugs: string[],
   routedModels: Array<Desktop3pRoutedModel>,
   profile?: OcxClaudeDesktopProfile,
-  nativeContextCap?: number,
+  nativeContextCap?: NativeContextLimitsInput,
 ): Desktop3pModelEntry[] {
   const { models, registry } = collectDesktop3pModels(nativeSlugs, routedModels, profile, nativeContextCap);
   desktop3pRegistry = registry;
@@ -337,7 +337,7 @@ export function generateDesktop3pConfig(
   apiKey = "ocx",
   mode: Desktop3pConfigMode = "static",
   profile?: OcxClaudeDesktopProfile,
-  nativeContextCap?: number,
+  nativeContextCap?: NativeContextLimitsInput,
 ): object {
   const base = {
     inferenceProvider: "gateway",
@@ -558,7 +558,7 @@ export function writeDesktop3pConfig(
   apiKey?: string,
   mode: Desktop3pConfigMode = "static",
   profile?: OcxClaudeDesktopProfile,
-  nativeContextCap?: number,
+  nativeContextCap?: NativeContextLimitsInput,
 ): { written: boolean; path: string; reason?: string; fingerprint?: string } {
   const libraryPath = resolveDesktop3pConfigLibraryPath();
   const metadataPath = join(libraryPath, "_meta.json");

@@ -10,7 +10,7 @@
  * catches the pathological case and stays out of the way otherwise. Every uncertainty
  * resolves toward admitting.
  */
-import { nativeOpenAiContextWindow, nativeOpenAiMaxInputTokens } from "../../codex/catalog/metadata";
+import { nativeOpenAiContextWindow, nativeOpenAiMaxInputTokens, type NativeContextLimitsInput } from "../../codex/catalog/metadata";
 import { estimateTokens } from "../../lib/token-estimate";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
 import type { OcxContentPart, OcxParsedRequest, OcxProviderConfig } from "../../types";
@@ -131,7 +131,7 @@ export function resolveInputCeiling(
   modelId: string,
   // Operator cap for the canonical native provider. Passed in rather than read from a
   // config here so this stays pure: no filesystem, no catalog, no registry scan.
-  nativeContextCap?: number,
+  nativeContextCap?: NativeContextLimitsInput,
 ): number | null {
   const configured = positive(provider.modelContextWindows?.[modelId]) ?? positive(provider.contextWindow);
 
@@ -143,15 +143,18 @@ export function resolveInputCeiling(
   const canonicalNativeBare = providerName === OPENAI_CODEX_PROVIDER_ID
     && isCanonicalOpenAiForwardProvider(provider)
     && !modelId.includes("/");
-  const native = configured === null && canonicalNativeBare
-    ? positive(nativeOpenAiContextWindow(modelId, nativeContextCap))
+  const nativeLimits = canonicalNativeBare && configured !== null
+    ? {
+        ...(typeof nativeContextCap === "number" ? { cap: nativeContextCap } : (nativeContextCap ?? {})),
+        modelWindows: { [modelId]: configured },
+      }
+    : nativeContextCap;
+  const native = canonicalNativeBare
+    ? positive(nativeOpenAiContextWindow(modelId, nativeLimits))
     : null;
-  // The model's own measured input ceiling applies even when the operator configured a
-  // window: a 1,050,000 override must not raise the gate above the 922,000 the upstream
-  // actually accepts. Computed independently of `configured` for exactly that reason.
-  const nativeMaxInput = canonicalNativeBare ? positive(nativeOpenAiMaxInputTokens(modelId, nativeContextCap)) : null;
+  const nativeMaxInput = canonicalNativeBare ? positive(nativeOpenAiMaxInputTokens(modelId, nativeLimits)) : null;
 
-  const window = configured ?? native;
+  const window = canonicalNativeBare ? native : configured;
   // modelMaxInputTokens is an input-only cap, so it can only tighten the window.
   const configuredMaxInput = positive(provider.modelMaxInputTokens?.[modelId]);
   const limits = [window, configuredMaxInput, nativeMaxInput].filter((v): v is number => v !== null);
@@ -168,7 +171,7 @@ export function checkInputAdmission(
   provider: OcxProviderConfig,
   providerName: string,
   modelId: string,
-  nativeContextCap?: number,
+  nativeContextCap?: NativeContextLimitsInput,
 ): InputAdmissionResult {
   const ceiling = resolveInputCeiling(provider, providerName, modelId, nativeContextCap);
   if (ceiling === null) return { admitted: true, estimatedTokens: 0, ceiling: null };

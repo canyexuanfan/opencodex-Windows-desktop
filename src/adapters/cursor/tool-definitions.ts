@@ -525,7 +525,12 @@ export function nonEmptyShellBridgeCommandFromArgs(
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
   const record = parsed as Record<string, unknown>;
-  for (const key of shellBridgeRequiredCommandKeys(toolName, schema)) {
+  const requiredKeys = shellBridgeRequiredCommandKeys(toolName, schema);
+  const candidateKeys = new Set<"cmd" | "command">([
+    ...requiredKeys,
+    requiredKeys.includes("cmd") ? "command" : "cmd",
+  ]);
+  for (const key of candidateKeys) {
     const value = record[key];
     if (typeof value === "string" && value.trim().length > 0) return value.trim();
   }

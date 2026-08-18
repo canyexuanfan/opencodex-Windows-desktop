@@ -1,6 +1,7 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { STORE_BUDGET_MS } from "./helpers/test-budget";
 import {
   CODEX_FAILURE_WINDOW_MS,
   CODEX_QUOTA_PROBE_INTERVAL_MS,
@@ -1063,7 +1064,9 @@ describe("codex routing", () => {
 
     expect(resolveCodexAccountForThread("lru-1", config, now + CODEX_THREAD_AFFINITY_MAX_ENTRIES + 1)).toBe("a");
     expect(resolveCodexAccountForThread("lru-0", config, now + CODEX_THREAD_AFFINITY_MAX_ENTRIES + 2)).toBe("b");
-  });
+    // Filling the cap means persisting CODEX_THREAD_AFFINITY_MAX_ENTRIES real mappings;
+    // that store work IS the eviction proof, and it crosses Bun's 5s default on Windows.
+  }, STORE_BUDGET_MS);
 
   test("thread affinity LRU cap includes legacy and native quota scopes", () => {
     const config = makeConfig();
@@ -1084,7 +1087,7 @@ describe("codex routing", () => {
     expect(resolveCodexAccountForThread("scoped-lru-0", config, after, "shared")).toBe("a");
     expect(resolveCodexAccountForThread("scoped-lru-0", config, after + 1, "spark")).toBe("a");
     expect(resolveCodexAccountForThread("scoped-lru-0", config, after + 2)).toBe("b");
-  });
+  }, STORE_BUDGET_MS);
 
   test("generation mismatch invalidates a mapped thread before reuse", () => {
     const config = makeConfig();

@@ -237,12 +237,12 @@ function rollbackInjectedKeys(port: number, injectedKeys: string[]): void {
 async function computeEffectiveModelEnv(config: OcxConfig, auto?: AutoContextMode): Promise<{ modelEnv: Record<string, string>; windows: Record<string, number> }> {
   const { boundedContextWindows, buildClaudeContextWindows, effectiveModelEnv } = await import("../claude/context-windows");
   const windows = await boundedContextWindows(async () => {
-    const { gatherRoutedModels, visibleNativeSlugs } = await import("../codex/catalog");
+    const { gatherRoutedModels, nativeContextLimits, visibleNativeSlugs } = await import("../codex/catalog");
     try {
-      return buildClaudeContextWindows([...visibleNativeSlugs(config)], await gatherRoutedModels(config), providerContextCap(config, OPENAI_CODEX_PROVIDER_ID));
+      return buildClaudeContextWindows([...visibleNativeSlugs(config)], await gatherRoutedModels(config), nativeContextLimits(config));
     } catch (error) {
       if (error && typeof error === "object" && (error as { code?: unknown }).code === "catalog_busy") {
-        return buildClaudeContextWindows([...visibleNativeSlugs(config)], [], providerContextCap(config, OPENAI_CODEX_PROVIDER_ID));
+        return buildClaudeContextWindows([...visibleNativeSlugs(config)], [], nativeContextLimits(config));
       }
       throw error;
     }

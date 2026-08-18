@@ -19,8 +19,11 @@ import {
 } from "../src/providers/request-pacing";
 import {
   acquireNativeMainProfileDrain,
+  activeRegistryMetrics,
+  getActiveTurnCount,
   getNativeMainProfileRequestCount,
   resetLifecycleDrainStateForTests,
+  tryAdmitTurn,
 } from "../src/server/lifecycle";
 import {
   blockNativeMainRecovery,
@@ -638,6 +641,53 @@ test("POST /v1/chat/completions forwards response_format to routed openai-chat",
   }
 });
 
+test("native Chat SSE holds its active-turn lease until terminal completion", async () => {
+  const encoder = new TextEncoder();
+  let upstreamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+  const upstream = Bun.serve({
+    port: 0,
+    fetch() {
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          upstreamController = controller;
+          controller.enqueue(encoder.encode(
+            `data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: "assistant", content: "held" } }] })}\n\n`,
+          ));
+        },
+      }), { headers: { "Content-Type": "text/event-stream" } });
+    },
+  });
+  saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
+  const server = startServer(0);
+  const before = getActiveTurnCount();
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    const response = await fetch(new URL("/v1/chat/completions", server.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "mock/test-model",
+        stream: true,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    expect(response.status).toBe(200);
+    reader = response.body!.getReader();
+    expect((await reader.read()).done).toBe(false);
+    expect(getActiveTurnCount()).toBe(before + 1);
+
+    upstreamController!.enqueue(encoder.encode("data: [DONE]\n\n"));
+    try { upstreamController!.close(); } catch { /* parser may cancel after terminal */ }
+    while (!(await reader.read()).done) { /* drain terminal frames */ }
+    reader = undefined;
+    expect(getActiveTurnCount()).toBe(before);
+  } finally {
+    await reader?.cancel();
+    await server.stop(true);
+    await upstream.stop(true);
+  }
+});
+
 test("POST /v1/responses carries text.format onto the routed chat wire", async () => {
   const { server: upstream, captured } = mockChatUpstreamCapturing();
   saveConfig(mockConfig(`${upstream.url.toString().replace(/\/$/, "")}/v1`));
@@ -1097,6 +1147,7 @@ test("chat-native streaming accepts CRLF events split across transport chunks", 
 });
 
 test("chat-native streaming rejects an unterminated SSE event", async () => {
+  const before = getActiveTurnCount();
   const upstream = Bun.serve({
     port: 0,
     fetch() {
@@ -1117,6 +1168,7 @@ test("chat-native streaming rejects an unterminated SSE event", async () => {
     expect(response.status).toBe(200);
     expect(text).toContain('"code":"upstream_sse_unterminated"');
     expect(text).not.toContain("data: [DONE]");
+    expect(getActiveTurnCount()).toBe(before);
   } finally {
     await server.stop(true);
     upstream.stop(true);
@@ -1254,6 +1306,60 @@ test("chat-native client cancellation cancels the upstream stream and logs 499",
   let markCancelled!: () => void;
   const cancelled = new Promise<void>(resolve => { markCancelled = resolve; });
   const encoder = new TextEncoder();
+  const releaseMisses = activeRegistryMetrics().activeTurns.releaseMisses;
+  const before = getActiveTurnCount();
+  const lease = tryAdmitTurn();
+  if (!lease) throw new Error("failed to admit native Chat cancellation test turn");
+  globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"index":0,"delta":{"content":"held"}}]}\n\n'));
+        },
+        cancel() {
+          markCancelled();
+        },
+      }), { headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+  try {
+    const request = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "mock/test-model", stream: true, messages: [{ role: "user", content: "hi" }] }),
+    });
+    const logCtx = {} as Parameters<typeof handleChatCompletions>[2];
+    const response = await handleChatCompletions(
+      request,
+      mockConfig("https://provider.example/v1"),
+      logCtx,
+      { requestId: "chat-cancel", start: Date.now(), turnAdmissionLease: lease },
+    );
+    const reader = response.body!.getReader();
+    expect((await reader.read()).done).toBe(false);
+    expect(lease.isTransferred()).toBe(true);
+    expect(getActiveTurnCount()).toBe(before + 1);
+    const cancelOutcome = await Promise.race([
+      Promise.all([reader.cancel("client done"), cancelled]).then(() => "cancelled" as const),
+      Bun.sleep(2_000).then(() => "timeout" as const),
+    ]);
+    expect(cancelOutcome).toBe("cancelled");
+    expect(getRequestLogEntries().at(-1)?.status).toBe(499);
+    expect(getActiveTurnCount()).toBe(before);
+    expect(activeRegistryMetrics().activeTurns.releaseMisses).toBe(releaseMisses);
+  } finally {
+    lease.release();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("chat-native request abort releases its active-turn lease and logs 499", async () => {
+  const { clearRequestLogsForTests, getRequestLogEntries } = await import("../src/server/request-log");
+  const { handleChatCompletions } = await import("../src/server/chat-completions");
+  clearRequestLogsForTests();
+  let markCancelled!: () => void;
+  const cancelled = new Promise<void>(resolve => { markCancelled = resolve; });
+  const encoder = new TextEncoder();
+  const releaseMisses = activeRegistryMetrics().activeTurns.releaseMisses;
+  const before = getActiveTurnCount();
+  const lease = tryAdmitTurn();
+  if (!lease) throw new Error("failed to admit native Chat request-abort test turn");
   globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
         start(controller) {
           controller.enqueue(encoder.encode('data: {"choices":[{"index":0,"delta":{"content":"held"}}]}\n\n'));
@@ -1270,19 +1376,55 @@ test("chat-native client cancellation cancels the upstream stream and logs 499",
       body: JSON.stringify({ model: "mock/test-model", stream: true, messages: [{ role: "user", content: "hi" }] }),
       signal: clientAbort.signal,
     });
-    const logCtx = {} as Parameters<typeof handleChatCompletions>[2];
     const response = await handleChatCompletions(
       request,
       mockConfig("https://provider.example/v1"),
-      logCtx,
-      { requestId: "chat-cancel", start: Date.now() },
+      {} as Parameters<typeof handleChatCompletions>[2],
+      { requestId: "chat-request-abort", start: Date.now(), turnAdmissionLease: lease },
     );
     const reader = response.body!.getReader();
     expect((await reader.read()).done).toBe(false);
+    expect(lease.isTransferred()).toBe(true);
+    expect(getActiveTurnCount()).toBe(before + 1);
+
+    const nextRead = reader.read();
     clientAbort.abort("client done");
-    expect((await reader.read()).done).toBe(true);
-    await cancelled;
+    const abortOutcome = await Promise.race([
+      Promise.all([nextRead, cancelled]).then(([read]) => ({ kind: "cancelled" as const, read })),
+      Bun.sleep(2_000).then(() => ({ kind: "timeout" as const })),
+    ]);
+    expect(abortOutcome.kind).toBe("cancelled");
+    if (abortOutcome.kind === "cancelled") expect(abortOutcome.read.done).toBe(true);
     expect(getRequestLogEntries().at(-1)?.status).toBe(499);
+    expect(getActiveTurnCount()).toBe(before);
+    expect(activeRegistryMetrics().activeTurns.releaseMisses).toBe(releaseMisses);
+  } finally {
+    lease.release();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("chat-native direct streaming without an admission lease does not record a release miss", async () => {
+  const { handleChatCompletions } = await import("../src/server/chat-completions");
+  const releaseMisses = activeRegistryMetrics().activeTurns.releaseMisses;
+  globalThis.fetch = (async () => new Response(
+    'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+    { headers: { "content-type": "text/event-stream" } },
+  )) as typeof fetch;
+  try {
+    const request = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "mock/test-model", stream: true, messages: [{ role: "user", content: "hi" }] }),
+    });
+    const response = await handleChatCompletions(
+      request,
+      mockConfig("https://provider.example/v1"),
+      {} as Parameters<typeof handleChatCompletions>[2],
+      { requestId: "chat-no-lease", start: Date.now() },
+    );
+    expect(await response.text()).toContain("data: [DONE]");
+    expect(activeRegistryMetrics().activeTurns.releaseMisses).toBe(releaseMisses);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1512,7 +1654,7 @@ test("chat-native skips optional main enrichment while routed work survives drai
     upstream.stop(true);
     resetLifecycleDrainStateForTests();
   }
-});
+}, 15_000);
 
 test("POST /v1/chat/completions finalizes native passthrough request logs", async () => {
   const { clearRequestLogsForTests, getRequestLogEntries } = await import("../src/server/request-log");

@@ -60,17 +60,24 @@ test("the native group keeps its window readable with the cap switched off", asy
   expect(src).toContain("{(capOn || nativeProviderGroup) && (");
   // With the cap off the stored value is only what a future toggle would apply — the 350k
   // default — so the display falls back to the widest window the rows actually advertise.
-  expect(src).toContain("const capDisplayValue = capOn ? providerCap : (widestRowWindow ?? providerCap);");
+  // Matched as separate fragments because the expression is wrapped across lines now, and
+  // it grew a native branch: with the cap off the native group shows its default window
+  // rather than the widest advertised row. A single-line literal pinned the formatting
+  // instead of the behaviour and broke on the reflow that introduced that branch.
+  expect(src).toContain("const capDisplayValue = capOn");
+  expect(src).toContain("nativeProviderGroup ? NATIVE_GPT56_DEFAULT_WINDOW : (widestRowWindow ?? providerCap)");
   // The select is inert until the cap is actually on: showing a number is not the same as
   // offering to change one.
   expect(src).toContain("disabled={busy || !capOn}");
 });
 
-test("the native group exposes the custom-model and cap controls, but not the context modal", async () => {
+test("the native group exposes the context modal alongside the custom-model and cap controls", async () => {
   const src = await Bun.file(new URL("../src/pages/Models.tsx", import.meta.url)).text();
-  // The context-window modal saves through PATCH /api/providers, which the canonical openai
-  // seed check rejects with a 400 — so that one button stays hidden for the native group.
-  expect(src).toContain("{!nativeProviderGroup && (");
+  // The context button is no longer gated: the canonical openai seed check admits
+  // contextWindow/modelContextWindows as user-owned overlays, and the native accessors only
+  // ever narrow the measured window with them.
+  expect(src).not.toContain("{!nativeProviderGroup && (");
+  expect(src).toContain('onClick={() => openContextSettings(group)}');
   // Badge and hint follow provider identity, not row composition.
   expect(src).toContain("{nativeProviderGroup && <span");
   expect(src).toContain("{nativeProviderGroup && <p");

@@ -31,7 +31,7 @@ import { redactSecretString } from "../../lib/redact";
 import upstreamModelsSnapshot from "../data/upstream-models.json";
 
 
-import { NATIVE_OPENAI_CONTEXT_OVERRIDES, SUPPORTED_NATIVE_OPENAI_SLUGS, UPSTREAM_NATIVE_ENTRIES, isNativeOpenAiCapabilityAliasModel, nativeMultiAgentVersion } from "./metadata";
+import { NATIVE_OPENAI_CONTEXT_OVERRIDES, SUPPORTED_NATIVE_OPENAI_SLUGS, UPSTREAM_NATIVE_ENTRIES, isNativeOpenAiCapabilityAliasModel, nativeMultiAgentVersion, nativeOpenAiContextWindow, nativeOpenAiMaxInputTokens, type NativeContextLimitsInput } from "./metadata";
 import { trustedAccountBoundNativeCatalogSlug } from "./account-models";
 import { CODEX_NATIVE_ALIAS_CATALOG_KIND } from "./kinds";
 
@@ -282,32 +282,65 @@ function nativeAutoCompactLimit(contextWindow: number, maxInputTokens: number | 
   return Math.min(ninety, cappedMaxInput, contextWindow);
 }
 
-export function applyNativeOpenAiContextOverride(entry: RawEntry, contextCap?: number): void {
+/**
+ * Narrow any already-resolved native window by the user levers.
+ *
+ * Used for the fields the accessors do not own (`max_context_window`, and preserved rows
+ * that carry no static override) so every field on a row lands at the same width.
+ */
+function narrowNativeMaxContextWindow(
+  slug: string,
+  value: number | undefined,
+  limits?: NativeContextLimitsInput,
+): number | undefined {
+  if (typeof value !== "number" || value <= 0) return value;
+  const resolved = nativeOpenAiContextWindow(slug, limits);
+  const authoritative = nativeOpenAiContextWindow(slug);
+  // The accessor pair tells us how far the levers moved this slug; apply the same delta to a
+  // field the accessor does not model, without ever raising it.
+  if (resolved === undefined || authoritative === undefined) return value;
+  return Math.min(value, Math.max(resolved, 1));
+}
+
+export function applyNativeOpenAiContextOverride(entry: RawEntry, limits?: NativeContextLimitsInput): void {
   const nativeSlug = trustedAccountBoundNativeCatalogSlug(entry)
     ?? (isNativeOpenAiEntry(entry) ? entry.slug as string : undefined);
   if (!nativeSlug) return;
   const override = NATIVE_OPENAI_CONTEXT_OVERRIDES[nativeSlug];
   if (override) {
+    // Read the effective values through the accessors rather than re-deriving them from the
+    // static table: this function used to apply only the provider cap, so a per-model window
+    // the dashboard had already accepted was silently written back at full width here.
     if (typeof override.contextWindow === "number") {
-      const contextWindow = applyProviderContextCap(override.contextWindow, contextCap) ?? override.contextWindow;
+      const contextWindow = nativeOpenAiContextWindow(nativeSlug, limits) ?? override.contextWindow;
       entry.context_window = contextWindow;
-      entry.auto_compact_token_limit = nativeAutoCompactLimit(contextWindow, override.maxInputTokens, contextCap);
+      entry.auto_compact_token_limit = nativeAutoCompactLimit(
+        contextWindow,
+        nativeOpenAiMaxInputTokens(nativeSlug, limits) ?? override.maxInputTokens,
+        undefined,
+      );
     }
     if (typeof override.maxContextWindow === "number") {
-      entry.max_context_window = applyProviderContextCap(override.maxContextWindow, contextCap) ?? override.maxContextWindow;
+      const maxContextWindow = narrowNativeMaxContextWindow(nativeSlug, override.maxContextWindow, limits);
+      entry.max_context_window = maxContextWindow;
     }
   }
   // providerContextCaps.openai is a ceiling for native OpenAI rows regardless of where the
   // advertised window came from (#1430): preserved rows without a hardcoded override (e.g.
   // gpt-5.4-mini) must stay under the cap too, and auto-compaction follows the capped window.
+  // The per-model window narrows the same rows for the same reason.
   const currentContext = typeof entry.context_window === "number" ? entry.context_window : undefined;
-  const cappedContext = applyProviderContextCap(currentContext, contextCap);
+  const cappedContext = narrowNativeMaxContextWindow(nativeSlug, currentContext, limits);
   if (cappedContext !== currentContext && typeof cappedContext === "number") {
     entry.context_window = cappedContext;
-    entry.auto_compact_token_limit = nativeAutoCompactLimit(cappedContext, override?.maxInputTokens, contextCap);
+    entry.auto_compact_token_limit = nativeAutoCompactLimit(
+      cappedContext,
+      nativeOpenAiMaxInputTokens(nativeSlug, limits) ?? override?.maxInputTokens,
+      undefined,
+    );
   }
   const currentMax = typeof entry.max_context_window === "number" ? entry.max_context_window : undefined;
-  const cappedMax = applyProviderContextCap(currentMax, contextCap);
+  const cappedMax = narrowNativeMaxContextWindow(nativeSlug, currentMax, limits);
   if (cappedMax !== currentMax) {
     entry.max_context_window = cappedMax;
   }
