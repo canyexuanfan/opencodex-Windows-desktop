@@ -275,13 +275,18 @@ The input is provider config rather than hostile traffic, so the practical risk 
 nothing. Replaced with `stripTrailingSlashes`, verified byte-identical to the regex across the
 edge cases (empty string, all-slashes, no trailing slash, interior slashes).
 
-**The root cause is a process one and belongs in the record.** #1897 merged on local focused
+> **This entire paragraph is superseded by the third explanation above.** It survives as the
+> record of a wrong answer, not as an answer. Full CI would *not* have surfaced this: CodeQL
+> never runs on a `dev`-targeting PR, so no amount of waiting on per-PR CI would have shown it.
+> The signal that was actually missed was a review comment on a promotion PR, not a CI job.
+
+~~**The root cause is a process one and belongs in the record.** #1897 merged on local focused
 tests plus `tsc`. That substitutes for CI on the axis it covers — behavior — and silently skips
-the axis it does not: static analysis. ~~Waiting for full CI would have surfaced this before it~~
+the axis it does not: static analysis. Waiting for full CI would have surfaced this before it
 reached `main`. The instruction for this run was to stop waiting on per-PR CI and gate once at
 the end, which is a reasonable trade for speed; the honest accounting is that it traded away
 exactly this class of finding, and the end-gate I ran (`bun test`, `typecheck`, `privacy:scan`)
-does not include CodeQL.
+does not include CodeQL.~~
 
 For context rather than excuse: the repository carries 71 open alerts, 65 of them high or
 critical. This is one of many — but it is one this campaign put there, so it gets fixed here
@@ -325,7 +330,7 @@ JS/TS run there; until it does, this campaign does not claim it closed.
 
 A reviewer asked whether other instances of the same pattern remain. **Yes — 30 occurrences of
 `/\/+$/` across `src/`**, with open `js/polynomial-redos` alerts on at least six
-(#83, #84, #60, #53, #51, #52) covering `openai-chat-url.ts`, `openai-responses-url.ts`,
+(#83, #60, #53, #52, #51, #50) covering `openai-chat-url.ts`, `openai-responses-url.ts`,
 `openai-responses.ts`, `openai-chat.ts` and `anthropic.ts`.
 
 All predate this campaign (created 2026-08-12/13), so the scoped claim — *this campaign
@@ -348,3 +353,12 @@ the *file* count; measured now it is **39 occurrences across 27 files**, one of 
 comment explaining the removal. Understating the remaining debt inside the section whose whole
 purpose is to not understate it was the wrong direction to be wrong in. Repo-wide open alerts
 have also drifted from 71 to 70 with the same rescan.
+**Correction to the alert list.** The six I named included **#84**, which had already been fixed
+at 03:03:30Z — before I wrote the list — and omitted **#50**, which is open. Still six, but one
+member was wrong. The live open set is #83, #60, #53, #52, #51, #50, all created 2026-08-12/13,
+which leaves the scoped claim intact: this campaign introduced exactly one `js/polynomial-redos`
+alert and fixed exactly that one.
+
+**And the one it introduced is now closed.** Alert #87 reads `fixed`, `fixed_at
+2026-08-18T03:17:06Z`, from the JS/TS rescan of `main` at `1f4e0470e`. The earlier text
+predicted this would happen on the next scan and declined to claim it had; the prediction held.
