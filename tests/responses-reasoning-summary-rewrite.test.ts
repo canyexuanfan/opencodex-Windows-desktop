@@ -119,6 +119,29 @@ describe("responses reasoning summary channel rewrite", () => {
     });
   });
 
+  test("preserves an existing summary when content is empty", () => {
+    expect(apply({
+      type: "response.output_item.done",
+      output_index: 0,
+      item: {
+        type: "reasoning",
+        id: "rs_1",
+        status: "completed",
+        content: [],
+        summary: [{ type: "summary_text", text: "already summarized" }],
+      },
+    })).toEqual({
+      type: "response.output_item.done",
+      output_index: 0,
+      item: {
+        type: "reasoning",
+        id: "rs_1",
+        status: "completed",
+        summary: [{ type: "summary_text", text: "already summarized" }],
+      },
+    });
+  });
+
   test("malformed payloads pass through unchanged", () => {
     expect(rewrite("not json")).toBe("not json");
     expect(rewrite("[1,2]")).toBe("[1,2]");

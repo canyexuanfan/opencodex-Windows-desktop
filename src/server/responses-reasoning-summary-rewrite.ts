@@ -37,7 +37,12 @@ function reasoningItemToSummaryShape(item: Record<string, unknown>): Record<stri
   const text = reasoningTextOf(item);
   const next: Record<string, unknown> = { ...item };
   delete next.content;
-  next.summary = text.length > 0 ? [{ type: "summary_text", text }] : [];
+  // Preserve an existing summary when the item carries no content-channel text
+  // (a future upstream may emit both channels); only synthesize the summary
+  // from content when content is actually present.
+  next.summary = text.length > 0
+    ? [{ type: "summary_text", text }]
+    : (Array.isArray(next.summary) ? next.summary : []);
   return next;
 }
 
