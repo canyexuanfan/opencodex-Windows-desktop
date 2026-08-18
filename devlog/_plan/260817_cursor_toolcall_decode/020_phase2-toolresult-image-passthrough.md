@@ -124,3 +124,28 @@ adapter directory)
 
 All nine pass, typecheck clean, cursor suite green on `ssh lidge`, pushed.
 
+## POST-SHIP CORRECTION (audit r1, 2026-08-18)
+
+This phase shipped the ENCODER, and the encoder is correct. It does **not** deliver
+the end-to-end capability, and the earlier wording in `000_index.md` overstated it.
+
+Every Cursor model is listed in `noVisionModels`
+(`src/providers/registry.ts:978-982`), so before the adapter ever runs, the vision
+sidecar replaces image parts with text descriptions — or strips them fail-closed
+when no sidecar plan exists (`src/server/responses/core.ts:2225-2243`). That
+preprocessing explicitly covers `toolResult` messages
+(`src/vision/index.ts:252-259`, replacement at `:565-581`).
+
+`tests/cursor-tool-result-image.test.ts` calls `encodeCursorRunRequest` directly
+with hand-built `rawMessages`, so it proves encoder support and nothing about the
+production path.
+
+The registry comment claiming "Cursor's wire protocol never forwards image parts"
+is now half-stale: still true for USER images (`request-builder.ts:206-214`
+flattens them), no longer true for tool results.
+
+Closing this gap is its own unit, not a wording fix: dropping Cursor from
+`noVisionModels` alone would leave user images with neither an image nor a
+description. It needs role-aware vision policy plus an end-to-end regression
+through the server path. Tracked as follow-up 1 in
+`devlog/_plan/260818_cursor_call_integration/000_plan.md`.
