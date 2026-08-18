@@ -12,7 +12,11 @@
 
 set -euo pipefail
 
-ROOT="${0:A:h}/../.."
+# Ask git for the root rather than counting `..` — the script lives three levels down
+# (devlog/_plan/<unit>/), and an off-by-one put the state file in devlog/.tmp/, which
+# is a different directory that happens to also be gitignored. A wrong-but-hidden
+# path is exactly the kind of thing this script exists to stop trusting.
+ROOT="$(cd "${0:A:h}" && git rev-parse --show-toplevel)" || { print -r -- "[cc] FATAL: not in a git repo" >&2; exit 1 }
 cd "$ROOT"
 STATE="$ROOT/.tmp/cursor-call-integration.env"
 mkdir -p "${STATE:h}"
