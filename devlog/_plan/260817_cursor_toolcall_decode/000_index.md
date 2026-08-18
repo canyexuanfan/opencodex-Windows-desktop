@@ -237,9 +237,9 @@ already-emitted terminal stay graceful.
 
 ### What shipped for 020
 
-Tool-result images reach Cursor as real `McpImageContent`. The final design differs
-from the original plan in three ways, each forced by a review that proved the plan
-would have broken a working request:
+The Cursor ENCODER now emits tool-result images as real `McpImageContent`. The final
+design differs from the original plan in three ways, each forced by a review that
+proved the plan would have broken a working request:
 
 1. **Bounding is post-serialization, not a byte budget.** A step is one blob shared
    with the call's arguments, text, and framing, so `toolCallStep` serializes and
