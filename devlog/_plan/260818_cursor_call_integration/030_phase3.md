@@ -24,11 +24,11 @@ The natural stack is the rebased history itself, cut at existing commits.
 
 ## The stack
 
-After the WP2 rebase, `EXPECTED_DEV..cursor-call` is one linear history. Cut it:
+After the WP2 rebase, `VERIFIED_BASE..cursor-call` is one linear history. Cut it:
 
 | PR | Head branch | Base | Range | Content |
 |----|-------------|------|-------|---------|
-| 1 | `cursor-call-wire` | `EXPECTED_DEV` | `EXPECTED_DEV..PR1_TIP` | Decode research docs + Cursor wire hardening: the EOF resolution (`emittedTerminal`), tool-result image encoder, and their tests |
+| 1 | `cursor-call-wire` | `VERIFIED_BASE` | `VERIFIED_BASE..PR1_TIP` | Decode research docs + Cursor wire hardening: the EOF resolution (`emittedTerminal`), tool-result image encoder, and their tests |
 | 2 | `cursor-call-cancel` | `cursor-call-wire` | `PR1_TIP..PR2_TIP` | Unexpected server-side CANCEL provenance (reads PR1's `emittedTerminal`) |
 | 3 | `cursor-call` | `cursor-call-cancel` | `PR2_TIP..cursor-call` | Bridge/adapter terminal semantics, WP2b, the integration unit, and the late honesty corrections to PR1's files |
 
@@ -36,7 +36,7 @@ After the WP2 rebase, `EXPECTED_DEV..cursor-call` is one linear history. Cut it:
 `docs(devlog): record what shipped for 010 and 020, and why 030 did not`.
 `PR2_TIP` = the rebased `docs(devlog): record what shipped for 040`.
 Both subjects are unique in the range — verified in `r5`:
-`git log --format='%s' EXPECTED_DEV..cursor-call | sort | uniq -d` returns nothing.
+`git log --format='%s' VERIFIED_BASE..cursor-call | sort | uniq -d` returns nothing.
 
 Every property the previous four versions fought for is now free:
 

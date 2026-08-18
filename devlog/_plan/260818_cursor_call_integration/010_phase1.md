@@ -188,6 +188,16 @@ MODIFY, at dev's current `:946`:
 5. Every OTHER commit should apply cleanly (zero dev commits on those paths). If one
    does not, STOP and investigate rather than resolving mechanically.
 6. Adversarial audit round on the resolved diff before pushing.
+7. **Push the rebased branch (audit `r7`).** WP3 verifies on lidge by fetching
+   `origin/cursor-call`, so an unpushed rebase means lidge either fails on an unknown
+   revision or silently tests the stale pre-rebase code:
+
+       git push --force-with-lease --no-verify origin cursor-call
+       test "$(git ls-remote origin refs/heads/cursor-call | cut -f1)" = "$(git rev-parse cursor-call)"
+
+   `--force-with-lease` rather than `--force`: the rewrite is expected, clobbering
+   someone else's push is not. The snapshot `cursor-call-prerebase-260818` remains the
+   recovery path.
 
 ## Verification (C)
 

@@ -30,6 +30,15 @@ ssh lidge 'cd /tmp/ocx-cc-<SHORTSHA> && git log --oneline -1'
 ssh lidge 'cd /tmp/ocx-cc-<SHORTSHA> && bun install --frozen-lockfile'
 ```
 
+`<SHA>` is the PUSHED rebase tip. `010` step 7 pushes it and asserts
+`git ls-remote` matches `git rev-parse cursor-call` — without that, this fetch brings
+the pre-rebase branch and the worktree either fails on an unknown revision or tests
+stale code (audit `r7`). Confirm the SHA here too before installing:
+
+```
+ssh lidge 'cd ~/Developer/opencodex && git rev-parse origin/cursor-call'   # == local rebase tip
+```
+
 Remove the worktree when the phase closes (`git worktree remove`), and never touch
 the shared checkout's HEAD.
 
