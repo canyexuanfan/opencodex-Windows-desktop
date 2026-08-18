@@ -28,12 +28,25 @@ const NEIGHBOR_AGENT_TOOL_NAMES = ["Read", "Grep", "Glob", "Bash", "LS"] as cons
 const CODEX_UNIFIED_EXEC_TOOL_NAME = "exec";
 const CODEX_SHELL_BRIDGE_TOOL_NAMES = ["exec_command", "shell_command"] as const;
 
-function isCodexCodeModeExecTool(tool: Pick<OcxTool, "name" | "freeform">): boolean {
-  return tool.name === CODEX_UNIFIED_EXEC_TOOL_NAME && tool.freeform === true;
+function isCodexCodeModeExecTool(tool: Pick<OcxTool, "namespace" | "name" | "freeform">): boolean {
+  return !tool.namespace && tool.name === CODEX_UNIFIED_EXEC_TOOL_NAME && tool.freeform === true;
 }
 
-function isBareShellBridgeTool(tool: Pick<OcxTool, "name">): boolean {
-  return (CODEX_SHELL_BRIDGE_TOOL_NAMES as readonly string[]).includes(tool.name);
+/**
+ * BARE means un-namespaced, and the word is load-bearing.
+ *
+ * An MCP server can advertise its own `exec_command` or `shell_command` — a docker, k8s or ssh
+ * server plausibly does — and those arrive namespaced (`mcp__docker__exec_command`). They are
+ * not Codex's shell bridge, so they must not cancel code mode: a genuine code-mode turn that
+ * merely happens to sit beside an MCP shell tool would lose its guidance and fall back to the
+ * generic sentence.
+ *
+ * The Cursor original this was ported from (`isBareCodexShellBridgeTool`) carries the same
+ * `!tool.namespace` requirement; dropping it here made the name assert a check the body did not
+ * perform.
+ */
+function isBareShellBridgeTool(tool: Pick<OcxTool, "namespace" | "name">): boolean {
+  return !tool.namespace && (CODEX_SHELL_BRIDGE_TOOL_NAMES as readonly string[]).includes(tool.name);
 }
 
 function quoteNames(names: readonly string[]): string {

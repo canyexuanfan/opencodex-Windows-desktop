@@ -133,6 +133,30 @@ describe("non-OpenAI tool catalog nudge", () => {
     expect(note).toContain("`custom_exec` is Codex code mode");
   });
 
+  // "Bare" means un-namespaced. An MCP server can advertise its own `exec_command` — docker,
+  // k8s and ssh servers plausibly do — and that is not Codex's shell bridge. Letting it cancel
+  // code mode silently strips the guidance from a genuine code-mode turn, which is how the
+  // Cursor original (`isBareCodexShellBridgeTool`) has always read it.
+  test("a namespaced MCP shell tool does not cancel code mode", () => {
+    for (const name of ["exec_command", "shell_command"]) {
+      const note = buildNonOpenAIToolCatalogNudgeForTools([
+        codeModeExec(),
+        { namespace: "mcp__docker", name, parameters: {} } as OcxTool,
+      ]);
+
+      expect(note).toContain("is Codex code mode");
+    }
+  });
+
+  test("a namespaced freeform exec is not Codex's own code-mode tool", () => {
+    const note = buildNonOpenAIToolCatalogNudgeForTools([
+      { namespace: "mcp__sandbox", name: "exec", freeform: true, parameters: {} } as OcxTool,
+    ]);
+
+    expect(note).not.toContain("is Codex code mode");
+    expect(note).toContain("call the listed parent tool and use those helpers only inside that tool's input");
+  });
+
   // `advertised` holds WIRE names. A provider that rewrites them (Claude OAuth `custom_`,
   // Anthropic compat `cx_`) must not have every neighbor name declared unavailable while the
   // catalog plainly lists the prefixed form.
