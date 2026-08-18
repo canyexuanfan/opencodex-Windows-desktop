@@ -60,9 +60,43 @@ enforces.
 | `push` | `010`/`015` | `--force-with-lease`, assert remote == local |
 | `verify` | `020` | `VERIFIED_TIP`, lidge worktree at that SHA, five gates each re-asserting HEAD |
 | `cut` | `030` | boundaries by subject, three ancestry assertions, count partition, push branches |
+| `verify_layers` | `020`/`030` | push the two layer branches, then typecheck + that layer's own tests AT ITS OWN HEAD |
 | `record_prs` | `030` | operator records the three PR numbers after `gh pr create` |
 | `merge` | `040` | per layer: base==dev, head==expected, live dev==EXPECTED_DEV, then merge and advance from the merge commit |
 | `release_gates` | `050` | `MERGED_DEV` worktree on lidge, five gates |
+| `release_state` | `050` | live main/dev/tags/dist-tags/releases for the readiness note |
+| `cleanup` | `020`/`050` | remove the verification worktrees both phases require removing |
+
+## What round 15 found in the FIRST version of this script
+
+Writing the program did not make the program correct — it made its defects findable.
+The audit ran it and found seven, three of them fatal:
+
+- **`LIDGE_HOME=~/Developer/opencodex` expanded LOCALLY.** zsh resolved `~` to
+  `/Users/jun`, so every ssh command sent a macOS path to a Linux host. The remote
+  gates could not have run at all. Now single-quoted `'$HOME/Developer/opencodex'`,
+  expanded by the remote shell.
+- **`merge` could not resume.** It restarted at PR1 every time, so a disconnect
+  between `gh pr merge` and `save` would re-attempt a merged PR. `merge_layer` now
+  reads the PR state first: `MERGED` adopts its merge commit and returns, `OPEN`
+  proceeds, anything else is fatal.
+- **Layers were never verified at their own heads**, which `AGENTS.md:178-180`
+  requires. `cut` pushed and moved on. That work is now `verify_layers`, and
+  `merge` refuses without `LAYERS_GREEN_AT`.
+
+And four smaller ones: `|| true` on worktree creation swallowed real failures and
+accepted a dirty tree at the right HEAD; neither worktree was ever removed; the
+conflict scan missed a lone `=======`; `push`/`verify` did not require
+`VERIFIED_BASE`; re-running `pin` silently invalidated every downstream artifact;
+and the state file was `source`d without validating what went into it.
+
+Three more I found by running it myself: `save` appended instead of replacing,
+`ROOT` counted `..` wrong and wrote state to `devlog/.tmp/`, and two steps never
+called `load_state`.
+
+Ten defects in a 200-line script, none of which fifteen rounds of reading prose had
+surfaced. That is the case for the rewrite, and also the case for not trusting the
+rewrite until it has been run.
 
 `record_prs` is deliberately manual: PR numbers do not exist until `gh pr create`
 returns them, and inventing a way to guess them would reintroduce exactly the
@@ -75,4 +109,3 @@ why WP2b must use `partialUsageFromEventState` rather than `resolvedTurnUsage`, 
 the stack splits where it does, or why the merge is an owner-authorized exception
 rather than policy compliance. Those live in `010`, `015`, `030` and `040`, and a
 reviewer needs them more than they need the commands.
-
