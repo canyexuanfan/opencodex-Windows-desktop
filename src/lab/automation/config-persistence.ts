@@ -217,7 +217,7 @@ function writeConfigUnlocked(
     if (configCommitFaultForTests === "before_publish") {
       throw new LabAutomationError("synthetic automation config commit failure", "invalid_state");
     }
-    renameAtomicFile(tmp, path);
+    renameAtomicFile(tmp, path, undefined, "lab-automation");
     return normalized;
   } finally {
     if (fd !== null) closeSync(fd);
