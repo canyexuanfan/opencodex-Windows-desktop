@@ -139,21 +139,21 @@ export async function syncModelsToCodex(
 
   if (externalProvider) {
     if (catalogEvenWhenNotInjected) {
-      // External providers own config.toml, so the injection below is only a
-      // courtesy. The catalog is still refreshed: the side profile consumes it.
+      // External providers own config.toml, and the injector removes the OpenCodex
+      // journal for external providers (inject.ts). This explicit catalog-only sync
+      // must not touch config, journal, or history, so refresh the catalog/cache and
+      // return without injection.
       applyProxyEnv(config);
       const refreshed = await refreshCatalogForSync(config, deps, undefined, log);
-      const result = await deps.injectCodexConfig(p, config, {});
-      if (result.success) log?.log(result.message);
-      else log?.error(result.message);
-      reportCodexHomeTarget(log, deps.collectCodexHomeDiagnostic ?? collectOrcaCodexHomeDiagnostic);
+      const message = refreshed.catalogWritten || refreshed.cacheSynced
+        ? "External provider owns config.toml; catalog and models cache refreshed, Codex config/journal untouched."
+        : "External provider owns config.toml; catalog refresh skipped, Codex config/journal untouched.";
       return {
-        status: "applied",
-        ok: result.success,
+        status: "catalog-only",
+        ok: true,
         ...refreshed,
-        message: result.message,
+        message,
         ...(refreshed.comboOmissions.length > 0 ? { comboOmissions: refreshed.comboOmissions } : {}),
-        ...(result.nativeSubagentDefaultsWarning ? { nativeSubagentDefaultsWarning: result.nativeSubagentDefaultsWarning } : {}),
       };
     }
     const result = await deps.injectCodexConfig(p, config, {});

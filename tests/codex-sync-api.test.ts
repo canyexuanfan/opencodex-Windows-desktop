@@ -261,9 +261,12 @@ describe("GUI/CLI Codex sync backend", () => {
     expect(result.message).toContain("Codex config untouched");
   });
 
-  test("explicit sync refreshes the catalog before preserving an external provider", async () => {
+  test("explicit sync refreshes the catalog without injecting or touching the journal for an external provider", async () => {
     let refreshed = 0;
     let injectCalls = 0;
+    const journalPath = join(TEST_CODEX_HOME, "opencodex-journal.json");
+    const journalBytes = Buffer.from(JSON.stringify({ injectedOpenaiBaseUrl: "http://127.0.0.1:1/v1" }));
+    writeFileSync(journalPath, journalBytes);
     const result = await syncModelsToCodex(10100, config, null, {
       admitCodexWrite: admittedSync,
       refreshCodexModelCatalog: async () => {
@@ -285,15 +288,17 @@ describe("GUI/CLI Codex sync backend", () => {
     }, { catalogEvenWhenNotInjected: true });
 
     expect(refreshed).toBe(1);
-    expect(injectCalls).toBe(1);
+    expect(injectCalls).toBe(0);
+    expect(readFileSync(journalPath)).toEqual(journalBytes);
     expect(result).toMatchObject({
-      status: "applied",
+      status: "catalog-only",
       ok: true,
       added: 2,
       catalogExists: true,
       catalogWritten: true,
       cacheSynced: true,
     });
+    expect(String(result.message)).toContain("journal untouched");
   });
 
   /**
