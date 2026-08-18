@@ -1,4 +1,4 @@
-import type { FastWire, OcxProviderConfig } from "../types";
+import type { OcxProviderConfig } from "../types";
 import { captureWireAdapterHardPins } from "../types";
 import { isCanonicalOpenAiForwardProvider } from "./openai-tiers";
 import {
@@ -8,6 +8,8 @@ import {
   type ModelWireDefault,
 } from "./registry";
 import {
+  cloneFastWire,
+  legacyChatEligibility,
   resolveFastPolicy,
   resolveProviderAuthTransport,
   type FastPolicyAuthority,
@@ -48,16 +50,6 @@ function cloneRegistryWireDefaults(
   return Object.freeze(clone);
 }
 
-function cloneFastWire(value: FastWire | null | undefined): FastWire | null | undefined {
-  if (value === null || value === undefined) return value;
-  return Object.freeze({
-    kind: value.kind,
-    canonicalToWire: Object.freeze({ ...value.canonicalToWire }),
-    foreignCallerTiers: value.foreignCallerTiers,
-    ...(value.betas ? { betas: Object.freeze([...value.betas]) } : {}),
-  });
-}
-
 /**
  * Capture every registry-owned input before an asynchronous catalog flight begins.
  * The resolver itself is pure and never reads the live provider registry.
@@ -72,6 +64,7 @@ function buildFastPolicyAuthority(
     providerAdapter: provider.adapter,
     fastWireDeclaration: cloneFastWire(
       provider.fastWire !== undefined ? provider.fastWire : registry?.fastWire,
+      { freeze: true },
     ),
     modelWireOverrideAllowed: !isCanonicalOpenAiForwardProvider(provider as OcxProviderConfig),
     authTransport: resolveProviderAuthTransport(
@@ -97,7 +90,7 @@ export function captureFastPolicyAuthority(
   registryTransportMatch: boolean,
 ): FastPolicyAuthority {
   const authority = buildFastPolicyAuthority(providerName, provider, registryTransportMatch);
-  capturedFastPolicyAuthorities.set(provider, authority);
+  if (Object.isFrozen(provider)) capturedFastPolicyAuthorities.set(provider, authority);
   return authority;
 }
 
@@ -127,7 +120,9 @@ function authorityForProvider(
       registryWireDefaults: Object.freeze({}),
     });
   }
-  const captured = capturedFastPolicyAuthorities.get(provider);
+  const captured = Object.isFrozen(provider)
+    ? capturedFastPolicyAuthorities.get(provider)
+    : undefined;
   if (captured) return captured;
   const registryTransportMatch = providerMatchesRegistryTransport(providerName, provider);
   const authority = buildFastPolicyAuthority(providerName, provider, registryTransportMatch);
@@ -176,11 +171,20 @@ export function canSerializeServiceTierForChatModel(
   provider: Pick<OcxProviderConfig, "supportsServiceTier" | "modelSupportsServiceTier" | "chatServiceTier">,
   modelId: string,
 ): boolean {
-  const exact = supportsServiceTierForModel({
-    modelSupportsServiceTier: provider.modelSupportsServiceTier,
+  return legacyChatEligibility({
+    providerAdapter: "openai-chat",
+    fastWireDeclaration: undefined,
+    modelWireOverrideAllowed: true,
+    authTransport: "authorization_bearer",
+    capability: {
+      ...(provider.supportsServiceTier !== undefined ? { provider: provider.supportsServiceTier } : {}),
+      models: provider.modelSupportsServiceTier ?? {},
+      ...(provider.chatServiceTier !== undefined ? { chatServiceTier: provider.chatServiceTier } : {}),
+    },
+    modelAdapters: {},
+    hardPins: {},
+    registryWireDefaults: {},
   }, modelId);
-  if (provider.supportsServiceTier === false || exact === false) return false;
-  return provider.chatServiceTier === true || exact === true;
 }
 
 /** Final adapter selected by the Fast policy's four-level wire resolver. */

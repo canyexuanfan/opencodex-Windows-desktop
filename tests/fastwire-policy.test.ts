@@ -4,6 +4,7 @@ import { createResponsesPassthroughAdapter } from "../src/adapters/openai-respon
 import { validateConfigCandidate } from "../src/config";
 import {
   canonicalFastTierMarker,
+  cloneFastWire,
   decideTier,
   legacyChatEligibility,
   resolveFastPolicy,
@@ -11,9 +12,16 @@ import {
   type FastPolicyAuthority,
   type ResolvedFastPolicy,
 } from "../src/providers/fastwire";
-import { fastPolicyForModel } from "../src/providers/service-tier";
+import { captureFastPolicyAuthority, fastPolicyForModel } from "../src/providers/service-tier";
 import { PROVIDER_REGISTRY, providerRegistryFastWireError } from "../src/providers/registry";
-import type { FastWire, OcxConfig, OcxParsedRequest, TierDecision } from "../src/types";
+import {
+  captureWireAdapterHardPins,
+  isWirePinnedModel,
+  type FastWire,
+  type OcxConfig,
+  type OcxParsedRequest,
+  type TierDecision,
+} from "../src/types";
 import { withTestTranslatorBudget } from "./helpers/translator-budget";
 
 const MODEL = "model";
@@ -203,6 +211,55 @@ describe("resolveFastPolicy matrix", () => {
     expect(policy).toMatchObject({ adapter: "anthropic", eligibility: "pin-unavailable" });
   });
 
+  test("an explicitly disabled wire reports wire-unavailable even when hard pinned", () => {
+    const policy = resolveFastPolicy({
+      ...authorityForMatrix({
+        source: "provider-adapter",
+        declaration: "null",
+        overrideAllowed: true,
+        capability: "true",
+        legacyChatEligible: true,
+      }),
+      hardPins: { [MODEL]: "anthropic" },
+    }, MODEL);
+    expect(policy).toMatchObject({ adapter: "anthropic", eligibility: "wire-unavailable" });
+  });
+
+  test("mutable providers rebuild authority after a capture", () => {
+    const provider = {
+      adapter: "openai-responses",
+      baseUrl: "https://fixture.example/v1",
+      supportsServiceTier: true,
+    };
+    expect(captureFastPolicyAuthority("fixture", provider, false).capability.provider).toBe(true);
+    provider.supportsServiceTier = false;
+    expect(fastPolicyForModel(provider, MODEL, "fixture").capability).toBe(false);
+  });
+
+  test("prototype-named providers and models use only own wire-policy rows", () => {
+    expect(captureWireAdapterHardPins("toString")).toEqual({});
+    expect(isWirePinnedModel("toString", MODEL)).toBe(false);
+    const authority = authorityForMatrix({
+      source: "provider-adapter",
+      declaration: "undefined",
+      overrideAllowed: true,
+      capability: "true",
+      legacyChatEligible: true,
+    });
+    const responsesAuthority = { ...authority, providerAdapter: "openai-responses" };
+    expect(resolveFastPolicy(responsesAuthority, "constructor")).toMatchObject({
+      adapter: "openai-responses",
+      eligibility: "eligible",
+    });
+    expect(resolveFastPolicy({
+      ...responsesAuthority,
+      hardPins: Object.fromEntries([["constructor", "anthropic"]]),
+    }, "constructor")).toMatchObject({
+      adapter: "anthropic",
+      eligibility: "pin-unavailable",
+    });
+  });
+
   test("a missing provider name preserves the legacy provider-adapter short circuit", () => {
     const provider = {
       adapter: "anthropic",
@@ -364,6 +421,26 @@ function configWithFastWire(fastWire: unknown, capability?: { provider?: boolean
 }
 
 describe("FastWire config and registry validation", () => {
+  test("the shared clone detaches nested FastWire records and arrays", () => {
+    const canonicalToWire = { priority: "priority" };
+    const betas = ["beta-one"];
+    const original: FastWire = {
+      kind: "service-tier",
+      canonicalToWire,
+      foreignCallerTiers: "verbatim",
+      betas,
+    };
+    const cloned = cloneFastWire(original)!;
+    canonicalToWire.priority = "performance";
+    betas[0] = "changed";
+    expect(cloned).toEqual({
+      kind: "service-tier",
+      canonicalToWire: { priority: "priority" },
+      foreignCallerTiers: "verbatim",
+      betas: ["beta-one"],
+    });
+  });
+
   test("accepts a complete declaration and trims its wire values", () => {
     const result = validateConfigCandidate(configWithFastWire({
       kind: "service-tier",
@@ -408,7 +485,7 @@ describe("FastWire config and registry validation", () => {
       .toBe(true);
   });
 
-  test("rejects null against an inherited registry capability", () => {
+  test("accepts and preserves null against an inherited registry capability", () => {
     expect(validateConfigCandidate({
       port: 10100,
       defaultProvider: "openai-apikey",
@@ -420,7 +497,10 @@ describe("FastWire config and registry validation", () => {
           fastWire: null,
         },
       },
-    }).ok).toBe(false);
+    })).toMatchObject({
+      ok: true,
+      config: { providers: { "openai-apikey": { fastWire: null } } },
+    });
   });
 
   test("provider-level false closes an inherited registry capability", () => {

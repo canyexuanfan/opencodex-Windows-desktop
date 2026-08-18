@@ -2179,8 +2179,9 @@ function warnDegradedNativeSubagentConfig(rawParsed: unknown, config: OcxConfig)
 
 /**
  * Registry metadata can gain service-tier capability after a config was written. An explicit
- * `fastWire: null` remains authoritative on load; rejecting the file would discard unrelated
- * providers and API keys. Live writes remain strict through validateConfigCandidate().
+ * `fastWire: null` remains authoritative on load and on whole-document writes; rejecting either
+ * would discard or lock access to unrelated providers and API keys. Direct contradictions within
+ * one provider row remain schema errors through providerConfigSchema.
  */
 function inheritedFastWireConflictProviderNames(
   config: Pick<OcxConfig, "providers">,
@@ -2566,13 +2567,6 @@ export function validateConfigCandidate(value: unknown): { ok: true; config: Ocx
   const result = configSchema.safeParse(value);
   if (result.success) {
     const config = normalizeApiKeyIds(result.data as OcxConfig);
-    const inheritedConflicts = inheritedFastWireConflictProviderNames(config);
-    if (inheritedConflicts.length > 0) {
-      return {
-        ok: false,
-        error: `schema_invalid: ${inheritedFastWireConflictWarning(inheritedConflicts[0]!)}`,
-      };
-    }
     return { ok: true, config };
   }
   return { ok: false, error: schemaDiagnosticsError(result.error) };
