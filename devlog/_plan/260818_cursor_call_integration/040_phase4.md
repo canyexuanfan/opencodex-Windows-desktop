@@ -1,6 +1,7 @@
 # 040 — WP5: merge the stack onto dev + ancestry proof
 
-Revised by audit `r1` F2 (governance honesty) and audit `r3` F1 (base pinning).
+Revised by `r1` F2 (governance honesty), `r3` F1 (base pinning), and `r4` F1 (the
+pin has to EVOLVE through the stack).
 
 ## Authority, stated precisely
 
@@ -11,45 +12,59 @@ What it is NOT: compliance with `MAINTAINERS.md:48-49`, which requires maintaine
 approval **and** successful required CI checks before merge. `AGENTS.md:251-253`
 makes `MAINTAINERS.md` authoritative.
 
-So this merge is an **owner-authorized exception**, and every downstream claim must
-say so:
+So each merge is an **owner-authorized exception**:
 
 - lidge is Linux; CI covers Linux + Windows + macOS.
 - This diff touches no Windows-sensitive surface — no shims, installer, PowerShell,
-  platform dispatch, or Windows path handling (verified in audit `r3`). That is why
-  Linux evidence is adequate for this diff.
-- `050`'s readiness note may say "gates green on Linux; CI waived by the owner". It
-  may **not** say "policy-compliant" or "all required checks passed".
+  platform dispatch, or Windows path handling (verified in `r3` and `r4`).
+- `050`'s note may say "gates green on Linux; CI waived by the owner". It may **not**
+  say "policy-compliant" or "all required checks passed".
 
 If the user wants full compliance instead, let required CI run on each PR head
-before merging. That is a one-line change to this plan.
+before merging. One-line change to this plan.
 
-## Pre-merge base check (r3 F1) — do this BEFORE every merge
+## `EXPECTED_DEV` evolves — it is not one frozen SHA (r4 F1)
 
-```
-git ls-remote origin refs/heads/dev
-```
+`VERIFIED_BASE` (the SHA WP3 verified against) is correct as the value to check
+before PR1. After PR1 merges, `dev` legitimately moves to PR1's merge result, so
+comparing PR2 against the original value would fail by construction.
 
-Compare to `VERIFIED_BASE` from `020`. If they differ, **stop**: rebase onto the new
-head and re-run the pre-merge gates. Merging a stale base lets GitHub construct a
-merge result nobody tested and put it on `dev` — the ancestry check in this doc runs
-*after* the merge and would discover that too late.
+The invariant is: **before merging layer N, the live `dev` head must equal the SHA
+that layer N's base was verified against.** Maintain one variable:
 
-For PR2 and PR3 the same rule applies to their parent: after PR1 lands, retarget PR2
-to `dev` (`gh pr edit <n> --base dev`), re-read the live `dev` head, and confirm it
-equals PR1's merge result before merging PR2.
+    EXPECTED_DEV := VERIFIED_BASE          # from 020, the rebase target
+    before PR1:  git ls-remote origin refs/heads/dev  == EXPECTED_DEV
+    merge PR1
+    EXPECTED_DEV := <PR1 merge result on dev>
+    retarget PR2 to dev, then:  live dev == EXPECTED_DEV
+    merge PR2
+    EXPECTED_DEV := <PR2 merge result on dev>
+    retarget PR3 to dev, then:  live dev == EXPECTED_DEV
+    merge PR3
+
+Read the live head with `git ls-remote origin refs/heads/dev` every time, never
+`origin/dev` — the tracking ref goes stale within minutes
+(`scripts/release.ts:327-335` uses `ls-remote` for exactly this reason). Observed
+drift during planning alone: `87f7f970b` → `e1bdbc1e5` → `1645bb924`.
+
+**If a check fails**, someone else pushed to `dev`. Stop: rebase the remaining
+layers onto the new head, re-run the affected gates from `020`, and update
+`EXPECTED_DEV`. Merging a stale base lets GitHub construct a merge result nobody
+tested and put it on `dev` — and the ancestry check below runs afterwards, too late
+to prevent it.
 
 ## Procedure
 
-Merge in dependency order, PR1 → PR2 → PR3:
+Merge in dependency order, PR1 → PR2 → PR3, with the base check before each:
 
 ```
+git ls-remote origin refs/heads/dev        # must equal EXPECTED_DEV
 gh pr merge <n> --merge --admin
+gh pr edit <child> --base dev              # retarget the next layer
 ```
 
 Do NOT squash. The commit-by-commit history is the audit trail for five campaign
-phases plus three integration audit rounds, and the devlog references specific SHAs
-— a squash breaks every one of those references.
+phases plus four integration audit rounds, and the devlog references specific SHAs.
 
 ## Ancestry proof (the actual criterion)
 
@@ -58,12 +73,12 @@ A merge API response is not proof:
 ```
 git fetch origin dev
 git merge-base --is-ancestor <final-stack-tip-SHA> origin/dev   # exit 0
-git log --oneline -8 origin/dev
+git log --oneline -10 origin/dev
 ```
 
 ## Verification (C)
 
-For each PR: the pre-merge live-`dev` SHA equal to the expected base, then exit 0
-from `--is-ancestor` for the final tip, plus the `origin/dev` log showing all three
-merges.
+For each layer: the pre-merge `ls-remote` SHA equal to the then-current
+`EXPECTED_DEV`, recorded. Then exit 0 from `--is-ancestor` for the final tip, plus
+the `origin/dev` log showing all three merges.
 

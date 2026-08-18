@@ -160,15 +160,34 @@ MODIFY, at dev's current `:946`:
 
 ## Procedure
 
-1. `git rebase origin/dev` on `cursor-call` (snapshot `cursor-call-prerebase-260818`
-   already exists at `fe2237038`).
+1. Pin the base first (audit `r3` F1 / `r4` F1). Never rebase onto the tracking ref:
+
+       git fetch origin dev
+       VERIFIED_BASE=\$(git ls-remote origin refs/heads/dev | cut -f1)
+       git rebase \$VERIFIED_BASE
+
+   Record `VERIFIED_BASE`; every later phase compares against it and `040` evolves
+   it through the stack. The snapshot `cursor-call-prerebase-260818` = `fe2237038` is
+   the recovery path. Observed drift while planning: `87f7f970b` → `e1bdbc1e5` →
+   `1645bb924`, which is why a cached SHA in this doc is never the rebase target.
 2. At the `54f68daf5` conflict: resolve to dev's block plus `emittedTerminal` and
    the extra guard; drop the unused import; rewrite the one test expectation.
    Amend the commit message to record the supersession.
-3. At any `google.ts` conflict: apply the hunk at dev's current location.
-4. Every later commit should apply cleanly (zero dev commits on those paths). If
-   one does not, STOP and investigate rather than resolving mechanically.
-5. Adversarial audit round on the resolved diff before pushing.
+3. **Expect a SECOND conflict at `f145fd513` (audit `r4` F3).** Step 2 removes
+   `CursorStreamTruncatedError` from the import line at `live-transport.ts:51`, and
+   `f145fd513` edits that same line to add `CursorUnexpectedCancelError` while still
+   listing the removed symbol. Resolve to:
+
+       import { classifyCursorError, CursorUnexpectedCancelError, isCursorBenignCancelError, safeCursorErrorMessage } from "./cursor-errors";
+
+   Its functional context survives intact — the `emittedTerminal` write in `push()`
+   and both `classifyTurnFailure` throw sites still exist after the step-2
+   resolution (verified at `live-transport.ts:541` and `:642`), so this is an import
+   line only. Do not let the conflict marker tempt a wider edit.
+4. At any `google.ts` conflict: apply the hunk at dev's current location.
+5. Every OTHER commit should apply cleanly (zero dev commits on those paths). If one
+   does not, STOP and investigate rather than resolving mechanically.
+6. Adversarial audit round on the resolved diff before pushing.
 
 ## Verification (C)
 
@@ -184,4 +203,3 @@ git merge-base --is-ancestor origin/dev cursor-call   # exit 0
 
 Authoritative verification is WP3 on `ssh lidge`. Expected: typecheck exit 0; the
 focused cursor files green; no conflict markers; dev head an ancestor.
-

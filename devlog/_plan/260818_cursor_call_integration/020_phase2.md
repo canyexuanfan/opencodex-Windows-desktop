@@ -33,7 +33,7 @@ ssh lidge 'cd /tmp/ocx-cc-<SHORTSHA> && bun install --frozen-lockfile'
 Remove the worktree when the phase closes (`git worktree remove`), and never touch
 the shared checkout's HEAD.
 
-## Pin the base (r3 F1)
+## Pin the base (r3 F1), and remember it EVOLVES (r4 F1)
 
 `dev` moves. Record, at the moment the rebase runs:
 
@@ -41,10 +41,14 @@ the shared checkout's HEAD.
 git ls-remote origin refs/heads/dev     # LIVE head, not the tracking ref
 ```
 
-That SHA is `VERIFIED_BASE`. Every later phase compares against it, and WP5 refuses
-to merge if the live `dev` head has moved off it. Using `git ls-remote` rather than
-`origin/dev` follows `scripts/release.ts:327-335`, which exists because the local
-tracking ref can be minutes stale.
+That SHA is `VERIFIED_BASE`, and it is what `010` step 1 rebases ONTO — not
+`origin/dev`, which can be minutes stale (`scripts/release.ts:327-335` uses
+`ls-remote` for exactly this reason). Observed drift during planning alone:
+`87f7f970b` → `e1bdbc1e5` → `1645bb924`.
+
+`VERIFIED_BASE` is the value `040` checks before merging PR1. It then becomes each
+layer's merge result in turn (`040`'s `EXPECTED_DEV`), because after PR1 lands the
+live `dev` head legitimately differs from the original.
 
 ## Gates
 
@@ -106,7 +110,12 @@ typecheck plus the tests that layer owns:
 
 | Layer | Focused tests |
 |-------|---------------|
-| PR1 (Cursor EOF + tool-result wire) | `tests/cursor-eof-terminal.test.ts`, `tests/cursor-hardening.test.ts`, `tests/cursor-tool-result-image.test.ts`, `tests/cursor-request-builder.test.ts` |
+| PR1 (Cursor EOF + tool-result wire + **WP2b**) | `tests/cursor-eof-terminal.test.ts`, `tests/cursor-hardening.test.ts`, `tests/cursor-tool-result-image.test.ts`, `tests/cursor-request-builder.test.ts`, `tests/cursor-interaction-query.test.ts` |
 | PR2 (unexpected CANCEL) | `tests/cursor-cancel-provenance.test.ts`, `tests/cursor-hardening.test.ts` |
-| PR3 (bridge/adapter terminals + WP2b) | `tests/bridge-nonstreaming-terminal.test.ts`, `tests/anthropic-error-stop-reason.test.ts`, `tests/command-code-error-finish.test.ts`, `tests/google-buffered-stop-reason.test.ts`, `tests/cursor-interaction-query.test.ts` + FULL suite |
+| PR3 (bridge/adapter terminals) | `tests/bridge-nonstreaming-terminal.test.ts`, `tests/anthropic-error-stop-reason.test.ts`, `tests/command-code-error-finish.test.ts`, `tests/google-buffered-stop-reason.test.ts` + FULL suite |
 
+`tests/cursor-interaction-query.test.ts` sits in PR1, not PR3 (audit `r4` F4): it is
+the existing contract for `partialUsageFromEventState`, WP2b moves that helper and
+re-exports it for that file's five dynamic imports, and WP2b lands in PR1. Gating it
+one layer above the change it verifies would let PR1 merge with the re-export
+untested.
