@@ -157,3 +157,31 @@ type.
 | #1889 | **blocked** | unsponsored `src/oauth/` surface; draft |
 | #1836 | already closed | nothing to do |
 | #1906 | open issue | the undocumented-`v1internal` policy call belongs to the user |
+## WP8 outcome — the wave was smaller than planned
+
+Two of the four items resolved themselves before this phase ran, which the Gate 0 inventory
+could not have known:
+
+| Item | State | Evidence |
+|------|-------|----------|
+| #1897 | **already merged** | `aca3c0241`, 2026-08-18T01:31:08Z — ancestor of `origin/dev` |
+| #1836 | **already closed** | confirmed at WP6; the plan's "close as superseded" was a no-op |
+| #1891 | **held** | draft, four readiness boxes unticked — the author's gate |
+| #1889 | **blocked** | `unsponsored_surface` on `src/oauth/google-antigravity.ts` |
+
+**#1891 verified independently rather than taken on trust.** Merged onto current `dev` in a
+scratch worktree: clean, then `bun test` across `client-fingerprint`,
+`google-antigravity-wire` and `google-antigravity-oauth` gives **75 pass / 0 fail**, with
+`tsc --noEmit` clean. Its description carries the kind of evidence a fingerprint change needs —
+a decompiled token sequence with an address, and a live `fetchAvailableModels` +
+`generateContent` round trip — because the failure mode here is silent upstream rejection, not
+a failing test.
+
+**#1889 is the second auth-surface block of this campaign**, after #1888.
+`.github/scripts/pr-sponsored-surface.cjs` lists `src/oauth/` under `RESTRICTED_PREFIXES`, and
+`MAINTAINERS.md` requires explicit security review there. The `maintainer-sponsored` label is
+the record that the review happened, so an agent applying it to unblock its own merge would
+make that record false rather than merely skip a step. Reported, not cleared.
+
+The planned order (`#1889 → #1891 → #1897`) is therefore moot: #1897 is in, and the remaining
+two are gated on a human decision each — one a readiness checklist, one a security review.
