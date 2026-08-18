@@ -25,55 +25,34 @@ describe("client fingerprint — helpers", () => {
     expect(ua).not.toBe("antigravity");
   });
 
-  test("antigravity UA honors an explicit version override", async () => {
+  test("antigravity UA honors explicit version and authMethod overrides", async () => {
     expect(antigravityUserAgent("9.9.9")).toBe("antigravity/ide/9.9.9 (os_type=windows; arch=amd64; aidev_client; auth_method=oauth)");
+    expect(antigravityUserAgent(ANTIGRAVITY_IDE_VERSION, "api_key")).toBe(
+      `antigravity/ide/${ANTIGRAVITY_IDE_VERSION} (os_type=windows; arch=amd64; aidev_client; auth_method=api_key)`,
+    );
   });
 
   test("GOOGLE_ANTIGRAVITY_USER_AGENT env override trims surrounding whitespace", async () => {
     const prevGoogle = process.env.GOOGLE_ANTIGRAVITY_USER_AGENT;
-    const prevPi = process.env.PI_AI_ANTIGRAVITY_USER_AGENT;
     try {
       process.env.GOOGLE_ANTIGRAVITY_USER_AGENT = "  custom-ua/1.2.3  ";
-      delete process.env.PI_AI_ANTIGRAVITY_USER_AGENT;
       expect(antigravityUserAgent()).toBe("custom-ua/1.2.3");
     } finally {
       if (prevGoogle === undefined) delete process.env.GOOGLE_ANTIGRAVITY_USER_AGENT;
       else process.env.GOOGLE_ANTIGRAVITY_USER_AGENT = prevGoogle;
-      if (prevPi === undefined) delete process.env.PI_AI_ANTIGRAVITY_USER_AGENT;
-      else process.env.PI_AI_ANTIGRAVITY_USER_AGENT = prevPi;
     }
   });
 
-  test("PI_AI_ANTIGRAVITY_USER_AGENT env override works when GOOGLE override is absent", async () => {
+  test("whitespace-only GOOGLE_ANTIGRAVITY_USER_AGENT falls back to default UA", async () => {
     const prevGoogle = process.env.GOOGLE_ANTIGRAVITY_USER_AGENT;
-    const prevPi = process.env.PI_AI_ANTIGRAVITY_USER_AGENT;
     try {
-      delete process.env.GOOGLE_ANTIGRAVITY_USER_AGENT;
-      process.env.PI_AI_ANTIGRAVITY_USER_AGENT = "  pi-ua/9.9.9  ";
-      expect(antigravityUserAgent()).toBe("pi-ua/9.9.9");
-    } finally {
-      if (prevGoogle === undefined) delete process.env.GOOGLE_ANTIGRAVITY_USER_AGENT;
-      else process.env.GOOGLE_ANTIGRAVITY_USER_AGENT = prevGoogle;
-      if (prevPi === undefined) delete process.env.PI_AI_ANTIGRAVITY_USER_AGENT;
-      else process.env.PI_AI_ANTIGRAVITY_USER_AGENT = prevPi;
-    }
-  });
-
-  test("GOOGLE_ANTIGRAVITY_USER_AGENT takes precedence over PI_AI override, whitespace-only falls back", async () => {
-    const prevGoogle = process.env.GOOGLE_ANTIGRAVITY_USER_AGENT;
-    const prevPi = process.env.PI_AI_ANTIGRAVITY_USER_AGENT;
-    try {
-      process.env.GOOGLE_ANTIGRAVITY_USER_AGENT = "google-wins/1.0";
-      process.env.PI_AI_ANTIGRAVITY_USER_AGENT = "pi-secondary/2.0";
-      expect(antigravityUserAgent()).toBe("google-wins/1.0");
-
       process.env.GOOGLE_ANTIGRAVITY_USER_AGENT = "   ";
-      expect(antigravityUserAgent()).toBe("pi-secondary/2.0");
+      expect(antigravityUserAgent()).toBe(
+        `antigravity/ide/${ANTIGRAVITY_IDE_VERSION} (os_type=windows; arch=amd64; aidev_client; auth_method=oauth)`,
+      );
     } finally {
       if (prevGoogle === undefined) delete process.env.GOOGLE_ANTIGRAVITY_USER_AGENT;
       else process.env.GOOGLE_ANTIGRAVITY_USER_AGENT = prevGoogle;
-      if (prevPi === undefined) delete process.env.PI_AI_ANTIGRAVITY_USER_AGENT;
-      else process.env.PI_AI_ANTIGRAVITY_USER_AGENT = prevPi;
     }
   });
 

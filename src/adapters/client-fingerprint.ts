@@ -59,10 +59,9 @@ export const ANTIGRAVITY_GOOG_API_CLIENT_UA = "google-api-nodejs-client/10.3.0";
  * CLI-shaped UAs even with a valid OAuth token. Only `antigravity/ide/<ver>` unlocks them.
  * A `GOOGLE_ANTIGRAVITY_USER_AGENT` override (set by the caller) takes precedence upstream.
  */
-export function antigravityUserAgent(version = ANTIGRAVITY_IDE_VERSION): string {
-  const ov = process.env.GOOGLE_ANTIGRAVITY_USER_AGENT?.trim()
-    || process.env.PI_AI_ANTIGRAVITY_USER_AGENT?.trim();
+export function antigravityUserAgent(version = ANTIGRAVITY_IDE_VERSION, authMethod = "oauth"): string {
+  const ov = process.env.GOOGLE_ANTIGRAVITY_USER_AGENT?.trim();
   if (ov) return ov;
   const [osType, arch] = ANTIGRAVITY_IDE_PLATFORM.split("/");
-  return `antigravity/ide/${version} (os_type=${osType}; arch=${arch}; ${ANTIGRAVITY_IDE_CLIENT_NAME}; auth_method=oauth)`;
+  return `antigravity/ide/${version} (os_type=${osType}; arch=${arch}; ${ANTIGRAVITY_IDE_CLIENT_NAME}; auth_method=${authMethod})`;
 }
