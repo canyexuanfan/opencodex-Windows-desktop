@@ -59,7 +59,7 @@ describe("antigravity CCA envelope", () => {
     // The exact default must not drift: Google gates models by family AND version,
     // so any change to version/platform could silently re-lock gemini-3.7-flash.
     expect(req.headers["User-Agent"]).toBe(
-      "antigravity/ide/2.5.5 (aidev_client; os_type=windows; arch=amd64)",
+      "antigravity/ide/2.5.5 (os_type=windows; arch=amd64; aidev_client; auth_method=oauth)",
     );
     // The literal "antigravity" giveaway UA must no longer be sent.
     expect(req.headers["User-Agent"]).not.toBe("antigravity");
