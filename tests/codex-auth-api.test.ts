@@ -45,6 +45,7 @@ import type { WsData } from "../src/server/ws-bridge";
 import { handleNativeProfileAPI } from "../src/codex/native-profile-api";
 import type { NativeProfileManager } from "../src/codex/native-profile-manager";
 import { MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "../src/codex/main-account";
+import { reconcileCodexPlansFromTokens, resetJwtPlanNotesForTests } from "../src/codex/plan-from-token";
 import {
   deleteCodexAccount,
   reconcileMainCodexAccountRuntimeState,
@@ -265,6 +266,7 @@ beforeEach(() => {
   clearPoolRotationState();
   clearCodexWebSocketRegistry();
   resetMainCodexAccountIdentityTrackingForTests();
+  resetJwtPlanNotesForTests();
 });
 
 afterEach(() => {
@@ -1347,6 +1349,7 @@ describe("codex-auth API", () => {
     });
     saveConfig(structuredClone(config));
     setAccountQuotaFromParsed(accountId, { weeklyPercent: 4 }, captureConfigGeneration());
+    reconcileCodexPlansFromTokens(config);
     let whamCalls = 0;
     globalThis.fetch = (async () => {
       whamCalls += 1;
