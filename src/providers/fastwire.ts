@@ -64,6 +64,26 @@ export interface AdapterTierMetadata {
   markResponseUnparseable(): void;
 }
 
+/** Detach a FastWire declaration from config or registry ownership. */
+export function cloneFastWire(
+  value: FastWire | null | undefined,
+  options: { freeze?: boolean } = {},
+): FastWire | null | undefined {
+  if (value === null || value === undefined) return value;
+  const canonicalToWire = { ...value.canonicalToWire };
+  const betas = value.betas ? [...value.betas] : undefined;
+  if (options.freeze) {
+    Object.freeze(canonicalToWire);
+    if (betas) Object.freeze(betas);
+  }
+  const clone: FastWire = {
+    ...value,
+    canonicalToWire,
+    ...(betas ? { betas } : {}),
+  };
+  return options.freeze ? Object.freeze(clone) : clone;
+}
+
 function exactModelValue<T>(record: Readonly<Record<string, T>>, modelId: string): T | undefined {
   if (Object.prototype.hasOwnProperty.call(record, modelId)) return record[modelId];
   const folded = modelId.toLowerCase();
@@ -95,7 +115,9 @@ function registryDefaultForModel(
   modelId: string,
   inbound: InboundWire,
 ): string | undefined {
-  const declared = defaults[modelId.trim().toLowerCase()];
+  const normalizedModelId = modelId.trim().toLowerCase();
+  if (!Object.hasOwn(defaults, normalizedModelId)) return undefined;
+  const declared = defaults[normalizedModelId];
   if (declared === undefined) return undefined;
   if (typeof declared !== "string" && !declared.inbound.includes(inbound)) return undefined;
   const wire = typeof declared === "string" ? declared : declared.wire;
@@ -109,11 +131,15 @@ function resolvePolicyAdapter(
 ): { adapter: string; hardPinned: boolean } {
   // Hard pins and configured overrides deliberately use the same exact-key semantics as
   // resolveWireProtocolOverride(). Registry defaults alone normalize ids at their boundary.
-  const hardPin = authority.hardPins[modelId];
-  if (hardPin !== undefined) return { adapter: hardPin, hardPinned: true };
+  const hardPin = Object.hasOwn(authority.hardPins, modelId)
+    ? authority.hardPins[modelId]
+    : undefined;
+  if (typeof hardPin === "string") return { adapter: hardPin, hardPinned: true };
   if (authority.modelWireOverrideAllowed) {
-    const configured = authority.modelAdapters[modelId];
-    if (configured !== undefined && MODEL_ADAPTER_OVERRIDE_ALLOWED.has(configured)) {
+    const configured = Object.hasOwn(authority.modelAdapters, modelId)
+      ? authority.modelAdapters[modelId]
+      : undefined;
+    if (typeof configured === "string" && MODEL_ADAPTER_OVERRIDE_ALLOWED.has(configured)) {
       return { adapter: configured, hardPinned: false };
     }
     if (MODEL_ADAPTER_OVERRIDE_ALLOWED.has(authority.providerAdapter)) {
@@ -257,7 +283,7 @@ export function createAdapterTierMetadata(
   const fastIntent = context.demandDecision === "force-fast"
     || (context.demandDecision === "inherit" && callerCanonicalFast);
 
-  if (!fastIntent || context.demandDecision === "force-default") {
+  if (!fastIntent) {
     outcome.fastOutcome = "not-requested";
   } else if (!effectiveFastRequested || context.eligibility !== "eligible" || wireValue === null) {
     outcome.fastOutcome = "downgraded";

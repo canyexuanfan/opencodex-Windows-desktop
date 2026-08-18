@@ -1,4 +1,5 @@
 import type { CodexAccountMode, OcxProviderConfig } from "../types";
+import { cloneFastWire } from "./fastwire";
 import {
   PROVIDER_REGISTRY,
   registryEntryForProviderDestination,
@@ -460,11 +461,7 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   // Registry-only metadata (never seeded into saved config): backfill straight from
   // the entry so an explicit user value stays distinguishable from the default.
   if (prov.fastWire === undefined && entry.fastWire !== undefined) {
-    prov.fastWire = entry.fastWire === null ? null : {
-      ...entry.fastWire,
-      canonicalToWire: { ...entry.fastWire.canonicalToWire },
-      ...(entry.fastWire.betas ? { betas: [...entry.fastWire.betas] } : {}),
-    };
+    prov.fastWire = cloneFastWire(entry.fastWire);
   }
   if (prov.supportsServiceTier === undefined && entry.supportsServiceTier !== undefined) prov.supportsServiceTier = entry.supportsServiceTier;
   if (prov.preserveResponsesReasoningContent === undefined && entry.preserveResponsesReasoningContent !== undefined) prov.preserveResponsesReasoningContent = entry.preserveResponsesReasoningContent;

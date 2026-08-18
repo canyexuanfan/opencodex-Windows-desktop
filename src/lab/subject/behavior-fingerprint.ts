@@ -72,6 +72,6 @@ export function normalizeBehaviorValues(values: LabBehaviorValues): LabBehaviorV
 
 /** Hash the authoritative production resolver output; Lab performs validation/canonicalization only. */
 export function buildBehaviorFingerprintV1(values: LabBehaviorValues): string {
-  const payload = { schemaVersion: 1, resolverVersion: 1, values: normalizeBehaviorValues(values) };
+  const payload = { schemaVersion: 1, resolverVersion: 2, values: normalizeBehaviorValues(values) };
   return createHash("sha256").update(jcsStringify(payload)).digest("hex");
 }

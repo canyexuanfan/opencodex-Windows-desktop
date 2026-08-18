@@ -268,14 +268,28 @@ interface DiscoveredWireModelMapping {
 
 const discoveredWireModelsByBaseUrl = new Map<string, DiscoveredWireModelMapping>();
 
+/**
+ * Strip trailing slashes without a backtracking regex.
+ *
+ * `/\/+$/` is polynomial-ReDoS on attacker-influenceable input (CodeQL js/polynomial-redos):
+ * a long run of slashes makes the engine retry every suffix. The base URL comes from provider
+ * config, which is not hostile in the ordinary case — but "not hostile today" is a property of
+ * the caller, not of this function, and a linear scan costs nothing.
+ */
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1;
+  return end === value.length ? value : value.slice(0, end);
+}
+
 function antigravityBaseUrlKey(baseUrl: string | undefined): string | undefined {
   if (typeof baseUrl !== "string" || !baseUrl.trim()) return undefined;
-  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  const trimmed = stripTrailingSlashes(baseUrl.trim());
   try {
     const url = new URL(trimmed);
     url.hash = "";
     url.search = "";
-    return url.toString().replace(/\/+$/, "").toLowerCase();
+    return stripTrailingSlashes(url.toString()).toLowerCase();
   } catch {
     return trimmed.toLowerCase();
   }

@@ -408,12 +408,12 @@ function captureProviderGather(
   const enriched = detachedClone(withCanonicalOpenAiForwardAuthDefault(name, configured));
   enrichProviderFromRegistry(name, enriched);
   const registryTransportMatch = providerMatchesRegistryTransport(name, enriched);
+  const provider = recursivelyFreeze(enriched);
   const fastPolicyAuthority = captureFastPolicyAuthority(
     name,
-    enriched,
+    provider,
     registryTransportMatch,
   );
-  const provider = recursivelyFreeze(enriched);
   const observedAuth = authResolver.kind === "observed"
     && provider.authMode !== "forward"
     && provider.liveModels !== false

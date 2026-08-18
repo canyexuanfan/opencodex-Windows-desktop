@@ -1807,9 +1807,15 @@ const ANTHROPIC_WIRE_MODELS: Record<string, ReadonlySet<string>> = {
   "opencode-go": new Set(["minimax-m2.5", "minimax-m2.7", "minimax-m3"]),
 };
 
+function anthropicWireModelsForProvider(providerName: string): ReadonlySet<string> | undefined {
+  return Object.hasOwn(ANTHROPIC_WIRE_MODELS, providerName)
+    ? ANTHROPIC_WIRE_MODELS[providerName]
+    : undefined;
+}
+
 /** Detached provider-local hard-pin table for pure wire-policy resolution. */
 export function captureWireAdapterHardPins(providerName: string): Readonly<Record<string, string>> {
-  const models = ANTHROPIC_WIRE_MODELS[providerName];
+  const models = anthropicWireModelsForProvider(providerName);
   if (!models) return Object.freeze({});
   return Object.freeze(Object.fromEntries([...models].map(modelId => [modelId, "anthropic"])));
 }
@@ -1823,7 +1829,7 @@ export function captureWireAdapterHardPins(providerName: string): Readonly<Recor
  * adapter" would pass on the first pass and then let the override win on the second.
  */
 export function isWirePinnedModel(providerName: string, modelId: string): boolean {
-  return ANTHROPIC_WIRE_MODELS[providerName]?.has(modelId) ?? false;
+  return anthropicWireModelsForProvider(providerName)?.has(modelId) ?? false;
 }
 
 /** The wire a pinned model must use, or undefined when the model is not pinned. */
