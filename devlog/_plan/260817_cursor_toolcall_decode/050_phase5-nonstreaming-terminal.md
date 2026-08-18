@@ -87,3 +87,39 @@ signal.
 All five pass, `bun run typecheck` clean, and the **full** suite on `ssh lidge`
 matches the pre-change baseline. Tests 1 and 2 demonstrated red beforehand.
 
+
+## Shipped, and what the audit chain changed
+
+Five review rounds. The plan's core claim survived; nearly every detail did not.
+
+| Commit | What it closed |
+|--------|----------------|
+| `aa800ae65` | The default itself: a buffered turn with no adapter terminal is `incomplete`/`adapter_eof`, and an open tool call is no longer emitted as a completed `function_call` with half-written JSON. |
+| `44fde398b` | The #422 compaction guard could only see explicit failure events, so a terminal-less turn still installed replacement history. |
+| `f73f09c9e` | Streaming emitted the compaction item *before* reading `stopReason`; Google's `parseResponse` dropped `finishReason` entirely. |
+| `95f73db17` | `stopReason` is an open-ended string and adapters disagree (`length`, `refusal`); canonical-only matching left the guard bypassable. |
+| `71730023a` | **My own regression:** suppressing the item without downgrading the turn produced `completed` with zero compaction items — the shape codex-rs fatals on. Suppression and status now come from one decision. |
+| `ea5e61677` | Anthropic `pause_turn` is unfinished by definition; AI SDK `error` is a failure, so Command Code emits a real error terminal instead of a stop reason. |
+
+The lesson worth keeping: each round fixed the previous round's fix. Round 4 found
+that my round-3 change had made things *worse* in one direction — a suppressed
+compaction item with a success status is more dangerous than the bug it replaced,
+because codex-rs treats zero items as fatal. Widening a guard without widening
+what it reports is not a partial fix; it is a new failure.
+
+## Open follow-ups (adapter-side, deliberately not folded in)
+
+Both erase truncation metadata **before** the bridge can defend anything, so they
+cannot be fixed here:
+
+- **Kiro** (`kiro.ts:1315`, `:1485`): in `completionMode: "disabled"` — which routed
+  compaction selects, because it removes tools — the normalized reason is observed
+  and then the final `done` omits `stopReason`. `MAX_TOKENS` and
+  `MODEL_CONTEXT_WINDOW_EXCEEDED` both vanish.
+- **Google ordinary mode** (`google.ts:779`, `:947`): only `MAX_TOKENS` and five safety
+  values are forwarded. `MALFORMED_RESPONSE`, `UNEXPECTED_TOOL_CALL`, `IMAGE_SAFETY`,
+  and `LANGUAGE` become reasonless `done` events. The Vertex/CCA fail-closed guard
+  covers only part of this.
+
+Each is its own unit with its own truncation subsystem. Recording them beats
+half-fixing them inside a bridge phase.
