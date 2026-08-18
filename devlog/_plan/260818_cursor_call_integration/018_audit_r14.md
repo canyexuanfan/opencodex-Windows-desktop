@@ -67,10 +67,45 @@ which is not a gate.
 - `040`'s governance position claims an owner-authorized exception, not compliance.
 - It also ran the focused Cursor tests: **71 pass, 0 fail**, and typecheck exit 0.
 
+## A second r14 pass found three MORE unbound artifacts
+
+The same round, re-run against the fixes above, went through every named variable
+rather than every code block. Six of nine failed:
+
+1. **`VERIFIED_BASE` was captured twice.** `010:166` pins it before the rebase;
+   `020` captured it AGAIN afterwards. A second `ls-remote` overwrites the pin with a
+   newer `dev`, and every later assertion then compares against a base the campaign
+   never rebased onto. `020` now inherits and asserts it
+   (`test -n` + `merge-base --is-ancestor "$VERIFIED_BASE" cursor-call`).
+
+2. **`git branch cursor-call-wire <PR1_TIP>` fails `zsh -n`.** The angle-bracket form
+   is not shell syntax. `030` captured the boundary SHAs correctly and then did not
+   consume them. Fixed in both the branch creation and the `git show --stat` checks.
+
+3. **`040` carried THREE merge procedures** that disagreed. One referenced `$PRN`,
+   `$PRN_HEAD` and `$PR_NEXT` — none of which any phase assigns. One omitted both the
+   head assertion and the `EXPECTED_DEV` update. The sharpest point: the
+   angle-bracket forms in `040` parse only because zsh reads them as REDIRECTIONS,
+   which is worse than failing — they run and bind nothing.
+
+   Now there is one `merge_layer` function taking the PR number and its expected
+   head, asserting base + head + `EXPECTED_DEV` before merging and advancing
+   `EXPECTED_DEV` from the merge commit inside the function.
+
+Verified by running the chain under zsh: parses clean, extractions return
+`dfb6fb884…` and `6d974428…`, the two boundary commits `030` names.
+
+### Side effect worth recording
+
+The reviewer executed one `020` snippet during isolation and left worktree
+`/tmp/ocx-L-` plus branch `ocx-L-` on lidge. Both removed; nothing was pushed or
+edited there. Worth noting that a READ-ONLY brief still produced remote state — the
+snippets are executable now, which is the point, and an auditor running them is a
+foreseeable consequence. Later briefs say so explicitly.
+
 ## Tally
 
 Fourteen rounds, 38 findings, every one verified and absorbed. Six of them are the
 artifact-chain class (`r7`, `r8`, `r10`, `r12`, `r13`, `r14`) and four were the
 stack-split cluster (`r3`-`r6`). The lesson `r13` and `r14` add: a plan that is only
 READ will keep hiding fragments that cannot RUN.
-
