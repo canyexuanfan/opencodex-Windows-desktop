@@ -35,7 +35,7 @@ WP5 (closeout).
 | #1748 | REDESIGN-SMALL | — | outbound-only fake-IP proxy routing (avoid SSRF widening) |
 | #1725 | MERGE-SQUASH | — | warmup response bounds; threads resolved |
 
-Tally: MERGE 9 · MERGE-SQUASH 5 · REDESIGN-SMALL 6 · REDESIGN-LARGE-CLOSE 3 · CLOSE-STALE 1.
+Tally: MERGE 9 · MERGE-SQUASH 4 · REDESIGN-SMALL 7 · REDESIGN-LARGE-CLOSE 3 · CLOSE-STALE 1.
 
 ## Issue-closure rules for this campaign
 
