@@ -235,7 +235,7 @@ function writeManifest(configDir: string, manifest: ConfigUninstallManifest): vo
     // Same Windows sharing-violation tolerance the config writer has: a
     // scanner holding the manifest must not turn uninstall bookkeeping into a
     // hard failure.
-    renameAtomicFile(temp, path);
+    renameAtomicFile(temp, path, undefined, "config-ownership");
   } catch (error) {
     try { unlinkSync(temp); } catch { /* best effort */ }
     throw error;

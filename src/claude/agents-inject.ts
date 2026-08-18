@@ -236,7 +236,7 @@ export function syncClaudeAgentDefs(defs: readonly ClaudeAgentDef[], configDir =
       } catch { /* does not exist: ours to create */ }
       const tmp = `${target}.tmp-${process.pid}`;
       writeFileSync(tmp, renderAgentDef(def), { encoding: "utf8", mode: 0o644 });
-      renameAtomicFile(tmp, target);
+      renameAtomicFile(tmp, target, undefined, "claude-agents");
       written.push(def.file);
     }
     return written;

@@ -243,7 +243,7 @@ export function replaceWindowsTrayOwnedFile(
       const hardened = hardenSecretPath(target, { required: true, timeoutMemoKey: path });
       if (!hardened.ok) throw new Error("Windows tray ACL hardening did not complete; refusing to persist executable state.");
     },
-    rename: renameAtomicFile,
+    rename: (source, destination) => renameAtomicFile(source, destination, undefined, "tray"),
     unlink: unlinkSync,
   },
 ): void {

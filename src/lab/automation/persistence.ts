@@ -125,7 +125,7 @@ function atomicWriteJson(path: string, payload: unknown): void {
   const tmp = join(dir, `.${basename(path)}.${process.pid}.${Date.now()}.tmp`);
   const text = JSON.stringify(payload);
   writeFileSync(tmp, text, { encoding: "utf8", mode: 0o600 });
-  renameAtomicFile(tmp, path);
+  renameAtomicFile(tmp, path, undefined, "lab-automation");
 }
 
 function basename(path: string): string {

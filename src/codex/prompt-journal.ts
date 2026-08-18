@@ -83,7 +83,7 @@ export function durableWrite(path: string, content: string): void {
     // Windows can refuse the replace with EBUSY/EPERM/EACCES while a scanner
     // still holds the target; the shared helper retries that briefly. Losing
     // this publish breaks journal restore, so it should not fail on a blink.
-    renameAtomicFile(tmp, path);
+    renameAtomicFile(tmp, path, undefined, "prompt-journal");
     // The temp is renamed away: proven absent — release its ACL memos.
     forgetEphemeralSecretPath(tmp);
     fsyncDir(path);

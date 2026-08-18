@@ -79,7 +79,7 @@ function atomicRewriteLedger(ledgerPath: string, events: LabEvent[]): void {
     } finally {
       closeSync(fd);
     }
-    renameAtomicFile(tmpPath, ledgerPath);
+    renameAtomicFile(tmpPath, ledgerPath, undefined, "lab-ledger");
     renamed = true;
   } catch (err) {
     if (!renamed) {
