@@ -64,3 +64,15 @@ their own reasons, which are about missing evidence rather than about release ti
 | #1926 | destination scope landed, but credential scope and emit-before-commit are still live in `src/bridge.ts` |
 | #1866 | explicitly scoped out of #1900; no PR addresses it |
 | #1730 | different provider and round from #1884's ClinePass replay fix |
+
+Two **pull requests** are also held, and they belong in this record even though the table
+above is about issues — a reader working only from this document would otherwise see no trace
+of them:
+
+| PR | Held because |
+|----|--------------|
+| #1891 | it makes `GOOGLE_ANTIGRAVITY_USER_AGENT` steerable into the `onboardUser` request body, violating this wave's accept criterion. Needs #1889 first, which is the one-line fix that makes `ide_version` a real constant. Detail in `080`. |
+| #1889 | unsponsored `src/oauth/` surface, plus still draft. The `maintainer-sponsored` label is the record that a security review happened, so an agent applying it would falsify that record. |
+
+Neither is affected by the close-on-dev-merge decision: both are blocked *before* merge, so the
+policy that governs when a merged fix closes its issue never reaches them.
