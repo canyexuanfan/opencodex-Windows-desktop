@@ -68,3 +68,29 @@ its CI could be judged. For #1900 the fork run was approved, waited to `complete
 
 `#1866` needs no decision here: it is an issue with no PR, and the structured Computer Use
 payload it describes is a design task rather than a merge.
+## WP7 outcome
+
+| PR | Outcome | Evidence |
+|----|---------|----------|
+| #1900 | merged | `2b12521ee` — CI success 01:12:10Z, merged 01:15:18Z |
+| #1895 | merged via #1951 | its blocking review finding fixed on top of its commits |
+| #1951 | merged | `93e521c80` — CI success 01:33:45Z, merged 01:37:50Z |
+| #1953 | merged | `9eb3a101a` — CI success 01:57:51Z, merged 01:59:12Z |
+| #1887 | **held** | must migrate five items into #1896 first; closing it as superseded would delete the catalog-derived guard |
+| #1896 | **held** | needs #1887's `cursorNativeExecUsesCodeModeBridge` before it can be canonical |
+| #1903 | **held** | conflicts alone on `dev`; needs an author rebase, and is a ~32-file review surface |
+| #1866 | **not started** | no PR exists; explicitly scoped out of #1900 |
+
+**The defect I introduced and the audit caught.** #1951 fixed #1895's blocker — code mode is
+decided from `freeform` metadata rather than the name `exec` — but my port of the shell-bridge
+predicate dropped the Cursor original's `!tool.namespace` requirement. A namespaced MCP tool
+(`mcp__docker__exec_command`) then cancelled code mode on a genuine code-mode turn, silently
+stripping the guidance. It failed *safe* — generic rather than false guidance — which is exactly
+why nothing caught it, and why an audit that runs the predicate against adversarial catalogs
+beats one that reads it. Fixed in #1953, driven red first.
+
+A second reviewer then probed ten catalog shapes — empty-string namespace, non-boolean truthy
+`freeform`, mixed namespaced and bare bridges — and found no remaining misclassification. Worth
+recording one behavior it judged correct: when `tool_choice` forces `exec`, a catalog holding
+both a freeform `exec` and a bare `exec_command` still classifies as code mode, because the
+bridge is filtered out of visibility first. Naming an unreachable tool would be the worse answer.
