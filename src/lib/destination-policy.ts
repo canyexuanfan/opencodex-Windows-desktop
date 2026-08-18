@@ -241,10 +241,18 @@ export function assessUrlDestination(url: string): UrlDestinationAssessment | nu
  * Returns the validated addresses so direct callers can pin the connect peer and
  * avoid a second, rebindable resolution. DNS failures remain fail-closed here;
  * the provider proxy wrapper alone may recognize that typed failure and degrade.
+ *
+ * `allowBenchmarkAddresses` is an explicit outbound-only opt-in for Clash/Surge/
+ * Mihomo fake-IP DNS (IANA benchmark space 198.18.0.0/15, credit #1748): a hostname
+ * answer in that range is accepted without marking the destination private, so the
+ * caller can keep the hostname on its configured HTTP(S) proxy path. It applies to
+ * resolved answers only — a literal 198.18.x URL still rejects — and mixed answers
+ * that include any other non-public address still fail. Callers that do not pass it
+ * (image and Lab fetch) keep rejecting benchmark space.
  */
 export async function resolvePublicAddresses(
   url: string,
-  options?: string | { context?: string; allowPrivateNetwork?: boolean },
+  options?: string | { context?: string; allowPrivateNetwork?: boolean; allowBenchmarkAddresses?: boolean },
 ): Promise<{
   hostname: string;
   addresses: { address: string; family: number }[];
@@ -254,6 +262,7 @@ export async function resolvePublicAddresses(
     ? `${options.trim() || "image"} URL`
     : options?.context?.trim() || "image URL";
   const privateNetworkAllowed = typeof options === "object" && options?.allowPrivateNetwork === true;
+  const benchmarkAllowed = typeof options === "object" && options?.allowBenchmarkAddresses === true;
   let hostname: string;
   try {
     hostname = normalizeHostname(new URL(url.trim()).hostname);
@@ -294,6 +303,14 @@ export async function resolvePublicAddresses(
     const ipKind = isIP(address) || (family === 4 || family === 6 ? family : 0);
     const assessment = ipKind === 4 ? classifyIpv4(address) : ipKind === 6 ? classifyIpv6(normalizeHostname(address)) : null;
     if (!assessment || assessment.kind !== "public") {
+      // Hostname → 198.18.0.0/15 under the explicit opt-in is Clash/Surge/Mihomo
+      // fake-IP DNS, not a LAN provider. Accept it without allowPrivateNetwork and
+      // do not mark the destination private, so the caller's HTTP(S)_PROXY path
+      // still applies (credit #1748).
+      if (benchmarkAllowed && assessment?.kind === "private" && assessment.detail === "benchmark address") {
+        validatedAddresses.push({ address, family: ipKind === 4 || ipKind === 6 ? ipKind : (family || 4) });
+        continue;
+      }
       const allowedPrivateAddress = privateNetworkAllowed
         && assessment
         && (assessment.kind === "loopback" || assessment.kind === "private");
