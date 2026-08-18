@@ -69,6 +69,15 @@ PR3's range includes three kinds of change a reviewer should expect:
 Run after the WP2 rebase and WP2b are on `cursor-call`. Nothing here rewrites
 anything.
 
+0. **Bind to the verified tree (audit `r10`).** `cursor-call` is mutable and `020`
+   verified one specific SHA:
+
+       test "$(git rev-parse cursor-call)" = "$VERIFIED_TIP"
+
+   If it fails, the branch moved after verification and the gates no longer describe
+   what is about to be reviewed. Re-run `020` rather than cutting branches from an
+   unverified tree.
+
 1. Find the boundaries in the REBASED history (the rebase preserves order, and the
    original SHAs no longer exist):
 
@@ -105,6 +114,13 @@ anything.
    with the counts, establishes the partition.
 
 4. Push the two new branches and open the PRs bottom-up.
+
+5. **Record each PR's expected head SHA.** `040` asserts these immediately before
+   merging:
+
+       PR1_HEAD = <PR1_TIP>
+       PR2_HEAD = <PR2_TIP>
+       PR3_HEAD = $VERIFIED_TIP
 
 ## Policy constraints (`AGENTS.md`)
 

@@ -63,6 +63,25 @@ gh pr merge <n> --merge --admin
 gh pr edit <child> --base dev              # retarget the next layer
 ```
 
+### Also assert the PR HEAD, not just the base (audit `r10`)
+
+The base check proves `dev` has not moved. It says nothing about what the PR itself
+now points at. A force-push to a PR head — by anyone, including a well-meaning
+rebase — would merge commits that never went through `020`'s gates, and the
+post-merge ancestry check below would still pass, because the verified tip remains an
+ancestor of a superset.
+
+So before EACH merge, compare the PR's live head against the SHA `030` step 5
+recorded:
+
+```
+gh pr view <n> --json headRefOid --jq .headRefOid    # must equal PR<N>_HEAD
+```
+
+PR3's expected head is `VERIFIED_TIP` — the exact SHA `020` ran the full suite
+against. If any head differs, stop: either re-verify that tree through `020` or
+reset the branch to the recorded SHA. Never merge a head no gate has seen.
+
 Do NOT squash. The commit-by-commit history is the audit trail for five campaign
 phases plus four integration audit rounds, and the devlog references specific SHAs.
 
@@ -81,4 +100,3 @@ git log --oneline -10 origin/dev
 For each layer: the pre-merge `ls-remote` SHA equal to the then-current
 `EXPECTED_DEV`, recorded. Then exit 0 from `--is-ancestor` for the final tip, plus
 the `origin/dev` log showing all three merges.
-

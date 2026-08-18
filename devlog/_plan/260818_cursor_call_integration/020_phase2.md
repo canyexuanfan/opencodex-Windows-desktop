@@ -112,6 +112,19 @@ Typecheck, privacy:scan, audit:high, and build:gui each exit 0, and `0 fail` fro
 `bun test --isolate tests` — each quoted with the SHA it ran against, plus the
 recorded `VERIFIED_BASE`.
 
+## Record `VERIFIED_TIP` (audit `r10`)
+
+The SHA these gates ran against is the ONLY tree this campaign has authoritative
+evidence for. Name it:
+
+    VERIFIED_TIP=$(git rev-parse cursor-call)     # after WP2b's push, before any gate
+
+Every later phase binds to it: `030` refuses to cut branches unless `cursor-call`
+still equals `VERIFIED_TIP`, and `040` compares each PR's `headRefOid` against its
+expected SHA immediately before merging. Without that chain, a force-push to any PR
+head could introduce commits nobody verified while `040`'s post-merge ancestry check
+still passes — the verified tip stays an ancestor either way.
+
 ## Per-layer verification (r3 F3)
 
 Because `030` now opens a real 3-PR stack, each layer needs its own evidence
