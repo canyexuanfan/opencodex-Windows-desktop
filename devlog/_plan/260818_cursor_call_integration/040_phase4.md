@@ -1,28 +1,41 @@
-# 040 — WP5: admin merge onto dev + ancestry proof
+# 040 — WP5: merge onto dev + ancestry proof
 
-## Authorization
+Revised after audit `r1` finding F2.
 
-The user explicitly granted admin merge authority for this branch ("admin 권한으로").
-CI checks are waived by the same user. That waiver covers THIS branch only.
+## Authority, stated precisely
+
+The user granted admin merge authority for this branch ("admin 권한으로") and waived
+CI checking. That is the repository owner exercising owner authority.
+
+What it is NOT: compliance with `MAINTAINERS.md:48-49`, which requires maintainer
+approval **and** successful required CI checks before merge. `AGENTS.md:251-253`
+makes `MAINTAINERS.md` authoritative.
+
+So this merge is an **owner-authorized exception**, and every downstream claim must
+say so. Concretely:
+
+- The platform gap is real: lidge is Linux, CI covers Linux + Windows + macOS.
+- This diff touches no Windows-sensitive surface (no shims, installer, PowerShell,
+  or path handling), which is why Linux evidence is adequate *for this diff*.
+- `050`'s readiness note may say "gates green on Linux; CI waived by the owner".
+  It may **not** say "policy-compliant" or "all required checks passed".
+
+If the user wants full compliance instead, the path is to let required CI run on the
+PR head before merging. That is a one-line change to this plan, not a rewrite.
 
 ## Procedure
-
-Merge in dependency order (parent before child). For each PR:
 
 ```
 gh pr merge <n> --merge --admin
 ```
 
-Do NOT squash across the campaign: the commit-by-commit history is the audit trail
-for five phases of adversarial review, and the devlog references specific SHAs.
-A squash would break every one of those references.
-
-If a child PR was stacked on a parent head branch, retarget it to `dev` after the
-parent merges (`gh pr edit <n> --base dev`) before merging it.
+Do NOT squash. The commit-by-commit history is the audit trail for five phases of
+adversarial review, and the devlog references specific SHAs — a squash breaks every
+one of those references.
 
 ## Ancestry proof (the actual criterion)
 
-A merge API response is not proof. The criterion is:
+A merge API response is not proof:
 
 ```
 git fetch origin dev
@@ -32,5 +45,5 @@ git log --oneline -5 origin/dev
 
 ## Verification (C)
 
-Exit 0 from `--is-ancestor` plus the `origin/dev` log showing the merge commits.
+Exit 0 from `--is-ancestor`, plus the `origin/dev` log showing the merge.
 
