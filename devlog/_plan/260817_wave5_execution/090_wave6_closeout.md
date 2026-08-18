@@ -88,11 +88,16 @@ Run on the promotion candidate (local `dev`, 6 commits ahead of `origin/dev` at 
 
 ### What actually closed, under the close-on-dev-merge decision
 
-| Closed | Landed via |
-|--------|-----------|
-| #1894 | #1739 through PR #1921 |
-| #1843 | #1860, already released in v2.24.0 |
-| #1899 | superseded by the ordering assertion in PR #1923 |
+**Two issues** closed, plus one pull request:
+
+| Closed | Kind | Landed via |
+|--------|------|-----------|
+| #1894 | issue | #1739 through PR #1921 |
+| #1843 | issue | #1860, already released in v2.24.0 |
+| #1899 | **pull request** | superseded by the ordering assertion in PR #1923 |
+
+The first version of this table listed all three as issues, which overstated the run.
+#1899 is a PR; two issues closed, not three.
 
 Everything else stayed open, and none of it for release-timing reasons — which is the point
 worth making about the policy change. It removed a gate that was never what held these back.
@@ -104,3 +109,22 @@ worth making about the policy change. It removed a gate that was never what held
 and `aca3c0241` were both cancelled by supersession as later merges landed. The local full
 suite above is the evidence that exists; a hosted run on the exact promotion head is the
 evidence that does not, and promotion should carry that distinction rather than bury it.
+### One merge landed on a red run
+
+PR #1921's merge commit `9dbc5fc42` has a failing hosted run (`32026536154`). The failure is
+`provider request pacing queue > spaces concurrent starts in one provider FIFO` in
+`tests/request-pacing.test.ts` — a wall-clock assertion, which is the classic flake shape on a
+loaded macOS runner. Evidence it is not a live regression: the file passes locally, and every
+subsequent hosted run on `dev` is green including the current head.
+
+It is recorded here because it happened, not because it blocks anything. A campaign record that
+omits the one merge that landed red is exactly the kind of record you cannot trust later.
+
+### Promotion evidence, updated
+
+The "no completed green run" statement above is **stale and superseded**. Run `32090176020` on
+`9eb3a101a` is `completed/success` with every job green — four test shards, macOS, keyring on
+all three OSes, npm-global on all three, gates, storage policy, api usage.
+
+So the hosted evidence now exists. Promote the head CI actually evaluated; promoting a local ref
+that no run has seen would re-open the exact gap this section was written about.

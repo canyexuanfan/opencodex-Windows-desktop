@@ -185,3 +185,35 @@ make that record false rather than merely skip a step. Reported, not cleared.
 
 The planned order (`#1889 → #1891 → #1897`) is therefore moot: #1897 is in, and the remaining
 two are gated on a human decision each — one a readiness checklist, one a security review.
+### Corrections from the WP8 audit
+
+**Failing-check count.** #1889 has **two** distinct failing checks, `hygiene` and
+`enforce-target`. Earlier text said four, which was the count of failing check *runs* across
+re-runs (`enforce-target` appears three times). Verified with `unique`.
+
+**#1891's head moved, and the reviewer's staleness finding is itself stale.** The audit reported
+the head 62 commits behind `origin/dev`, which would have mattered:
+`READINESS_LATEST_DEV_BEHIND_MAX = 10` in `.github/scripts/pr-quality-state.cjs` unticks the
+`latest_dev` box past that, so ticking without rebasing would have re-drafted the PR. Re-checked
+against the live head `81236807f`: **0 commits behind**. The author rebased in the interim, so
+ticking alone is now sufficient — which is what my comment on the PR says.
+
+Worth keeping as a lesson rather than deleting: a rejected finding was still worth chasing,
+because the mechanism it named is real and would have made my advice wrong on a different day.
+
+### Work found and done instead of held
+
+The audit asked whether anything here could be landed rather than recorded. One thing could,
+and it was a live defect on `dev` independent of both PRs: `metadata.ide_version` in
+`src/oauth/google-antigravity.ts` was set to `antigravityUserAgent()` — the whole header,
+`antigravity/ide/2.5.5 (aidev_client; os_type=...; arch=...)` — where the real client sends
+`2.5.5`.
+
+Nothing failed, which is why it survived: the request succeeds, it just does not look like
+Antigravity. `ANTIGRAVITY_IDE_VERSION` already existed one import away. Fixed in **#1955**, with
+a regression that pins the field and asserts the shapes it must not have; driven red first.
+
+That is also the honest answer to "is the sponsorship refusal over-cautious": I hold #1889
+because reviewing *someone else's* auth change is the maintainer act the label records — but a
+one-line auth fix I wrote and verified myself is exactly the case where a maintainer sponsors
+their own work, so it ships.
