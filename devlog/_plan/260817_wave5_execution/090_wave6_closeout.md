@@ -104,7 +104,7 @@ worth making about the policy change. It removed a gate that was never what held
 
 ### Promotion state
 
-`dev` carries nine merged PRs from this campaign. `preview` and `main` are both behind it, and
+`dev` carries this campaign's merges. `preview` and `main` are both behind it, and
 `dev`'s own hosted CI has no completed green run on its current head — the runs at `2b12521ee`
 and `aca3c0241` were both cancelled by supersession as later merges landed. The local full
 suite above is the evidence that exists; a hosted run on the exact promotion head is the
@@ -157,8 +157,14 @@ Two smaller corrections in the same pass:
   after `9dbc5fc42` are *cancelled* by supersession, and cancelled is not green. The accurate
   statement is that the completed runs after it are green, and most never completed — this
   branch supersedes its own runs faster than they finish.
-- **The PR count is dropped rather than corrected.** I wrote nine, then ten; neither was derived.
-  Seventeen merges into `dev` during this campaign touch `src/` or `tests/`. Rather than guess a
-  third time, the accounting that matters is per-PR and lives in the wave documents.
+- **The PR count is dropped rather than corrected, and this time actually dropped.** I wrote
+  nine, then ten, then claimed to drop it while leaving "nine merged PRs" standing in the
+  Promotion state section and substituting an equally underived "seventeen" here. Three wrong
+  numbers and a false claim to have stopped giving numbers.
+
+  The derived figure, for anyone who wants one: **23** merge commits between `v2.24.2`
+  (`474584bcd`) and the promotion head touch `src/` or `tests/`, out of 32 merges total. That
+  range includes work outside this campaign, which is exactly why the per-PR accounting in the
+  wave documents is the thing to read instead of a headline count.
 - The closure-rules section still says #1843 was "released in v2.24.2"; the results table saying
   **v2.24.0** is the correct one, confirmed by `ac8c0d2df` being contained in that tag.
