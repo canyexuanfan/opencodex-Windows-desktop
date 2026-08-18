@@ -33,6 +33,11 @@ export interface CursorTransportFactoryInput {
    * native local exec authorization because the text is caller-controlled.
    */
   requestDeclaresFullAccess?: boolean;
+  /**
+   * Stable Cursor Connect `x-session-id` across transport rebuilds for the same
+   * client thread. Distinct from the per-transport native-exec/shell owner.
+   */
+  sessionId?: string;
 }
 
 export type CursorTransportFactory = (input: CursorTransportFactoryInput) => CursorTransport;
