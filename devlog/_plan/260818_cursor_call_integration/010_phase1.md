@@ -163,8 +163,8 @@ MODIFY, at dev's current `:946`:
 1. Pin the base first (audit `r3` F1 / `r4` F1). Never rebase onto the tracking ref:
 
        git fetch origin dev
-       VERIFIED_BASE=\$(git ls-remote origin refs/heads/dev | cut -f1)
-       git rebase \$VERIFIED_BASE
+       VERIFIED_BASE=$(git ls-remote origin refs/heads/dev | cut -f1)
+       git rebase "$VERIFIED_BASE"
 
    Record `VERIFIED_BASE`; every later phase compares against it and `040` evolves
    it through the stack. The snapshot `cursor-call-prerebase-260818` = `fe2237038` is
