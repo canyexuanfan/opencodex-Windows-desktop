@@ -15,19 +15,20 @@ repository's OIDC workflow is the only publish mechanism — never a direct
 
 ## Gates (dedicated worktree, r3 F2)
 
-```
-ssh lidge 'cd ~/Developer/opencodex && git fetch origin dev'
-ssh lidge 'cd ~/Developer/opencodex && git worktree add /tmp/ocx-dev-<SHORTSHA> <MERGED_DEV_SHA>'
-ssh lidge 'cd /tmp/ocx-dev-<SHORTSHA> && git log --oneline -1 && bun install --frozen-lockfile'
-ssh lidge 'cd /tmp/ocx-dev-<SHORTSHA> && bun x tsc --noEmit'
-ssh lidge 'cd /tmp/ocx-dev-<SHORTSHA> && bun run privacy:scan'
-ssh lidge 'cd /tmp/ocx-dev-<SHORTSHA> && bun run audit:high'
-ssh lidge 'cd /tmp/ocx-dev-<SHORTSHA> && bun run build:gui'
-ssh lidge 'cd /tmp/ocx-dev-<SHORTSHA> && bun test --isolate tests'
-```
+`MERGED_DEV` is inherited from `040` — the OID of PR3's merge commit, not a fresh
+read. Build the worktree at it and assert what landed there:
 
-`<MERGED_DEV_SHA>` is `MERGED_DEV` as recorded at the end of `040` — the SHA `dev`
-carried when PR3 landed, already proven to descend from `VERIFIED_TIP`. Do not
+    DEVDIR=/tmp/ocx-dev-${MERGED_DEV:0:9}
+    ssh lidge "cd ~/Developer/opencodex && git fetch origin dev && git worktree add $DEVDIR $MERGED_DEV"
+    ssh lidge "cd $DEVDIR && test \"\$(git rev-parse HEAD)\" = \"$MERGED_DEV\" && bun install --frozen-lockfile"
+    ssh lidge "cd $DEVDIR && bun x tsc --noEmit"
+    ssh lidge "cd $DEVDIR && bun run privacy:scan"
+    ssh lidge "cd $DEVDIR && bun run audit:high"
+    ssh lidge "cd $DEVDIR && bun run build:gui"
+    ssh lidge "cd $DEVDIR && bun test --isolate tests"
+
+`MERGED_DEV` is the SHA `dev` carried when PR3 landed, taken from the merge commit
+itself in `040` and already proven to descend from `VERIFIED_TIP`. Do not
 substitute a fresh read of `origin/dev`: if someone else pushed in between, these
 gates would describe a tree this campaign never produced, and a green result would be
 attributed to work that is not ours (audit `r13` sweep).

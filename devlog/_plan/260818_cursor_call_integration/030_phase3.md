@@ -120,9 +120,7 @@ anything.
    add up. Only the ancestry chain `VERIFIED_BASE → wire → cancel → tip`, together
    with the counts, establishes the partition.
 
-4. Push the two new branches and open the PRs bottom-up.
-
-5. **Record each PR's expected head SHA as real variables.** `040` asserts these
+4. **Record each PR's expected head SHA as real variables.** `040` asserts these
    immediately before merging. Written as executable assignments, not a legend — a
    probe of the earlier prose form exited 127 under zsh because `NAME = value` runs
    `NAME` as a command (audit `r13`):
@@ -138,6 +136,15 @@ anything.
        test "$PR1_HEAD" = "$PR1_TIP"
        test "$PR2_HEAD" = "$PR2_TIP"
        test "$PR3_HEAD" = "$VERIFIED_TIP"
+
+5. **Run each layer's gates before opening its PR (audit `r12`).** The layer branches
+   only exist from step 2 onward, which is why `020`'s per-layer section runs HERE
+   rather than earlier: one lidge worktree pinned to each layer head, per the
+   procedure in `020`. A PR body must cite a run at ITS OWN head — the stack-tip run
+   belongs to PR3 alone, because PR1's tests passing at the stack tip prove nothing
+   about a tree that excludes PR2 and PR3.
+
+6. Push the two new branches and open the PRs bottom-up, each citing its own run.
 
 ## Policy constraints (`AGENTS.md`)
 
