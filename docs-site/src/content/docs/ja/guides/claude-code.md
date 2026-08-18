@@ -20,7 +20,7 @@ ocx claude
 | `ANTHROPIC_BASE_URL` | `http://127.0.0.1:<port>` |
 | `ANTHROPIC_AUTH_TOKEN` | プロキシに API キーが必要なときのみ設定します。それ以外は設定せず、claude.ai ログイン(サブスクリプション + コネクター)を維持します |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | `1` (デフォルトの `/model` ピッカーのモデル検索) |
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 自動コンテキスト圧縮のしきい値(デフォルト `350000`)。自動コンテキストがオンのときのみ注入します |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 自動コンテキスト圧縮のしきい値(デフォルト `829800`)。自動コンテキストがオンのときのみ注入します |
 | `ANTHROPIC_MODEL` | `claudeCode.model` (任意) |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `claudeCode.tierModels.haiku ?? claudeCode.smallFastModel` (任意、従来の `ANTHROPIC_SMALL_FAST_MODEL` もサポート) |
 | `ANTHROPIC_DEFAULT_{OPUS,SONNET,FABLE}_MODEL` | `claudeCode.tierModels.*` (任意) |
@@ -114,7 +114,7 @@ Claude Code は未知モデルのコンテキストを 200k トークンとし�
 
 1. 実際のコンテキストウィンドウが 200k より大きく自動圧縮しきい値以上のモデルのピッカー行と環境スロットに
    `[1m]` 標識が付きます。
-2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW`(デフォルト `350000`、範囲 `100000`–`1000000`)を注入し、該当
+2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW`(デフォルト `829800`、範囲 `100000`–`1000000`)を注入し、該当
    地点で会話を自動要約します。
 
 設定状態は 3 つです。
@@ -127,7 +127,7 @@ Claude ページで圧縮値を調整できます。**警告:** モデルの実�
 要約を開始する前にチャットエラーが発生します。
 
 1M 未満のネイティブ Anthropic モデルには自動で標識を付けません。直接 export した値が常に優先し、プロキシは**ユーザーが指定した**値を基準にどのモデルに安全に標識を付けるか決定します。
-直接編集した設定値が不正な場合は 350k に戻ります。
+直接編集した設定値が不正な場合は 829,800 に戻ります。
 
 ### 実モデル環境
 

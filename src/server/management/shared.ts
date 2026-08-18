@@ -192,11 +192,11 @@ export interface GrokCandidateModel {
  * from the same two sources as the sync so the two can never disagree.
  */
 export async function fetchGrokCandidateModels(config: OcxConfig): Promise<GrokCandidateModel[]> {
-  const { filterCatalogVisibleModels, nativeOpenAiContextWindow, visibleNativeSlugs } = await import("../../codex/catalog");
+  const { filterCatalogVisibleModels, nativeContextLimits, nativeOpenAiContextWindow, visibleNativeSlugs } = await import("../../codex/catalog");
   const routed = filterCatalogVisibleModels(await fetchAllModels(config), config);
   return [
     ...visibleNativeSlugs(config).map(id => {
-      const contextWindow = nativeOpenAiContextWindow(id, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID));
+      const contextWindow = nativeOpenAiContextWindow(id, nativeContextLimits(config));
       return { id, native: true, ...(contextWindow !== undefined ? { contextWindow } : {}) };
     }),
     ...routed.map(m => ({
@@ -221,7 +221,7 @@ export function stripRegistryOnlyStaticHeaders(name: string, provider: OcxProvid
 
 /** Shared Desktop profile DTO builder for the management API and CLI. */
 export async function buildClaudeDesktopState(config: OcxConfig, stored?: OcxClaudeDesktopProfile) {
-  const { filterCatalogVisibleModels, nativeOpenAiContextWindow, desktopVisibleNativeSlugs } = await import("../../codex/catalog");
+  const { filterCatalogVisibleModels, nativeContextLimits, nativeOpenAiContextWindow, desktopVisibleNativeSlugs } = await import("../../codex/catalog");
   const { DESKTOP_SUPPORTS_1M_THRESHOLD } = await import("../../claude/desktop-3p");
   const { reconcileDesktopProfile, renderDesktopProfile } = await import("../../claude/desktop-profile");
   const routed = filterCatalogVisibleModels(await fetchAllModels(config), config);
@@ -229,7 +229,7 @@ export async function buildClaudeDesktopState(config: OcxConfig, stored?: OcxCla
     // Native rows carry their real context window from the same accessor the Grok sync
     // uses — otherwise Sol's 372k and gpt-5.5's 272k render as blank on Desktop.
     ...desktopVisibleNativeSlugs(config).map(id => {
-      const contextWindow = nativeOpenAiContextWindow(id, providerContextCap(config, OPENAI_CODEX_PROVIDER_ID));
+      const contextWindow = nativeOpenAiContextWindow(id, nativeContextLimits(config));
       return { route: `native/${id}`, label: `${id} (native)`,
         ...(contextWindow !== undefined ? { contextWindow } : {}) };
     }),

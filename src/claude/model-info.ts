@@ -15,7 +15,7 @@
  *  - created_at is a fixed constant; max_input_tokens is authoritative-or-null;
  *    max_tokens is always null (no authoritative output limit exists proxy-side).
  */
-import { catalogModelEfforts, nativeEffortClamp, nativeOpenAiContextWindow, nativeOpenAiMaxInputTokens, type CatalogModel } from "../codex/catalog";
+import { catalogModelEfforts, nativeEffortClamp, nativeOpenAiContextWindow, nativeOpenAiMaxInputTokens, type CatalogModel, type NativeContextLimitsInput } from "../codex/catalog";
 import { claudeCodeAlias, claudeCodeNativeAlias } from "./alias";
 import { desktop3pAlias } from "./desktop-3p";
 import { AUTO_CONTEXT_OFF, type AutoContextMode } from "./context-windows";
@@ -108,7 +108,7 @@ export function buildAnthropicModelInfos(
   auto: AutoContextMode = AUTO_CONTEXT_OFF,
   idStyle: AnthropicIdStyle = "desktop3p",
   aliasForRoute: (provider: string, modelId: string) => string = desktop3pAlias,
-  nativeContextCap?: number,
+  nativeContextCap?: NativeContextLimitsInput,
 ): AnthropicModelInfo[] {
   const out: AnthropicModelInfo[] = [];
   const seen = new Set<string>();

@@ -15,7 +15,7 @@ import {
   ClaudeCodeSettingsCard,
 } from "./claude-code-sections";
 import { serializeSidecarOverride } from "./claude-code-sidecar";
-import { formatCompactWindow, newClientId, type ClaudeCodeState, type MapRow } from "./claude-code-types";
+import { AUTO_COMPACT_WINDOW_DEFAULT, formatCompactWindow, newClientId, type ClaudeCodeState, type MapRow } from "./claude-code-types";
 import { SmallFastModelSetting } from "./claude-code-settings";
 
 export { AutoConnectSetting, SmallFastModelSetting } from "./claude-code-settings";
@@ -104,14 +104,21 @@ export default function ClaudeCode({ apiBase, active = true }: { apiBase: string
   );
 
   // Auto-compact window presets (devlog 020 + user request): dropdown like the model
-  // pickers. "" = 350k default; a saved off-ladder value is surfaced as its own option.
+  // pickers. "" means "use the runtime default"; a saved off-ladder value is surfaced as
+  // its own option. The default itself is on the ladder so the empty choice and the
+  // explicit one are visibly the same number.
   const autoCompactOptions = useMemo(() => {
-    const ladder = [100_000, 200_000, 250_000, 300_000, 350_000, 400_000, 500_000, 600_000, 750_000, 900_000, 1_000_000];
+    const ladder = [
+      100_000, 200_000, 250_000, 300_000, 350_000, 400_000, 500_000, 600_000, 750_000,
+      AUTO_COMPACT_WINDOW_DEFAULT, 900_000, 1_000_000,
+    ].sort((a, b) => a - b);
     // Compact SI-style units (1M / 350k) — technical number format, not prose.
     const current = state?.autoCompactWindow ?? null;
     const values = current !== null && !ladder.includes(current) ? [...ladder, current].sort((a, b) => a - b) : ladder;
     return [
-      { value: "", label: t("claude.autoCompactDefault") },
+      // The label carries the number instead of hardcoding it in nine locale files, which
+      // is how "350k (default)" survived a default change.
+      { value: "", label: t("claude.autoCompactDefault", { value: formatCompactWindow(AUTO_COMPACT_WINDOW_DEFAULT, localeTag) }) },
       ...values.map(value => ({ value: String(value), label: formatCompactWindow(value, localeTag) })),
     ];
   }, [state?.autoCompactWindow, t, localeTag]);

@@ -1,13 +1,15 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { INTERNAL_DEADLINE_MS } from "./helpers/test-budget";
+import { INTERNAL_DEADLINE_MS, SPAWN_BUDGET_MS } from "./helpers/test-budget";
 
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(repoRoot, "src", "cli", "index.ts");
+
+setDefaultTimeout(SPAWN_BUDGET_MS);
 
 function runCli(args: string[], env: Record<string, string> = {}) {
   const result = spawnSync(process.execPath, [cliPath, ...args], {

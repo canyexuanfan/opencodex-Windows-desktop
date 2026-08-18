@@ -93,9 +93,8 @@ describe("anthropic-flavor ModelInfo discovery entries (devlog 130 B4b)", () => 
     const infos = buildAnthropicModelInfos(["gpt-5.6-sol", "gpt-5.5"], []);
     const sol = infos.find(i => i.display_name === "gpt-5.6-sol (native)");
     const gpt55 = infos.find(i => i.display_name === "gpt-5.5 (native)");
-    // max_input_tokens is an INPUT limit: the 5.6 family advertises a 1,050,000 window but
-    // refuses input past 922,000 (measured), so the row reports the ceiling, not the window.
-    expect(sol!.max_input_tokens).toBe(922_000);
+    // Default native 5.6 follows the Codex 272k window, so the input ceiling matches it.
+    expect(sol!.max_input_tokens).toBe(272_000);
     expect(gpt55!.max_input_tokens).toBe(272_000);
   });
 
