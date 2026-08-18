@@ -84,3 +84,59 @@ These PRs change how the client identifies itself upstream. Before merging eithe
 must show no token, account id, or project value reaching a snapshot, log, or test fixture —
 `AGENTS.md` treats credential handling as a release blocker, and a fingerprint change is
 exactly where a capture fixture tends to acquire one by accident.
+## Corrections from the WP8 audit — the order inverts, and #1891 holds
+
+**#1891 is a leak, not a fingerprint change, and my accept criterion caught nothing because I
+treated it as a box to tick rather than a live risk.**
+
+The criterion said "a UA override never leaks into body metadata." #1891 violates it. The
+change reads as consolidation — moving the `GOOGLE_ANTIGRAVITY_USER_AGENT` lookup out of the
+module constant and into `antigravityUserAgent()` — but that function has an untouched caller
+at `src/oauth/google-antigravity.ts:114` which puts its return value in the `onboardUser`
+**request body** as `ide_version`. So the override widens from one destination to two.
+
+Reproduced in a scratch worktree, same env var, `dev` versus `dev`+#1891:
+
+```
+baseline dev  → ide_version = antigravity/ide/2.5.5 (aidev_client; os_type=windows; arch=amd64)
+dev + #1891   → ide_version = LEAK-CANARY/1.0
+```
+
+**The dependency runs opposite to my reorder.** I put #1889 last because it is the only PR with
+red CI. But #1889 is the PR that makes `ide_version` a real version constant — it *closes* the
+hole #1891 widens. Ordering by CI colour put the fix behind the regression. The correct
+sequence is: sponsor and land **#1889 first**, then #1891 becomes safe.
+
+That does not change my refusal to self-apply `maintainer-sponsored` on #1889 — it makes the
+refusal costlier, which is the honest position rather than a reason to reconsider.
+
+### Other findings
+
+- **#1891 adds `PI_AI_ANTIGRAVITY_USER_AGENT`**, an env var with no references anywhere else in
+  `src/`, `tests/`, or `docs-site/` — a second undocumented spoofing knob under a title about
+  token order.
+- **#1891's central claim is asserted, not attached.** It cites a decompiled address and live
+  200s, but no disassembly excerpt or redacted capture is in the diff. For a change whose whole
+  value is matching an observed client, the observation is the artifact. Requested on the PR.
+- **#1891 is clean on secrets** — no token, account id, or project value in the diff, fixtures,
+  or added tests. Checked specifically.
+- **#1897 misses one of its four cache-contract requirements**: invalidation on authorization
+  failure. `markProviderDiscoveryFailed` neither clears the cache nor bumps the generation, so a
+  stale wire-ID map survives a 401/403. Incremental gap rather than regression — there was no
+  wire-ID cache before — so it did not hold the merge, and it is recorded on the PR.
+
+### Corrections to this document
+
+`#1889` has **4** failing checks at head, not 5 as the original text said. And `#1906` is an
+**issue**, not a PR — the earlier correction reached the right state through the wrong object
+type.
+
+## WP8 outcome
+
+| PR | Outcome | Evidence |
+|----|---------|----------|
+| #1897 | merged | `aca3c0241`; verified in a scratch worktree since no CI run existed at head — 99 pass / 0 fail plus `tsc` clean |
+| #1891 | **held** | routes a user-controlled env var into an upstream request body; needs #1889 first |
+| #1889 | **blocked** | unsponsored `src/oauth/` surface; draft |
+| #1836 | already closed | nothing to do |
+| #1906 | open issue | the undocumented-`v1internal` policy call belongs to the user |
