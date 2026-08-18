@@ -100,3 +100,29 @@ git log --oneline -10 origin/dev
 For each layer: the pre-merge `ls-remote` SHA equal to the then-current
 `EXPECTED_DEV`, recorded. Then exit 0 from `--is-ancestor` for the final tip, plus
 the `origin/dev` log showing all three merges.
+
+## Hand `MERGED_DEV` to WP6
+
+After PR3 merges, name the result and pass it on rather than letting `050` re-read a
+moving ref:
+
+    MERGED_DEV=$(git ls-remote origin refs/heads/dev | cut -f1)
+    git merge-base --is-ancestor "$VERIFIED_TIP" "$MERGED_DEV"      # exit 0
+
+`050` gates exactly that SHA. Same reason as every other named artifact here: a
+phase that re-reads a mutable ref is not verifying what the previous phase produced
+(audits `r7`, `r8`, `r10`).
+
+## Hand `MERGED_DEV` to WP6
+
+After PR3 merges, name the result and pass it on rather than letting `050` re-read a
+moving ref:
+
+```
+MERGED_DEV=$(git ls-remote origin refs/heads/dev | cut -f1)
+git merge-base --is-ancestor "$VERIFIED_TIP" "$MERGED_DEV"      # exit 0
+```
+
+`050` gates exactly that SHA. Same reason as every other named artifact here: a
+phase that re-reads a mutable ref is not verifying what the previous phase produced
+(audits `r7`, `r8`, `r10`).

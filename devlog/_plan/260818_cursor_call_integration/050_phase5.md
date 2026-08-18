@@ -26,6 +26,12 @@ ssh lidge 'cd /tmp/ocx-dev-<SHORTSHA> && bun run build:gui'
 ssh lidge 'cd /tmp/ocx-dev-<SHORTSHA> && bun test --isolate tests'
 ```
 
+`<MERGED_DEV_SHA>` is `MERGED_DEV` as recorded at the end of `040` — the SHA `dev`
+carried when PR3 landed, already proven to descend from `VERIFIED_TIP`. Do not
+substitute a fresh read of `origin/dev`: if someone else pushed in between, these
+gates would describe a tree this campaign never produced, and a green result would be
+attributed to work that is not ours (audit `r13` sweep).
+
 Never `checkout -f` the shared `~/Developer/opencodex`. Remove the worktree when
 done.
 
@@ -86,4 +92,3 @@ Write `060_release_readiness.md` with:
 
 All gate commands exit 0 at a named `dev` SHA, the live refs in the note match a
 `git ls-remote` run recorded alongside them, and the note is committed.
-
