@@ -334,7 +334,9 @@ describe("Cursor tool definitions", () => {
     expect(note).toContain("current tool catalog as ground truth");
     expect(note).toContain("This turn does not expose neighboring-agent tool names `Read`, `Grep`, `Glob`, `Bash`, `LS`");
     expect(note).toContain("not an external MCP server tool");
-    expect(note).toContain("Never tell the user that shell or read access is blocked");
+    expect(note).toContain("Prefer the Codex shell bridge over Cursor-native Shell/Read");
+    expect(note).not.toContain("Never tell the user");
+    expect(note).not.toContain("silently call");
     expect(note).toContain("prefer one response containing multiple tool calls");
     expect(note).toContain("Use MCP only for explicit discovery/resource tasks");
     expect(note).toContain("not generic tool-count demos");
@@ -349,7 +351,9 @@ describe("Cursor tool definitions", () => {
     expect(note).toContain("`shell_command`");
     expect(note).toContain("`shell_command` and `exec_command` are aliases of the same bridge");
     expect(note).toContain("mcp_opencodex-responses_shell_command");
-    expect(note).toContain("Never tell the user that shell or read access is blocked");
+    expect(note).toContain("Prefer the Codex shell bridge over Cursor-native Shell/Read");
+    expect(note).not.toContain("Never tell the user");
+    expect(note).not.toContain("silently call");
   });
 
   test("adds host-shell-neutral PowerShell and one-retry-stop guidance (#604)", () => {
@@ -401,6 +405,25 @@ describe("Cursor tool definitions", () => {
     expect(note).toContain("available tool names are exactly `exec_command`, `Glob`");
     expect(note).toContain("This turn does not expose neighboring-agent tool names `Read`, `Grep`, `Bash`, `LS`");
     expect(note).not.toContain("`Read`, `Grep`, `Glob`, `Bash`, `LS`");
+  });
+
+  test("treats GJC lowercase read/find/bash as covering neighboring-agent names (#1992)", () => {
+    const tools: OcxTool[] = [
+      { name: "exec_command", description: "Run", parameters: {} },
+      { name: "read", description: "Read a file", parameters: {} },
+      { name: "find", description: "Find files", parameters: {} },
+      { name: "bash", description: "Run a command", parameters: {} },
+    ];
+
+    const note = buildCursorToolGuidanceSystemNote(tools);
+    expect(note).toBeDefined();
+    if (!note) throw new Error("Expected Cursor tool guidance note");
+
+    expect(note).toContain("available tool names are exactly `exec_command`, `read`, `find`, `bash`");
+    expect(note).toContain("This turn does not expose neighboring-agent tool names `Grep`, `LS`");
+    expect(note).not.toContain("`Read`");
+    expect(note).not.toContain("`Glob`");
+    expect(note).not.toContain("`Bash`");
   });
 
   test("omits Cursor tool guidance when no tools are advertised", () => {
