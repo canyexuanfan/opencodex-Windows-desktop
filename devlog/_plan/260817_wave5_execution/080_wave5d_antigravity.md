@@ -86,8 +86,19 @@ must show no token, account id, or project value reaching a snapshot, log, or te
 exactly where a capture fixture tends to acquire one by accident.
 ## Corrections from the WP8 audit — the order inverts, and #1891 holds
 
-**#1891 is a leak, not a fingerprint change, and my accept criterion caught nothing because I
-treated it as a box to tick rather than a live risk.**
+**#1891 violates this wave's own accept criterion, and I treated that criterion as a box to
+tick rather than a live risk.**
+
+*Wording corrected after review: I first called this a "leak." It is not one.* The env var is
+set by whoever controls the process, and anyone who can set it can already read the token file
+or patch the source. No trust boundary is crossed and no secret escapes. It is a **contract
+violation and a correctness foot-gun**, and calling it a leak in a section headed "security
+posture" inflates a real finding into a wrong category — which is exactly how you lose
+credibility on the next finding that genuinely is severe.
+
+The sharper objection, which I also missed: on `dev` today `ide_version` is *already* the full
+UA string. The wrongness predates #1891 entirely. #1891 does not open a channel — it makes an
+already-wrong channel operator-steerable.
 
 The criterion said "a UA override never leaks into body metadata." #1891 violates it. The
 change reads as consolidation — moving the `GOOGLE_ANTIGRAVITY_USER_AGENT` lookup out of the
@@ -135,8 +146,8 @@ type.
 
 | PR | Outcome | Evidence |
 |----|---------|----------|
-| #1897 | merged | `aca3c0241`; verified in a scratch worktree since no CI run existed at head — 99 pass / 0 fail plus `tsc` clean |
-| #1891 | **held** | routes a user-controlled env var into an upstream request body; needs #1889 first |
+| #1897 | merged | `aca3c0241`; **macOS-only** local verification — 99 pass / 0 fail plus `tsc` clean. No CI run existed at head, which is a fact about fork policy rather than an unavoidable constraint: pushing the head to a repo branch would have triggered `push` CI. Judged not worth it for a pure-TypeScript diff with no platform-sensitive APIs |
+| #1891 | **held** | makes an operator env var steerable into an upstream request body; violates this wave's accept criterion; needs #1889 first. Note its head also has **no test CI** — the four green checks are governance gates, not tests |
 | #1889 | **blocked** | unsponsored `src/oauth/` surface; draft |
 | #1836 | already closed | nothing to do |
 | #1906 | open issue | the undocumented-`v1internal` policy call belongs to the user |
