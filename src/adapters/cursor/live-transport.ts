@@ -410,6 +410,12 @@ class LiveCursorTransport implements CursorTransport {
   private firstFrameTimer?: ReturnType<typeof setTimeout>;
   private committed = false;
   private expectedClose = false;
+  /**
+   * True once a terminal (`done` or `error`) has been admitted to the outbound queue. Read only
+   * by the EOF branch below: after a mapper error the bridge has already failed the turn, so
+   * failing again on EOF would add a duplicate adapter error for no benefit.
+   */
+  private emittedTerminal = false;
   private pendingFinalize?: ReturnType<typeof setTimeout>;
   private readonly clientToolFinalizeGraceMs: number;
   private activeClientToolFinalizeGraceMs: number;
@@ -532,6 +538,7 @@ class LiveCursorTransport implements CursorTransport {
     const push = (message: CursorServerMessage) => {
       const bytes = new TextEncoder().encode(JSON.stringify(message)).byteLength;
       this.reserveTransportBytes(bytes);
+      if (message.type === "done" || message.type === "error") this.emittedTerminal = true;
       queue.push({ message, bytes });
       wake();
     };
@@ -771,6 +778,7 @@ class LiveCursorTransport implements CursorTransport {
     this.turnStartedAt = Date.now();
     this.framesReceived = 0;
     this.sawAssistantText = false;
+    this.emittedTerminal = false;
     this.firstFrameAt = undefined;
     this.firstFrameLogged = false;
     const dialHost = cursorHostLabel(this.input.provider.baseUrl || "https://api2.cursor.sh");
@@ -1028,7 +1036,9 @@ class LiveCursorTransport implements CursorTransport {
           settler.settleFail(new Error("Cursor stream ended before any response frame (unexpected EOF)"));
           return;
         }
-        if (state.terminated || this.expectedClose) {
+        // `emittedTerminal` joins dev's two conditions so EOF finalization cannot append a
+        // second terminal after a mapper error already failed the turn (integration 010).
+        if (state.terminated || this.expectedClose || this.emittedTerminal) {
           releaseBacklogLease();
           settler.settleFinish();
           return;
