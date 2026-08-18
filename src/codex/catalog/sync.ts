@@ -307,8 +307,8 @@ export function deriveEntry(
     if (isRouted) {
       // A routed model is NOT the native template: never inherit its context
       // window when /models omits context metadata (#992). Known metadata
-      // restores exact values below; otherwise the strict-fields fallback
-      // supplies the conservative 128k triple.
+      // restores exact values below; an enabled Context cap fills the gap;
+      // otherwise the strict-fields fallback supplies the 128k triple.
       if (!codexForwardNativeCapabilityAlias) {
         delete e.context_window;
         delete e.max_context_window;

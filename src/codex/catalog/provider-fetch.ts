@@ -39,7 +39,7 @@ import {
 import type { FastPolicyAuthority } from "../../providers/fastwire";
 import { effectiveGoogleMode, getProviderRegistryEntry, providerMatchesRegistryTransport } from "../../providers/registry";
 import { parseAntigravityAvailableModels, registerAntigravityDiscoveredWireModels } from "../../providers/antigravity-models";
-import { applyProviderContextCap, providerContextCap } from "../../providers/context-cap";
+import { applyProviderContextCap, providerContextCap, resolveUnknownRoutedContextWindow } from "../../providers/context-cap";
 import { routedSlug, slugEquals, slugsEquivalent } from "../../providers/slug-codec";
 import { CODEX_GPT5_IDENTITY_LINE } from "../../adapters/identity";
 import { filterCursorConfiguredModelsByLiveDiscovery } from "../../adapters/cursor/discovery";
@@ -648,15 +648,16 @@ export function applyProviderConfigHints(name: string, prov: OcxProviderConfig, 
   const supportsReasoningSummaries = configuredReasoningSummarySupport(prov, model.id);
   const supportsServiceTier = serviceTierSupportForModel(prov, model.id, name);
   const { supportsServiceTier: _staleServiceTier, ...modelWithoutServiceTier } = model;
+  // 已发现窗口只允许被配置值压低；缺窗口时，已开的 Context cap 就是实际窗口。
+  const discoveredWindow = typeof model.contextWindow === "number" && model.contextWindow > 0
+    ? model.contextWindow
+    : undefined;
+  const hintedWindow = discoveredWindow !== undefined
+    ? (configuredCap !== undefined ? Math.min(discoveredWindow, configuredCap) : discoveredWindow)
+    : (configuredCap ?? (providerCap !== undefined ? resolveUnknownRoutedContextWindow(providerCap) : undefined));
   const hinted = {
     ...modelWithoutServiceTier,
-    ...(configuredCap !== undefined
-      ? {
-        contextWindow: typeof model.contextWindow === "number" && model.contextWindow > 0
-          ? Math.min(model.contextWindow, configuredCap)
-          : configuredCap,
-      }
-      : {}),
+    ...(hintedWindow !== undefined ? { contextWindow: hintedWindow } : {}),
     ...(inputModalities ? { inputModalities } : {}),
     ...(reasoningEfforts !== undefined ? { reasoningEfforts } : {}),
     ...(configuredMaxInput !== undefined
@@ -695,9 +696,11 @@ export function applyConfigHintsToCachedModels(name: string, prov: OcxProviderCo
 
 
 /**
- * Last-resort context window for combo member synthesis when discovery and
- * provider config both omit one. Matches the catalog entry default in
- * `normalizeRoutedCatalogEntry` so incomplete live rows still catalog.
+ * Last-resort context window for combo member synthesis when discovery,
+ * provider config, and an enabled Context cap all omit one. Matches the
+ * catalog entry default in `normalizeRoutedCatalogEntry` so incomplete live
+ * rows still catalog. An enabled Context cap is the operator-facing window,
+ * not a clamp on this placeholder.
  */
 const COMBO_MEMBER_CONTEXT_FALLBACK = 128_000;
 
@@ -715,9 +718,9 @@ interface ComboCatalogMemberFallback {
  * lacks a positive contextWindow, synthesize from the (registry-enriched)
  * provider config so combos remain catalogued when targets are configured but
  * discovery metadata is incomplete. Disabled providers stay unresolved.
- * When hints still omit contextWindow, prefer known maxInputTokens, else
- * COMBO_MEMBER_CONTEXT_FALLBACK so a live row without ctx does not drop the
- * whole combo from the public catalog.
+ * When hints still omit contextWindow, prefer known maxInputTokens, else the
+ * enabled Context cap, else COMBO_MEMBER_CONTEXT_FALLBACK so a live row
+ * without ctx does not drop the whole combo from the public catalog.
  */
 export function resolveComboCatalogMember(
   target: { provider: string; model: string },
@@ -806,12 +809,15 @@ export function resolveComboCatalogMember(
   const uncappedContext = hintedContext
     ?? knownMaxInput
     ?? fallbackContext
-    ?? (existing || prov ? COMBO_MEMBER_CONTEXT_FALLBACK : undefined);
+    ?? (existing || prov ? resolveUnknownRoutedContextWindow(contextCap) : undefined);
   if (uncappedContext === undefined) return undefined;
-  const usedFallback = hintedContext === undefined;
-  const cappedContext = applyProviderContextCap(uncappedContext, contextCap);
+  // 真发现值才压低。resolveUnknownRoutedContextWindow 已经把 cap 当成窗口填进去了，不能再 min 一次。
+  const usedDiscoveredWindow = hintedContext !== undefined || knownMaxInput !== undefined || fallbackContext !== undefined;
+  const cappedContext = usedDiscoveredWindow
+    ? applyProviderContextCap(uncappedContext, contextCap)
+    : uncappedContext;
   const contextWindow = cappedContext ?? uncappedContext;
-  const fallbackCapped = usedFallback
+  const fallbackCapped = usedDiscoveredWindow
     && contextCap !== undefined
     && cappedContext !== undefined
     && cappedContext !== uncappedContext;
