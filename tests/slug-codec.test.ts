@@ -235,6 +235,7 @@ describe("routeModel decode (proxy layer)", () => {
     expect(admitted.modelId).toBe("openai/gpt-5.5");
     setCached("zenmux", [{ provider: "zenmux", id: "openai-gpt-5.5" }]);
     expect(() => routeModel(config, "zenmux/openai-gpt-5.5")).toThrow(/ambiguous/);
+  });
 
   test("commandcode API-key preset decodes its native slash ids from the registry effort table", () => {
     // Regression: the `commandcode` (API-key) registry entry must share the official
@@ -254,7 +255,6 @@ describe("routeModel decode (proxy layer)", () => {
     expect(ids).toContain("zai-org/GLM-5.3");
     expect(decodeRoutedModelId("deepseek-deepseek-v4-pro", ids)).toBe("deepseek/deepseek-v4-pro");
     expect(decodeRoutedModelId("zai-org-GLM-5.3", ids)).toBe("zai-org/GLM-5.3");
-
   });
 });
 
