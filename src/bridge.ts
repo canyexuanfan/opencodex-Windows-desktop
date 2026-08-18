@@ -9,7 +9,7 @@ import type {
 import { coerceIntegerToolArguments } from "./lib/tool-argument-integers";
 import { adapterFailureFromMessage, classifyError, CYBER_POLICY_ERROR_CODE, isCyberPolicyCode, type OcxErrorPayload } from "./lib/errors";
 import { encodeCompactionSummary } from "./responses/compaction";
-import { isTruncatedStopReason } from "./responses/truncated-stop-reason";
+import { isTruncatedStopReason, truncationReasonFor } from "./responses/truncated-stop-reason";
 import { encodeReasoningEnvelope, type ReasoningEnvelope } from "./responses/reasoning-envelope";
 import { rememberReasoningForCall } from "./responses/reasoning-replay-cache";
 import {
@@ -1169,14 +1169,18 @@ export function bridgeToResponsesSSE(
                 retainFinishedItem(item as OutputItem, compactionTextBytes);
                 outputIndex++;
               }
-              if (event.stopReason === "max_tokens" || event.stopReason === "content_filter") {
+              // Recognize every adapter's truncation vocabulary, not just the canonical pair.
+              // Suppression and terminal status must agree: withholding the compaction item while
+              // still reporting success hands codex-rs a completed response with zero compaction
+              // items, which it treats as fatal.
+              if (truncationReasonFor(event.stopReason)) {
                 // Upstream stopped before a normal completion. Surface as incomplete so the
                 // client can distinguish a truncated/filtered turn from a finished one.
                 const response = {
                   ...responseSnapshot("incomplete", finishedItems, event.endTurn),
                   usage: responsesUsage(event.usage),
                   incomplete_details: {
-                    reason: event.stopReason === "max_tokens" ? "max_output_tokens" : "content_filter",
+                    reason: truncationReasonFor(event.stopReason) ?? "content_filter",
                   },
                 };
                 // Cache max-output partials so previous_response_id replay can continue them;
@@ -1812,7 +1816,13 @@ function buildResponseJSONWithBudget(
         rawStopReason = e.stopReason;
         if (e.providerState) options?.onProviderState?.(e.providerState);
         // Match streaming: max_tokens and content_filter both terminate as incomplete.
-        if (e.stopReason === "max_tokens" || e.stopReason === "content_filter") stopReason = e.stopReason;
+        // Normalize every adapter's truncation vocabulary to the canonical pair, so a raw
+        // `length` or `refusal` reaches the status/incomplete_details logic below instead of
+        // silently reading as a clean stop.
+        {
+          const truncation = truncationReasonFor(e.stopReason);
+          if (truncation) stopReason = truncation === "max_output_tokens" ? "max_tokens" : "content_filter";
+        }
         break;
     }
     if (budget) releaseTranslatedEvent(e, budget);

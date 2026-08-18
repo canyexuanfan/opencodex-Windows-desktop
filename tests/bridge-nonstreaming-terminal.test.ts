@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { bridgeToResponsesSSE, buildResponseJSON } from "../src/bridge";
+import { isTruncatedStopReason, truncationReasonFor } from "../src/responses/truncated-stop-reason";
 import type { AdapterEvent } from "../src/types";
 
 async function sseText(events: AdapterEvent[]): Promise<string> {
@@ -189,6 +190,16 @@ describe("truncation is recognized regardless of adapter vocabulary", () => {
   // half-written summary as replacement history (#422).
   const delta = (t: string) => ({ type: "text_delta", text: t }) as AdapterEvent;
 
+  async function streamTerminal(events: AdapterEvent[]): Promise<string> {
+    async function* source(): AsyncGenerator<AdapterEvent> {
+      for (const e of events) yield e;
+    }
+    const text = await new Response(bridgeToResponsesSSE(
+      source(), "routed/model", undefined, undefined, undefined, undefined, 2_000, { compaction: true },
+    )).text();
+    return terminalEventNames(text)[0] ?? "";
+  }
+
   async function streamCompactionItems(events: AdapterEvent[]): Promise<number> {
     async function* source(): AsyncGenerator<AdapterEvent> {
       for (const e of events) yield e;
@@ -224,6 +235,10 @@ describe("truncation is recognized regardless of adapter vocabulary", () => {
 
       expect(await streamCompactionItems(events)).toBe(0);
       expect(bufferedCompactionItems(events)).toBe(0);
+      // Suppression and terminal status must agree. Withholding the item while still reporting
+      // success hands codex-rs a completed response with ZERO compaction items, which is fatal.
+      expect(await streamTerminal(events)).toBe("response.incomplete");
+      expect(buildResponseJSON(events, "routed/model", { compaction: true }).status).toBe("incomplete");
     });
   }
 
@@ -243,5 +258,34 @@ describe("truncation is recognized regardless of adapter vocabulary", () => {
 
     expect(await streamCompactionItems(events)).toBe(1);
     expect(bufferedCompactionItems(events)).toBe(1);
+  });
+});
+
+describe("truncated-stop-reason classifier", () => {
+  test("matches every adapter vocabulary case-insensitively", () => {
+    for (const reason of [
+      "max_tokens", "content_filter",              // canonical
+      "length", "content-filter", "error",          // Command Code / AI SDK
+      "refusal", "model_context_window_exceeded",   // Anthropic
+      "MAX_TOKENS", "SAFETY", "MALFORMED_FUNCTION_CALL", "IMAGE_SAFETY", "LANGUAGE", // Gemini
+      "Safety", "safety",                           // mixed case must not slip through
+    ]) {
+      expect(isTruncatedStopReason(reason)).toBe(true);
+    }
+  });
+
+  test("normal stops are never treated as truncation", () => {
+    // A false positive costs a compaction item, and codex-rs fatals on zero.
+    for (const reason of ["end_turn", "stop", "stop_sequence", "tool_use", "STOP", "tool-calls", undefined]) {
+      expect(isTruncatedStopReason(reason)).toBe(false);
+    }
+  });
+
+  test("truncation maps to the right incomplete_details reason", () => {
+    expect(truncationReasonFor("length")).toBe("max_output_tokens");
+    expect(truncationReasonFor("model_context_window_exceeded")).toBe("max_output_tokens");
+    expect(truncationReasonFor("refusal")).toBe("content_filter");
+    expect(truncationReasonFor("SAFETY")).toBe("content_filter");
+    expect(truncationReasonFor("end_turn")).toBeUndefined();
   });
 });
