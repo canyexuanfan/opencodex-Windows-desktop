@@ -12,7 +12,7 @@ import { CODEX_REASONING_LEVELS, codexEffortRank, configuredReasoningEfforts, mo
 import { getModelMetadata, getModelMetadataCaseInsensitive, listModelMetadata, resolveMetadataProvider } from "../../generated/model-metadata";
 import { enrichProviderFromRegistry, shouldCaseFoldMetadataModelId } from "../../providers/derive";
 import { getProviderRegistryEntry } from "../../providers/registry";
-import { applyProviderContextCap, providerContextCap } from "../../providers/context-cap";
+import { applyProviderContextCap, providerContextCap, resolveUnknownRoutedContextWindow } from "../../providers/context-cap";
 import { routedSlug, slugEquals, slugsEquivalent } from "../../providers/slug-codec";
 import { CODEX_GPT5_IDENTITY_LINE } from "../../adapters/identity";
 import { filterCursorConfiguredModelsByLiveDiscovery } from "../../adapters/cursor/discovery";
@@ -122,11 +122,14 @@ export function applyCatalogModelMetadata(entry: RawEntry, model?: CatalogModel)
   // so genuine upstream marketing names are preserved untouched.
   const displayName = typeof model.displayName === "string" ? model.displayName.trim() : "";
   if (displayName) entry.display_name = displayName;
-  if (typeof model.contextWindow === "number" && model.contextWindow > 0) {
-    entry.context_window = model.contextWindow;
-    entry.max_context_window = model.contextWindow;
+  const resolvedContext = typeof model.contextWindow === "number" && model.contextWindow > 0
+    ? model.contextWindow
+    : (model.contextCap !== undefined ? resolveUnknownRoutedContextWindow(model.contextCap) : undefined);
+  if (typeof resolvedContext === "number" && resolvedContext > 0) {
+    entry.context_window = resolvedContext;
+    entry.max_context_window = resolvedContext;
     entry.auto_compact_token_limit = Math.min(
-      Math.floor(model.contextWindow * 0.9),
+      Math.floor(resolvedContext * 0.9),
       model.maxInputTokens ?? Number.POSITIVE_INFINITY,
     );
   }
