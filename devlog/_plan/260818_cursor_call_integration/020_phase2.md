@@ -64,13 +64,24 @@ live `dev` head legitimately differs from the original.
 
 ## Gates
 
-```
-bun x tsc --noEmit
-bun run privacy:scan
-bun run audit:high
-bun test --isolate tests
-bun run build:gui        # see r3 F4 — publish runs this unconditionally
-```
+Every gate runs INSIDE the pinned worktree, over ssh, with the SHA re-asserted first
+(audit `r14`). Written as bare local commands they would execute against whatever
+directory the operator happens to be in, and could pass for a tree that is not
+`VERIFIED_TIP`:
+
+    CC_WT="/tmp/ocx-cc-${VERIFIED_TIP:0:9}"
+    for GATE in \
+      "bun x tsc --noEmit" \
+      "bun run privacy:scan" \
+      "bun run audit:high" \
+      "bun run build:gui" \
+      "bun test --isolate tests"
+    do
+      ssh lidge "cd $CC_WT && test \"\$(git rev-parse HEAD)\" = \"$VERIFIED_TIP\" && $GATE"
+    done
+
+`build:gui` precedes the suite only because it is the shorter of the two long gates;
+order is not load-bearing. Run the suite as a managed background session and poll.
 
 `audit:high` and `privacy:scan` are in `scripts/release.ts:374,380`.
 `build:gui` is here because `prepublishOnly` (`package.json:49`) runs it on every
@@ -155,25 +166,34 @@ PR1's tests at `VERIFIED_TIP` proves nothing about PR1, because that tree alread
 contains PR2's and PR3's code — a PR1 test could pass only because of something a
 reviewer of PR1 will never see.
 
-The layer branches do not exist until `030` step 2, so this half of WP3 runs AFTER
-that step and before the PRs are opened. Order inside the work-phase, not a new
-work-phase:
+The layer branches do not exist until `030` step 2, and their head variables are not
+assigned until `030` step 4 (audit `r14`: an earlier draft of this section used
+`$PR1_HEAD` before that assignment). So this half of WP3 runs AFTER `030` step 4:
 
-1. `020` first half: gates at `VERIFIED_TIP` (full suite, typecheck, privacy:scan,
-   audit:high, build:gui) — this is the stack-tip evidence PR3 cites.
-2. `030` steps 0-3: bind to `VERIFIED_TIP`, cut `cursor-call-wire` and
-   `cursor-call-cancel`, prove the partition.
-3. `020` this half: one dedicated worktree per layer, pinned to that layer's head:
+1. `020` first half: the gate loop above at `VERIFIED_TIP` — the stack-tip evidence
+   PR3 cites.
+2. `030` steps 0-4: bind to `VERIFIED_TIP`, cut `cursor-call-wire` and
+   `cursor-call-cancel`, prove the partition, and assign `PR1_HEAD`/`PR2_HEAD`.
+3. `020` this half: one worktree per layer, pinned to that layer's head. The test
+   file list is spelled out per layer rather than left as a placeholder — a literal
+   `<that layer's files>` is a zsh parse error, not an instruction:
 
-       for LAYER_SHA in "$PR1_HEAD" "$PR2_HEAD"; do
-         ssh lidge "cd ~/Developer/opencodex && git fetch origin && git worktree add /tmp/ocx-L-${LAYER_SHA:0:9} $LAYER_SHA"
-         ssh lidge "cd /tmp/ocx-L-${LAYER_SHA:0:9} && test \"\$(git rev-parse HEAD)\" = \"$LAYER_SHA\" && bun install --frozen-lockfile"
-         ssh lidge "cd /tmp/ocx-L-${LAYER_SHA:0:9} && bun x tsc --noEmit"
-         ssh lidge "cd /tmp/ocx-L-${LAYER_SHA:0:9} && bun test <that layer's files from the table>"
-       done
+       PR1_TESTS="tests/cursor-eof-terminal.test.ts tests/cursor-hardening.test.ts tests/cursor-tool-result-image.test.ts tests/cursor-request-builder.test.ts"
+       PR2_TESTS="tests/cursor-cancel-provenance.test.ts tests/cursor-hardening.test.ts"
 
-   `PR3_HEAD` is `VERIFIED_TIP`, already covered by step 1 — do not re-run it.
-4. `030` step 4: push the branches and open the PRs, each citing ITS OWN run.
+       run_layer() {
+         local SHA="$1" TESTS="$2" WT="/tmp/ocx-L-${1:0:9}"
+         ssh lidge "cd ~/Developer/opencodex && git fetch origin && git worktree add $WT $SHA"
+         ssh lidge "cd $WT && test \"\$(git rev-parse HEAD)\" = \"$SHA\" && bun install --frozen-lockfile"
+         ssh lidge "cd $WT && bun x tsc --noEmit"
+         ssh lidge "cd $WT && bun test $TESTS"
+       }
+
+       run_layer "$PR1_HEAD" "$PR1_TESTS"
+       run_layer "$PR2_HEAD" "$PR2_TESTS"
+
+   `PR3_HEAD` equals `VERIFIED_TIP` and step 1 already covered it — do not re-run.
+4. `030` step 6: push the branches and open the PRs, each citing ITS OWN run.
 
 Every layer's evidence therefore names a SHA equal to that PR's head, which is the
 same SHA `040` asserts with `gh pr view --json headRefOid` before merging. Remove the

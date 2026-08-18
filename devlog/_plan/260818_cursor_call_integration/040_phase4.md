@@ -80,6 +80,28 @@ recorded:
 `test`, not a printed value: a comparison the operator has to eyeball is not a gate
 (audit `r13`). Repeat with `$PR2_HEAD` and `$PR3_HEAD` for the other two layers.
 
+### And assert the PR's live BASE (audit `r14`)
+
+The two checks above cover "has `dev` moved" and "has the PR head moved". Neither
+covers "is this PR still pointing at `dev`". A retarget — to `main`, or to a parent
+branch that has since merged — passes both, and `gh pr merge` would then merge into
+whatever base the PR now names. `030` prints the bases for inspection, which is not a
+gate.
+
+So the pre-merge check for EVERY layer is all three at once:
+
+    PR_BASE=$(gh pr view $PRN --json baseRefName --jq .baseRefName)
+    PR_HEAD=$(gh pr view $PRN --json headRefOid --jq .headRefOid)
+    test "$PR_BASE" = "dev"
+    test "$PR_HEAD" = "$EXPECTED_HEAD"
+    test "$(git ls-remote origin refs/heads/dev | cut -f1)" = "$EXPECTED_DEV"
+    gh pr merge $PRN --merge --admin
+
+`dev` is the only acceptable base for all three layers at merge time: PR1 targets it
+from the start, and PR2/PR3 are retargeted to it as their parents land
+(`AGENTS.md:218-225`). A base of `main` would be a policy violation, and a base still
+naming a merged parent branch would produce an empty or wrong diff.
+
 PR3's expected head is `VERIFIED_TIP` — the exact SHA `020` ran the full suite
 against. If any head differs, stop: either re-verify that tree through `020` or
 reset the branch to the recorded SHA. Never merge a head no gate has seen.
