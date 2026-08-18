@@ -26,7 +26,13 @@ function blobData(blobId: Uint8Array): Uint8Array {
   return kv.message.value.blobData;
 }
 
-/** Every content item Cursor will see for the tool result attached to the assistant's tool call. */
+/**
+ * Every content item the ENCODER emits for the tool result attached to the assistant's tool call.
+ * This is encoder-level: it calls encodeCursorRunRequest directly, so it deliberately bypasses the
+ * server's vision preprocessing. In production every Cursor model is in noVisionModels, so images
+ * are described or stripped before the adapter runs — these assertions prove encoder support, not
+ * end-to-end delivery.
+ */
 function toolResultItems(bytes: Uint8Array) {
   const msg = fromBinary(AgentClientMessageSchema, bytes);
   const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
@@ -88,7 +94,7 @@ describe("Cursor tool-result image passthrough", () => {
     expect(items!.length).toBe(2);
     expect(items![0].content.case).toBe("text");
     expect(items![0].content.case === "text" ? items![0].content.value.text : "").toBe("here is the screen");
-    // The decisive assertion: the model receives the actual bytes, not a placeholder.
+    // The decisive assertion: the encoder emits the actual bytes, not a placeholder.
     expect(items![1].content.case).toBe("image");
     if (items![1].content.case !== "image") throw new Error("expected image content");
     expect(items![1].content.value.mimeType).toBe("image/png");

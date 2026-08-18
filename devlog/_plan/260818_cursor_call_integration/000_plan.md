@@ -4,9 +4,16 @@
 
 Land the `cursor-call` tool-call hardening campaign on the current `dev` head, then
 carry it to a release-ready state. The campaign shipped against `f64c0639`
-(merge-base); `dev` has moved 104 commits since, and two of the source files we
+(merge-base); `dev` has moved 100+ commits since, and two of the source files we
 changed were changed there too — one of them for the SAME defect, in the opposite
 shape.
+
+**Moving-ref discipline (audit `r2` finding 2).** `dev` advances during this work:
+it was `87f7f970b` (+104) when the collision sweep ran and `e1bdbc1e5` (+124) a few
+minutes later. Every count below is therefore pinned to an immutable SHA, and the
+rebase re-reads `origin/dev` immediately before running rather than trusting a
+number written here. The COLLISION SET is what matters, and it was re-checked at
+the later head: still the same two paths.
 
 This unit is the integration record, not a re-decode. The decode unit is
 `devlog/_plan/260817_cursor_toolcall_decode/`.
@@ -22,12 +29,12 @@ the merge, the stack claim replaced) — they were not absorbed as wording tweak
 
 | Fact | Command |
 |------|---------|
-| merge-base = `f64c06391` | `git merge-base origin/dev cursor-call-prerebase-260818` |
-| snapshot `cursor-call-prerebase-260818` = `fe2237038`, 31 commits | `git rev-list --count <base>..cursor-call-prerebase-260818` |
-| `cursor-call` now 32 commits (this unit's plan commit `66b9df9ef` is the 32nd) | `git rev-list --count <base>..cursor-call` |
-| dev head = `87f7f970b`, 104 commits ahead of merge-base | `git rev-list --count cursor-call-prerebase-260818..origin/dev` |
-| snapshot touches **28** paths (18 source/test + 10 devlog) | `git diff --name-only <base> cursor-call-prerebase-260818` |
-| only 2 of the 28 were touched on dev | per-path `git log --oneline <base>..origin/dev -- <path>` |
+| merge-base = `f64c06391` (immutable) | `git merge-base origin/dev cursor-call-prerebase-260818` |
+| snapshot `cursor-call-prerebase-260818` = `fe2237038`, **31 commits** (immutable) | `git rev-list --count <base>..cursor-call-prerebase-260818` |
+| `cursor-call` is a MOVING ref: 32 commits at `66b9df9ef`, 34 at `be1b881ec`, and it keeps growing as this unit is written | `git rev-list --count <base>..cursor-call` |
+| `origin/dev` is a MOVING ref: +104 at `87f7f970b`, +124 at `e1bdbc1e5` | `git rev-list --count <base>..origin/dev` |
+| snapshot touches **28** paths (18 source/test + 10 devlog) (immutable) | `git diff --name-only <base> cursor-call-prerebase-260818` |
+| only 2 of the 28 were touched on dev — re-verified at `e1bdbc1e5` | per-path `git log --oneline <base>..origin/dev -- <path>` |
 
 The earlier draft said "18 files" while listing a devlog wildcard row; `r1` finding 6
 was right. 18 is the source+test count; 28 is the full path count.
@@ -69,9 +76,11 @@ upstream hazard `r1` found is not a renamed import — it is request PREPROCESSI
 ## Loop-spec
 
 - Loop archetype: verifier-defined (typecheck + full suite on lidge decide done).
-- Write scope: the 18 source/test paths above, plus `src/vision/index.ts` and
-  `src/providers/registry.ts` if WP2b's investigation concludes a fix belongs
-  there, plus this unit. No version bump, no npm publish, no `main` promotion.
+- Write scope: the 18 source/test paths above, plus this unit. `src/vision/index.ts`
+  and `src/providers/registry.ts` are **out** of scope: audit `r2` finding 3 is right
+  that a conditional clause letting WP2b expand into vision policy contradicts the
+  explicit deferral of F1. WP2b is about EOF usage and authorizes nothing in vision.
+  No version bump, no npm publish, no `main` promotion.
 - Tool/credential scope: local git, `ssh lidge` for verification, `gh`/GitHub app
   for PRs and the merge. Push to `origin/cursor-call` is pre-approved
   (`--no-verify`); force-push is inherent to the requested rebase and the snapshot
@@ -133,4 +142,3 @@ decode unit's docs. Landing a rebase does not make it worse.
    separately-advertised top-level `apply_patch` — the same affordance surface 030
    suspected, fixed independently on dev. Re-probing needs a user-supplied failing
    case.
-

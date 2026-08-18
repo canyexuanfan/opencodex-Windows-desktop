@@ -3,80 +3,127 @@
 Origin: audit `r1` finding F3. This work-phase exists **because** `010` chose dev's
 error-event shape; without it, choosing that shape would be a usage regression.
 
+Revised by audit `r2` finding 1: the value must be PARTIAL-failure usage, not
+clean-turn usage.
+
 ## The defect
 
 Two paths report a truncated Cursor turn, and only one of them reports tokens.
 
 | Path | Usage |
 |------|-------|
-| thrown transport failure | `attachPartialUsage` (`live-transport.ts:1195-1199`) → `cursor.ts:181-192` copies `partialUsage` into the error event | 
+| thrown transport failure | `attachPartialUsage` (`live-transport.ts:1193-1197`) → `cursor.ts:181-192` copies `partialUsage` into the error event |
 | `finalizeTurnEvents` open-tool branch | none (`protobuf-events.ts:1367-1372`) |
 
 `CursorServerMessage`'s error variant already carries usage
-(`src/adapters/cursor/types.ts:44-48`), and `resolvedTurnUsage(state)` is defined
-in the same file at `:1340` and already used by the `done` branch at `:1376`. So the
-omission is an oversight in the open-tool branch, not a design constraint.
+(`src/adapters/cursor/types.ts:44-48`). So the omission is an oversight in the
+open-tool branch, not a design constraint.
 
 Consequence: a turn that consumed real tokens and then truncated mid-tool-call
 reports `usageStatus: unreported` with 0 tokens — the exact failure mode
 `attachPartialUsage`'s own doc comment says it exists to prevent.
 
+## Which resolver (audit r2 finding 1)
+
+The first draft said `resolvedTurnUsage(state)`. That is wrong in one case, and the
+reason is worth stating because it is the same class of mistake this campaign made
+once before.
+
+`resolvedTurnUsage` (`protobuf-events.ts:1340-1352`) is the CLEAN-turn resolver: it
+falls back to the session carry-forward, then the request-local estimate, so it
+returns a number even when this turn produced no token signal at all.
+
+`partialUsageFromEventState` (`live-transport.ts:1178-1188`) exists precisely
+because that is wrong for a failure. It returns `undefined` unless this turn
+produced a checkpoint or a positive output delta, on its own stated grounds: "a
+carry-forward value belongs to an earlier successful turn ... cannot by itself prove
+that a first-frame failure consumed anything."
+
+An unconditional `resolvedTurnUsage` would therefore make the EOF error report
+stale or inferred consumption exactly where the thrown path correctly reports none.
+That trades one wrong number (0) for a different wrong number.
+
+Use the failure-specific helper. It currently lives in `live-transport.ts` while
+`finalizeTurnEvents` lives in `protobuf-events.ts`, and `protobuf-events.ts` imports
+nothing from the transport. So the helper moves DOWN to `protobuf-events.ts` (next
+to `resolvedTurnUsage`, which it already calls) and `live-transport.ts` imports it
+from there. That is the direction the dependency already runs; the reverse would
+create a cycle.
+
 ## MODIFY — `src/adapters/cursor/protobuf-events.ts`
 
-In `finalizeTurnEvents`, the open-tool branch:
+Move `partialUsageFromEventState` here from `live-transport.ts`, keeping its
+exported name and its doc comment (it is exported for unit testing and
+`live-transport.ts` keeps using it via import).
 
-```diff
-     for (const callId of openCallIds) state.translatorBudget?.closeCall(callId);
-     state.openToolCalls.clear();
--    return [{ type: "error", message: `Cursor stream ended with incomplete tool call(s): ${openIds}. Arguments may be truncated; the call was not committed.` }];
-+    // Same usage resolution as the clean `done` branch below. A truncated turn still consumed
-+    // tokens, and the error variant carries usage (types.ts CursorServerMessage). Without this the
-+    // event-shaped truncation reports 0 tokens / unreported, while the thrown path reports real
-+    // consumption via attachPartialUsage — so the choice of shape would change the bill.
-+    return [{
-+      type: "error",
-+      message: `Cursor stream ended with incomplete tool call(s): ${openIds}. Arguments may be truncated; the call was not committed.`,
-+      usage: resolvedTurnUsage(state),
-+    }];
-```
+Then, in `finalizeTurnEvents`, the open-tool branch:
 
-`resolvedTurnUsage` is already in scope (same module).
+    for (const callId of openCallIds) state.translatorBudget?.closeCall(callId);
+    state.openToolCalls.clear();
+    // A truncated turn still consumed tokens, and the error variant carries usage
+    // (types.ts CursorServerMessage). Use the FAILURE resolver, not resolvedTurnUsage:
+    // a carry-forward or request estimate belongs to an earlier successful turn and must
+    // not be reported as this turn's consumption. Absent when nothing was proven, which
+    // matches the thrown path exactly.
+    const partial = partialUsageFromEventState(state);
+    return [{
+      type: "error",
+      message: `Cursor stream ended with incomplete tool call(s): ${openIds}. Arguments may be truncated; the call was not committed.`,
+      ...(partial ? { usage: partial } : {}),
+    }];
 
-### Check before writing: does the adapter overwrite it?
+Note the spread: no `usage` key at all when this turn proved nothing.
 
-`src/adapters/cursor.ts:181-192` builds its error event from `err.partialUsage`.
-That is the THROWN path and is unrelated to an event that already flowed through
-the mapper. Confirm the mapper (`message-mapper.ts`) forwards `usage` on an error
-message rather than dropping it; if it drops it, the mapper is the real fix site
-and this doc gets amended at WP2b's P rather than patched blindly.
+## MODIFY — `src/adapters/cursor/live-transport.ts`
+
+Delete the local `partialUsageFromEventState` definition and import it from
+`./protobuf-events` alongside the existing `finalizeTurnEvents` import. Any test
+importing it from `live-transport.ts` must be repointed; check
+`rg -n 'partialUsageFromEventState' tests` first.
+
+## Confirmed before writing: the consumer forwards it
+
+`src/adapters/cursor/message-mapper.ts:29` maps an error message to
+`{ type: "error", message, ...(message.usage ? { usage: message.usage } : {}) }`, and
+`src/adapters/cursor.ts:127-142` emits the mapped event unchanged. The patch site is
+right and no mapper change is needed. (`cursor.ts:181-192` is the THROWN path's
+`err.partialUsage` handling, unrelated to an event that flowed through the mapper.)
 
 ## TESTS — `tests/cursor-eof-terminal.test.ts`
 
-Add a case, and drive it red first:
+Two cases, both driven red first.
 
-```ts
-test("an EOF truncation error reports the tokens the turn already consumed", async () => {
-  // A checkpoint/usage frame BEFORE the open tool call, then clean EOF with no terminal.
-  // Red before the fix: usage is undefined on the error event.
-  // ...arrange frames: assistant text with a token signal, toolCallStarted, then stream end
-  expect(errorEvent.usage).toBeDefined();
-  expect(errorEvent.usage?.outputTokens ?? 0).toBeGreaterThan(0);
-});
-```
+Positive — a real token signal this turn:
 
-The existing rewritten case from `010` asserts the SHAPE (error event, no `done`,
-no `tool_call_end`); this new one asserts the USAGE. Keeping them separate means a
-future change cannot quietly satisfy one by breaking the other — which is the
-mistake the decode campaign already made once, when a test titled "carrying usage"
-never asserted usage.
+    test("an EOF truncation error reports the tokens the turn already consumed", async () => {
+      // Assistant text plus a tokenDelta (or checkpoint) BEFORE the open tool call,
+      // then clean EOF with no terminal. Red before the fix: usage is undefined.
+      expect(errorEvent.usage).toBeDefined();
+      expect(errorEvent.usage?.outputTokens ?? 0).toBeGreaterThan(0);
+    });
+
+Negative — carry-forward only, which audit `r2` asked for. Without it, a later
+change could satisfy the positive case by reporting a previous turn's tokens:
+
+    test("an EOF truncation with no token signal this turn reports no usage at all", async () => {
+      // Seed a session carry-forward / request estimate, then open a tool call and EOF
+      // with NO checkpoint and NO tokenDelta this turn.
+      expect(errorEvent.usage).toBeUndefined();
+    });
+
+The rewritten case from `010` asserts the SHAPE (error event, no `done`, no
+`tool_call_end`); these assert the USAGE. Keeping them separate means a future
+change cannot quietly satisfy one by breaking the other — the mistake this campaign
+already made once, when a test titled "carrying usage" never asserted usage.
+
+`010`'s assertion uses `toMatchObject`, which tolerates the added `usage` property,
+so the two docs do not conflict (confirmed in audit `r2`).
 
 ## Verification (C)
 
-```
-bun test tests/cursor-eof-terminal.test.ts tests/cursor-hardening.test.ts \
-         tests/cursor-interaction-query.test.ts
-bun x tsc --noEmit
-```
+    bun test tests/cursor-eof-terminal.test.ts tests/cursor-hardening.test.ts \
+             tests/cursor-interaction-query.test.ts
+    bun x tsc --noEmit
 
 `tests/cursor-interaction-query.test.ts:148-185` is in the list because it is the
 existing contract for partial-usage reporting; this change must not disturb it.
