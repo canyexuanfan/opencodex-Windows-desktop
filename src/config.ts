@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, constants as fsConstants, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, constants as fsConstants, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
@@ -93,34 +93,13 @@ import { isHostedToolUnsupportedForModel } from "./responses/hosted-tool-policy"
 
 let _atomicSeq = 0;
 
-interface AtomicRenameIO {
-  platform: NodeJS.Platform;
-  rename: (source: string, destination: string) => void;
-  sleep: (milliseconds: number) => void;
-}
-
-export function renameAtomicFile(
-  source: string,
-  destination: string,
-  io: AtomicRenameIO = {
-    platform: process.platform,
-    rename: renameSync,
-    sleep: Bun.sleepSync,
-  },
-): void {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      io.rename(source, destination);
-      return;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      const transientWindowsError = io.platform === "win32"
-        && (code === "EBUSY" || code === "EPERM" || code === "EACCES");
-      if (!transientWindowsError || attempt >= 2) throw error;
-      io.sleep(25 * (attempt + 1));
-    }
-  }
-}
+// The Windows-tolerant replace lives in lib/windows-atomic-replace: config-ownership
+// is one of its callers and this module already imports config-ownership, so
+// exporting it from here would close an import cycle. Re-exported because these
+// names are part of this module's public surface and its callers.
+export type { AtomicRenameIO } from "./lib/windows-atomic-replace";
+export { renameAtomicFile } from "./lib/windows-atomic-replace";
+import { renameAtomicFile, renameAtomicFileAsync } from "./lib/windows-atomic-replace";
 
 /**
  * Write a file atomically (temp + rename) so concurrent writers — e.g. `ocx stop` and the
@@ -282,21 +261,6 @@ export interface AtomicWriteAsyncIO {
 /** Test-only crash seam. Production callers leave this undefined. */
 export interface AtomicWriteAsyncTestSeam {
   afterTempWrite?: (tempPath: string) => void | Promise<void>;
-}
-
-async function renameAtomicFileAsync(source: string, destination: string): Promise<void> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      renameSync(source, destination);
-      return;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      const transientWindowsError = process.platform === "win32"
-        && (code === "EBUSY" || code === "EPERM" || code === "EACCES");
-      if (!transientWindowsError || attempt >= 2) throw error;
-      await Bun.sleep(25 * (attempt + 1));
-    }
-  }
 }
 
 /**

@@ -2435,7 +2435,7 @@ function writeRestorePending(
     throw new Error("test_fail_pending_rename");
   }
   try {
-    renameSync(tmp, dest);
+    renameAtomicFile(tmp, dest);
   } catch (error) {
     try { unlinkSync(tmp); } catch { /* */ }
     throw error;
