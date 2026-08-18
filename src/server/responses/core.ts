@@ -2835,7 +2835,8 @@ async function handleResponsesInner(
           ? createResponsesItemIdPayloadRewrite(repairConfig!, translatorBudget)
           : undefined,
         responseModelRewrite,
-        routeUsesContentChannelReasoning(route.provider, route.modelId)
+        parsed.options.hideThinkingSummary !== true
+          && routeUsesContentChannelReasoning(route.provider, route.modelId)
           ? createReasoningSummaryChannelPayloadRewrite()
           : undefined,
       ].filter((rewrite): rewrite is NonNullable<typeof rewrite> => rewrite !== undefined);
@@ -3055,7 +3056,8 @@ async function handleResponsesInner(
         // The bounded-JSON answer bypasses the SSE payload rewrite, so content-
         // channel reasoning needs the same normalization here for the plain
         // JSON answer and every reframed-SSE variant built from clientJson.
-        return routeUsesContentChannelReasoning(route.provider, route.modelId)
+        return parsed.options.hideThinkingSummary !== true
+          && routeUsesContentChannelReasoning(route.provider, route.modelId)
           ? rewriteReasoningSummaryInJsonString(modelRewritten)
           : modelRewritten;
       })();
