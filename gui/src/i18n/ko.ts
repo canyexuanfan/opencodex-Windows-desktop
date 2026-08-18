@@ -730,6 +730,7 @@ export const ko: Record<TKey, string> = {
   "logs.detail.estimate.cache_detail_missing": "캐시 상세가 없어 입력 전액을 상한으로 추정했습니다.",
   "logs.detail.estimate.expected_price_overlay": "검증된 expected 정가를 사용했습니다.",
   "logs.detail.estimate.provider_cost_overlay": "프로바이더 구성 가격 오버레이를 사용했습니다.",
+  "logs.detail.estimate.priority_lower_bound": "xAI가 Priority와 긴 컨텍스트의 결합 가격을 공개하지 않아 표시 비용은 하한입니다.",
   "logs.col.error": "오류",
   "logs.col.upstreamReason": "업스트림 원인",
   "logs.col.duration": "소요 시간",

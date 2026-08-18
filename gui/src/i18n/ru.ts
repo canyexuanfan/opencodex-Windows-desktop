@@ -728,6 +728,7 @@ export const ru: Record<TKey, string> = {
   "logs.detail.estimate.cache_detail_missing": "Детализация кэша недоступна; входные токены оценены по верхней границе.",
   "logs.detail.estimate.expected_price_overlay": "Использована подтверждённая ожидаемая цена из прайс-листа.",
   "logs.detail.estimate.provider_cost_overlay": "Использован ценовой оверлей провайдера.",
+  "logs.detail.estimate.priority_lower_bound": "xAI не опубликовала совмещённую цену Priority и длинного контекста; показанная стоимость является нижней границей.",
   "logs.col.error": "Ошибка",
   "logs.col.upstreamReason": "Причина от провайдера",
   "logs.col.duration": "Длительность",

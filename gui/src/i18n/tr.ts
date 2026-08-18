@@ -735,6 +735,7 @@ export const tr: Record<TKey, string> = {
   "logs.detail.estimate.cache_detail_missing": "Önbellek detayları eksik.",
   "logs.detail.estimate.expected_price_overlay": "Doğrulanmış liste fiyatı kullanıldı.",
   "logs.detail.estimate.provider_cost_overlay": "Kullanıcı tarafından yapılandırılan bir sağlayıcı fiyat katmanı kullanıldı.",
+  "logs.detail.estimate.priority_lower_bound": "xAI, Priority ile uzun bağlamın birleşik fiyatını yayımlamadı; gösterilen maliyet alt sınırdır.",
   "logs.col.error": "Hata",
   "logs.col.upstreamReason": "Yukarı akış nedeni",
   "logs.col.duration": "Süre",

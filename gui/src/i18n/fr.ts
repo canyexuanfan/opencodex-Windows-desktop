@@ -725,6 +725,7 @@ export const fr: Record<TKey, string> = {
   "logs.detail.estimate.cache_detail_missing": "Les détails du cache n’étaient pas disponibles ; l’entrée est une estimation de la limite supérieure.",
   "logs.detail.estimate.expected_price_overlay": "Un tarif catalogue attendu et vérifié a été utilisé.",
   "logs.detail.estimate.provider_cost_overlay": "Un remplacement de tarif configuré pour le fournisseur a été utilisé.",
+  "logs.detail.estimate.priority_lower_bound": "xAI n’a pas publié de tarif combinant Priority et contexte long ; le coût affiché est une borne inférieure.",
   "logs.col.error": "Erreur",
   "logs.col.upstreamReason": "Motif en amont",
   "logs.col.duration": "Durée",

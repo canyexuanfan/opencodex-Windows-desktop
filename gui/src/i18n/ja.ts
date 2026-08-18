@@ -687,6 +687,7 @@ export const ja: Record<TKey, string> = {
   "logs.detail.estimate.cache_detail_missing": "キャッシュの詳細が利用できませんでした; 入力は上限の推定です。",
   "logs.detail.estimate.expected_price_overlay": "検証済みの予想定価が使用されました。",
   "logs.detail.estimate.provider_cost_overlay": "プロバイダー設定の価格オーバーレイが使用されました。",
+  "logs.detail.estimate.priority_lower_bound": "xAI は Priority と長いコンテキストの組み合わせ価格を公開していないため、表示額は下限です。",
   "logs.col.error": "エラー",
   "logs.col.upstreamReason": "上流の理由",
   "logs.col.duration": "所要時間",

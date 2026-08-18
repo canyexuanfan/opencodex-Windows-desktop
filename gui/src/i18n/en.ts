@@ -744,6 +744,7 @@ export const en = {
   "logs.detail.estimate.cache_detail_missing": "Cache details were unavailable; input is an upper-bound estimate.",
   "logs.detail.estimate.expected_price_overlay": "A verified expected list price was used.",
   "logs.detail.estimate.provider_cost_overlay": "A provider-configured price overlay was used.",
+  "logs.detail.estimate.priority_lower_bound": "xAI has not published a combined Priority and long-context price; the displayed cost is a lower bound.",
   "logs.col.error": "Error",
   "logs.col.upstreamReason": "Upstream reason",
   "logs.col.duration": "Duration",

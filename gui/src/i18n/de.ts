@@ -711,6 +711,7 @@ export const de: Record<TKey, string> = {
   "logs.detail.estimate.cache_detail_missing": "Cache-Details fehlen; Eingabe ist als Obergrenze geschätzt.",
   "logs.detail.estimate.expected_price_overlay": "Ein verifizierter Expected-Listenpreis wurde verwendet.",
   "logs.detail.estimate.provider_cost_overlay": "Ein vom Anbieter konfiguriertes Preis-Overlay wurde verwendet.",
+  "logs.detail.estimate.priority_lower_bound": "xAI hat keinen kombinierten Preis für Priority und langen Kontext veröffentlicht; die angezeigten Kosten sind eine Untergrenze.",
   "logs.col.error": "Fehler",
   "logs.col.upstreamReason": "Upstream-Grund",
   "logs.col.duration": "Dauer",
