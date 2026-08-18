@@ -1043,7 +1043,14 @@ printf '%s\\n' child-codex
       chmodSync(realCodexPath, 0o755);
       chmodSync(shimPath, 0o755);
       const env = { ...process.env, OCX_SHIM_BYPASS: "1" };
+      // Both recursion-guard variables, not just the pid. A developer running this suite from a
+      // shell that was itself launched through an installed shim inherits
+      // OCX_SHIM_ACTIVE_DEPTH=1, so the outer shim starts at depth 1, the child re-entry lands on
+      // depth 2, and the guard exits 126 with the launcher-loop message — the shim behaving
+      // exactly as designed, on a test that meant to start from a clean slate. CI never sees it
+      // because CI has no shimmed ancestor, which is what made this look environmental.
       delete env.OCX_SHIM_ACTIVE_PID;
+      delete env.OCX_SHIM_ACTIVE_DEPTH;
 
       const result = spawnSync(shimPath, ["--help"], {
         encoding: "utf8",
