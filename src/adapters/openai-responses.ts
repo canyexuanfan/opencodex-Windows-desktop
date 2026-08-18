@@ -576,8 +576,9 @@ function toolOutputText(output: unknown): string {
  *   ("No tool output found for tool call <call_id>"). A stateless upstream cannot resolve
  *   the pair from its own storage, so a placeholder output is synthesized to keep the
  *   turn continuable without pretending the result was real. Synthetic outputs are
- *   deferred until after the complete parallel call batch so the adjacency normalizer can
- *   still recognize the batch as one reasoning-bearing assistant turn (#1477). Gated on
+ *   emitted after the complete parallel call batch, in call order alongside any real
+ *   outputs, so the adjacency normalizer can still recognize the batch as one
+ *   reasoning-bearing assistant turn (#1477). Gated on
  *   `synthesizeMissingCallOutputs` (stateless AND non-forward wires); forward replay keeps
  *   fail-closed behavior.
  * - `function_call_output`/`custom_tool_call_output` without their paired call item
@@ -634,6 +635,7 @@ function repairOrphanedInputItems(body: unknown, dropReasoning: boolean, synthes
 
   let changed = false;
   const repaired: unknown[] = [];
+  const syntheticKeys = new Set<string>();
   const pendingSyntheticOutputs: unknown[] = [];
   const flushPendingSyntheticOutputs = (): void => {
     if (pendingSyntheticOutputs.length === 0) return;
@@ -670,6 +672,7 @@ function repairOrphanedInputItems(body: unknown, dropReasoning: boolean, synthes
           changed = true;
           const name = typeof item.name === "string" && item.name.length > 0 ? item.name : callId;
           const text = `[ocx] no tool result was recorded for "${name}"; execution status unknown — do not treat this as success, failure, or user-provided input.`;
+          syntheticKeys.add(`${isFnCall ? "function" : "custom"}:${callId}`);
           pendingSyntheticOutputs.push(isFnCall
             ? { type: "function_call_output", call_id: callId, output: text }
             : { type: "custom_tool_call_output", call_id: callId, output: text });
@@ -682,7 +685,59 @@ function repairOrphanedInputItems(body: unknown, dropReasoning: boolean, synthes
   }
   flushPendingSyntheticOutputs();
 
-  return changed ? { ...body, input: repaired } : body;
+  const callKeyOf = (item: unknown): string | null => {
+    if (!isPlainObject(item) || typeof item.call_id !== "string") return null;
+    if (item.type === "function_call" || item.type === "local_shell_call") return `function:${item.call_id}`;
+    if (item.type === "custom_tool_call") return `custom:${item.call_id}`;
+    return null;
+  };
+  const outputKeyOf = (item: unknown): string | null => {
+    if (!isPlainObject(item) || typeof item.call_id !== "string") return null;
+    if (item.type === "function_call_output") return `function:${item.call_id}`;
+    if (item.type === "custom_tool_call_output") return `custom:${item.call_id}`;
+    return null;
+  };
+  const reorderBatchOutputs = (items: unknown[]): unknown[] => {
+    const ordered: unknown[] = [];
+    let index = 0;
+    while (index < items.length) {
+      const key = callKeyOf(items[index]);
+      if (key === null) { ordered.push(items[index]); index += 1; continue; }
+      const batch: unknown[] = [];
+      const batchKeys: string[] = [];
+      let cursor = index;
+      while (cursor < items.length) {
+        const nextKey = callKeyOf(items[cursor]);
+        if (nextKey === null) break;
+        batch.push(items[cursor]);
+        batchKeys.push(nextKey);
+        cursor += 1;
+      }
+      const hasSynthetic = batchKeys.some(batchKey => syntheticKeys.has(batchKey));
+      if (!hasSynthetic) {
+        ordered.push(...batch);
+        index = cursor;
+        continue;
+      }
+      const remainder: unknown[] = [];
+      const batchOutputs: Array<{ key: string; item: unknown }> = [];
+      for (let probe = cursor; probe < items.length; probe += 1) {
+        const outputKey = outputKeyOf(items[probe]);
+        if (outputKey !== null && batchKeys.includes(outputKey)) {
+          batchOutputs.push({ key: outputKey, item: items[probe] });
+        } else {
+          remainder.push(items[probe]);
+        }
+      }
+      batchOutputs.sort((left, right) => batchKeys.indexOf(left.key) - batchKeys.indexOf(right.key));
+      ordered.push(...batch, ...batchOutputs.map(output => output.item));
+      ordered.push(...reorderBatchOutputs(remainder));
+      return ordered;
+    }
+    return ordered;
+  };
+
+  return changed ? { ...body, input: reorderBatchOutputs(repaired) } : body;
 }
 
 /**

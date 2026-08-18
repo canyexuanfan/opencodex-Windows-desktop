@@ -109,6 +109,22 @@ describe("stateless Responses wire repairs orphaned tool calls", () => {
     expect(input[4]).toMatchObject({ type: "function_call_output", call_id: "call_b" });
   });
 
+  test("emits a synthetic output in call order after an earlier real output", async () => {
+    const { body } = await drive([
+      { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "thinking" }] },
+      { type: "function_call", id: "fc_a", call_id: "call_a", name: "exec_command", arguments: "{}" },
+      { type: "function_call", id: "fc_b", call_id: "call_b", name: "exec_command", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_a", output: "A" },
+    ]);
+    const input = body.input as Array<Record<string, unknown>>;
+    expect(input).toHaveLength(5);
+    expect(input[1]).toMatchObject({ type: "function_call", call_id: "call_a" });
+    expect(input[2]).toMatchObject({ type: "function_call", call_id: "call_b" });
+    expect(input[3]).toMatchObject({ type: "function_call_output", call_id: "call_a", output: "A" });
+    expect(input[4]).toMatchObject({ type: "function_call_output", call_id: "call_b" });
+    expect(String((input[4] as { output: unknown }).output)).toContain("no tool result was recorded");
+  });
+
   test("leaves intact call/output pairs untouched", async () => {
     const { body } = await drive([
       { type: "function_call", id: "fc_ok", call_id: "call_ok", name: "exec_command", arguments: "{}" },
