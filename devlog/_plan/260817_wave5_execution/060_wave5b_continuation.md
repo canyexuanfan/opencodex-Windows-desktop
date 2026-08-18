@@ -157,3 +157,23 @@ real gate, and then the train ran without one recorded.
 `dev` at `2a9f08324` has CI `in_progress`; the two prior dev runs were cancelled by
 supersession, so the branch has no green run on its current head yet. That is the thing to
 watch before promotion, not the individual PR runs.
+## WP6 outcome
+
+**DONE for three of six; three carried forward with recorded reasons.**
+
+| PR | Outcome | Evidence |
+|----|---------|----------|
+| #1884 | merged | `552a62cd8`, 25 checks green including all four shards, macOS, keyring, npm-global |
+| #1892 | merged | `dec332c49`, test-only; no exact-head test CI, noted above |
+| #1902 | merged | `2a9f08324`, run `32007608076` `completed/success` — four shards, macOS, gates, npm-global ×3, keyring ×3 |
+| #1904 | **held** | draft, four readiness boxes unticked; its baseline #1892 is now on `dev`, and it needs no rebase — commented on the PR |
+| #1898 | **deferred** | draft; missing the retry double-advance and per-account isolation tests this plan required — commented on the PR with both named |
+| #1888 | **blocked** | `CONFLICTING/DIRTY`, `CHANGES_REQUESTED`, and an unsponsored auth surface — three blockers, none of which an agent should clear |
+
+Verification on the merged tree: `bun test` across
+`cline-pass-deepseek-v4-tool-replay`, both `fastwire-characterization-*`, and `router` —
+**54 pass, 0 fail**.
+
+`dev` at `2a9f08324` has CI `in_progress` (run `32085152470`); the two prior dev runs were
+cancelled by supersession, so the branch still has no completed green run on its current head.
+That is a promotion gate for WP9, not a merge gate here.
