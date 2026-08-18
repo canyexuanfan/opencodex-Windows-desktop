@@ -92,4 +92,6 @@ export interface AdapterFetchContext {
   returnRawErrors?: boolean;
   /** Whether the upstream response will be consumed as a stream; adapters may select low-latency transport settings. */
   stream?: boolean;
+  /** Custom fetch executor to use for physical upstream network requests (defaults to globalThis.fetch). */
+  executor?: typeof globalThis.fetch;
 }

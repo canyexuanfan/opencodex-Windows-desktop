@@ -377,8 +377,10 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
   return {
     name: "google",
 
-    // Vertex + Antigravity get Kiro-style retry/timeout + classified, redacted errors. AI-Studio
-    // Gemini keeps the default server fetch path (fetchResponse stays undefined so server.ts falls back).
+    // Vertex + Antigravity get Kiro-style retry/timeout + classified, redacted errors.
+    // Direct AI-Studio uses the canonical server transport (fetchWithTransientRetry), which
+    // retries transient 5xx responses through providerFetch while preserving multi-key pool
+    // 429 rotation and raw error formatting.
     ...(provider.googleMode === "vertex" || provider.googleMode === "cloud-code-assist"
       ? {
           fetchResponse: (request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> =>

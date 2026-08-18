@@ -259,4 +259,24 @@ describe("provider request pacing queue", () => {
     const second = await fetchWithHeaderTimeout("https://example.test/v1/chat/completions", {}, new AbortController().signal, 50, false, executor);
     expect(second.status).toBe(200);
   });
+
+  test("Google AI Studio providerFetch paces each attempt through waitForPacing", async () => {
+    let pacingWaited = 0;
+    const configured: OcxProviderConfig = {
+      adapter: "google",
+      baseUrl: "https://generativelanguage.googleapis.com",
+      apiKey: "key",
+      requestPacing: { enabled: true, minIntervalMs: 50 },
+      fetch: (async () => new Response("ok")) as typeof fetch,
+    };
+    const executor = providerFetch(configured, undefined, { providerName: "google-direct", modelId: "gemini-2.5-flash" });
+    const originalWaitForPacing = executor.waitForPacing;
+    executor.waitForPacing = async (signal) => {
+      pacingWaited++;
+      await originalWaitForPacing?.(signal);
+    };
+    const res = await fetchWithHeaderTimeout("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent", {}, new AbortController().signal, 500, false, executor);
+    expect(res.status).toBe(200);
+    expect(pacingWaited).toBe(1);
+  });
 });

@@ -116,4 +116,22 @@ describe("providerFetch upstreamHttpVersion propagation", () => {
     await fetcher(HTTPS_URL);
     expect((seen.init as RequestInit & { protocol?: string })?.protocol).toBe("http1.1");
   });
+
+  test("Google AI Studio providerFetch attaches pinned protocol to all attempts", async () => {
+    const seen: RequestInit[] = [];
+    const fetcher = providerFetch({
+      adapter: "google",
+      baseUrl: "https://generativelanguage.googleapis.com",
+      apiKey: "ai-key",
+      upstreamHttpVersion: "http1.1",
+      fetch: (async (_url, init) => {
+        seen.push(init ?? {});
+        return new Response("ok");
+      }) as typeof fetch,
+    });
+
+    await fetcher("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent");
+    expect(seen).toHaveLength(1);
+    expect((seen[0] as RequestInit & { protocol?: string }).protocol).toBe("http1.1");
+  });
 });

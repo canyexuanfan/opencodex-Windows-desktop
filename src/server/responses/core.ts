@@ -3647,9 +3647,13 @@ async function handleResponsesInner(
         abortSignal: upstream.signal,
         timeoutMs: connectMs,
         stream: parsed.stream,
+        executor: providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+          providerName: route.providerName,
+          modelId: route.modelId,
+        }),
       });
     } else {
-      upstreamResponse = await fetchWithResetRetry(
+      upstreamResponse = await fetchWithTransientRetry(
         recovery => {
           noteAttemptSend(logCtx.activeAttempt, inputTokenEstimate, recovery);
           return fetchWithHeaderTimeout(builtInitialRequest.url, applyUpstreamRecoveryInit({
@@ -3738,7 +3742,15 @@ async function handleResponsesInner(
         try {
           if (activeAdapter.fetchResponse) {
             await waitForProviderRequestSlot(route.providerName, route.provider, route.modelId, upstream.signal);
-            return await activeAdapter.fetchResponse(retryRequest, { abortSignal: upstream.signal, timeoutMs: connectMs, stream: parsed.stream });
+            return await activeAdapter.fetchResponse(retryRequest, {
+              abortSignal: upstream.signal,
+              timeoutMs: connectMs,
+              stream: parsed.stream,
+              executor: providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+                providerName: route.providerName,
+                modelId: route.modelId,
+              }),
+            });
           }
           return await fetchWithHeaderTimeout(retryRequest.url, {
             method: retryRequest.method, headers: retryRequest.headers, body: retryRequest.body,
@@ -4065,9 +4077,13 @@ async function handleResponsesInner(
             abortSignal: upstream.signal,
             timeoutMs: connectMs,
             stream: nextParsed.stream,
+            executor: providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+              providerName: route.providerName,
+              modelId: nextParsed.modelId,
+            }),
           });
         }
-        return await fetchWithResetRetry(
+        return await fetchWithTransientRetry(
           recovery => {
             noteAttemptSend(logCtx.activeAttempt, continuationEstimate, recovery ?? replayKind);
             return fetchWithHeaderTimeout(
