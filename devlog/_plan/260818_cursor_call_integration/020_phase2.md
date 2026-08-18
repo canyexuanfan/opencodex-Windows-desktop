@@ -110,12 +110,15 @@ typecheck plus the tests that layer owns:
 
 | Layer | Focused tests |
 |-------|---------------|
-| PR1 (Cursor EOF + tool-result wire + **WP2b**) | `tests/cursor-eof-terminal.test.ts`, `tests/cursor-hardening.test.ts`, `tests/cursor-tool-result-image.test.ts`, `tests/cursor-request-builder.test.ts`, `tests/cursor-interaction-query.test.ts` |
+| PR1 (Cursor EOF + tool-result wire) | `tests/cursor-eof-terminal.test.ts`, `tests/cursor-hardening.test.ts`, `tests/cursor-tool-result-image.test.ts`, `tests/cursor-request-builder.test.ts` |
 | PR2 (unexpected CANCEL) | `tests/cursor-cancel-provenance.test.ts`, `tests/cursor-hardening.test.ts` |
-| PR3 (bridge/adapter terminals) | `tests/bridge-nonstreaming-terminal.test.ts`, `tests/anthropic-error-stop-reason.test.ts`, `tests/command-code-error-finish.test.ts`, `tests/google-buffered-stop-reason.test.ts` + FULL suite |
+| PR3 (bridge/adapter terminals + **WP2b**) | `tests/bridge-nonstreaming-terminal.test.ts`, `tests/anthropic-error-stop-reason.test.ts`, `tests/command-code-error-finish.test.ts`, `tests/google-buffered-stop-reason.test.ts`, `tests/cursor-eof-terminal.test.ts`, `tests/cursor-interaction-query.test.ts` + FULL suite |
 
-`tests/cursor-interaction-query.test.ts` sits in PR1, not PR3 (audit `r4` F4): it is
-the existing contract for `partialUsageFromEventState`, WP2b moves that helper and
-re-exports it for that file's five dynamic imports, and WP2b lands in PR1. Gating it
-one layer above the change it verifies would let PR1 merge with the re-export
-untested.
+WP2b and `tests/cursor-interaction-query.test.ts` are BOTH in PR3 (audit `r6`
+finding 3 resolved this way rather than by moving WP2b down). `r4` F4's rule was
+right — a change and its contract test belong in the same layer — and the honest
+placement is PR3, where WP2b lands chronologically. PR1 stays correct without it:
+PR1 makes a truncated turn reportable, PR3 makes it report tokens.
+
+`tests/cursor-eof-terminal.test.ts` appears in both PR1 and PR3 because WP2b adds
+cases to it. Each layer runs the file as it stands at that layer.

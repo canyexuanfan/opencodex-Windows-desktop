@@ -1,114 +1,100 @@
 # 030 — WP4: the stacked pull requests against dev
 
-Rewritten four times. `r1` F4 killed a fabricated split. `r3` F3 found the honest
-layering. `r4` F2 found the commit-range version unconstructible. `r5` then found
-the ownership version's PROCEDURE unexecutable: it placed commits on a branch before
-creating it, never restacked PR2/PR3, claimed a retarget could neutralize a commit
-that already exists, and missed two late doc edits.
+Five versions. `r1` F4 killed a fabricated split; `r3` F3 found phase boundaries;
+`r4` F2 killed the commit-range version for "ownership impurity"; `r5` killed the
+ownership version's procedure; `r6` killed the forward-construction version on
+ancestry, overbroad pathspecs, and WP2b landing in the wrong layer.
 
-The lesson across all four: **do not try to re-slice a finished linear history.**
-Every attempt produced a procedure that had to move commits between layers, and each
-one broke differently. Build the stack FORWARD instead.
+Four consecutive failures on the same question is the signal to re-examine the
+question, not to patch the fifth answer (LOOP-REPAIR-01).
 
-## The stack, built forward from the rebase
+## The mistake was mine, and it was a category error
 
-The rebase produces one linear history `EXPECTED_DEV..cursor-call`. Rather than
-cutting that history into layers after the fact, create each layer's branch as a
-FRESH commit series whose tree is the layer's contribution:
+I was requiring the stack layers to be **subsystem-pure** — each layer touching only
+its own files. That came from `r4` F2's observation that the top commit range also
+edits PR1-owned files, which I read as a defect in the split.
 
-| PR | Head branch | Base | Owns (subsystem) |
-|----|-------------|------|------------------|
-| 1 | `cursor-call-wire` | `EXPECTED_DEV` | Cursor wire + WP2b: `cursor-errors.ts`, `live-transport.ts` (EOF resolution + `emittedTerminal`), `native-exec.ts`, `protobuf-request.ts`, `protobuf-events.ts`, `request-builder.ts`, tests `cursor-eof-terminal`, `cursor-request-builder`, `cursor-tool-result-image`, `cursor-interaction-query` (only if WP2b's re-export touches it), decode docs 000-030 |
-| 2 | `cursor-call-cancel` | `cursor-call-wire` | Unexpected CANCEL: `cursor-errors.ts` (+`CursorUnexpectedCancelError`), `live-transport.ts` (`classifyTurnFailure`), `tests/cursor-cancel-provenance.test.ts`, decode doc 040 |
-| 3 | `cursor-call` | `cursor-call-cancel` | Bridge/adapter terminals: `bridge.ts`, `truncated-stop-reason.ts`, `google.ts`, `anthropic.ts`, `command-code.ts`, their 4 tests, decode doc 050, this integration unit |
+It is not a defect. **A stacked PR does not promise subsystem purity. It promises
+reviewable increments in dependency order.** Every mechanism I then invented to
+achieve purity — cherry-pick, `rebase -i` split, forward tree copy — broke a
+different git invariant, because purity requires moving content between commits and
+the history is already final.
 
-`cursor-errors.ts` and `live-transport.ts` appear in PR1 and PR2 on purpose: PR2
-edits them again. A file may cross layers; a layer's *contribution* to a file must
-not.
+The natural stack is the rebased history itself, cut at existing commits.
 
-The dependency is real: PR2's `classifyTurnFailure` reads PR1's `emittedTerminal`
-(absent at `dfb6fb884`, present at `6d9744283` — verified), and PR3's bridge terminal
-logic is what makes PR1/PR2's adapter error events reportable at all.
+## The stack
 
-## Procedure — forward construction, no commit ever moves
+After the WP2 rebase, `EXPECTED_DEV..cursor-call` is one linear history. Cut it:
 
-Run after the WP2 rebase and WP2b are on `cursor-call`. `FINAL` = the rebased
-`cursor-call` tip. Nothing below rewrites `cursor-call`.
+| PR | Head branch | Base | Range | Content |
+|----|-------------|------|-------|---------|
+| 1 | `cursor-call-wire` | `EXPECTED_DEV` | `EXPECTED_DEV..PR1_TIP` | Decode research docs + Cursor wire hardening: the EOF resolution (`emittedTerminal`), tool-result image encoder, and their tests |
+| 2 | `cursor-call-cancel` | `cursor-call-wire` | `PR1_TIP..PR2_TIP` | Unexpected server-side CANCEL provenance (reads PR1's `emittedTerminal`) |
+| 3 | `cursor-call` | `cursor-call-cancel` | `PR2_TIP..cursor-call` | Bridge/adapter terminal semantics, WP2b, the integration unit, and the late honesty corrections to PR1's files |
 
-1. **PR1 branch.** Cut from the pinned base and take the layer's final state
-   directly from `FINAL` — which is what will actually be reviewed and merged:
+`PR1_TIP` = the rebased commit whose subject is
+`docs(devlog): record what shipped for 010 and 020, and why 030 did not`.
+`PR2_TIP` = the rebased `docs(devlog): record what shipped for 040`.
+Both subjects are unique in the range — verified in `r5`:
+`git log --format='%s' EXPECTED_DEV..cursor-call | sort | uniq -d` returns nothing.
 
-       git switch -c cursor-call-wire EXPECTED_DEV
-       git checkout FINAL -- src/adapters/cursor/cursor-errors.ts \
-         src/adapters/cursor/native-exec.ts \
-         src/adapters/cursor/protobuf-request.ts \
-         src/adapters/cursor/protobuf-events.ts \
-         src/adapters/cursor/request-builder.ts \
-         tests/cursor-eof-terminal.test.ts \
-         tests/cursor-request-builder.test.ts \
-         tests/cursor-tool-result-image.test.ts \
-         devlog/_plan/260817_cursor_toolcall_decode/
+Every property the previous four versions fought for is now free:
 
-   `live-transport.ts` is NOT taken wholesale: `FINAL`'s version contains PR2's
-   `classifyTurnFailure`. Take the PR1 state of that one file from the rebased
-   commit that ends the wire work (the rewritten
-   `docs(devlog): record what shipped for 010 and 020, and why 030 did not` — verified
-   unique by `git log --format='%s' EXPECTED_DEV..cursor-call | sort | uniq -d`
-   returning nothing), then re-apply WP2b's `protobuf-events.ts` hunk if it landed
-   after that point.
+- **Ancestry** is automatic — all three branches are commits on one linear history,
+  so `cursor-call-wire` is an ancestor of `cursor-call-cancel` is an ancestor of
+  `cursor-call`. This was `r6`'s finding 1.
+- **Union = the branch** is automatic — the three ranges partition the history
+  exactly. This was `r4` F2, `r5` F2, and `r6` F4.
+- **No commit ever moves**, so nothing can be dropped or duplicated.
 
-   Then `git add` + commit as ONE commit per phase intent, and check the tree:
+## What PR3 legitimately contains, stated up front
 
-       git diff --stat EXPECTED_DEV cursor-call-wire
+PR3's range includes three kinds of change a reviewer should expect:
 
-2. **PR2 branch.** Cut from PR1 and take PR2's two files plus its test and doc:
+1. Bridge/adapter terminal work — its main subject.
+2. **WP2b** (the EOF truncation error's partial usage). It edits
+   `protobuf-events.ts`, which PR1's EOF resolution selects, so a reader might expect
+   it in PR1. It is in PR3 because that is where it lands chronologically, and PR1 is
+   not *wrong* without it — PR1 makes truncation reportable, PR3 makes it report
+   tokens. That is a normal stacked increment. `tests/cursor-interaction-query.test.ts`
+   (WP2b's contract test) is therefore also PR3's, which resolves `r4` F4 the other
+   way: both move together.
+3. **Late corrections to PR1-owned files** — `2ea12062d`'s comment fixes in
+   `request-builder.ts` and two cursor tests, and `be1b881ec`'s two decode docs. These
+   are the honesty corrections from audits `r1`/`r2`. Say so in PR3's body rather
+   than letting a reviewer wonder why a bridge PR touches a cursor comment.
 
-       git switch -c cursor-call-cancel cursor-call-wire
-       git checkout FINAL -- src/adapters/cursor/cursor-errors.ts \
-         src/adapters/cursor/live-transport.ts \
-         tests/cursor-cancel-provenance.test.ts \
-         devlog/_plan/260817_cursor_toolcall_decode/040_phase4-server-cancel-terminal.md
+## Procedure
 
-   Here `FINAL`'s `live-transport.ts` IS correct — PR2 is the layer that adds
-   `classifyTurnFailure`, and nothing above PR2 touches that file.
+Run after the WP2 rebase and WP2b are on `cursor-call`. Nothing here rewrites
+anything.
 
-3. **PR3.** `cursor-call` itself, unchanged. Its diff against
-   `cursor-call-cancel` must be exactly the bridge/adapter set plus docs:
+1. Find the boundaries in the REBASED history (the rebase preserves order, and the
+   original SHAs no longer exist):
 
-       git diff --name-only cursor-call-cancel cursor-call
+       git log --format='%h %s' "$VERIFIED_BASE"..cursor-call
 
-4. **Prove the partition.** Every changed path must appear in exactly the layer that
-   owns its contribution, and the union must equal the whole:
+   Read `PR1_TIP` and `PR2_TIP` off that list by subject, then confirm each:
 
-       git diff --name-only EXPECTED_DEV cursor-call-wire
-       git diff --name-only cursor-call-wire cursor-call-cancel
-       git diff --name-only cursor-call-cancel cursor-call
-       # and the decisive one:
-       git diff EXPECTED_DEV cursor-call --stat      # equals the union above
+       git show --stat <PR1_TIP>   # must be the 010/020 shipped-record doc commit
+       git show --stat <PR2_TIP>   # must be the 040 shipped-record doc commit
 
-   **The load-bearing check:** `git diff cursor-call-cancel cursor-call` must show no
-   `src/adapters/cursor/` path other than what PR3 legitimately owns (none). If it
-   shows `request-builder.ts` or a cursor test, PR1's checkout in step 1 missed a
-   late edit — the exact defect `r5` caught, now caught mechanically instead of by
-   reading.
+2. Create the branches at those commits:
 
-5. **Late doc edits are handled automatically** by step 1 taking the whole
-   `devlog/_plan/260817_cursor_toolcall_decode/` directory from `FINAL`. `r5` was
-   right that `000_index.md` and `020_*.md` were edited late (by `be1b881ec`); taking
-   the final state of the directory rather than a mid-history state is what makes
-   that a non-issue.
+       git branch cursor-call-wire   <PR1_TIP>
+       git branch cursor-call-cancel <PR2_TIP>
 
-Because each branch's tree is copied from `FINAL`, **PR1 ∪ PR2 ∪ PR3 is identical to
-the rebased `cursor-call` by construction.** That is the property the previous
-procedures kept failing to guarantee.
+3. Prove the stack mechanically — all four must pass:
 
-### Commit messages on the rebuilt layers
+       git merge-base --is-ancestor cursor-call-wire cursor-call-cancel   # exit 0
+       git merge-base --is-ancestor cursor-call-cancel cursor-call        # exit 0
+       git rev-list --count "$VERIFIED_BASE"..cursor-call-wire
+       git rev-list --count cursor-call-wire..cursor-call-cancel
+       git rev-list --count cursor-call-cancel..cursor-call
+       # the counts must sum to:
+       git rev-list --count "$VERIFIED_BASE"..cursor-call
 
-Each layer's commits are new objects, so the campaign's original messages must be
-carried over deliberately — they are the audit trail the devlog cites. Write one
-commit per original phase intent with its original message body, and note in the PR
-body that the layer is a re-slice of `cursor-call` for review purposes and the
-canonical history is `cursor-call` itself.
+4. Push the two new branches and open the PRs bottom-up.
 
 ## Policy constraints (`AGENTS.md`)
 
@@ -122,21 +108,16 @@ canonical history is `cursor-call` itself.
 
 ## Description content
 
-- **Summary** — the defect and the wire behavior before/after. Two mandatory honest
-  notes: (a) in PR1, that dev independently fixed the clean-EOF defect and our
-  surviving contribution is `emittedTerminal`, one guard, and WP2b's usage fix;
-  (b) wherever tool-result images appear, that the ENCODER supports them and
-  production does not reach it because all Cursor models are in `noVisionModels`.
+- **Summary** — the defect and the wire behavior before/after for that layer. Three
+  mandatory honest notes: (a) in PR1, that dev independently fixed the clean-EOF
+  defect and our surviving contribution is `emittedTerminal` plus one guard;
+  (b) wherever tool-result images appear, that the ENCODER supports them and nothing
+  reaches Cursor today because all Cursor models are in `noVisionModels`; (c) in PR3,
+  that its range also carries WP2b and the late corrections to PR1-owned files, and
+  why.
 - **Verification** — that layer's own commands, output, and SHA.
 - **Checklist** — three boxes, honestly, `docs-site/` determination made here.
 - No `Closes #`.
-
-## Fallback (state it, do not hide it)
-
-If step 4's union check fails and the cause is not a missed file but a genuine
-interleaving that forward construction cannot express, open ONE PR from
-`cursor-call` to `dev` and say why in the body. A single honest PR beats three PRs
-whose union is not the branch. Do not iterate on the split a fifth time.
 
 ## Verification (C)
 
@@ -145,6 +126,12 @@ gh pr list --state open --json number,baseRefName,headRefName,title
 gh pr view <n> --json body
 ```
 
-PR1 base `dev`; PR2 base `cursor-call-wire`; PR3 base `cursor-call-cancel`; step 4's
-union check recorded; all three template sections non-thin in each.
+PR1 base `dev`; PR2 base `cursor-call-wire`; PR3 base `cursor-call-cancel`; step 3's
+four checks recorded; all three template sections non-thin in each.
+
+## Fallback
+
+If step 3 fails — which would mean the rebase did not preserve order as expected —
+open ONE PR from `cursor-call` to `dev` and say why in the body. Do not invent a
+sixth splitting scheme.
 
