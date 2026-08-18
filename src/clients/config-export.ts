@@ -1273,9 +1273,14 @@ function buildZcodeClientConfig(ctx: ExportContext): ZcodeGeneratedConfig {
       name: exportModelLabel(model),
       modalities: { input, output: ["text"] },
     };
+    // `limit.context` follows the authoritative-window rule. `output` is
+    // deliberately absent: ZCode's schema makes it optional and we have no
+    // authoritative output budget to assert (reviewer finding: an emitted
+    // stand-in would be a guessed capability, exactly what "no metadata is
+    // guessed" forbids).
     const context = authoritativeContextWindow(model.contextWindow);
     if (context !== undefined) {
-      entry.limit = { context, output: outputBudgetFor(context) };
+      entry.limit = { context };
     }
     models[model.namespaced] = entry;
   }

@@ -240,18 +240,18 @@ const ZCODE_USAGE = `Usage:
  */
 export async function handleZcodeCommand(argv: string[], deps: RuntimeApiDeps = {}): Promise<number> {
   const args = [...argv];
-  const action = (args[0] ?? "status").toLowerCase();
+  // Find the first non-flag token so `ocx zcode --json enable` still enables.
+  const verbIndex = args.findIndex(arg => !arg.startsWith("-"));
+  const action = (verbIndex === -1 ? "status" : args[verbIndex]).toLowerCase();
   const known = ["status", "show", "list", "enable", "disable", "history", "journal", "restore"];
-  if (!known.includes(action) && !action.startsWith("-")) {
+  if (!known.includes(action)) {
     console.error(`unknown zcode command ${action}`);
     console.error(ZCODE_USAGE);
     return 2;
   }
-  const forwarded = action === "restore"
-    ? [...args]
-    : action.startsWith("-")
-      ? ["status", ...args, "--client", "zcode"]
-      : [action, ...args.slice(1), "--client", "zcode"];
+  const rest = verbIndex === -1 ? args : [...args.slice(0, verbIndex), ...args.slice(verbIndex + 1)];
+  // `restore` addresses an operation id, not a client, so nothing is injected.
+  const forwarded = action === "restore" ? [action, ...rest] : [action, ...rest, "--client", "zcode"];
   const code = await handleClientIntegrationCommand(forwarded, deps);
   if (code === 0 && (action === "enable" || action === "disable")) {
     console.error("Restart ZCode to pick up the provider change.");

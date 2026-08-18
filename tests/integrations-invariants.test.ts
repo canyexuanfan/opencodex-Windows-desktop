@@ -76,6 +76,7 @@ describe("the client registries cannot drift apart", () => {
      */
     const gui = await import("../gui/src/components/apikeys-workspace/client-config-clients");
     const guiIntegrations = await import("../gui/src/pages/integrations/integration-api");
+    const guiRouting = await import("../gui/src/app-routing");
 
     const expected = [...EXPORT_CLIENT_IDS].sort();
     expect(expected).toHaveLength(10);
@@ -84,6 +85,16 @@ describe("the client registries cannot drift apart", () => {
     expect([...gui.CLIENTS].sort()).toEqual(expected);
     expect(Object.keys(gui.CLIENT_LABEL_KEYS).sort()).toEqual(expected);
     expect([...guiIntegrations.FILE_INTEGRATION_CLIENTS].sort()).toEqual(expected);
+    // The Integrations tab strip needs a registered hash per file client, or
+    // App normalization strips the route and the tab can never render. The
+    // remaining per-page Record maps are enforced by the GUI typecheck
+    // (Record<FileIntegrationClientId, TKey> is exhaustive).
+    const routedFileClients = guiRouting.INTEGRATION_TAB_HASHES
+      .filter(hash => /^integrations\/[a-z-]+$/.test(hash))
+      .map(hash => hash.split("/")[1]!)
+      .filter(id => (expected as string[]).includes(id))
+      .sort();
+    expect(routedFileClients).toEqual(expected);
   });
 
   test("source preservation and cross-process locking are registry capabilities", () => {
