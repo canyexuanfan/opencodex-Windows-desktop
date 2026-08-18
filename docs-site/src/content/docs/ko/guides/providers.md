@@ -14,7 +14,7 @@ description: opencodex가 LLM 프로바이더를 인증하고 통신하는 모�
 | `openai-apikey` | OpenAI API | 설정된 API key/key pool만 사용하며 Codex 계정을 읽지 않습니다. |
 
 bare `gpt-5.6-sol`은 Providers 페이지의 Pool/Direct 옵션을 따르고,
-`openai-apikey/gpt-5.6-sol`은 API를 선택합니다. 자격증명 경로 간 fallback은 없습니다. API는 context 1,050,000 /
+`openai-apikey/gpt-5.6-sol`은 API를 선택합니다. 자격증명 경로 간 fallback은 없습니다. API는 context 922,000 /
 max input 922,000이며 `*-pro` virtual id는 공개 상태에 유지되고 wire에서 base 모델과
 `reasoning.mode: "pro"`로 바뀝니다.
 
@@ -349,9 +349,9 @@ Sol/Terra/Luna를 폴백 목록에 넣어 둡니다.
 
 | Codex 경로 | 미리 등록된 모델 id | Codex에 표시되는 컨텍스트 |
 | --- | --- | --- |
-| Codex 로그인(Pool 또는 Direct) | `gpt-5.6-*` | 1,050,000 |
-| OpenAI (API key) | `openai-apikey/gpt-5.6-*`와 `*-pro` | 1,050,000 (max input 922,000) |
-| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 1,050,000 |
+| Codex 로그인(Pool 또는 Direct) | `gpt-5.6-*` | 922,000 |
+| OpenAI (API key) | `openai-apikey/gpt-5.6-*`와 `*-pro` | 922,000 (max input 922,000) |
+| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 922,000 |
 | Cursor | `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, `cursor/gpt-5.6-luna` | 1,000,000 |
 
 네이티브 GPT-5.6 항목은 고정된 업스트림 reasoning 단계를 그대로 따릅니다. 예를 들어 Luna에는

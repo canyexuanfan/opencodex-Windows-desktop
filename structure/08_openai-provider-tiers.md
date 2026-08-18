@@ -115,13 +115,19 @@ preserving a stale one would block every later migration.
   `daybreak-blue-latest` are distinct wire surfaces. An observed native row follows the pinned Sol
   capability metadata, but routing strips only the account selector and keeps
   `gpt-daybreak-blue-latest` byte-for-byte; it never expands the bare list or substitutes Sol.
-- GPT-5.6 rows use 1,050,000 context tokens and 922,000 max input tokens on BOTH surfaces. The
-  Codex-login side used to advertise 372,000; probing a real account showed that was wrong —
-  921,508 input tokens were accepted and 922,013 refused with `context_length_exceeded` on Sol,
-  Terra and Luna alike, which is the same 922,000 ceiling the API surface already declared.
-  The two limits stay separate fields: auto-compaction clamps to the 922,000 input ceiling rather
-  than to 90% of the window, since 945,000 would sit past what upstream accepts. Evidence:
-  `devlog/_plan/260817_native_gpt56_1m_context/001_measurement_evidence.md`.
+- The two GPT-5.6 surfaces advertise different windows on purpose. API rows use 1,050,000
+  context with 922,000 max input. Codex-login rows default to the live catalog 272,000
+  (auto-compact 244,800) and only rise to 922,000 / 829,800 when the user turns the 1M
+  switch on.
+
+  The ceiling is the same on both — probing a real Codex-login account accepted 921,508 input
+  tokens and refused 922,013 with `context_length_exceeded` on Sol, Terra and Luna alike,
+  matching the 922,000 the API surface already declared. A Codex-login `context_window` is a
+  spending budget, not a label: Codex fills `context_window * effective_context_window_percent`
+  (95% by default, codex-rs `turn_context.rs`). Advertising 1,050,000 there spent 997,500 and
+  blew past the ceiling. The 922,000 opt-in yields a 875,900-token budget and keeps ~46k of
+  headroom. Evidence: `devlog/_plan/260817_native_gpt56_1m_context/001_measurement_evidence.md`
+  and `014_final_922k_with_margin.md`.
 - `*-pro` selected ids rewrite to the base wire id with `reasoning.mode: "pro"`; request logs,
   usage, model visibility, subagent state, and injection state retain the selected virtual id.
 - Compact preserves provider/selected identity but sends the base model without a reasoning object.

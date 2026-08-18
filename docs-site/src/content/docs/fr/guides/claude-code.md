@@ -47,7 +47,7 @@ ocx claude
 | `ANTHROPIC_BASE_URL` | `http://127.0.0.1:<port>` |
 | `ANTHROPIC_AUTH_TOKEN` | Uniquement lorsque le proxy exige une clé API ; sinon, elle n'est PAS définie, afin que votre connexion claude.ai (abonnement et connecteurs) reste active |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | `1` (découverte du sélecteur `/model` natif) |
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | Seuil de compactage du contexte automatique (par défaut `350000`) ; injecté uniquement lorsque le contexte automatique est activé |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | Seuil de compactage du contexte automatique (par défaut `829800`) ; injecté uniquement lorsque le contexte automatique est activé |
 | `ANTHROPIC_MODEL` | `claudeCode.model` (facultatif) |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `claudeCode.tierModels.haiku ?? claudeCode.smallFastModel` (facultatif ; ancien `ANTHROPIC_SMALL_FAST_MODEL` également) |
 | `ANTHROPIC_DEFAULT_{OPUS,SONNET,FABLE}_MODEL` | `claudeCode.tierModels.*` (facultatif) |
@@ -233,7 +233,7 @@ par défaut, corrige ce comportement :
 
 1. Les modèles dont la fenêtre réelle dépasse 200k **et** atteint au moins le seuil de compactage automatique obtiennent le
    marqueur `[1m]` dans les lignes du sélecteur et les variables d'environnement qui les désignent.
-2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (`350000` par défaut, plage `100000`–`1000000`) est injecté afin
+2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (`829800` par défaut, plage `100000`–`1000000`) est injecté afin
    que la conversation soit automatiquement résumée à ce seuil.
 
 Trois états de configuration :
@@ -247,7 +247,7 @@ rend ce modèle inutilisable : les tours échouent avant que le résumé puisse
 
 Les modèles Anthropic natifs dont le contexte est inférieur à 1M ne sont jamais marqués automatiquement. Les valeurs que vous exportez vous-même
 restent prioritaires ; le proxy s'appuie sur votre valeur pour déterminer les modèles qui peuvent recevoir le marqueur sans risque.
-Les valeurs de configuration invalides définies manuellement reviennent à 350k.
+Les valeurs de configuration invalides définies manuellement reviennent à 829,800.
 
 ### Environnement effectif des modèles
 

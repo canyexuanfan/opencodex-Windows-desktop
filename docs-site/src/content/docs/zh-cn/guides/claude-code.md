@@ -20,7 +20,7 @@ ocx claude
 | `ANTHROPIC_BASE_URL` | `http://127.0.0.1:<port>` |
 | `ANTHROPIC_AUTH_TOKEN` | 仅在代理要求 API 密钥时设置——否则不会设置，因此你的 claude.ai 登录（订阅 + 连接器）会保持有效 |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | `1`（原生 `/model` 选择器发现） |
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 自动上下文压缩阈值（默认 `350000`）；仅在启用自动上下文时注入 |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 自动上下文压缩阈值（默认 `829800`）；仅在启用自动上下文时注入 |
 | `ANTHROPIC_MODEL` | `claudeCode.model`（可选） |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `claudeCode.tierModels.haiku ?? claudeCode.smallFastModel`（可选，也包括旧版 `ANTHROPIC_SMALL_FAST_MODEL`） |
 | `ANTHROPIC_DEFAULT_{OPUS,SONNET,FABLE}_MODEL` | `claudeCode.tierModels.*`（可选） |
@@ -117,7 +117,7 @@ v1 别名按字面解码（历史上 model ID 中包含的两字符序列 `~s` /
 
 1. 实际窗口大于 200k **且**至少达到自动压缩阈值的模型，其选择器条目和环境变量槽位会带有
    `[1m]` 标记。
-2. 系统会注入 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`（默认 `350000`，范围 `100000`–`1000000`），
+2. 系统会注入 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`（默认 `829800`，范围 `100000`–`1000000`），
    使对话在该位置自动进行摘要。
 
 配置有三种状态：
@@ -130,7 +130,7 @@ v1 别名按字面解码（历史上 model ID 中包含的两字符序列 `~s` /
 工作——聊天会在触发摘要之前报错。
 
 低于 1M 的原生 Anthropic 模型绝不会被自动标记。你自行导出的值始终优先（代理会使用**你的**
-值来判断哪些模型可以安全标记）。手动编辑配置时填入的无效值会回退到 350k。
+值来判断哪些模型可以安全标记）。手动编辑配置时填入的无效值会回退到 829,800。
 
 ### 有效模型环境变量
 

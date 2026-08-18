@@ -122,6 +122,7 @@ differing backup and rewrites known legacy namespaced selected ids to bare ids.
 | `escapeBuiltinToolNames?` | `boolean` | Escape built-in tool names for Anthropic-compatible gateways and restore them in returned calls. |
 | `anthropicEofTolerance?` | `boolean` | Let an Anthropic-compatible gateway complete a stream that ends before `message_stop`, only when visible text or a complete JSON-object tool input was received. Off by default. |
 | `googleMode?` | `"ai-studio" \| "vertex" \| "cloud-code-assist"` | Google transport/auth mode. Default `ai-studio`. |
+| `directGeminiWireRenames?` | `boolean` | Google only. Applies only to direct AI Studio requests. Omitted or `true` keeps the `-tiered` wire rename for Gemini Flash ids (`gemini-3.7-flash` -> `gemini-3.7-flash-tiered`); `false` sends the requested bare ids to the wire unchanged. Vertex preserves the requested model ID, and Cloud Code Assist routing is unchanged. Set `false` when the configured upstream still serves the bare ids. |
 | `project?` | `string` | Vertex or Antigravity Cloud Code Assist project id. |
 | `location?` | `string` | Vertex location; environment fallback is `GOOGLE_CLOUD_LOCATION`. |
 | `mcpServers?` | `Record<string, CursorMcpServerConfig>` | Cursor only: stdio or Streamable HTTP MCP servers. |
@@ -373,9 +374,9 @@ Use `selectedModels` when discovery should still run but only selected ids shoul
 `/v1/models`. The dashboard retains the full discovered list for later allowlist changes.
 
 Preview GPT-5.6 fallback entries use the same mechanism. The OpenAI API-key preset seeds base and Pro
-ids with context `1050000` and max input `922000`; OpenRouter seeds `openai/gpt-5.6-sol`,
-`openai/gpt-5.6-terra`, and `openai/gpt-5.6-luna` with context `1050000`. Pool/Direct advertises
-`1050000`; the synced catalog advertises `max` while keeping `xhigh` distinct.
+ids with context `922000` and max input `922000`; OpenRouter seeds `openai/gpt-5.6-sol`,
+`openai/gpt-5.6-terra`, and `openai/gpt-5.6-luna` with context `922000`. Pool/Direct advertises
+`922000`; the synced catalog advertises `max` while keeping `xhigh` distinct.
 
 ```json
 {

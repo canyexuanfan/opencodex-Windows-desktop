@@ -20,12 +20,6 @@ let previousClaudeConfigDir: string | undefined;
 let previousDesktopConfigDir: string | undefined;
 let isolatedCodexHome: IsolatedCodexHome | null = null;
 
-function setPlatform(platform: NodeJS.Platform): void {
-  Object.defineProperty(process, "platform", { configurable: true, value: platform });
-}
-
-const originalPlatform = process.platform;
-
 beforeEach(() => {
   previousHome = process.env.OPENCODEX_HOME;
   previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
@@ -47,7 +41,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  setPlatform(originalPlatform);
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
   if (previousClaudeConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
@@ -511,7 +504,7 @@ test("PUT/GET round-trips the context/effort levers (devlog 136 B6)", async () =
 test("PUT/GET round-trips auto-context (devlog 260712 020)", async () => {
   const server = startServer(0);
   try {
-    // Defaults: on, window null (GUI shows the 350000 placeholder).
+    // Defaults: on, window null — the GUI renders the runtime default as the empty choice.
     let get = await fetch(new URL("/api/claude-code", server.url)).then(r => r.json()) as Record<string, unknown>;
     expect(get.autoContext).toBe(true);
     expect(get.autoCompactWindow).toBeNull();
@@ -627,8 +620,7 @@ test("PUT validation rejects bad shapes", async () => {
 });
 
 test("GET /api/claude-code reports Auto-connect support on Darwin", async () => {
-  setPlatform("darwin");
-  const server = startServer(0);
+  const server = startServer(0, { managementApi: { platform: "darwin" } });
   try {
     const r = await fetch(new URL("/api/claude-code", server.url));
     expect(r.status).toBe(200);
@@ -644,8 +636,7 @@ test("GET /api/claude-code reports Auto-connect unsupported outside Darwin", asy
     ...loadConfig(),
     claudeCode: { systemEnv: true },
   } as OcxConfig);
-  setPlatform("linux");
-  const server = startServer(0);
+  const server = startServer(0, { managementApi: { platform: "linux" } });
   try {
     const r = await fetch(new URL("/api/claude-code", server.url));
     expect(r.status).toBe(200);

@@ -15,7 +15,7 @@ description: opencodex 進行身分驗證並與 LLM 供應商通訊的所有方�
 
 在 Providers 頁面使用裸 `gpt-5.6-sol` 搭配 Pool／Direct 選項，或使用
 `openai-apikey/gpt-5.6-sol` 走 API。憑證路徑不會彼此 fallback。API 路徑發布的 metadata 為
-1,050,000 context／922,000 max input；`sol-pro`、`terra-pro` 與 `luna-pro` virtual id 會保留使用者
+922,000 context／922,000 max input；`sol-pro`、`terra-pro` 與 `luna-pro` virtual id 會保留使用者
 選到的公開 identity，但 wire 會改用 base model 加上 `reasoning.mode: "pro"`。
 
 若內建 `openai` 供應商缺失或已停用，儀表板 Accounts picker 與 Codex Auth 頁面可以恢復它：缺失的 row
@@ -435,9 +435,9 @@ GPT-5.6 Sol/Terra/Luna 會預置在 provider fallback list 中，因此即使即
 
 | Codex 路由 | 預置 model id | Codex 可見 context |
 | --- | --- | --- |
-| Codex 登入（Pool 或 Direct） | `gpt-5.6-*` | 1,050,000 |
-| OpenAI (API key) | `openai-apikey/gpt-5.6-*` 加 `*-pro` | 1,050,000（922,000 max input） |
-| OpenRouter | `openrouter/openai/gpt-5.6-sol`、`openrouter/openai/gpt-5.6-terra`、`openrouter/openai/gpt-5.6-luna` | 1,050,000 |
+| Codex 登入（Pool 或 Direct） | `gpt-5.6-*` | 922,000 |
+| OpenAI (API key) | `openai-apikey/gpt-5.6-*` 加 `*-pro` | 922,000（922,000 max input） |
+| OpenRouter | `openrouter/openai/gpt-5.6-sol`、`openrouter/openai/gpt-5.6-terra`、`openrouter/openai/gpt-5.6-luna` | 922,000 |
 | Cursor | `cursor/gpt-5.6-sol`、`cursor/gpt-5.6-terra`、`cursor/gpt-5.6-luna` | 1,000,000 |
 
 原生 GPT-5.6 條目保留固定的上游 reasoning ladder，例如 Luna 有 `max` 但沒有 `ultra`。路由條目使用各

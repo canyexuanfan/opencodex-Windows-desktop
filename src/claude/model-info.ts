@@ -15,7 +15,7 @@
  *  - created_at is a fixed constant; max_input_tokens is authoritative-or-null;
  *    max_tokens is always null (no authoritative output limit exists proxy-side).
  */
-import { catalogModelEfforts, nativeEffortClamp, nativeOpenAiContextWindow, nativeOpenAiMaxInputTokens, type CatalogModel } from "../codex/catalog";
+import { catalogModelEfforts, nativeEffortClamp, nativeOpenAiContextWindow, nativeOpenAiMaxInputTokens, type CatalogModel, type NativeContextLimitsInput } from "../codex/catalog";
 import { claudeCodeAlias, claudeCodeNativeAlias } from "./alias";
 import { desktop3pAlias } from "./desktop-3p";
 import { AUTO_CONTEXT_OFF, type AutoContextMode } from "./context-windows";
@@ -108,7 +108,7 @@ export function buildAnthropicModelInfos(
   auto: AutoContextMode = AUTO_CONTEXT_OFF,
   idStyle: AnthropicIdStyle = "desktop3p",
   aliasForRoute: (provider: string, modelId: string) => string = desktop3pAlias,
-  nativeContextCap?: number,
+  nativeContextCap?: NativeContextLimitsInput,
 ): AnthropicModelInfo[] {
   const out: AnthropicModelInfo[] = [];
   const seen = new Set<string>();
@@ -129,7 +129,7 @@ export function buildAnthropicModelInfos(
     if (seen.has(id)) return;
     seen.add(id);
     // The marker fixes Claude Code's accounting at 1e6, but a model may accept less input
-    // than that: GPT-5.6 advertises a 1,050,000 window while refusing anything past 922,000
+    // than that — a routed GPT-5.6 row runs a 1,050,000 window while refusing past 922,000
     // (measured — see devlog/_plan/260817_native_gpt56_1m_context/001_measurement_evidence.md).
     // Advertising the flat 1e6 there would invite mid-session context_length_exceeded, so the
     // variant reports whichever of the two is smaller.

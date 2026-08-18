@@ -51,6 +51,8 @@ import {
   fmtK,
   NATIVE_CAP_OPTIONS,
   NATIVE_CAP_OPTION_SET,
+  NATIVE_GPT56_DEFAULT_WINDOW,
+  NATIVE_GPT56_OPT_IN_WINDOW,
   PAGE,
   readCollapsedProviders,
   THREAD_OPTION_SET,
@@ -629,7 +631,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
     }
   };
 
-  const toggleProviderCap = async (provider: string) => {
+  const toggleProviderCap = async (provider: string, nativeGroup = false) => {
     setBusy(true);
     busyRef.current = true;
     setStatus("");
@@ -640,7 +642,9 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
       const r = await fetch(`${apiBase}/api/provider-context-caps`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, enabled }),
+        body: JSON.stringify(enabled && nativeGroup
+          ? { provider, enabled, value: NATIVE_GPT56_OPT_IN_WINDOW }
+          : { provider, enabled }),
       });
       try {
         const data = await readJsonOrThrow<ProviderContextCapsResponse>(r, t("models.capSaveFailed"));
@@ -1025,7 +1029,9 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
       if (window === undefined) return widest;
       return widest === undefined || window > widest ? window : widest;
     }, undefined);
-    const capDisplayValue = capOn ? providerCap : (widestRowWindow ?? providerCap);
+    const capDisplayValue = capOn
+      ? providerCap
+      : (nativeProviderGroup ? NATIVE_GPT56_DEFAULT_WINDOW : (widestRowWindow ?? providerCap));
     // The native group offers only the three windows GPT-5.6 actually has contracts for
     // (272k live, 372k legacy, 1.05M measured); routed providers keep the generic ladder.
     // The set has to follow the list, or a saved value outside it loses its option.
@@ -1081,16 +1087,16 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
           <span className="muted mono text-label">{t("models.active", { active: activeCount, total: rows.length })}</span>
           </button>
            <div className="row models-provider-actions">
-             {/* The context-window modal saves through PATCH /api/providers, which the canonical
-                 `openai` seed check rejects. The native group gets the cap select below instead. */}
-             {!nativeProviderGroup && (
-               <button
-                 type="button"
-                 className="btn btn-ghost btn-sm text-caption"
-                 onClick={() => openContextSettings(group)}
-                 aria-haspopup="dialog"
-               >{t("models.contextSettings")}</button>
-             )}
+             {/* Available on every card, including the native one: the canonical `openai` seed
+                 check now admits contextWindow/modelContextWindows as user-owned overlays, and
+                 the native accessors only ever narrow the measured window with them. The cap
+                 next to it is the coarser sibling — one value for the whole provider. */}
+             <button
+               type="button"
+               className="btn btn-ghost btn-sm text-caption"
+               onClick={() => openContextSettings(group)}
+               aria-haspopup="dialog"
+             >{t("models.contextSettings")}</button>
              {
               <button
                 type="button"
@@ -1118,7 +1124,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
              <button type="button" className="btn btn-ghost btn-sm text-caption" disabled={busy || allOn} onClick={() => bulkToggle(true)}>{t("models.allOn")}</button>
              <button type="button" className="btn btn-ghost btn-sm text-caption" disabled={busy || allOff} onClick={() => bulkToggle(false)}>{t("models.allOff")}</button>
              <>
-               <Switch on={capOn} onClick={() => toggleProviderCap(provider)} disabled={busy} label={t("models.capValue", { value: fmtK(capDisplayValue) })} />
+               <Switch on={capOn} onClick={() => toggleProviderCap(provider, nativeProviderGroup)} disabled={busy} label={t("models.capValue", { value: fmtK(capDisplayValue) })} />
                {/* The native group keeps the value visible with the cap off: its rows always
                    advertise SOME window, so hiding the number leaves the card saying nothing
                    about the context Codex will actually see. Routed providers keep the old

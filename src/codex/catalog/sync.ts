@@ -35,7 +35,7 @@ import { codexAccountNamespaceEntries, isMainCodexAccountTarget } from "../accou
 
 import { CODEX_CUSTOM_MODEL_CATALOG_KIND, CODEX_PROVIDER_MODEL_CATALOG_KIND, activeCodexModelsCachePath, applyCatalogMetadata, applyMultiAgentMode, applyNativeOpenAiContextOverride, applyRoutedCodexToolMode, catalogBackupPathFor, catalogHasRoutedEntries, catalogModelSlug, ensureStrictCatalogFields, findNativeTemplate, isDefaultCatalogPath, isRoutedModelCompatibilityExcluded, legacyCatalogBackupPath, normalizeRoutedCatalogEntry, normalizeServiceTiers, readCatalog, readCatalogBackup, readCodexCatalogPath, readNativeBaseline } from "./parsing";
 import type { CatalogModel, MultiAgentMode, RawCatalog, RawEntry } from "./parsing";
-import { accountBoundNativeOpenAiSlugs, accountBoundNativeOpenAiSlugsBySelector, applyNativeVisibility, CODEX_NATIVE_ALIAS_CATALOG_KIND, desktopAllowlistSuppressedNativeSlugs, disabledNativeSlugs, isNativeAliasCatalogEntry, isUnsupportedOpenAiNativeSlug, NATIVE_OPENAI_MODELS, observedAccountBoundNativeEntries, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, shouldUpgradeToUpstreamEntry, SUPPORTED_NATIVE_OPENAI_SLUGS, upstreamNativeEntry } from "./metadata";
+import { accountBoundNativeOpenAiSlugs, accountBoundNativeOpenAiSlugsBySelector, applyNativeVisibility, CODEX_NATIVE_ALIAS_CATALOG_KIND, desktopAllowlistSuppressedNativeSlugs, disabledNativeSlugs, isNativeAliasCatalogEntry, isUnsupportedOpenAiNativeSlug, NATIVE_OPENAI_MODELS, nativeContextLimits, observedAccountBoundNativeEntries, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, shouldUpgradeToUpstreamEntry, SUPPORTED_NATIVE_OPENAI_SLUGS, upstreamNativeEntry, type NativeContextLimitsInput } from "./metadata";
 import {
   bundledCatalogCacheState,
   loadBundledCodexCatalog,
@@ -226,7 +226,7 @@ export function effectiveSubagentRoster(
   return { candidates, advertised, excluded };
 }
 
-export function finishUpstreamNativeEntry(clone: RawEntry, priority: number, contextCap?: number): RawEntry {
+export function finishUpstreamNativeEntry(clone: RawEntry, priority: number, contextCap?: NativeContextLimitsInput): RawEntry {
   if (priority !== 9) clone.priority = priority;
   applyNativeOpenAiContextOverride(clone, contextCap);
   // GPT-5.6 natives keep their exact upstream ladders (e.g. luna has max but no ultra).
@@ -279,7 +279,7 @@ export function deriveEntry(
   priority: number,
   model?: CatalogModel,
   exactComboSlugs: ReadonlySet<string> = new Set(),
-  contextCap?: number,
+  contextCap?: NativeContextLimitsInput,
 ): RawEntry {
   const preserveExact = isExactComboCatalogModel(model, exactComboSlugs);
   const codexForwardNativeCapabilityAlias = model?.codexForwardNativeCapabilityAlias === true
@@ -405,7 +405,7 @@ export interface ObservedCatalogEntryBuildInput {
   readonly disabledNativeAccountSlugs: ReadonlySet<string>;
   readonly multiAgentV2Enabled: boolean;
   readonly keepNativeChatGptOnV1?: boolean;
-  readonly openaiContextCap?: number;
+  readonly openaiContextCap?: NativeContextLimitsInput;
   /** Additional native ids to clone under account selectors, without creating bare rows. */
   readonly accountNativeSlugs?: readonly string[];
   /** Per-selector account ids; unknown observations must not be copied to unrelated accounts. */
@@ -424,7 +424,7 @@ export function buildCatalogEntries(
   accountSelectors: readonly string[] = [],
   suppressedBareNativeSlugs: ReadonlySet<string> = new Set(),
   disabledNativeAccountSlugs: ReadonlySet<string> = new Set(),
-  contextCap?: number,
+  contextCap?: NativeContextLimitsInput,
   accountNativeSlugs?: readonly string[],
   accountNativeSlugsBySelector?: ReadonlyMap<string, readonly string[]>,
   keepNativeChatGptOnV1 = false,
@@ -760,7 +760,7 @@ export interface ObservedCatalogMergeInput {
   readonly accountBoundEntries: readonly RawEntry[];
   readonly suppressedBareNativeSlugs?: ReadonlySet<string>;
   readonly policy: ObservedCatalogMergePolicy;
-  readonly openaiContextCap?: number;
+  readonly openaiContextCap?: NativeContextLimitsInput;
 }
 
 /**
@@ -1424,7 +1424,9 @@ function writeRetainedCatalogSync({
   const hasPhysicalComboProvider = Object.hasOwn(config.providers, COMBO_NAMESPACE);
   const includeNativeOpenAi = shouldIncludeNativeOpenAi(config);
   const includeAccountBoundNativeOpenAi = shouldIncludeAccountBoundNativeOpenAi(config);
-  const openaiContextCap = providerContextCap(config, OPENAI_CODEX_PROVIDER_ID);
+  // Both user levers. Passing only the cap here is what let a per-model window the dashboard
+  // had accepted get written back at full width in the on-disk catalog.
+  const openaiContextCap = nativeContextLimits(config);
   const accountSelectors = includeAccountBoundNativeOpenAi
     ? visibleCodexAccountSelectors(config)
     : [];

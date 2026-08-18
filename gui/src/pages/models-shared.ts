@@ -79,10 +79,14 @@ export const CAP_OPTION_SET = new Set(CAP_OPTIONS);
  *
  * Deliberately three values, not the generic 100k…950k ladder: these are the windows the
  * native GPT-5.6 family actually has a contract for — 272,000 (what the live catalog
- * reports), 372,000 (the previous opencodex contract), and 1,050,000 (measured; see
- * devlog/_plan/260817_native_gpt56_1m_context). Anything else goes through "Custom".
+ * reports), 372,000 (the previous opencodex contract), and 922,000 (the current advertised
+ * cap, measured; see devlog/_plan/260817_native_gpt56_1m_context). A cap only ever lowers a
+ * window, so listing a value above the advertised one would be an inert choice.
+ * Anything else goes through "Custom".
  */
-export const NATIVE_CAP_OPTIONS = [272_000, 372_000, 1_050_000];
+export const NATIVE_GPT56_DEFAULT_WINDOW = 272_000;
+export const NATIVE_GPT56_OPT_IN_WINDOW = 922_000;
+export const NATIVE_CAP_OPTIONS = [NATIVE_GPT56_DEFAULT_WINDOW, 372_000, NATIVE_GPT56_OPT_IN_WINDOW];
 export const NATIVE_CAP_OPTION_SET = new Set(NATIVE_CAP_OPTIONS);
 export const CUSTOM_OPTION = "custom";
 export const THREAD_OPTIONS = [4, 8, 16, 32, 64, 128, 256, 500, 1000];

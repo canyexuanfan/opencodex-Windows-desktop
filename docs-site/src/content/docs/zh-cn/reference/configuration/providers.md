@@ -46,7 +46,7 @@ selector，而不是分配一个新名称。
 
 ## 保留的 OpenAI 提供者
 
-`openai` 和 `openai-apikey` 是固定的保留 id。`openai.codexAccountMode` 默认是 `"pool"`，会在主账户和新增账户之间选择；`"direct"` 只使用当前调用者/主登录态。API 只使用其配置的 API key 或 key 池。请使用裸模型名或 `openai-apikey/<model>`；不存在跨路由凭据回退。API 的 GPT-5.6 行携带 1,050,000 上下文 / 922,000 最大输入元数据，而 Pro 虚拟 id 会重写为基础线协议模型并带上 `reasoning.mode: "pro"`。
+`openai` 和 `openai-apikey` 是固定的保留 id。`openai.codexAccountMode` 默认是 `"pool"`，会在主账户和新增账户之间选择；`"direct"` 只使用当前调用者/主登录态。API 只使用其配置的 API key 或 key 池。请使用裸模型名或 `openai-apikey/<model>`；不存在跨路由凭据回退。API 的 GPT-5.6 行携带 922,000 上下文 / 922,000 最大输入元数据，而 Pro 虚拟 id 会重写为基础线协议模型并带上 `reasoning.mode: "pro"`。
 
 `openaiProviderTierVersion: 2` 标记当前的单提供者投影。对已发布的 v1 配置进行迁移之前，opencodex 会创建 `config.json.pre-openai-tiers-v2.bak`，且不会覆盖不同的备份文件，并会把已知的旧式命名空间选择 id 重写为裸 id。
 
@@ -295,7 +295,7 @@ OpenRouter 可以通过多个推理提供者来提供同一个模型。`openRout
 
 当需要继续运行发现，但只有选定 id 应该出现在 Codex 和 `/v1/models` 中时，请使用 `selectedModels`。仪表板会保留完整的已发现列表，以便之后调整允许列表。
 
-预览版 GPT-5.6 回退条目使用相同机制。OpenAI API key 预设会为基础和 Pro id 设定 `1050000` 上下文和 `922000` 最大输入；OpenRouter 会为 `openai/gpt-5.6-sol`、`openai/gpt-5.6-terra` 和 `openai/gpt-5.6-luna` 设定 `1050000` 上下文。Pool/Direct 会声明 `1050000`；同步后的目录会声明 `max`，同时保留 `xhigh` 的独立性。
+预览版 GPT-5.6 回退条目使用相同机制。OpenAI API key 预设会为基础和 Pro id 设定 `922000` 上下文和 `922000` 最大输入；OpenRouter 会为 `openai/gpt-5.6-sol`、`openai/gpt-5.6-terra` 和 `openai/gpt-5.6-luna` 设定 `922000` 上下文。Pool/Direct 会声明 `922000`；同步后的目录会声明 `max`，同时保留 `xhigh` 的独立性。
 
 ```json
 {
