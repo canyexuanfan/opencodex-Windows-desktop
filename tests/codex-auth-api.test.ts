@@ -3508,6 +3508,189 @@ describe("codex-auth API", () => {
     expect(data.status).toBe("expired");
   });
 
+  test("Codex OAuth login responses project raw provider errors", async () => {
+    const oauth = await import("../src/oauth");
+    const startSpy = spyOn(oauth, "startLoginFlow").mockImplementation(async () => {
+      throw new Error("already in progress at C:\\Users\\Alice\\.opencodex\\auth.json.ocx-tmp sk-secret-provider-key");
+    });
+    try {
+      const req = new Request("http://localhost/api/codex-auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+      const data = await resp!.json() as { error?: string };
+
+      expect(resp!.status).toBe(500);
+      expect(data.error).toBe("OAuth authentication failed. Check the OpenCodex account status and retry.");
+      expect(JSON.stringify(data)).not.toContain("Alice");
+      expect(JSON.stringify(data)).not.toContain("sk-secret-provider-key");
+    } finally {
+      startSpy.mockRestore();
+    }
+  });
+
+  test("Codex OAuth login responses preserve actionable OAuth errors", async () => {
+    const oauth = await import("../src/oauth");
+    const { OAuthMutationBusyError } = await import("../src/oauth/store");
+    const startSpy = spyOn(oauth, "startLoginFlow");
+    const cases: Array<{ error: Error; expected: string }> = [
+      {
+        error: new oauth.OAuthLoginRequiredError("chatgpt"),
+        expected: "Not logged in to chatgpt. Run: ocx login chatgpt",
+      },
+      {
+        error: new oauth.OAuthTokenRefreshBusyError(),
+        expected: "OAuth token refresh capacity reached",
+      },
+      {
+        error: new oauth.OAuthTokenRefreshStaleError(),
+        expected: "OAuth token refresh owner became stale",
+      },
+      {
+        error: new OAuthMutationBusyError(),
+        expected: "OAuth mutation queue is busy",
+      },
+    ];
+    try {
+      for (const { error, expected } of cases) {
+        startSpy.mockRejectedValueOnce(error);
+        const req = new Request("http://localhost/api/codex-auth/login", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        });
+        const response = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+        const body = await response!.json() as { error?: string };
+
+        expect(response!.status).toBe(500);
+        expect(body.error).toBe(expected);
+      }
+    } finally {
+      startSpy.mockRestore();
+    }
+  });
+
+  test("Codex OAuth login status projects late provider errors", async () => {
+    const oauth = await import("../src/oauth");
+    const openUrlMod = await import("../src/lib/open-url");
+    const originalLogin = oauth.OAUTH_PROVIDERS.chatgpt.login;
+    oauth.OAUTH_PROVIDERS.chatgpt.login = async (controller) => {
+      controller.onAuth({ url: "https://example.test/oauth" });
+      throw new Error("late failure at /home/alice/.opencodex/auth.json.ocx-tmp sk-secret-provider-key");
+    };
+    const openSpy = spyOn(openUrlMod, "openUrl").mockImplementation(() => {});
+    const timeoutSpy = spyOn(globalThis, "setTimeout").mockImplementation(((
+      callback: (...args: unknown[]) => void,
+      delay?: number,
+      ...args: unknown[]
+    ) => {
+      if (delay === 2_000) queueMicrotask(() => callback(...args));
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout);
+    try {
+      const req = new Request("http://localhost/api/codex-auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      const startResponse = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+      const started = await startResponse!.json() as { flowId: string };
+      expect(startResponse!.status).toBe(200);
+
+      let state: { status?: string; error?: string } = {};
+      for (let attempt = 0; attempt < 50 && state.status !== "error"; attempt += 1) {
+        const statusReq = new Request(
+          `http://localhost/api/codex-auth/login-status?flowId=${encodeURIComponent(started.flowId)}`,
+        );
+        const statusResponse = await handleCodexAuthAPI(statusReq, new URL(statusReq.url), makeConfig());
+        state = await statusResponse!.json() as typeof state;
+        if (state.status !== "error") await new Promise<void>(resolve => setImmediate(resolve));
+      }
+
+      expect(state).toMatchObject({
+        status: "error",
+        error: "OAuth authentication failed. Check the OpenCodex account status and retry.",
+      });
+      expect(JSON.stringify(state)).not.toContain("/home/alice");
+      expect(JSON.stringify(state)).not.toContain("sk-secret-provider-key");
+    } finally {
+      timeoutSpy.mockRestore();
+      openSpy.mockRestore();
+      oauth.OAUTH_PROVIDERS.chatgpt.login = originalLogin;
+      oauth.clearLoginState("chatgpt");
+    }
+  });
+
+  test("Codex OAuth login status preserves actionable late OAuth errors", async () => {
+    const oauth = await import("../src/oauth");
+    const { OAuthMutationBusyError } = await import("../src/oauth/store");
+    const openUrlMod = await import("../src/lib/open-url");
+    const originalLogin = oauth.OAUTH_PROVIDERS.chatgpt.login;
+    const openSpy = spyOn(openUrlMod, "openUrl").mockImplementation(() => {});
+    const timeoutSpy = spyOn(globalThis, "setTimeout").mockImplementation(((
+      callback: (...args: unknown[]) => void,
+      delay?: number,
+      ...args: unknown[]
+    ) => {
+      if (delay === 2_000) queueMicrotask(() => callback(...args));
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout);
+    const cases: Array<{ error: Error; expected: string }> = [
+      {
+        error: new oauth.OAuthLoginRequiredError("chatgpt"),
+        expected: "Not logged in to chatgpt. Run: ocx login chatgpt",
+      },
+      {
+        error: new oauth.OAuthTokenRefreshBusyError(),
+        expected: "OAuth token refresh capacity reached",
+      },
+      {
+        error: new oauth.OAuthTokenRefreshStaleError(),
+        expected: "OAuth token refresh owner became stale",
+      },
+      {
+        error: new OAuthMutationBusyError(),
+        expected: "OAuth mutation queue is busy",
+      },
+    ];
+    try {
+      for (const { error, expected } of cases) {
+        oauth.OAUTH_PROVIDERS.chatgpt.login = async (controller) => {
+          controller.onAuth({ url: "https://example.test/oauth" });
+          throw error;
+        };
+        const req = new Request("http://localhost/api/codex-auth/login", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        });
+        const startResponse = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+        const started = await startResponse!.json() as { flowId: string };
+        expect(startResponse!.status).toBe(200);
+
+        let state: { status?: string; error?: string } = {};
+        for (let attempt = 0; attempt < 50 && state.status !== "error"; attempt += 1) {
+          const statusReq = new Request(
+            `http://localhost/api/codex-auth/login-status?flowId=${encodeURIComponent(started.flowId)}`,
+          );
+          const statusResponse = await handleCodexAuthAPI(statusReq, new URL(statusReq.url), makeConfig());
+          state = await statusResponse!.json() as typeof state;
+          if (state.status !== "error") await new Promise<void>(resolve => setImmediate(resolve));
+        }
+
+        expect(state).toMatchObject({ status: "error", error: expected });
+        oauth.clearLoginState("chatgpt");
+      }
+    } finally {
+      timeoutSpy.mockRestore();
+      openSpy.mockRestore();
+      oauth.OAUTH_PROVIDERS.chatgpt.login = originalLogin;
+      oauth.clearLoginState("chatgpt");
+    }
+  });
+
   test("POST /api/codex-auth/login/cancel expires the pending flow", async () => {
     const flowId = "flow-cancel-test";
     const req = new Request("http://localhost/api/codex-auth/login/cancel", {

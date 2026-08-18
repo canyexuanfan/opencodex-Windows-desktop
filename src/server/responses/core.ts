@@ -9,7 +9,6 @@ import { checkInputAdmission } from "./input-admission";
 import { nativeContextLimits } from "../../codex/catalog";
 import { describeUpstreamConnectFailure } from "./upstream-error";
 import {
-  getConfigPath,
   multiAgentGuidanceEnabled,
   resolveEnvValue,
 } from "../../config";
@@ -67,6 +66,7 @@ import {
   getOAuthCredentialApiBaseUrl,
   getValidAccessTokenForAccount,
   getValidAccessTokenSnapshot,
+  publicOAuthAuthenticationErrorMessage,
   type OAuthAccessSnapshot,
   UnsupportedOAuthProviderError,
 } from "../../oauth";
@@ -372,8 +372,6 @@ function isFixedCodexAccount(authCtx: CodexAuthContext): boolean {
   return (authCtx.kind === "pool" || authCtx.kind === "main-pool")
     && authCtx.fixedAccount === true;
 }
-
-
 
 export function usesCodexForwardPoolAuth(
   authCtx: CodexAuthContext,
@@ -2161,13 +2159,14 @@ async function handleResponsesInner(
       }
     } catch (err) {
       if (err instanceof UnsupportedOAuthProviderError) {
+        const safeProviderName = redactSecretString(route.providerName);
         return formatErrorResponse(
           400,
           "invalid_request_error",
-          `${err.message}. Remove or reconfigure provider '${route.providerName}' in ${getConfigPath()}.`,
+          `${redactSecretString(err.message)}. Remove or reconfigure provider '${safeProviderName}' in the OpenCodex configuration.`,
         );
       }
-      return formatErrorResponse(401, "authentication_error", err instanceof Error ? err.message : String(err));
+      return formatErrorResponse(401, "authentication_error", publicOAuthAuthenticationErrorMessage(err));
     }
   }
   route.provider = resolveProviderTransport(
@@ -3807,7 +3806,7 @@ async function handleResponsesInner(
           refreshed = await forceRefreshOAuthAccessSnapshot(sentOAuthSnapshot);
         } catch (err) {
           cleanupUpstreamAbort();
-          return formatErrorResponse(401, "authentication_error", err instanceof Error ? err.message : String(err));
+          return formatErrorResponse(401, "authentication_error", publicOAuthAuthenticationErrorMessage(err));
         }
         sentOAuthSnapshot = refreshed;
         replayOAuthCredentialSnapshot = {
