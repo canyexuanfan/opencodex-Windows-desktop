@@ -27,6 +27,25 @@ function errorCode(value: unknown): string {
  * True when Cursor intentionally cancelled the HTTP/2 stream after a client-tool suspend.
  * These are expected between multi-turn Responses bridge cycles, not upstream failures.
  */
+/**
+ * A Cursor stream that ended cleanly at the HTTP/2 layer while a client tool call was still
+ * open — no `turnEnded`, no error trailer, just EOF. The call's buffered arguments are lost,
+ * so the turn is truncated: reporting it as success would hand Codex a turn whose tool call
+ * silently never happened. Not retryable — the request is committed once the session connects.
+ */
+export class CursorStreamTruncatedError extends Error {
+  constructor(
+    public readonly openCallIds: readonly string[],
+    public readonly framesReceived: number,
+  ) {
+    super(
+      `Cursor stream ended without terminating the turn; ${openCallIds.length} tool call(s) left incomplete `
+      + `(${openCallIds.join(", ")}) after ${framesReceived} frame(s). Arguments may be truncated; the call was not committed.`,
+    );
+    this.name = "CursorStreamTruncatedError";
+  }
+}
+
 export function isCursorBenignCancelError(value: unknown): boolean {
   const message = errorMessage(value).toLowerCase();
   const code = errorCode(value).toUpperCase();
