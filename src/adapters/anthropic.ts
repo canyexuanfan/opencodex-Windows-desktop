@@ -989,6 +989,18 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
       const emitDone = function* (): Generator<AdapterEvent> {
         if (emittedDone) return;
         emittedDone = true;
+        // An `error` stop reason is a failed generation, not a stop. Forwarding it as `done`
+        // lets the turn report success and install replacement history on a compaction turn.
+        if (pendingStopReason === "error") {
+          yield {
+            type: "error",
+            message: "upstream ended the turn with stop_reason \"error\"",
+            status: 502,
+            errorType: "upstream_error",
+            usage: usageFromAnthropic(pendingUsage),
+          };
+          return;
+        }
         yield {
           type: "done",
           usage: usageFromAnthropic(pendingUsage),
@@ -1210,6 +1222,21 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
       }
       const usage = json.usage as Record<string, number> | undefined;
       const stopReason = typeof json.stop_reason === "string" ? json.stop_reason : undefined;
+      // An Anthropic-compatible upstream can forward an `error` stop reason verbatim. As a
+      // `done` it reads as a clean completion, so the turn reports success and — on a compaction
+      // turn — installs its partial summary as replacement history (#422). Usage is preserved:
+      // a failed turn still consumed tokens.
+      if (stopReason === "error") {
+        events.push({
+          type: "error",
+          message: "upstream ended the turn with stop_reason \"error\"",
+          status: 502,
+          errorType: "upstream_error",
+          usage: usageFromAnthropic(usage),
+        });
+        retainTranslatedEventBatch(events, budget);
+        return events;
+      }
       events.push({
         type: "done",
         usage: usageFromAnthropic(usage),
