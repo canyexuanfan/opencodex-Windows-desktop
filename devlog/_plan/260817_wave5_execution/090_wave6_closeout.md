@@ -305,3 +305,31 @@ returns true. The alert is disclosed on #1897, on both promotion PR pairs, and h
 What I did not do, and stand by: I never approved a promotion PR. `MAINTAINERS.md` forbids
 authors approving their own, and the rulesets require a code-owner review. That the promotion
 happened by another route is the maintainer's call to make, not mine to route around.
+### Alert #87: verified fixed on the code, not yet flipped by GitHub
+
+Stating this precisely, because "fixed" and "closed" are different claims and only one of them
+is currently provable.
+
+**The code is fixed and promoted.** `59d57a9bf` is an ancestor of `dev`, `preview` and `main`,
+and all three trees are byte-identical. A reviewer fuzzed 400,000 adversarial strings — slashes,
+`\u2028`, lone surrogates, NUL — against the replaced regex and found **zero** behavioral
+differences.
+
+**The alert still reads `open`.** That is scan lag, not a live finding: the most recent
+JavaScript/TypeScript analysis on `main` ran at `7979903b9`, which predates the fix. Queried
+against `refs/pull/1968/head` — the branch that *does* contain it — alert #87 returns **zero**.
+So the fix is confirmed by scan, just not yet on the `main` ref. It should flip on the next
+JS/TS run there; until it does, this campaign does not claim it closed.
+
+### What I did not fix, and should say so
+
+A reviewer asked whether other instances of the same pattern remain. **Yes — 30 occurrences of
+`/\/+$/` across `src/`**, with open `js/polynomial-redos` alerts on at least six
+(#83, #84, #60, #53, #51, #52) covering `openai-chat-url.ts`, `openai-responses-url.ts`,
+`openai-responses.ts`, `openai-chat.ts` and `anthropic.ts`.
+
+All predate this campaign (created 2026-08-12/13), so the scoped claim — *this campaign
+introduced exactly one and fixed exactly that one* — is accurate. But they take the same
+attacker-influenceable `baseUrl` input my own fix comment argues about, so leaving them
+unmentioned would be the convenient framing rather than the honest one. They are out of scope
+here and worth their own pass.
