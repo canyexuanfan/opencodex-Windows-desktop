@@ -71,7 +71,7 @@ of them:
 
 | PR | Held because |
 |----|--------------|
-| #1891 | it makes `GOOGLE_ANTIGRAVITY_USER_AGENT` steerable into the `onboardUser` request body, violating this wave's accept criterion. Needs #1889 first, which is the one-line fix that makes `ide_version` a real constant. Detail in `080`. |
+| #1891 | **held during the campaign, then merged afterwards** as `5c66ad205` — see the correction below |
 | #1889 | unsponsored `src/oauth/` surface, plus still draft. The `maintainer-sponsored` label is the record that a security review happened, so an agent applying it would falsify that record. |
 
 Neither is affected by the close-on-dev-merge decision: both are blocked *before* merge, so the
@@ -128,3 +128,27 @@ all three OSes, npm-global on all three, gates, storage policy, api usage.
 
 So the hosted evidence now exists. Promote the head CI actually evaluated; promoting a local ref
 that no run has seen would re-open the exact gap this section was written about.
+## Correction: #1891 merged, and the record said otherwise
+
+I held #1891 and argued #1889 must land first, because #1889 is the one-line fix that makes
+`ide_version` a real constant. **#1891 merged at 02:25:46Z as `5c66ad205` without it. #1889 is
+still open and draft.**
+
+For a while this document, and both promotion PR descriptions, described #1891 as deliberately
+excluded while it was sitting on the promotion head. That is the worst kind of error in a record
+meant to inform an approval: a maintainer reading it would have approved a promotion believing
+it excluded a change it contained. Corrected in all three places.
+
+The underlying concern *is* addressed on this head, by a different route than the hold pointed
+at: **#1957** changed `ide_version` to `ANTIGRAVITY_IDE_VERSION`, so the body field no longer
+carries the User-Agent at all. The hold was right about the defect and wrong about which PR
+would fix it.
+
+Two smaller corrections in the same pass:
+
+- **"every subsequent hosted run on `dev` is green"** was not backed. Four of the runs after
+  `9dbc5fc42` are *cancelled* by supersession, and cancelled is not green. The accurate
+  statement is that the completed runs after it are green, and several never completed.
+- **The campaign landed ten functional PRs, not nine** — the count predated #1891 merging.
+- The closure-rules section still says #1843 was "released in v2.24.2"; the results table saying
+  **v2.24.0** is the correct one, confirmed by `ac8c0d2df` being contained in that tag.
