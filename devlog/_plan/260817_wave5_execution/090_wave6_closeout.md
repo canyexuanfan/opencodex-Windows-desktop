@@ -243,12 +243,22 @@ targeting the default branch. Every campaign PR targets `dev`, so none of them c
 CodeQL feedback at all — verified: `refs/pull/1959/head` and `refs/pull/1963/head` have analyses
 because they target `main`, while the `preview`-targeting pair have zero.
 
-The actual root cause is duller and more useful: **`dev` is scanned on push, and nobody read
-the result.** It carries 84 open alerts against `main`'s 71. The finding was observable on the
-integration branch from the moment #1897 merged until promotion, and no step in this campaign
-ever looked. CodeQL is structurally absent from the `dev` PR flow *and* the post-merge alert
-list is not part of anyone's gate — those are two different holes, and I named neither the
-first time.
+**Second attempt, also wrong.** I then wrote that `dev` is scanned on push and nobody read the
+result. Both halves are false: `dev`'s most recent analysis is `02abe0afa` from 2026-08-15,
+default setup runs on a *weekly* schedule, and `0be660a2e` is not an ancestor of that commit —
+so the code was never in a `dev` scan at all. Its 84 alerts are stale, not current, which is the
+opposite of what I claimed they showed. Alert #87's only instances are `refs/heads/main` and
+`refs/pull/1959/head`. "Nobody read it" described a page that never displayed it.
+
+**The actual missed signal, third time.** `github-advanced-security[bot]` posted the finding as
+an inline review comment on **#1959** at `src/providers/antigravity-models.ts:273` at
+**02:38:08Z**. #1963 promoted at **02:55:04Z**. It was sitting on a promotion PR, in the review
+thread, for **17 minutes** before the code reached `main` — and I was actively editing that PR's
+description during the window. Not a coverage gap. I did not look at the review comments on a
+PR I was in the middle of rewriting.
+
+Three explanations for one mistake, the first two of which blamed infrastructure. The third is
+the one that is true and the least comfortable.
 
 Severity in context: the input is a configured `baseUrl`, so exploitation needs a hostile or
 careless config rather than attacker-controlled traffic. Worth fixing, not urgent. Separately,
@@ -267,7 +277,7 @@ edge cases (empty string, all-slashes, no trailing slash, interior slashes).
 
 **The root cause is a process one and belongs in the record.** #1897 merged on local focused
 tests plus `tsc`. That substitutes for CI on the axis it covers — behavior — and silently skips
-the axis it does not: static analysis. Waiting for full CI would have surfaced this before it
+the axis it does not: static analysis. ~~Waiting for full CI would have surfaced this before it~~
 reached `main`. The instruction for this run was to stop waiting on per-PR CI and gate once at
 the end, which is a reasonable trade for speed; the honest accounting is that it traded away
 exactly this class of finding, and the end-gate I ran (`bun test`, `typecheck`, `privacy:scan`)
@@ -295,3 +305,31 @@ returns true. The alert is disclosed on #1897, on both promotion PR pairs, and h
 What I did not do, and stand by: I never approved a promotion PR. `MAINTAINERS.md` forbids
 authors approving their own, and the rulesets require a code-owner review. That the promotion
 happened by another route is the maintainer's call to make, not mine to route around.
+### Alert #87: verified fixed on the code, not yet flipped by GitHub
+
+Stating this precisely, because "fixed" and "closed" are different claims and only one of them
+is currently provable.
+
+**The code is fixed and promoted.** `59d57a9bf` is an ancestor of `dev`, `preview` and `main`,
+and all three trees are byte-identical. A reviewer fuzzed 400,000 adversarial strings — slashes,
+`\u2028`, lone surrogates, NUL — against the replaced regex and found **zero** behavioral
+differences.
+
+**The alert still reads `open`.** That is scan lag, not a live finding: the most recent
+JavaScript/TypeScript analysis on `main` ran at `7979903b9`, which predates the fix. Queried
+against `refs/pull/1968/head` — the branch that *does* contain it — alert #87 returns **zero**.
+So the fix is confirmed by scan, just not yet on the `main` ref. It should flip on the next
+JS/TS run there; until it does, this campaign does not claim it closed.
+
+### What I did not fix, and should say so
+
+A reviewer asked whether other instances of the same pattern remain. **Yes — 30 occurrences of
+`/\/+$/` across `src/`**, with open `js/polynomial-redos` alerts on at least six
+(#83, #84, #60, #53, #51, #52) covering `openai-chat-url.ts`, `openai-responses-url.ts`,
+`openai-responses.ts`, `openai-chat.ts` and `anthropic.ts`.
+
+All predate this campaign (created 2026-08-12/13), so the scoped claim — *this campaign
+introduced exactly one and fixed exactly that one* — is accurate. But they take the same
+attacker-influenceable `baseUrl` input my own fix comment argues about, so leaving them
+unmentioned would be the convenient framing rather than the honest one. They are out of scope
+here and worth their own pass.
