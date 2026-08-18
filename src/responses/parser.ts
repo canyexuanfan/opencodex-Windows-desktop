@@ -169,6 +169,23 @@ function buildTools(tools: unknown[] | undefined): OcxTool[] | undefined {
     if (namespace) tool.namespace = namespace;
     out.push(tool);
   };
+  const pushCustom = (t: Record<string, unknown>, namespace?: string) => {
+    // Freeform custom tools are lowered to a single string `input` because chat models cannot
+    // emit Responses grammar payloads directly. Keep tool-specific input guidance scoped to the
+    // tool that owns it: leaking apply_patch syntax into `exec` or another freeform tool teaches
+    // routed models that the nested helper name is itself a callable top-level tool.
+    const inputDescription = t.name === "apply_patch"
+      ? "Raw tool input. For apply_patch, begin exactly with `*** Begin Patch` (no trailing `***`), then use its standard patch envelope."
+      : "Raw freeform input for this tool.";
+    const tool: OcxTool = {
+      name: t.name as string,
+      description: (t.description as string) ?? "",
+      parameters: { type: "object", properties: { input: { type: "string", description: inputDescription } }, required: ["input"] },
+      freeform: true,
+    };
+    if (namespace) tool.namespace = namespace;
+    out.push(tool);
+  };
   for (const t of tools) {
     if (!isObj(t)) continue;
     if (t.type === "function" && isObj(t.function) && typeof t.function.name === "string" && t.function.name.length > 0) {
@@ -178,27 +195,19 @@ function buildTools(tools: unknown[] | undefined): OcxTool[] | undefined {
     if (t.type === "function" && typeof t.name === "string") {
       pushFn(t);
     } else if (t.type === "namespace" && Array.isArray(t.tools)) {
-      // MCP tools arrive grouped under a namespace tool; flatten the inner function tools so
-      // chat-completions models receive them (round-trip restores the namespace in the bridge).
-      const ns = typeof t.name === "string" ? t.name : undefined;
+      // Codex 0.147 groups its ordinary client tools under the reserved `functions` namespace,
+      // including freeform custom tools such as code-mode `exec`. Those children are still
+      // top-level Responses tools, so flatten them without a namespace. Other namespace groups
+      // are MCP-style and keep their namespace for round-trip routing.
+      const builtinFunctions = t.name === "functions";
+      const ns = typeof t.name === "string" && !builtinFunctions ? t.name : undefined;
       for (const inner of t.tools as unknown[]) {
         if (isObj(inner) && inner.type === "function" && typeof inner.name === "string") pushFn(inner, ns);
+        else if (builtinFunctions && isObj(inner) && inner.type === "custom" && typeof inner.name === "string") pushCustom(inner);
       }
     }
     else if (t.type === "custom" && typeof t.name === "string") {
-      // Freeform custom tools are lowered to a single string `input` because chat models cannot
-      // emit Responses grammar payloads directly. Keep tool-specific input guidance scoped to the
-      // tool that owns it: leaking apply_patch syntax into `exec` or another freeform tool teaches
-      // routed models that the nested helper name is itself a callable top-level tool.
-      const inputDescription = t.name === "apply_patch"
-        ? "Raw tool input. For apply_patch, begin exactly with `*** Begin Patch` (no trailing `***`), then use its standard patch envelope."
-        : "Raw freeform input for this tool.";
-      out.push({
-        name: t.name,
-        description: (t.description as string) ?? "",
-        parameters: { type: "object", properties: { input: { type: "string", description: inputDescription } }, required: ["input"] },
-        freeform: true,
-      });
+      pushCustom(t);
     }
     else if (t.type === "tool_search") {
       // Client-executed tool discovery — the gateway to deferred tools (subagents, extra MCP tools).
