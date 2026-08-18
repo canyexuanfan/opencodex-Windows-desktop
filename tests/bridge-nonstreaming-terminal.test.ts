@@ -181,3 +181,67 @@ describe("streaming compaction respects the same #422 guard", () => {
     expect(terminals).toEqual(["response.completed"]);
   });
 });
+
+describe("truncation is recognized regardless of adapter vocabulary", () => {
+  // stopReason is an open-ended string and adapters disagree: openai-chat normalizes to
+  // max_tokens/content_filter, Command Code forwards the raw "length", Anthropic forwards
+  // stop_reason verbatim. Matching only the canonical pair let those turns install a
+  // half-written summary as replacement history (#422).
+  const delta = (t: string) => ({ type: "text_delta", text: t }) as AdapterEvent;
+
+  async function streamCompactionItems(events: AdapterEvent[]): Promise<number> {
+    async function* source(): AsyncGenerator<AdapterEvent> {
+      for (const e of events) yield e;
+    }
+    const text = await new Response(bridgeToResponsesSSE(
+      source(), "routed/model", undefined, undefined, undefined, undefined, 2_000, { compaction: true },
+    )).text();
+    // Count emitted ITEMS, not mentions: the compaction item also appears inside the terminal
+    // response snapshot. A duplicate emission would slip past a boolean presence check.
+    return text.split("\n\n")
+      .filter(f => f.includes("event: response.output_item.done") && f.includes('"type":"compaction"'))
+      .length;
+  }
+
+  function bufferedCompactionItems(events: AdapterEvent[]): number {
+    const json = buildResponseJSON(events, "routed/model", { compaction: true });
+    return (json.output as { type: string }[]).filter(o => o.type === "compaction").length;
+  }
+
+  const truncatedReasons = [
+    "length",             // Command Code / raw OpenAI
+    "max_tokens",         // canonical
+    "content_filter",     // canonical
+    "refusal",            // raw Anthropic
+    "MAX_TOKENS",         // raw Gemini
+    "MALFORMED_FUNCTION_CALL",
+    "SAFETY",
+  ];
+
+  for (const reason of truncatedReasons) {
+    test(`stopReason "${reason}" installs no compaction history (streaming and buffered)`, async () => {
+      const events: AdapterEvent[] = [delta("half a summary"), { type: "done", stopReason: reason }];
+
+      expect(await streamCompactionItems(events)).toBe(0);
+      expect(bufferedCompactionItems(events)).toBe(0);
+    });
+  }
+
+  test("a clean turn still ships EXACTLY ONE compaction item on both paths", async () => {
+    // codex-rs takes the first compaction item and fatals on zero, so suppression must not
+    // widen — and a duplicate would be just as wrong.
+    const events: AdapterEvent[] = [delta("a whole summary"), { type: "done" }];
+
+    expect(await streamCompactionItems(events)).toBe(1);
+    expect(bufferedCompactionItems(events)).toBe(1);
+  });
+
+  test("an unrecognized stop reason is treated as a normal stop", async () => {
+    // Unknown values must not fail healthy turns: an unrecognized reason is far more likely a
+    // provider's ordinary stop than a silent truncation.
+    const events: AdapterEvent[] = [delta("a whole summary"), { type: "done", stopReason: "end_turn" }];
+
+    expect(await streamCompactionItems(events)).toBe(1);
+    expect(bufferedCompactionItems(events)).toBe(1);
+  });
+});

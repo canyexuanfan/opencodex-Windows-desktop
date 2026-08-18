@@ -9,6 +9,7 @@ import type {
 import { coerceIntegerToolArguments } from "./lib/tool-argument-integers";
 import { adapterFailureFromMessage, classifyError, CYBER_POLICY_ERROR_CODE, isCyberPolicyCode, type OcxErrorPayload } from "./lib/errors";
 import { encodeCompactionSummary } from "./responses/compaction";
+import { isTruncatedStopReason } from "./responses/truncated-stop-reason";
 import { encodeReasoningEnvelope, type ReasoningEnvelope } from "./responses/reasoning-envelope";
 import { rememberReasoningForCall } from "./responses/reasoning-replay-cache";
 import {
@@ -1158,7 +1159,7 @@ export function bridgeToResponsesSSE(
               // has always checked this; streaming emitted the item BEFORE reading stopReason, so
               // a max_tokens/content_filter turn shipped a half-written summary and then declared
               // itself incomplete — the same hazard, one branch over.
-              if (options?.compaction && event.stopReason !== "max_tokens" && event.stopReason !== "content_filter") {
+              if (options?.compaction && !isTruncatedStopReason(event.stopReason)) {
                 // Exactly one compaction item per turn; codex-rs takes the first and fatals on 0.
                 const item = {
                   type: "compaction", id: `cmp_${uuid()}`,
@@ -1471,6 +1472,10 @@ function buildResponseJSONWithBudget(
   let incompleteEvent: Extract<AdapterEvent, { type: "incomplete" }> | undefined;
   let endTurn: boolean | undefined;
   let stopReason: string | undefined;
+  // The adapter's stop reason exactly as it arrived. `stopReason` above is deliberately narrowed
+  // to the two reasons that map onto a Responses `incomplete_details`; the raw value is what the
+  // truncation guard needs, because adapters disagree on vocabulary (`length`, `refusal`, ...).
+  let rawStopReason: string | undefined;
   let cleanDone = false;
   // Whether the adapter emitted ANY terminal (done/error/incomplete). Distinct from `cleanDone`,
   // which is only true for a `done` without a stop reason. A buffered turn whose adapter simply
@@ -1804,6 +1809,7 @@ function buildResponseJSONWithBudget(
         sawTerminal = true;
         endTurn = e.endTurn;
         cleanDone = e.stopReason === undefined;
+        rawStopReason = e.stopReason;
         if (e.providerState) options?.onProviderState?.(e.providerState);
         // Match streaming: max_tokens and content_filter both terminate as incomplete.
         if (e.stopReason === "max_tokens" || e.stopReason === "content_filter") stopReason = e.stopReason;
@@ -1839,8 +1845,7 @@ function buildResponseJSONWithBudget(
     // truncated summary as replacement history — the exact #422 hazard, reached by a route that
     // did not exist when the guard was written.
     && sawTerminal
-    && stopReason !== "max_tokens"
-    && stopReason !== "content_filter"
+    && !isTruncatedStopReason(rawStopReason)
   ) {
     pushOutput({ type: "compaction", id: `cmp_${uuid()}`, encrypted_content: encodeCompactionSummary(compactionText) }, compactionTextBytes);
   }
