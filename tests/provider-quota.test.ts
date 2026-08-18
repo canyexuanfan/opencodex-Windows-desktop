@@ -883,6 +883,79 @@ describe("fetchProviderQuotaReports", () => {
       seen.push({ url, authorization: headers?.Authorization, redirect: init?.redirect });
       return new Response(JSON.stringify({
         success: true,
+        data: {
+          limits: [
+            { type: "TOKENS_LIMIT", unit: 3, number: 5, percentage: 40.5, currentValue: 405, usage: 1000, nextResetTime: 1789000000000 },
+            { type: "TOKENS_LIMIT", unit: 6, number: 1, percentage: 52, nextResetTime: 1789600000000 },
+            { type: "TIME_LIMIT", percentage: 12.3, nextResetTime: 1789000000000 },
+          ],
+        },
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("zai", "https://api.z.ai"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.source).toBe("zai:quota-limit");
+    expect(result.reports[0]?.quota).toMatchObject({
+      fiveHourPercent: 40.5,
+      fiveHourResetAt: 1789000000000,
+      weeklyPercent: 52,
+      weeklyResetAt: 1789600000000,
+      monthlyPercent: 12.3,
+      monthlyResetAt: 1789000000000,
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe("https://api.z.ai/api/monitor/usage/quota/limit");
+    expect(seen[0]?.authorization).toBe("Bearer zai-secret");
+    expect(seen[0]?.redirect).toBe("error");
+  });
+
+  test("Z.AI quota probes the BigModel region from the provider's own host", async () => {
+    const seen: Array<{ url: string; authorization?: string; redirect?: RequestRedirect }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = init?.headers as Record<string, string> | undefined;
+      seen.push({ url, authorization: headers?.Authorization, redirect: init?.redirect });
+      // Weekly row omits `percentage`: the fallback derives it from currentValue/usage.
+      return new Response(JSON.stringify({
+        success: true,
+        data: {
+          limits: [
+            { type: "CREDIT_LIMIT", unit: 3, number: 5, percentage: 20, currentValue: 200, usage: 1000, nextResetTime: 1789000000000 },
+            { type: "TOKENS_LIMIT", unit: 6, number: 1, currentValue: 156, usage: 300, nextResetTime: 1789600000000 },
+            { type: "TIME_LIMIT", percentage: 7.5, nextResetTime: 1789000000000 },
+          ],
+        },
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(
+      keyQuotaConfig("zhipu-bigmodel-coding", "https://open.bigmodel.cn/api/coding/paas/v4"),
+      true,
+    );
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.source).toBe("zai:quota-limit");
+    expect(result.reports[0]?.quota).toMatchObject({
+      fiveHourPercent: 20,
+      weeklyPercent: 52,
+      monthlyPercent: 7.5,
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe("https://open.bigmodel.cn/api/monitor/usage/quota/limit");
+    expect(seen[0]?.authorization).toBe("Bearer zhipu-bigmodel-coding-secret");
+    expect(seen[0]?.redirect).toBe("error");
+  });
+
+  test("Z.AI quota falls back to legacy field-name payloads", async () => {
+    const seen: Array<{ url: string; authorization?: string }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = init?.headers as Record<string, string> | undefined;
+      seen.push({ url, authorization: headers?.Authorization });
+      return new Response(JSON.stringify({
+        success: true,
         data: { fiveHourPercent: 40.5, weeklyPercent: 52, monthlyMCPUsage: 12.3 },
       }), { status: 200 });
     }) as typeof fetch;
@@ -898,8 +971,41 @@ describe("fetchProviderQuotaReports", () => {
     });
     expect(seen).toHaveLength(1);
     expect(seen[0]?.url).toBe("https://api.z.ai/api/monitor/usage/quota/limit");
-    expect(seen[0]?.authorization).toBe("Bearer zai-secret");
-    expect(seen[0]?.redirect).toBe("error");
+  });
+
+  test("Z.AI quota probes the BigModel Responses endpoint at /api/v1", async () => {
+    const seen: Array<{ url: string; authorization?: string }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = init?.headers as Record<string, string> | undefined;
+      seen.push({ url, authorization: headers?.Authorization });
+      return new Response(JSON.stringify({
+        success: true,
+        data: {
+          limits: [
+            { type: "TOKENS_LIMIT", unit: 3, number: 5, percentage: 30, currentValue: 300, usage: 1000, nextResetTime: 1789000000000 },
+            { type: "TOKENS_LIMIT", unit: 6, number: 1, percentage: 60, nextResetTime: 1789600000000 },
+            { type: "TIME_LIMIT", percentage: 9.5, nextResetTime: 1789000000000 },
+          ],
+        },
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(
+      keyQuotaConfig("zhipu-bigmodel-coding", "https://open.bigmodel.cn/api/v1"),
+      true,
+    );
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.source).toBe("zai:quota-limit");
+    expect(result.reports[0]?.quota).toMatchObject({
+      fiveHourPercent: 30,
+      weeklyPercent: 60,
+      monthlyPercent: 9.5,
+    });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe("https://open.bigmodel.cn/api/monitor/usage/quota/limit");
+    expect(seen[0]?.authorization).toBe("Bearer zhipu-bigmodel-coding-secret");
   });
 
   test("Z.AI quota treats an unsuccessful payload as a no-report", async () => {
@@ -921,6 +1027,22 @@ describe("fetchProviderQuotaReports", () => {
 
     const result = await fetchProviderQuotaReports(
       keyQuotaConfig("zai", "https://attacker.example/api/coding/paas/v4"),
+      true,
+    );
+
+    expect(result.reports).toEqual([]);
+    expect(seen).toEqual([]);
+  });
+
+  test("Z.AI quota never probes the BigModel pay-as-you-go endpoint", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response("unexpected", { status: 500 });
+    }) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(
+      keyQuotaConfig("zhipu-bigmodel", "https://open.bigmodel.cn/api/paas/v4"),
       true,
     );
 
