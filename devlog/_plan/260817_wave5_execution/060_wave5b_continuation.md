@@ -49,3 +49,34 @@ a timing change on inference.
 Each PR either lands with focused tests green on `origin/dev`, or carries a
 recorded blocker disposition naming exactly what is missing. Merge order is
 preserved and verified with `git merge-base --is-ancestor`.
+## Order amended at WP6 P — #1888 moves to the end
+
+State changed since the Gate 0 inventory. #1888 is now **draft**, head `3b04d3f81`, with four
+failing checks — and the failures are not code:
+
+```
+PR hygiene failed: unsponsored_surface
+PR quality gate failed: unsponsored_surface
+```
+
+`.github/scripts/pr-sponsored-surface.cjs` lists `src/oauth/` as a restricted path, and
+#1888 touches `src/oauth/index.ts`. The gate clears only when a maintainer applies the
+`maintainer-sponsored` label, which is exactly the authorization boundary `AGENTS.md`
+describes for auth surfaces. **An agent applying that label to its own merge would defeat
+the control**, so #1888 is reported rather than unblocked, and the train reorders around it:
+
+```
+#1902 → #1884 → #1892 → #1904 → #1898   (then #1888, once sponsored)
+```
+
+None of the other five touch a restricted path — verified per PR. #1888 loses nothing by
+going last: its dependency claim was that continuation scope should precede the others, but
+the five remaining PRs touch disjoint files (`src/router.ts` + `providers/derive.ts`;
+`adapters/cline-pass-*`; two fastwire test files; `src/chat/inbound.ts`;
+`providers/request-pacing.ts`), so none of them consumes its output.
+
+One thing to carry into #1888's eventual review: it now also touches
+`src/responses/reasoning-replay-cache.ts`, `src/server/responses/core.ts` and `src/types.ts` —
+the three files WP4 changed for the durable destination identity. It will need a rebase, and
+the reviewer should check that its account-scoping work composes with the destination scoping
+rather than duplicating it.
