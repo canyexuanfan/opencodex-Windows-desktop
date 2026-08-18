@@ -1,7 +1,7 @@
 # 020 — WP3: full remote verification on ssh lidge
 
-Revised by audit `r1` finding F5: `privacy:scan` and `audit:high` run HERE, before
-the PR, not after the merge.
+Revised by audit `r1` F5 (gates moved before the PR) and audit `r3` F1+F2 (base
+pinning, and never `checkout -f` a shared checkout).
 
 ## Why remote, and why the FULL suite
 
@@ -12,44 +12,73 @@ scoped adapter change. `AGENTS.md` §Commands requires `bun run typecheck` and
 
 Standing user contract: the authoritative suite runs on `ssh lidge`, never locally.
 
-Remote checkout: `/home/lidgeai/Developer/opencodex`, bun 1.3.14, 16 cores.
+lidge: `/home/lidgeai/Developer/opencodex`, bun 1.3.14, 16 cores.
 
 `--isolate` is required: the flat suite bleeds environment between files without it.
 
-## Procedure (verification only, no MODIFY)
+## Use a DEDICATED worktree, never `checkout -f` the shared clone (r3 F2)
+
+`~/Developer/opencodex` is a shared working checkout, and `git checkout -f` there
+would silently discard any tracked uncommitted work. `git worktree list` on lidge
+already shows a dozen `/tmp/ocx-*` verification worktrees, so this is the
+established pattern there:
 
 ```
-ssh lidge 'cd ~/Developer/opencodex && git fetch origin cursor-call && git checkout -f <SHA> && git log --oneline -1'
-ssh lidge 'cd ~/Developer/opencodex && bun install --frozen-lockfile'
-ssh lidge 'cd ~/Developer/opencodex && bun x tsc --noEmit'
-ssh lidge 'cd ~/Developer/opencodex && bun run privacy:scan'
-ssh lidge 'cd ~/Developer/opencodex && bun run audit:high'
-ssh lidge 'cd ~/Developer/opencodex && bun test --isolate tests'
+ssh lidge 'cd ~/Developer/opencodex && git fetch origin cursor-call dev'
+ssh lidge 'cd ~/Developer/opencodex && git worktree add /tmp/ocx-cc-<SHORTSHA> <SHA>'
+ssh lidge 'cd /tmp/ocx-cc-<SHORTSHA> && git log --oneline -1'
+ssh lidge 'cd /tmp/ocx-cc-<SHORTSHA> && bun install --frozen-lockfile'
 ```
 
-`audit:high` and `privacy:scan` are in `scripts/release.ts:374,380` — the release
-authority runs both, so they belong before a merge that claims release readiness.
+Remove the worktree when the phase closes (`git worktree remove`), and never touch
+the shared checkout's HEAD.
 
-Run the suite as a managed background session (~8 min) and poll; do not block a
-turn on it.
+## Pin the base (r3 F1)
+
+`dev` moves. Record, at the moment the rebase runs:
+
+```
+git ls-remote origin refs/heads/dev     # LIVE head, not the tracking ref
+```
+
+That SHA is `VERIFIED_BASE`. Every later phase compares against it, and WP5 refuses
+to merge if the live `dev` head has moved off it. Using `git ls-remote` rather than
+`origin/dev` follows `scripts/release.ts:327-335`, which exists because the local
+tracking ref can be minutes stale.
+
+## Gates
+
+```
+bun x tsc --noEmit
+bun run privacy:scan
+bun run audit:high
+bun test --isolate tests
+bun run build:gui        # see r3 F4 — publish runs this unconditionally
+```
+
+`audit:high` and `privacy:scan` are in `scripts/release.ts:374,380`.
+`build:gui` is here because `prepublishOnly` (`package.json:49`) runs it on every
+publish regardless of whether `gui/` changed, and it also runs `prepare:package`.
+"No gui/ path changed" is therefore not a reason to skip it for a readiness claim.
+
+Run the suite and the gui build as managed background sessions and poll.
 
 ## Expected evidence
 
 - `bun x tsc --noEmit` → exit 0, no output.
 - `bun run privacy:scan` → exit 0.
 - `bun run audit:high` → exit 0. If it reports a pre-existing advisory that also
-  fails on `origin/dev`, record that comparison rather than attributing it to this
-  branch.
-- `bun test --isolate tests` → **0 fail**. Pass counts move because dev added 104
-  commits of tests; the bar is 0 fail, not a count. (Prior data points: 12761 pass
-  at the old base, 12800 at the campaign tip.)
+  fails at `VERIFIED_BASE`, record that comparison rather than blaming this branch.
+- `bun test --isolate tests` → **0 fail**. Pass counts move as dev grows; the bar is
+  0 fail. (Data points: 12761 at the old base, 12800 at the campaign tip.)
+- `bun run build:gui` → exit 0.
 
 ## Platform gap (state it, do not paper over it)
 
-lidge is Linux. Repository CI covers Linux, Windows, and macOS. Windows-specific
-surfaces (shims, installer, PowerShell) are historically where this repository
-breaks. This campaign touches none of them — record that as the reason the Linux
-evidence is *adequate for this diff*, rather than implying Linux equals CI.
+lidge is Linux. Repository CI covers Linux, Windows, and macOS. This campaign's
+28-path diff contains no shim, installer, PowerShell, platform dispatch, or Windows
+path handling — verified in audit `r3`. That is why Linux evidence is adequate *for
+this diff*, and it is not a claim that Linux equals CI.
 
 ## Known flake (do NOT call it a regression without isolation)
 
@@ -65,6 +94,19 @@ with a changed plan.
 
 ## Verification (C)
 
-Typecheck exit 0, privacy:scan exit 0, audit:high exit 0, and a `0 fail` line from
-`bun test --isolate tests` — each quoted with the SHA it ran against.
+Typecheck, privacy:scan, audit:high, and build:gui each exit 0, and `0 fail` from
+`bun test --isolate tests` — each quoted with the SHA it ran against, plus the
+recorded `VERIFIED_BASE`.
+
+## Per-layer verification (r3 F3)
+
+Because `030` now opens a real 3-PR stack, each layer needs its own evidence
+(`AGENTS.md:178-180`). Full suite on the TOP of the stack; per-layer verification is
+typecheck plus the tests that layer owns:
+
+| Layer | Focused tests |
+|-------|---------------|
+| PR1 (Cursor EOF + tool-result wire) | `tests/cursor-eof-terminal.test.ts`, `tests/cursor-hardening.test.ts`, `tests/cursor-tool-result-image.test.ts`, `tests/cursor-request-builder.test.ts` |
+| PR2 (unexpected CANCEL) | `tests/cursor-cancel-provenance.test.ts`, `tests/cursor-hardening.test.ts` |
+| PR3 (bridge/adapter terminals + WP2b) | `tests/bridge-nonstreaming-terminal.test.ts`, `tests/anthropic-error-stop-reason.test.ts`, `tests/command-code-error-finish.test.ts`, `tests/google-buffered-stop-reason.test.ts`, `tests/cursor-interaction-query.test.ts` + FULL suite |
 

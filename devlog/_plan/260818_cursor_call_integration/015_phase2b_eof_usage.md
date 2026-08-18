@@ -77,9 +77,22 @@ Note the spread: no `usage` key at all when this turn proved nothing.
 ## MODIFY — `src/adapters/cursor/live-transport.ts`
 
 Delete the local `partialUsageFromEventState` definition and import it from
-`./protobuf-events` alongside the existing `finalizeTurnEvents` import. Any test
-importing it from `live-transport.ts` must be repointed; check
-`rg -n 'partialUsageFromEventState' tests` first.
+`./protobuf-events` alongside the existing `finalizeTurnEvents` import.
+
+**RE-EXPORT it.** `tests/cursor-interaction-query.test.ts` imports it from
+`live-transport.ts` five times (`:150`, `:164`, `:172`, `:189`, `:195`) — that file
+is dev's existing contract for partial-usage reporting and this work-phase has no
+business rewriting it. So:
+
+    export { partialUsageFromEventState } from "./protobuf-events";
+
+keeps every existing import path working while the definition lives in one place.
+Verified with `rg -n 'partialUsageFromEventState' tests src`.
+
+Import-cycle check: `protobuf-events.ts` imports only `../../types`, `./gen/agent_pb`,
+`./arg-codec`, `./arg-normalize`, `./types`, and `../../lib/translator-budget` — nothing
+from `live-transport.ts`. Moving the helper down therefore adds no cycle; moving
+`finalizeTurnEvents` up would have.
 
 ## Confirmed before writing: the consumer forwards it
 
@@ -127,4 +140,3 @@ so the two docs do not conflict (confirmed in audit `r2`).
 
 `tests/cursor-interaction-query.test.ts:148-185` is in the list because it is the
 existing contract for partial-usage reporting; this change must not disturb it.
-
