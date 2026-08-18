@@ -85,8 +85,8 @@ anything.
 
    Read `PR1_TIP` and `PR2_TIP` off that list by subject, then confirm each:
 
-       git show --stat <PR1_TIP>   # must be the 010/020 shipped-record doc commit
-       git show --stat <PR2_TIP>   # must be the 040 shipped-record doc commit
+       git show --stat "$PR1_TIP"   # must be the 010/020 shipped-record doc commit
+       git show --stat "$PR2_TIP"   # must be the 040 shipped-record doc commit
 
    Bind them to variables rather than reading them by eye, so step 5's assertions
    have something to compare against:
@@ -95,10 +95,11 @@ anything.
        PR2_TIP=$(git log --format='%H %s' "$VERIFIED_BASE"..cursor-call | grep -F 'record what shipped for 040' | cut -d' ' -f1)
        test -n "$PR1_TIP" && test -n "$PR2_TIP"
 
-2. Create the branches at those commits:
+2. Create the branches at those commits, consuming the captured variables (audit
+   `r14`: the angle-bracket form is not shell syntax and fails `zsh -n`):
 
-       git branch cursor-call-wire   <PR1_TIP>
-       git branch cursor-call-cancel <PR2_TIP>
+       git branch cursor-call-wire   "$PR1_TIP"
+       git branch cursor-call-cancel "$PR2_TIP"
 
 3. Prove the stack mechanically — all three ancestry assertions plus the count
    identity must pass:

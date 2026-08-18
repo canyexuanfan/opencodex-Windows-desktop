@@ -32,17 +32,12 @@ comparing PR2 against the original value would fail by construction.
 The invariant is: **before merging layer N, the live `dev` head must equal the SHA
 that layer N's base was verified against.** Maintain one variable:
 
-    EXPECTED_DEV="$VERIFIED_BASE"                       # from 020, the rebase target
-
-    # per layer N, with PRN and PRN_HEAD from 030 step 5:
-    test "$(git ls-remote origin refs/heads/dev | cut -f1)" = "$EXPECTED_DEV"
-    test "$(gh pr view $PRN --json headRefOid --jq .headRefOid)" = "$PRN_HEAD"
-    gh pr merge $PRN --merge --admin
-    EXPECTED_DEV=$(gh pr view $PRN --json mergeCommit --jq .mergeCommit.oid)
-    gh pr edit $PR_NEXT --base dev                      # retarget the next layer
+    EXPECTED_DEV="$VERIFIED_BASE"        # from 020, the rebase target
 
 `EXPECTED_DEV` advances to the MERGE COMMIT of the layer just landed, not to a fresh
-read of `dev` — same reason as `MERGED_DEV` below (audit `r13`).
+read of `dev` — same reason as `MERGED_DEV` below (audit `r13`). The single
+executable merge ladder is in **Procedure** below; this section only states the
+invariant (audit `r14`: three scattered half-procedures disagreed with each other).
 
 Read the live head with `git ls-remote origin refs/heads/dev` every time, never
 `origin/dev` — the tracking ref goes stale within minutes
@@ -57,11 +52,8 @@ to prevent it.
 
 ## Procedure
 
-Merge in dependency order, PR1 → PR2 → PR3, with the base check before each:
-
-    test "$(git ls-remote origin refs/heads/dev | cut -f1)" = "$EXPECTED_DEV"
-    gh pr merge $PRN --merge --admin
-    gh pr edit $PR_NEXT --base dev              # retarget the next layer
+Merge in dependency order. The full ladder is at the end of this section; the two
+subsections below explain why each of its three assertions exists.
 
 ### Also assert the PR HEAD, not just the base (audit `r10`)
 
@@ -88,14 +80,30 @@ branch that has since merged — passes both, and `gh pr merge` would then merge
 whatever base the PR now names. `030` prints the bases for inspection, which is not a
 gate.
 
-So the pre-merge check for EVERY layer is all three at once:
+So the pre-merge check for EVERY layer is all three at once. This is the ONE merge
+ladder for the whole phase — `PR1`/`PR2`/`PR3` are the numbers `030` step 4 returns
+when the PRs are opened, and `PR1_HEAD`/`PR2_HEAD`/`PR3_HEAD` are the SHAs `030`
+step 5 captured:
 
-    PR_BASE=$(gh pr view $PRN --json baseRefName --jq .baseRefName)
-    PR_HEAD=$(gh pr view $PRN --json headRefOid --jq .headRefOid)
-    test "$PR_BASE" = "dev"
-    test "$PR_HEAD" = "$EXPECTED_HEAD"
-    test "$(git ls-remote origin refs/heads/dev | cut -f1)" = "$EXPECTED_DEV"
-    gh pr merge $PRN --merge --admin
+    merge_layer () {          # $1 = PR number, $2 = its expected head SHA
+      local pr="$1" expected_head="$2"
+      test "$(gh pr view "$pr" --json baseRefName --jq .baseRefName)" = "dev"
+      test "$(gh pr view "$pr" --json headRefOid --jq .headRefOid)" = "$expected_head"
+      test "$(git ls-remote origin refs/heads/dev | cut -f1)" = "$EXPECTED_DEV"
+      gh pr merge "$pr" --merge --admin
+      EXPECTED_DEV=$(gh pr view "$pr" --json mergeCommit --jq .mergeCommit.oid)
+      test -n "$EXPECTED_DEV"
+    }
+
+    merge_layer "$PR1" "$PR1_HEAD"
+    gh pr edit "$PR2" --base dev            # parent landed; retarget the child
+    merge_layer "$PR2" "$PR2_HEAD"
+    gh pr edit "$PR3" --base dev
+    merge_layer "$PR3" "$PR3_HEAD"
+
+`EXPECTED_DEV` advances inside the function, from the merge commit of the layer just
+landed — so the next layer's base assertion compares against what THIS campaign
+produced, not against a fresh read that would absorb someone else's push.
 
 `dev` is the only acceptable base for all three layers at merge time: PR1 targets it
 from the start, and PR2/PR3 are retargeted to it as their parents land

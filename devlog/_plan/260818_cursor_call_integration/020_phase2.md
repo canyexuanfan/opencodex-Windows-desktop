@@ -48,12 +48,16 @@ the shared checkout's HEAD.
 
 ## Pin the base (r3 F1), and remember it EVOLVES (r4 F1)
 
-`dev` moves. Record, at the moment the rebase runs:
+`dev` moves, so `VERIFIED_BASE` is captured ONCE — in `010` step 1, at the moment
+the rebase runs — and inherited here. Do NOT re-capture it in this phase (audit
+`r14`): a second `ls-remote` after the rebase would silently overwrite the pin with
+a newer `dev`, and every later assertion would then compare against a base the
+campaign never rebased onto. Assert instead:
 
-    VERIFIED_BASE=$(git ls-remote origin refs/heads/dev | cut -f1)
     test -n "$VERIFIED_BASE"
+    git merge-base --is-ancestor "$VERIFIED_BASE" cursor-call     # exit 0
 
-That is `VERIFIED_BASE`, and it is what `010` step 1 rebases ONTO — not
+`VERIFIED_BASE` is what `010` step 1 rebased ONTO — not
 `origin/dev`, which can be minutes stale (`scripts/release.ts:327-335` uses
 `ls-remote` for exactly this reason). Observed drift during planning alone:
 `87f7f970b` → `e1bdbc1e5` → `1645bb924`.
