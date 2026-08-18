@@ -168,3 +168,56 @@ Two smaller corrections in the same pass:
   wave documents is the thing to read instead of a headline count.
 - The closure-rules section still says #1843 was "released in v2.24.2"; the results table saying
   **v2.24.0** is the correct one, confirmed by `ac8c0d2df` being contained in that tag.
+## WP9 outcome — gate and promotion
+
+Gate on `dev` at `87f7f970b`:
+
+| Check | Result |
+|-------|--------|
+| `bun test --isolate tests` | **12807 pass, 10 skip, 0 fail** — 159387 assertions, 826 files, 462s |
+| `bun run typecheck` | passed |
+| `bun run privacy:scan` | passed |
+
+Promoted through PRs, since `preview` and `main` both carry protection rulesets:
+
+| Branch | Head | Ancestry |
+|--------|------|----------|
+| `dev` | `87f7f970b` | — |
+| `preview` | `a43150c74` (#1962) | `dev` is an ancestor |
+| `main` | `7979903b9` (#1963) | `dev` is an ancestor |
+
+107 commits promoted.
+
+### What landed
+
+| Wave | Merged |
+|------|--------|
+| 5A | #1739 (via #1921), #1923, #1925, #1929 |
+| 5B | #1884, #1892, #1902 |
+| 5C | #1900, #1895 (via #1951), #1953 |
+| 5D | #1897, #1891, #1955, #1960, #1961 |
+
+Issues closed: **#1894, #1843, #1899**.
+
+Four of those PRs did not exist when the campaign started. They came out of auditing the plan
+rather than executing it: #1951 and #1953 (code mode decided by tool semantics rather than the
+name `exec`, then the namespace guard my own fix dropped), #1955 (`ide_version` sending a whole
+User-Agent), and #1960/#1961 (a suite failure that was real for every developer running under an
+installed shim).
+
+### Still open, each with a reason
+
+| Issue/PR | Why |
+|----------|-----|
+| #1889 | maintainer sponsorship of `src/oauth/` — the label records a security review |
+| #1852 | its actual defect is #1876's unmerged async work, not the fail-open that landed |
+| #1926 | credential scope and emit-before-commit still live in `src/bridge.ts` |
+| #1942 | transactional updater, unstarted |
+| #1049 | needs the publication protocol; rewrites the create path every clean install uses |
+| #1866 | no PR; explicitly scoped out of #1900 |
+| #1795 | needs a live SenseNova/Kimi canary |
+| #1059 | needs hosted Windows shard evidence |
+| #1887/#1896 | consolidation is a migration of five named items, not a discard |
+| #1903 | author rebase; ~32-file review surface |
+| #1898 | missing the retry double-advance and per-account isolation tests |
+| #1904 | draft, author's readiness checklist |
