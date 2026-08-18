@@ -7,6 +7,8 @@ import {
   getValidAccessToken,
   OAuthLoginRequiredError,
   OAuthProviderPublicationError,
+  OAuthReauthIdentityMismatchError,
+  OAuthReauthIdentityUnverifiedError,
   OAuthTokenRefreshBusyError,
   OAuthTokenRefreshStaleError,
   OAUTH_PROVIDERS,
@@ -256,6 +258,12 @@ describe("OAuth status privacy", () => {
     expect(publicOAuthAuthenticationErrorMessage(new OAuthProviderPublicationError())).toBe(
       "OAuth credential was saved, but the provider entry was not written. Resolve the account namespace collision, then retry login.",
     );
+    expect(publicOAuthAuthenticationErrorMessage(new OAuthReauthIdentityMismatchError())).toBe(
+      "Signed-in account does not match the selected account. Sign in with the same account.",
+    );
+    expect(publicOAuthAuthenticationErrorMessage(new OAuthReauthIdentityUnverifiedError())).toBe(
+      "Could not verify signed-in account identity for reauth.",
+    );
     expect(publicOAuthAuthenticationErrorMessage(new OAuthTokenRefreshBusyError())).toBe(
       "OAuth token refresh capacity reached",
     );
@@ -369,6 +377,14 @@ describe("OAuth status privacy", () => {
       {
         error: new OAuthLoginRequiredError("xai"),
         expected: "Not logged in to xai. Run: ocx login xai",
+      },
+      {
+        error: new OAuthReauthIdentityMismatchError(),
+        expected: "Signed-in account does not match the selected account. Sign in with the same account.",
+      },
+      {
+        error: new OAuthReauthIdentityUnverifiedError(),
+        expected: "Could not verify signed-in account identity for reauth.",
       },
       {
         error: new OAuthTokenRefreshBusyError(),

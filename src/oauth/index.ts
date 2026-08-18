@@ -308,6 +308,20 @@ export class OAuthProviderPublicationError extends Error {
   }
 }
 
+export class OAuthReauthIdentityMismatchError extends Error {
+  constructor() {
+    super("Signed-in account does not match the selected account. Sign in with the same account.");
+    this.name = "OAuthReauthIdentityMismatchError";
+  }
+}
+
+export class OAuthReauthIdentityUnverifiedError extends Error {
+  constructor() {
+    super("Could not verify signed-in account identity for reauth.");
+    this.name = "OAuthReauthIdentityUnverifiedError";
+  }
+}
+
 /** Project arbitrary OAuth failures onto the small, stable public error vocabulary. */
 export function publicOAuthAuthenticationErrorMessage(error: unknown): string {
   if (error instanceof OAuthMutationBusyError) {
@@ -318,6 +332,10 @@ export function publicOAuthAuthenticationErrorMessage(error: unknown): string {
   if (
     (error instanceof OAuthLoginRequiredError && isOAuthProvider(error.provider))
     || error instanceof OAuthProviderPublicationError
+    // Reauth identity outcomes carry fixed, account-free remediation text. Dropping them to the
+    // generic message hides WHICH failure the user must fix (sign in with the selected account).
+    || error instanceof OAuthReauthIdentityMismatchError
+    || error instanceof OAuthReauthIdentityUnverifiedError
     || error instanceof OAuthTokenRefreshBusyError
     || error instanceof OAuthTokenRefreshStaleError
   ) return error.message;
@@ -1137,7 +1155,7 @@ export async function runLogin(
       const existing = getAccountCredential(provider, opts.reauthAccountId);
       if (!existing) throw new Error(`Unknown account for reauth: ${opts.reauthAccountId}`);
       if (!existing.accountId && !existing.email) {
-        throw new Error("Could not verify signed-in account identity for reauth.");
+        throw new OAuthReauthIdentityUnverifiedError();
       }
       const identityMatches = existing.accountId && cred.accountId
         ? existing.accountId === cred.accountId
@@ -1145,7 +1163,7 @@ export async function runLogin(
           ? existing.email.toLowerCase() === cred.email.toLowerCase()
           : false;
       if (!identityMatches) {
-        throw new Error("Signed-in account does not match the selected account. Sign in with the same account.");
+        throw new OAuthReauthIdentityMismatchError();
       }
       await (deps.saveAccountCredential ?? saveAccountCredential)(provider, opts.reauthAccountId, cred);
     } else {
