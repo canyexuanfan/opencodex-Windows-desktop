@@ -3669,7 +3669,12 @@ async function handleResponsesInner(
         }),
       });
     } else {
-      upstreamResponse = await fetchWithTransientRetry(
+      // #1851 scope guard: transient-5xx retry on this generic adapter path is opt-in for
+      // direct Google AI Studio only (Vertex/Antigravity use fetchResponse above). Other
+      // adapters keep reset-only retry so combo failover still hops on the first 5xx
+      // instead of burning ~1.2s of same-target retries per hop.
+      const fetchWithRetryPolicy = route.provider.adapter === "google" ? fetchWithTransientRetry : fetchWithResetRetry;
+      upstreamResponse = await fetchWithRetryPolicy(
         recovery => {
           noteAttemptSend(logCtx.activeAttempt, inputTokenEstimate, recovery);
           return fetchWithHeaderTimeout(builtInitialRequest.url, applyUpstreamRecoveryInit({
@@ -4099,7 +4104,10 @@ async function handleResponsesInner(
             }),
           });
         }
-        return await fetchWithTransientRetry(
+        // Same #1851 scope guard as the initial send: transient-5xx retry only for direct
+        // Google AI Studio; every other adapter keeps reset-only semantics here.
+        const fetchContinuationWithRetryPolicy = route.provider.adapter === "google" ? fetchWithTransientRetry : fetchWithResetRetry;
+        return await fetchContinuationWithRetryPolicy(
           recovery => {
             noteAttemptSend(logCtx.activeAttempt, continuationEstimate, recovery ?? replayKind);
             return fetchWithHeaderTimeout(
