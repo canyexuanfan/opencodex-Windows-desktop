@@ -298,6 +298,8 @@ export interface OcxRequestOptions {
   serviceTier?: string;
   /** Final outbound tier action, resolved after the provider/model wire is settled. */
   tierDecision?: TierDecision;
+  /** Internal B0 observation inputs; adapters combine these with the wire they actually serialize. */
+  tierObservation?: TierObservationContext;
   presencePenalty?: number;
   frequencyPenalty?: number;
   /** Responses prompt-cache affinity key. Passthrough preserves it via _rawBody; routed adapters do not consume it unless their upstream wire supports it. */
@@ -1320,6 +1322,36 @@ export interface FastWire {
   foreignCallerTiers: "verbatim" | "drop";
   /** Anthropic speed headers/betas reserved for the later wire implementation. */
   betas?: readonly string[];
+}
+
+/** Durable per-attempt service-tier fact produced at the adapter serialization boundary. */
+export interface AttemptTierOutcome {
+  canonical?: "priority";
+  wireKind?: FastWire["kind"] | null;
+  wireValue?: string | null;
+  fastOutcome: "not-requested" | "applied" | "downgraded" | "unknown";
+  fastDowngradeReason?: "route-unsupported" | "wire-unavailable" | "response-declined";
+  callerTierDropped?: boolean;
+  callerFastSuppressedByConfig?: boolean;
+  confirmation: "confirmed" | "assumed" | "downgraded" | "unknown";
+  responseServiceTier?: string;
+}
+
+/**
+ * Request-local observation inputs captured before the final tier action mutates the parsed view.
+ * This is not persisted; the final adapter turns it into AttemptTierOutcome after serialization.
+ */
+export interface TierObservationContext {
+  capability: boolean | undefined;
+  eligibility:
+    | "eligible"
+    | "capability-unsupported"
+    | "unclassified"
+    | "wire-unavailable"
+    | "pin-unavailable";
+  fastWire: FastWire | null;
+  demandDecision: "force-fast" | "force-default" | "inherit";
+  callerTier?: string;
 }
 
 export type TierDecision =

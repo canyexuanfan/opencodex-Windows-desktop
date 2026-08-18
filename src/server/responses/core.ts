@@ -126,7 +126,13 @@ import {
   serviceTierSupportFromPolicy,
   SERVICE_TIER_ADAPTERS,
 } from "../../providers/service-tier";
-import { decideTier, tierValueAfterDecision, type ResolvedFastPolicy } from "../../providers/fastwire";
+import {
+  canonicalFastTierMarker,
+  decideTier,
+  tierObservationContext,
+  tierValueAfterDecision,
+  type ResolvedFastPolicy,
+} from "../../providers/fastwire";
 import {
   RequestPacingQueueOverloadError,
   waitForProviderRequestSlot,
@@ -152,7 +158,7 @@ import { shouldAttemptImageTierRetry } from "../image-retry";
 import { resolveProviderTransport } from "../../providers/xai-transport";
 import type { WsData } from "../ws-bridge";
 import { codexAccountSelectionForTurn, registerTurn, trackStreamLifetime, unregisterTurn } from "../lifecycle";
-import { redactSecretString } from "../../lib/redact";
+import { redactSecretString, sanitizeLogMetadataString } from "../../lib/redact";
 import { readBoundedResponseBody } from "../../lib/bounded-body";
 import type { AdmissionLease } from "../../lib/admission";
 import { supportedLadderFor } from "../effort-policy";
@@ -170,6 +176,8 @@ import {
   noteAttemptSend,
   readConfiguredCodexServiceTier,
   recordAdapterReasoning,
+  recordAdapterTier,
+  recordAdapterTierMetadata,
   recordAttemptRequestedEffort,
   requestLogSpeedLabel,
   sealRequestAttemptIdentity,
@@ -602,6 +610,7 @@ async function retryCodexPoolOnAlternateAccount(
     translatorBudget: options.translatorBudget,
   });
   recordAdapterReasoning(logCtx, request);
+  recordAdapterTier(logCtx, request);
 
   await firstResponse.body?.cancel().catch(() => undefined);
   options.onCodexAuthContextResolved?.(retryAuthCtx);
@@ -1183,6 +1192,7 @@ async function applyFinalRouteRequestNormalization(args: {
   );
   const modelServiceTierSupport = serviceTierSupportFromPolicy(fastPolicy);
   const callerTier = parsed.options.serviceTier;
+  parsed.options.tierObservation = tierObservationContext(fastPolicy, config.fastMode, callerTier);
   parsed.options.tierDecision = decideTier(fastPolicy, config.fastMode, callerTier);
   parsed.options.serviceTier = tierValueAfterDecision(parsed.options.tierDecision, callerTier);
   if (fastPolicy.capability === true && fastPolicy.fastWire === null) {
@@ -1603,10 +1613,21 @@ export function applyServiceTierGate(
   // model adapter as well: an explicit override to Anthropic (or another non-OpenAI wire) must
   // not carry a caller-supplied `service_tier` through a route that cannot forward it.
   if (modelId === undefined && !SERVICE_TIER_ADAPTERS.has(provider.adapter)) return;
+  const policy = modelId === undefined
+    ? undefined
+    : resolvedPolicy ?? fastPolicyForModel(provider, modelId, providerName, inbound);
   const forwardCallerTier = modelId === undefined
     ? provider.supportsServiceTier !== false
-    : (resolvedPolicy ?? fastPolicyForModel(provider, modelId, providerName, inbound)).forwardCallerTier;
-  if (forwardCallerTier) return;
+    : policy!.forwardCallerTier;
+  const rawTier = rawBody && typeof rawBody === "object"
+    ? (rawBody as Record<string, unknown>).service_tier
+    : undefined;
+  const dropForeignCallerTier = policy?.capability === true
+    && policy.fastWire?.kind === "service-tier"
+    && policy.fastWire?.foreignCallerTiers === "drop"
+    && typeof rawTier === "string"
+    && canonicalFastTierMarker(rawTier) === undefined;
+  if (forwardCallerTier && !dropForeignCallerTier) return;
   if (rawBody && typeof rawBody === "object") {
     delete (rawBody as Record<string, unknown>).service_tier;
   }
@@ -1742,6 +1763,7 @@ async function handleResponsesInner(
   }
   logCtx.requestedModel = parsed.modelId;
   logCtx.requestedEffort = parsed.options.reasoning;
+  logCtx.callerServiceTier = sanitizeLogMetadataString(parsed.options.serviceTier);
   logCtx.requestedServiceTier = parsed.options.serviceTier;
   logCtx.requestedSpeedLabel = requestLogSpeedLabel(parsed.options.serviceTier);
   logCtx.configuredServiceTier = readConfiguredCodexServiceTier();
@@ -2184,6 +2206,9 @@ async function handleResponsesInner(
     (logCtx.attempts ??= []).push(attempt);
   }
   sealRequestAttemptIdentity(logCtx.activeAttempt, logCtx.provider, adapter.name, logCtx.accountLogLabel);
+  if (adapter.runTurn) {
+    recordAdapterTierMetadata(logCtx, adapter.tierLogForRunTurn?.(parsed));
+  }
   // Optional route-identity linkage for attempt correlation (CL-09 consumes it). The slot
   // resolves to null unless an opt-in subsystem registered a linker, so an install without
   // routing profiles does no work here and loads no additional module. The non-throwing
@@ -2418,6 +2443,7 @@ async function handleResponsesInner(
       }
       : undefined;
     recordAdapterReasoning(logCtx, request);
+    recordAdapterTier(logCtx, request);
     const actualHostKey = upstreamHostHealthKey(
       route.providerName,
       safeOriginLabel(request.url),
@@ -3214,7 +3240,10 @@ async function handleResponsesInner(
       stallTimeoutSec: config.stallTimeoutSec,
       waitForRequestSlot: imageProviderFetch.waitForPacing,
       fetchImpl: imageProviderFetch.unpacedFetch ?? imageProviderFetch,
-      onRequestBuilt: request => recordAdapterReasoning(logCtx, request),
+      onRequestBuilt: request => {
+        recordAdapterReasoning(logCtx, request);
+        recordAdapterTier(logCtx, request);
+      },
       ...(vidPlan?.timeoutMs ? { videoTimeoutMs: vidPlan.timeoutMs } : {}),
       onUsage: usage => {
         // Cursor may assign _cursorConversationId inside the image loop's first runTurn;
@@ -3292,7 +3321,10 @@ async function handleResponsesInner(
       forceEmptyResponseId: true,
       abortSignal: options.abortSignal,
       ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
-      onRequestBuilt: request => recordAdapterReasoning(logCtx, request),
+      onRequestBuilt: request => {
+        recordAdapterReasoning(logCtx, request);
+        recordAdapterTier(logCtx, request);
+      },
       onAttemptSend: (recovery?: AttemptRecoveryKind) =>
         noteAttemptSend(logCtx.activeAttempt, logCtx.usageLogInputTokens, recovery),
       onUsage: usage => {
@@ -3562,6 +3594,7 @@ async function handleResponsesInner(
   try {
     initialRequest = await activeAdapter.buildRequest(parsed, { headers: selectedForwardHeaders, translatorBudget });
     recordAdapterReasoning(logCtx, initialRequest);
+    recordAdapterTier(logCtx, initialRequest);
     inputTokenEstimate = typeof initialRequest.usageLog?.inputTokens === "number"
       ? initialRequest.usageLog.inputTokens
       : undefined;
@@ -3666,6 +3699,7 @@ async function handleResponsesInner(
             ...(imageTierBias > 0 ? { imageTierBias } : {}),
           });
           recordAdapterReasoning(logCtx, retryRequest);
+          recordAdapterTier(logCtx, retryRequest);
         } catch (err) {
           // A rotated/rebuilt adapter build failure is a request-shaping error, not an
           // upstream connect failure: tear the abort link down and map it as 400 (no 413
@@ -3988,6 +4022,7 @@ async function handleResponsesInner(
             ...(imageTierBias > 0 ? { imageTierBias } : {}),
           });
           recordAdapterReasoning(logCtx, continuationRequest);
+          recordAdapterTier(logCtx, continuationRequest);
         } catch (err) {
           // The main body is already streaming, so there is no HTTP error surface: release
           // any partial body observation and surface the failure as an in-stream error via

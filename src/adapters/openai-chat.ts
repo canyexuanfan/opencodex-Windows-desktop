@@ -13,6 +13,9 @@ import { peekReasoningForCall } from "../responses/reasoning-replay-cache";
 import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalogNudge } from "./tool-catalog-nudge";
 import { openRouterProviderPayload, resolveOpenRouterRouting } from "../providers/openrouter-routing";
 import { canSerializeServiceTierForChatModel } from "../providers/service-tier";
+import {
+  createAdapterTierMetadata,
+} from "../providers/fastwire";
 import { openaiChatCompletionsUrl } from "./openai-chat-url";
 import { stripResponsesOnlyEncryptedMarker } from "./responses-tool-schema";
 import {
@@ -1430,6 +1433,13 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       if (parsed.stream) body.stream_options = { include_usage: true };
 
       const bodyJson = JSON.stringify(body);
+      const actualServiceTier = typeof body.service_tier === "string" ? body.service_tier : null;
+      const tierLog = createAdapterTierMetadata(
+        parsed.options.tierObservation,
+        parsed.options.tierDecision,
+        actualServiceTier === null ? null : "service-tier",
+        actualServiceTier,
+      );
       if (isDebugEnabled()) {
         let host = "upstream";
         try { host = new URL(url).host; } catch { /* keep fallback */ }
@@ -1450,6 +1460,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         headers,
         body: bodyJson,
         ...(reasoningLog ? { reasoningLog } : {}),
+        ...(tierLog ? { tierLog } : {}),
       };
     },
 
