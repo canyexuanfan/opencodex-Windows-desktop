@@ -221,3 +221,24 @@ installed shim).
 | #1903 | author rebase; ~32-file review surface |
 | #1898 | missing the retry double-advance and per-account isolation tests |
 | #1904 | draft, author's readiness checklist |
+## The campaign introduced a CodeQL alert, and three drafts of this document denied it
+
+**`js/polynomial-redos`, high severity, at `src/providers/antigravity-models.ts:273`** — the
+`baseUrl.trim().replace(/\/+$/, "")` in `antigravityBaseUrlKey`. It came in with commit
+`0be660a2e` via `aca3c0241`, which is **#1897 — a PR I merged in WP8**.
+`git merge-base --is-ancestor 0be660a2e v2.24.2` returns false, so it postdates the release.
+
+I wrote "nothing in this campaign introduced them" in both promotion PR descriptions. That was
+false, and it is the worst error in this campaign's record: an approver reading it would have
+promoted past a high-severity finding that this campaign created, on my assurance that it had
+not. Corrected in both PR bodies, reported on #1897, and recorded here.
+
+**Why my verification missed it.** Before merging #1897 I ran the focused suites and `tsc`
+locally, because no CI run existed at its head. Neither runs CodeQL. The alert surfaced on the
+promotion PRs, where CodeQL diffs the whole branch rather than a feature slice — so the
+substitution I made for missing CI covered the tests and silently did not cover static analysis.
+That is a real gap in the local-verification substitute, not a one-off.
+
+Severity in context: the input is a configured `baseUrl`, so exploitation needs a hostile or
+careless config rather than attacker-controlled traffic. Worth fixing, not urgent. Separately,
+the repository carries **71** open alerts that genuinely predate this work.
