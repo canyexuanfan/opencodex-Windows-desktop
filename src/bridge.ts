@@ -576,9 +576,16 @@ export function bridgeToResponsesSSE(
       const closeCurrentRawReasoning = () => {
         if (!currentRawReasoning) return;
         rawReasoningForNextToolCall = currentRawReasoning.text;
+        emit("response.reasoning_summary_text.done", {
+          item_id: currentRawReasoning.itemId, output_index: currentRawReasoning.outputIndex, summary_index: 0, text: currentRawReasoning.text,
+        });
+        emit("response.reasoning_summary_part.done", {
+          item_id: currentRawReasoning.itemId, output_index: currentRawReasoning.outputIndex, summary_index: 0,
+          part: { type: "summary_text", text: currentRawReasoning.text },
+        });
         const item = {
-          type: "reasoning", id: currentRawReasoning.itemId, summary: [],
-          content: [{ type: "reasoning_text", text: currentRawReasoning.text }],
+          type: "reasoning", id: currentRawReasoning.itemId,
+          summary: [{ type: "summary_text", text: currentRawReasoning.text }],
         };
         emit("response.output_item.done", { output_index: currentRawReasoning.outputIndex, item });
         retainFinishedItem(item as OutputItem, currentRawReasoning.textBytes, "reasoning");
@@ -977,8 +984,12 @@ export function bridgeToResponsesSSE(
               if (currentToolCall) closeCurrentToolCall();
               if (!currentRawReasoning) {
                 const itemId = `rs_${uuid()}`;
-                const item = { type: "reasoning", id: itemId, summary: [] as never[], content: [] as { type: string; text: string }[] };
+                const item = { type: "reasoning", id: itemId, summary: [] as { type: string; text: string }[] };
                 emit("response.output_item.added", { output_index: outputIndex, item });
+                emit("response.reasoning_summary_part.added", {
+                  item_id: itemId, output_index: outputIndex, summary_index: 0,
+                  part: { type: "summary_text", text: "" },
+                });
                 currentRawReasoning = { itemId, outputIndex, text: "", textBytes: 0 };
               }
               ({ value: currentRawReasoning.text, bytes: currentRawReasoning.textBytes } = appendString(
@@ -987,9 +998,9 @@ export function bridgeToResponsesSSE(
                 event.text,
                 "reasoning",
               ));
-              emit("response.reasoning_text.delta", {
+              emit("response.reasoning_summary_text.delta", {
                 item_id: currentRawReasoning.itemId, output_index: currentRawReasoning.outputIndex,
-                content_index: 0, delta: event.text,
+                summary_index: 0, delta: event.text,
               });
               break;
             }
@@ -1582,8 +1593,8 @@ function buildResponseJSONWithBudget(
       return;
     }
     pushOutput({
-      type: "reasoning", id: `rs_${uuid()}`, summary: [],
-      content: [{ type: "reasoning_text", text: currentRawReasoning }],
+      type: "reasoning", id: `rs_${uuid()}`,
+      summary: [{ type: "summary_text", text: currentRawReasoning }],
     }, currentRawReasoningBytes, "reasoning");
     currentRawReasoning = "";
     currentRawReasoningBytes = 0;

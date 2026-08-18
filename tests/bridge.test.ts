@@ -85,22 +85,27 @@ describe("Responses bridge reasoning and usage parity", () => {
     expect(firstOutputs).toBe(1);
   });
 
-  test("streaming raw reasoning emits reasoning_text deltas and final raw content", async () => {
+  test("streaming raw reasoning is routed through the expandable summary channel", async () => {
     const frames = await collectSse(bridgeToResponsesSSE(replay([
       { type: "reasoning_raw_delta", text: "raw detail" },
       { type: "done", usage: { inputTokens: 10, outputTokens: 5, cachedInputTokens: 3, reasoningOutputTokens: 2 } },
     ]), "routed/model"));
 
-    const delta = frames.find(f => f.event === "response.reasoning_text.delta")?.data;
-    expect(delta).toMatchObject({ content_index: 0, delta: "raw detail" });
+    // Chat-completions providers (DeepSeek-style) deliver thinking as raw
+    // reasoning_content. Codex renders the expandable reasoning trace from the
+    // Responses summary channel only, so raw reasoning is routed through the
+    // summary channel (issue #45) instead of the content channel.
+    expect(frames.find(f => f.event === "response.reasoning_summary_text.delta")?.data)
+      .toMatchObject({ summary_index: 0, delta: "raw detail" });
+    expect(frames.some(f => f.event === "response.reasoning_text.delta")).toBe(false);
 
     const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
     const output = completed.output as Record<string, unknown>[];
     expect(output[0]).toMatchObject({
       type: "reasoning",
-      summary: [],
-      content: [{ type: "reasoning_text", text: "raw detail" }],
+      summary: [{ type: "summary_text", text: "raw detail" }],
     });
+    expect((output[0] as { content?: unknown }).content).toBeUndefined();
     expect(completed.usage).toMatchObject({
       input_tokens: 10,
       input_tokens_details: { cached_tokens: 3 },
@@ -495,8 +500,9 @@ describe("Responses bridge reasoning and usage parity", () => {
     const output = json.output as Record<string, unknown>[];
     expect(output.map(item => item.type)).toEqual(["reasoning", "message"]);
     expect(output[0]).toMatchObject({
-      content: [{ type: "reasoning_text", text: "raw json" }],
+      summary: [{ type: "summary_text", text: "raw json" }],
     });
+    expect((output[0] as { content?: unknown }).content).toBeUndefined();
     expect(json.usage).toMatchObject({
       input_tokens: 6,
       input_tokens_details: { cached_tokens: 1, cache_write_tokens: 2 },
@@ -723,6 +729,42 @@ describe("Responses bridge reasoning and usage parity", () => {
 
     const output = json.output as Record<string, unknown>[];
     expect(output.map(item => item.type)).toEqual(["message"]);
+  });
+
+  test("streaming hideThinkingSummary suppresses raw reasoning", async () => {
+    const frames = await collectSse(bridgeToResponsesSSE(replay([
+      { type: "reasoning_raw_delta", text: "hidden raw thought" },
+      { type: "text_delta", text: "visible" },
+      { type: "done" },
+    ]), "model", undefined, undefined, undefined, undefined, undefined, { hideThinkingSummary: true }));
+
+    expect(frames.some(f => f.event === "response.reasoning_summary_text.delta")).toBe(false);
+    expect(frames.some(f => f.event === "response.reasoning_text.delta")).toBe(false);
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    const output = completed.output as Record<string, unknown>[];
+    // Raw reasoning stays hidden: the text round-trips only in an ocxr1 envelope,
+    // never as visible summary or content.
+    expect(output.map(item => item.type)).toEqual(["reasoning", "message"]);
+    expect(output[0]).toMatchObject({
+      type: "reasoning",
+      summary: [],
+    });
+    expect((output[0] as { encrypted_content?: string }).encrypted_content).toStartWith("ocxr1:");
+    expect((output[0] as { content?: unknown }).content).toBeUndefined();
+  });
+
+  test("non-streaming hideThinkingSummary suppresses raw reasoning", () => {
+    const json = buildResponseJSON([
+      { type: "reasoning_raw_delta", text: "hidden" },
+      { type: "text_delta", text: "visible" },
+      { type: "done" },
+    ], "model", { hideThinkingSummary: true });
+
+    const output = json.output as Record<string, unknown>[];
+    expect(output.map(item => item.type)).toEqual(["reasoning", "message"]);
+    expect(output[0]).toMatchObject({ type: "reasoning", summary: [] });
+    expect((output[0] as { encrypted_content?: string }).encrypted_content).toStartWith("ocxr1:");
+    expect((output[0] as { content?: unknown }).content).toBeUndefined();
   });
 
   test("heartbeat events reset the stall watchdog and emit no protocol frame", async () => {

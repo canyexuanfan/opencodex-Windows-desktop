@@ -222,6 +222,10 @@ import {
   repairResponsesJsonItemIds,
 } from "../responses-item-id-repair";
 import {
+  createReasoningSummaryChannelPayloadRewrite,
+  routeUsesContentChannelReasoning,
+} from "../responses-reasoning-summary-rewrite";
+import {
   createImageGenCallRestoreRewrite,
   imageGenToolCallAliases,
   restoreImageGenCallsInJson,
@@ -2830,6 +2834,9 @@ async function handleResponsesInner(
           ? createResponsesItemIdPayloadRewrite(repairConfig!, translatorBudget)
           : undefined,
         responseModelRewrite,
+        routeUsesContentChannelReasoning(route.provider, route.modelId)
+          ? createReasoningSummaryChannelPayloadRewrite()
+          : undefined,
       ].filter((rewrite): rewrite is NonNullable<typeof rewrite> => rewrite !== undefined);
       // #893: sparse-snapshot gateways get field backfills AND lifecycle event
       // injection at the block level, after payload rewrites. Defaults come
