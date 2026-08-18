@@ -660,9 +660,10 @@ normalization, credential and provider headers, capability-specific fields, and 
 messages (including `name` and separate `system`/`developer` entries), Chat token controls,
 sampling/logprob fields, caller identity/metadata, and caller stream options retain their wire
 shape. For streams, caller `stream_options` are merged with mandatory `include_usage: true`. On
-classified Fast-capable routes, canonical Fast follows the resolved Fast policy and does not require
-`chatServiceTier`; foreign caller tiers still require `chatServiceTier: true`, as does every caller
-tier on an unclassified Chat route. `parallel_tool_calls` is emitted only for providers opted into
+the native passthrough there is no canonical Fast injection and no wire mapping: every caller
+`service_tier` — canonical or foreign — is forwarded raw and only under `chatServiceTier: true`,
+and `fastMode` injects nothing here. Resolved-Fast-policy injection applies only to routes that
+take the Chat -> Responses -> Chat bridge below. `parallel_tool_calls` is emitted only for providers opted into
 parallel tools (or pinned false by the existing provider opt-out contract).
 Combo/policy routes and requests that need Responses-only hosted tools, continuation, background,
 or storage semantics retain the existing Chat -> Responses -> Chat bridge.
