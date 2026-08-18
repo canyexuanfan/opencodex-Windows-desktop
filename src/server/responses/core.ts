@@ -226,6 +226,11 @@ import {
   repairResponsesJsonItemIds,
 } from "../responses-item-id-repair";
 import {
+  createReasoningSummaryChannelPayloadRewrite,
+  rewriteReasoningSummaryInJsonString,
+  routeUsesContentChannelReasoning,
+} from "../responses-reasoning-summary-rewrite";
+import {
   createImageGenCallRestoreRewrite,
   imageGenToolCallAliases,
   restoreImageGenCallsInJson,
@@ -2834,6 +2839,10 @@ async function handleResponsesInner(
           ? createResponsesItemIdPayloadRewrite(repairConfig!, translatorBudget)
           : undefined,
         responseModelRewrite,
+        parsed.options.hideThinkingSummary !== true
+          && routeUsesContentChannelReasoning(route.provider, route.modelId)
+          ? createReasoningSummaryChannelPayloadRewrite()
+          : undefined,
       ].filter((rewrite): rewrite is NonNullable<typeof rewrite> => rewrite !== undefined);
       // #893: sparse-snapshot gateways get field backfills AND lifecycle event
       // injection at the block level, after payload rewrites. Defaults come
@@ -3046,9 +3055,16 @@ async function handleResponsesInner(
         const repaired = hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair)
           ? repairResponsesSnapshotJson(restored, outboundRequestBody)
           : restored;
-        return parsed._responseModelId !== undefined && parsed._responseModelId !== parsed.modelId
+        const modelRewritten = parsed._responseModelId !== undefined && parsed._responseModelId !== parsed.modelId
           ? rewriteResponsesModelJson(backfillResponsesFieldsJson(repaired), parsed._responseModelId)
           : backfillResponsesFieldsJson(repaired);
+        // The bounded-JSON answer bypasses the SSE payload rewrite, so content-
+        // channel reasoning needs the same normalization here for the plain
+        // JSON answer and every reframed-SSE variant built from clientJson.
+        return parsed.options.hideThinkingSummary !== true
+          && routeUsesContentChannelReasoning(route.provider, route.modelId)
+          ? rewriteReasoningSummaryInJsonString(modelRewritten)
+          : modelRewritten;
       })();
       // #1700: same fail-closed policy as the SSE relay above. Both the plain JSON answer and
       // the reframed-SSE branch below are built from this body, so one check covers them. This
