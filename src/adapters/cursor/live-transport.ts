@@ -48,7 +48,7 @@ import {
   type InteractionResponse,
 } from "./gen/agent_pb";
 import { debugProviderDiagnostic } from "../../lib/debug";
-import { classifyCursorError, isCursorBenignCancelError, safeCursorErrorMessage } from "./cursor-errors";
+import { classifyCursorError, CursorUnexpectedCancelError, isCursorBenignCancelError, safeCursorErrorMessage } from "./cursor-errors";
 import { mcpArgsFromToolCall } from "./protobuf-events";
 import { OCX_RESPONSES_TOOL_PROVIDER } from "./tool-definitions";
 import {
@@ -410,6 +410,12 @@ class LiveCursorTransport implements CursorTransport {
   private firstFrameTimer?: ReturnType<typeof setTimeout>;
   private committed = false;
   private expectedClose = false;
+  /**
+   * True once a terminal (`done` or `error`) has been admitted to the outbound queue. Read only
+   * by the EOF branch below: after a mapper error the bridge has already failed the turn, so
+   * failing again on EOF would add a duplicate adapter error for no benefit.
+   */
+  private emittedTerminal = false;
   private pendingFinalize?: ReturnType<typeof setTimeout>;
   private readonly clientToolFinalizeGraceMs: number;
   private activeClientToolFinalizeGraceMs: number;
@@ -523,6 +529,22 @@ class LiveCursorTransport implements CursorTransport {
       }
       return err;
     };
+    /**
+     * A cancel we did not request is a real transport failure, but as a raw `NGHTTP2_CANCEL` it
+     * gets swallowed twice over: the adapter re-decides "benign" from the error code alone
+     * (`cursor.ts:181`) and drops the turn, and any message that survives is re-matched
+     * downstream and labelled an intentional "Cursor stream suspended". Raising a typed error
+     * carries the provenance this class already holds.
+     *
+     * Suppressed once a terminal was emitted: the turn already ended, and a second terminal flips
+     * a completed buffered response to failed.
+     */
+    const classifyTurnFailure = (err: Error): Error => {
+      if (!this.expectedClose && !this.emittedTerminal && isCursorBenignCancelError(err)) {
+        return summarizeFailure(new CursorUnexpectedCancelError(err));
+      }
+      return summarizeFailure(err);
+    };
     const wake = () => {
       const fn = notify;
       notify = undefined;
@@ -532,6 +554,7 @@ class LiveCursorTransport implements CursorTransport {
     const push = (message: CursorServerMessage) => {
       const bytes = new TextEncoder().encode(JSON.stringify(message)).byteLength;
       this.reserveTransportBytes(bytes);
+      if (message.type === "done" || message.type === "error") this.emittedTerminal = true;
       queue.push({ message, bytes });
       wake();
     };
@@ -621,7 +644,7 @@ class LiveCursorTransport implements CursorTransport {
         // A CANCEL is benign only on the client-tool suspend path (expectedClose); an
         // unexpected server-side NGHTTP2_CANCEL must surface as a real transport error.
         if (this.expectedClose && isCursorBenignCancelError(failure)) return;
-        throw attachPartialUsage(summarizeFailure(failure), state);
+        throw attachPartialUsage(classifyTurnFailure(failure), state);
       }
       if (done) break;
       await new Promise<void>(resolve => {
@@ -630,7 +653,7 @@ class LiveCursorTransport implements CursorTransport {
     }
     if (failure) {
       if (this.expectedClose && isCursorBenignCancelError(failure)) return;
-      throw attachPartialUsage(summarizeFailure(failure), state);
+      throw attachPartialUsage(classifyTurnFailure(failure), state);
     }
   }
 
@@ -771,6 +794,7 @@ class LiveCursorTransport implements CursorTransport {
     this.turnStartedAt = Date.now();
     this.framesReceived = 0;
     this.sawAssistantText = false;
+    this.emittedTerminal = false;
     this.firstFrameAt = undefined;
     this.firstFrameLogged = false;
     const dialHost = cursorHostLabel(this.input.provider.baseUrl || "https://api2.cursor.sh");
@@ -1028,7 +1052,9 @@ class LiveCursorTransport implements CursorTransport {
           settler.settleFail(new Error("Cursor stream ended before any response frame (unexpected EOF)"));
           return;
         }
-        if (state.terminated || this.expectedClose) {
+        // `emittedTerminal` joins dev's two conditions so EOF finalization cannot append a
+        // second terminal after a mapper error already failed the turn (integration 010).
+        if (state.terminated || this.expectedClose || this.emittedTerminal) {
           releaseBacklogLease();
           settler.settleFinish();
           return;
