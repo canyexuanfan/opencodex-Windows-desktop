@@ -704,11 +704,12 @@ export function parseZaiQuotaLimits(data: Record<string, unknown> | null): Provi
     if (percent === undefined) continue;
     if (row.type === "TOKENS_LIMIT" || row.type === "CREDIT_LIMIT") {
       const unit = toFiniteNumber(row.unit);
-      if (unit === 3) {
+      const number = toFiniteNumber(row.number);
+      if (unit === 3 && number === 5) {
         quota.fiveHourPercent = percent;
         if (resetAt !== undefined) quota.fiveHourResetAt = resetAt;
         windows += 1;
-      } else if (unit === 6) {
+      } else if (unit === 6 && number === 1) {
         quota.weeklyPercent = percent;
         if (resetAt !== undefined) quota.weeklyResetAt = resetAt;
         windows += 1;
@@ -782,7 +783,9 @@ async function fetchZaiQuota(provider: string, config: OcxProviderConfig): Promi
   const body = asRecord(await readQuotaJson(response));
   if (!body || body.success === false) return null;
   const data = asRecord(body.data) ?? body;
-  const quota = parseZaiQuotaLimits(data) ?? parseZaiQuotaLegacyFields(data);
+  const quota = Array.isArray(data?.limits)
+    ? parseZaiQuotaLimits(data)
+    : parseZaiQuotaLegacyFields(data);
   return quota ? report(provider, "zai:quota-limit", quota) : null;
 }
 

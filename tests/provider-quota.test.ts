@@ -1042,12 +1042,43 @@ describe("fetchProviderQuotaReports", () => {
     }) as typeof fetch;
 
     const result = await fetchProviderQuotaReports(
-      keyQuotaConfig("zhipu-bigmodel", "https://open.bigmodel.cn/api/paas/v4"),
+      keyQuotaConfig("zhipu-bigmodel-coding", "https://open.bigmodel.cn/api/paas/v4"),
       true,
     );
 
     expect(result.reports).toEqual([]);
     expect(seen).toEqual([]);
+  });
+
+  test("Z.AI quota ignores token rows whose window length does not match", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      success: true,
+      data: {
+        limits: [
+          { type: "TOKENS_LIMIT", unit: 3, number: 2, percentage: 40, nextResetTime: 1789000000000 },
+          { type: "TOKENS_LIMIT", unit: 6, number: 2, percentage: 52, nextResetTime: 1789600000000 },
+          { type: "TIME_LIMIT", percentage: 12.3, nextResetTime: 1789000000000 },
+        ],
+      },
+    }), { status: 200 })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("zai", "https://api.z.ai/api/coding/paas/v4"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.quota).toMatchObject({ monthlyPercent: 12.3 });
+    expect(result.reports[0]?.quota.fiveHourPercent).toBeUndefined();
+    expect(result.reports[0]?.quota.weeklyPercent).toBeUndefined();
+  });
+
+  test("Z.AI quota does not fall back to legacy fields when limits is present but empty", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      success: true,
+      data: { limits: [], fiveHourPercent: 40.5, weeklyPercent: 52, monthlyMCPUsage: 12.3 },
+    }), { status: 200 })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("zai", "https://api.z.ai/api/coding/paas/v4"), true);
+
+    expect(result.reports).toEqual([]);
   });
 
   test("MiniMax quota drops the row when the API omits the plan total after having it", async () => {
