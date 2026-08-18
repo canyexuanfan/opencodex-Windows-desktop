@@ -459,6 +459,27 @@ describe("FastWire config and registry validation", () => {
     expect(validateConfigCandidate(configWithFastWire(null, capability)).ok).toBe(false);
   });
 
+  test("redacts a token-shaped provider name in a FastWire conflict path", () => {
+    const providerName = ["sk", "proj", "fastwire", "A".repeat(40)].join("-");
+    const result = validateConfigCandidate({
+      port: 10100,
+      defaultProvider: providerName,
+      providers: {
+        [providerName]: {
+          adapter: "openai-responses",
+          baseUrl: "https://fixture.example/v1",
+          supportsServiceTier: true,
+          fastWire: null,
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).not.toContain(providerName);
+      expect(result.error).toContain("providers.[REDACTED].fastWire");
+    }
+  });
+
   test("provider-level false keeps null valid even with an exact-model true", () => {
     expect(validateConfigCandidate(configWithFastWire(null, { provider: false, exact: true })).ok)
       .toBe(true);

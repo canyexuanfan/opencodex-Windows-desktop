@@ -769,15 +769,7 @@ const providerConfigSchema = z.object({
     repairInvalidIds: z.boolean().optional(),
   }).strict().optional(),
   responsesSnapshotRepair: z.boolean().optional(),
-}).passthrough().superRefine((provider, ctx) => {
-  if (hasFastWireCapabilityConflict(provider)) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["fastWire"],
-      message: "fastWire=null conflicts with supportsServiceTier=true",
-    });
-  }
-});
+}).passthrough();
 
 const RESERVED_PROVIDER_NAMES = new Set([
   // JavaScript prototype-pollution guards.
@@ -1439,6 +1431,13 @@ const configSchema = z.object({
       });
     }
     const provider = config.providers[name];
+    if (hasFastWireCapabilityConflict(provider)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", redactSecretString(name), "fastWire"],
+        message: "fastWire=null conflicts with supportsServiceTier=true",
+      });
+    }
     const openRouterRoutingError = openRouterRoutingConfigError(provider);
     if (openRouterRoutingError) {
       ctx.addIssue({
@@ -2181,7 +2180,8 @@ function warnDegradedNativeSubagentConfig(rawParsed: unknown, config: OcxConfig)
  * Registry metadata can gain service-tier capability after a config was written. An explicit
  * `fastWire: null` remains authoritative on load and on whole-document writes; rejecting either
  * would discard or lock access to unrelated providers and API keys. Direct contradictions within
- * one provider row remain schema errors through providerConfigSchema.
+ * one provider row remain schema errors through the outer config refinement, where the dynamic
+ * provider name can be redacted before it reaches diagnostics.
  */
 function inheritedFastWireConflictProviderNames(
   config: Pick<OcxConfig, "providers">,
