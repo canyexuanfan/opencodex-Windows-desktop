@@ -123,3 +123,49 @@ cannot be fixed here:
 
 Each is its own unit with its own truncation subsystem. Recording them beats
 half-fixing them inside a bridge phase.
+
+## Final state (eight rounds)
+
+| Commit | Closed |
+|--------|--------|
+| `ea5e61677` | Anthropic `pause_turn` is unfinished by definition; AI SDK `error` is a failure, so Command Code emits a real error terminal. |
+| `6478cbb02` | Removing `error` from the shared table was safe only for Command Code — Anthropic forwards `stop_reason` verbatim, so it needed its own error terminal on the buffered and streaming paths. Both terminals carry usage. |
+| `1651002c5` | Anthropic has a **third** terminal path: the EOF branch for providers that close after `message_delta` without `message_stop` bypasses `emitDone` entirely and still reported success. |
+
+Round 8: **PASS, no findings.** Verified exhaustively that Anthropic's terminal
+paths are `message_stop`/`emitDone`, the compatible-provider EOF branch, and
+buffered `parseResponse` — and that `anthropicEofTolerance` is not a fourth,
+since it runs only when no stop reason was received and delegates back through
+`emitDone`.
+
+Final verification on `ssh lidge` at `1651002c59`: typecheck clean,
+**12800 pass / 0 fail** across 830 files. The pre-phase baseline was 12761/0.
+
+### Two tests that were protecting nothing
+
+Worth recording, because both looked like coverage:
+
+- The Anthropic streaming test was titled "carrying usage" and never asserted
+  usage. Removing usage from the error terminal kept it green.
+- The Command Code coverage hand-constructed the downstream error event instead
+  of driving the parser, so it stayed green while the adapter still emitted a
+  clean `done`.
+
+Both now drive the real parsers, and dropping usage from either error terminal
+turns the suite red.
+
+### What the round count actually bought
+
+Eight rounds, and the finding that justified them arrived at round 7 — after two
+rounds had already declared the area closed. Two of the defects were regressions
+I introduced while fixing the previous round's finding:
+
+1. Suppressing the compaction item without downgrading the turn produced
+   `completed` with zero compaction items, which codex-rs treats as fatal. A
+   half-widened guard was more dangerous than the bug it replaced.
+2. Removing `error` from the shared table fixed Command Code and silently
+   re-opened Anthropic, which forwards the same string verbatim.
+
+Both share a shape: a fix that is correct for the case in front of you and wrong
+for the one next to it. That is the argument for auditing revisions, not just
+first drafts.
