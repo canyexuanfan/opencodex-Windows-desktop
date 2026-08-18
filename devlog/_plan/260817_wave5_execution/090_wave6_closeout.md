@@ -341,7 +341,9 @@ here and worth their own pass.
 ### Post-scan resolution
 
 The prediction above held. GitHub flipped **alert #87 to `fixed` at 03:17:06Z**, after
-`refs/heads/main` re-analyzed at `c49fed608`. So the fix is now confirmed on both axes: the code
+`refs/heads/main` re-analyzed at `1f4e0470e` (an earlier sentence said `c49fed608`, whose
+analyses are `actions` and `go` — the JS/TS run that actually closed the alert is `1f4e0470e`).
+So the fix is now confirmed on both axes: the code
 is right, and the scanner agrees.
 
 One artifact to expect: `refs/pull/1959/head` will keep listing an `open` instance of #87 until
