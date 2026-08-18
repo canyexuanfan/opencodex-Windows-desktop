@@ -177,7 +177,7 @@ function assistantRootText(
 // so prior history — including assistant tool calls and tool results — must be replayed here or a
 // ResumeAction has nothing model-visible to continue from. The active user message is excluded
 // because it travels in the action. Tool results are assistant-role text with a [Tool Result]
-// marker so Cursor does not wrap them as `<user_query>` (#1992). Each entry is a SHA-256 blob ID.
+// or [Tool Error] marker so Cursor does not wrap them as `<user_query>` (#1992). Each entry is a SHA-256 blob ID.
 function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobRequestScopeToken): {
   ids: Uint8Array[];
   byteLength: number;

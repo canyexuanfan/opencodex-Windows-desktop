@@ -116,6 +116,9 @@ describe("Cursor native exec bridge", () => {
       expect(deniedRead.message.value.result.value.error).toContain("shell_command");
       expect(deniedRead.message.value.result.value.error).toContain("exec_command");
       expect(deniedRead.message.value.result.value.error).toContain("cat");
+      expect(deniedRead.message.value.result.value.error).toContain("Get-Content");
+      expect(deniedRead.message.value.result.value.error).toContain("Get-ChildItem");
+      expect(deniedRead.message.value.result.value.error).toContain("Select-String");
       expect(deniedRead.message.value.result.value.error).toContain("apply_patch");
       expect(deniedRead.message.value.result.value.error).not.toContain("silently call");
       expect(deniedRead.message.value.result.value.error).not.toContain("Do not tell the user");

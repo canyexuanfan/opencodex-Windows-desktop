@@ -47,7 +47,7 @@ function codexNativeMutationRefusal(operation: "write" | "delete", structuredEdi
 }
 
 const NATIVE_LOCAL_EXEC_DISABLED =
-  "Cursor-native filesystem tools are not executed locally. Use a catalog tool for this work: `shell_command` / `exec_command` (or the listed `mcp_opencodex-responses_*` display alias) with equivalent shell commands (cat, head, ls, rg, grep), or `apply_patch` for file edits.";
+  "Cursor-native filesystem tools are not executed locally. Use a catalog tool for this work: `shell_command` / `exec_command` (or the listed `mcp_opencodex-responses_*` display alias) with host-shell-safe equivalents: POSIX (`cat`, `head`, `ls`, `rg`, `grep`) or Windows PowerShell (`Get-Content`, `Get-ChildItem`, `Select-String`); use `apply_patch` for file edits.";
 
 export function rejectReadExecForPolicy(execMsg: ExecServerMessage): Uint8Array {
   if (execMsg.message.case !== "readArgs") throw new Error("invalid read exec");

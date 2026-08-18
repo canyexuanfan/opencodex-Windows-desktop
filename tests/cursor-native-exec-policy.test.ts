@@ -134,6 +134,9 @@ describe("Cursor native exec sandbox policy", () => {
     expect(deniedText).toContain("exec_command");
     expect(deniedText).toContain("mcp_opencodex-responses_*");
     expect(deniedText).toContain("cat");
+    expect(deniedText).toContain("Get-Content");
+    expect(deniedText).toContain("Get-ChildItem");
+    expect(deniedText).toContain("Select-String");
     expect(deniedText).toContain("apply_patch");
     expect(deniedText).not.toContain("silently call");
     expect(deniedText).not.toContain("Do not tell the user");

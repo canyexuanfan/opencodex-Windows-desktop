@@ -643,7 +643,7 @@ export function buildCursorToolGuidanceSystemNote(
       ? "Your tool list may display it under a longer `mcp_opencodex-responses_shell_command` / `mcp_opencodex-responses_exec_command` name; those are the SAME tool — call whichever your list shows, and do not comment on the naming difference to the user."
       : undefined,
     hasBareExec
-      ? "Prefer the Codex shell bridge over Cursor-native Shell/Read. If a Cursor-native file read, directory listing, grep, or shell operation is rejected, continue with a listed catalog tool such as `shell_command` / `exec_command`."
+      ? `Prefer the Codex shell bridge over Cursor-native Shell/Read. If a Cursor-native file read, directory listing, grep, or shell operation is rejected, continue with the listed catalog tool ${shellBridgeLabel}.`
       : undefined,
     hostShellNote,
     "Cursor product features (Chronicle, screen recording, Notes, Plans, background agents) are available only if this turn's catalog lists a matching tool; do not offer or promise them otherwise.",

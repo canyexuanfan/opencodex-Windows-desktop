@@ -335,6 +335,8 @@ describe("Cursor tool definitions", () => {
     expect(note).toContain("This turn does not expose neighboring-agent tool names `Read`, `Grep`, `Glob`, `Bash`, `LS`");
     expect(note).toContain("not an external MCP server tool");
     expect(note).toContain("Prefer the Codex shell bridge over Cursor-native Shell/Read");
+    expect(note).toContain("continue with the listed catalog tool `exec_command`");
+    expect(note).not.toContain("such as `shell_command` / `exec_command`");
     expect(note).not.toContain("Never tell the user");
     expect(note).not.toContain("silently call");
     expect(note).toContain("prefer one response containing multiple tool calls");
@@ -352,6 +354,7 @@ describe("Cursor tool definitions", () => {
     expect(note).toContain("`shell_command` and `exec_command` are aliases of the same bridge");
     expect(note).toContain("mcp_opencodex-responses_shell_command");
     expect(note).toContain("Prefer the Codex shell bridge over Cursor-native Shell/Read");
+    expect(note).toContain("continue with the listed catalog tool `shell_command`");
     expect(note).not.toContain("Never tell the user");
     expect(note).not.toContain("silently call");
   });
