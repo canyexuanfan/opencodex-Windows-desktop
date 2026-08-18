@@ -11,7 +11,7 @@ import type {
   OcxToolCall,
   OcxReasoningReplayScopeRef,
 } from "../types";
-import { namespacedToolName } from "../types";
+import { namespacedToolName, toolChoiceCandidates } from "../types";
 import { responsesRequestSchema } from "./schema";
 import { providerMetadataFromResponsesFunctionCall } from "./provider-opaque-metadata";
 import { lookupReplayThoughtSignature } from "./thought-signature-replay";
@@ -691,6 +691,15 @@ export function parseRequest(
   const declaredTools = buildTools(data.tools as unknown[] | undefined) ?? [];
   const loadedTools = buildTools(loadedToolSpecs) ?? [];
   const loadedToolNames = new Set(loadedTools.map(t => namespacedToolName(t.namespace, t.name)));
+  const wireOwners = new Map<string, OcxTool>();
+  for (const tool of [...declaredTools, ...loadedTools]) {
+    const wireName = namespacedToolName(tool.namespace, tool.name);
+    const previous = wireOwners.get(wireName);
+    if (previous && (previous.namespace !== tool.namespace || previous.name !== tool.name || previous.freeform !== tool.freeform || previous.toolSearch !== tool.toolSearch)) {
+      throw new Error(`ambiguous tool catalog: multiple logical tools map to wire name ${wireName}`);
+    }
+    wireOwners.set(wireName, tool);
+  }
   const seenTools = new Set<string>();
   const mergedTools = [...declaredTools, ...loadedTools]
     .filter(t => {
@@ -716,6 +725,14 @@ export function parseRequest(
     options.stopSequences = typeof data.stop === "string" ? [data.stop] : data.stop;
   }
   const tc = mapToolChoice(data.tool_choice);
+  if (tc && typeof tc === "object") {
+    const selectors = "allowedTools" in tc ? tc.allowedTools : [tc.name];
+    for (const selector of selectors) {
+      if (toolChoiceCandidates(mergedTools, selector).length > 1) {
+        throw new Error(`ambiguous tool_choice name: ${selector}`);
+      }
+    }
+  }
   if (tc !== undefined) options.toolChoice = tc;
   if (data.parallel_tool_calls !== undefined) options.parallelToolCalls = data.parallel_tool_calls;
   // Upstream codex-rs converts "ultra" to "max" at the inference boundary (core/src/client.rs

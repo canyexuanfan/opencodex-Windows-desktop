@@ -246,13 +246,29 @@ export function toolChoiceAliases(tool: Pick<OcxTool, "namespace" | "name">): st
   return tool.namespace ? [wireName, `${tool.namespace}.${tool.name}`] : [wireName];
 }
 
-function uniqueBareToolMatch(
+function sameToolIdentity(
+  left: Pick<OcxTool, "namespace" | "name">,
+  right: Pick<OcxTool, "namespace" | "name">,
+): boolean {
+  return left.namespace === right.namespace && left.name === right.name;
+}
+
+/**
+ * All tools that could be selected by one client-facing name. Bare logical names are included
+ * here because they are a compatibility selector for namespaced tools, while wire and dotted
+ * aliases come from `toolChoiceAliases`. A selector with more than one candidate is invalid.
+ */
+export function toolChoiceCandidates(
   tools: readonly Pick<OcxTool, "namespace" | "name">[] | undefined,
   name: string,
-): Pick<OcxTool, "namespace" | "name"> | undefined {
-  if (!tools) return undefined;
-  const matches = tools.filter(tool => tool.name === name);
-  return matches.length === 1 ? matches[0] : undefined;
+): Pick<OcxTool, "namespace" | "name">[] {
+  if (!tools) return [];
+  const candidates: Pick<OcxTool, "namespace" | "name">[] = [];
+  for (const tool of tools) {
+    if (tool.name !== name && !toolChoiceAliases(tool).includes(name)) continue;
+    if (!candidates.some(candidate => sameToolIdentity(candidate, tool))) candidates.push(tool);
+  }
+  return candidates;
 }
 
 /**
@@ -265,20 +281,24 @@ export function toolAllowedByChoice(
   allowedTools: ReadonlySet<string>,
   tools?: readonly Pick<OcxTool, "namespace" | "name">[],
 ): boolean {
-  if (toolChoiceAliases(tool).some(name => allowedTools.has(name))) return true;
-  if (!tool.namespace || !allowedTools.has(tool.name)) return false;
-  const match = uniqueBareToolMatch(tools, tool.name);
-  return match?.namespace === tool.namespace && match.name === tool.name;
+  if (!tools) return toolChoiceAliases(tool).some(name => allowedTools.has(name));
+  for (const name of [...toolChoiceAliases(tool), tool.name]) {
+    if (!allowedTools.has(name)) continue;
+    const candidates = toolChoiceCandidates(tools, name);
+    if (candidates.length === 1 && sameToolIdentity(candidates[0], tool)) return true;
+  }
+  return false;
 }
 
 export function resolveToolChoiceWireName(tools: readonly Pick<OcxTool, "namespace" | "name">[] | undefined, name: string): string {
-  const exactMatches = tools?.filter(tool => toolChoiceAliases(tool).includes(name)) ?? [];
-  if (exactMatches.length === 1) {
-    const match = exactMatches[0];
+  const candidates = toolChoiceCandidates(tools, name);
+  if (candidates.length === 1) {
+    const match = candidates[0];
     return namespacedToolName(match.namespace, match.name);
   }
-  const bareMatch = uniqueBareToolMatch(tools, name);
-  return bareMatch ? namespacedToolName(bareMatch.namespace, bareMatch.name) : name;
+  // Keep unknown/ambiguous names unchanged for callers that only serialize a selector. The
+  // catalog-aware predicate rejects them, and parseRequest rejects ambiguous request selectors.
+  return name;
 }
 
 /**
@@ -316,8 +336,8 @@ export function toolChoiceToolPredicate(
     return tool => toolAllowedByChoice(tool, allowed, tools);
   }
   if (!tools) return tool => toolChoiceAliases(tool).includes(choice.name);
-  const selected = resolveToolChoiceWireName(tools, choice.name);
-  return tool => namespacedToolName(tool.namespace, tool.name) === selected;
+  const candidates = toolChoiceCandidates(tools, choice.name);
+  return tool => candidates.length === 1 && sameToolIdentity(candidates[0], tool);
 }
 
 export interface OcxRequestOptions {

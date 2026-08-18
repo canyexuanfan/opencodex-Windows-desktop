@@ -197,7 +197,7 @@ describe("Responses parser", () => {
       input: "run it",
       tools: [{
         type: "namespace",
-        name: "functions",
+        name: "mcp__functions",
         tools: [{ type: "custom", name: "exec", description: "Run a command" }],
       }],
       tool_choice: {
@@ -209,10 +209,10 @@ describe("Responses parser", () => {
 
     let maps = buildToolBridgeMaps(parsed);
     expect([...maps.toolNsMap]).toEqual([
-      ["functions__exec", { namespace: "functions", name: "exec", freeform: true }],
-      ["exec", { namespace: "functions", name: "exec", freeform: true }],
+      ["mcp__functions__exec", { namespace: "mcp__functions", name: "exec", freeform: true }],
+      ["exec", { namespace: "mcp__functions", name: "exec", freeform: true }],
     ]);
-    expect([...maps.declaredToolNames]).toEqual(["functions__exec", "exec"]);
+    expect([...maps.declaredToolNames]).toEqual(["mcp__functions__exec", "exec"]);
     expect([...maps.freeformToolNames]).toEqual(["exec"]);
 
     const bridged = buildResponseJSON([
@@ -232,14 +232,14 @@ describe("Responses parser", () => {
 
     parsed.options.toolChoice = { name: "exec" };
     maps = buildToolBridgeMaps(parsed);
-    expect([...maps.toolNsMap.keys()]).toEqual(["functions__exec", "exec"]);
+    expect([...maps.toolNsMap.keys()]).toEqual(["mcp__functions__exec", "exec"]);
 
-    const ambiguous = parseRequest({
+    expect(() => parseRequest({
       model: "claude-opus-5",
       input: "run it",
       tools: [{
         type: "namespace",
-        name: "functions",
+        name: "mcp__functions",
         tools: [{ type: "custom", name: "exec" }],
       }, {
         type: "namespace",
@@ -251,18 +251,14 @@ describe("Responses parser", () => {
         mode: "required",
         tools: [{ type: "custom", name: "exec" }],
       },
-    });
-
-    const ambiguousMaps = buildToolBridgeMaps(ambiguous);
-    expect([...ambiguousMaps.declaredToolNames]).toEqual([]);
-    expect([...ambiguousMaps.toolNsMap]).toEqual([]);
+    })).toThrow("ambiguous tool_choice name: exec");
 
     const mixedKinds = parseRequest({
       model: "claude-opus-5",
       input: "run it",
       tools: [{
         type: "namespace",
-        name: "functions",
+        name: "mcp__functions",
         tools: [{ type: "custom", name: "exec" }],
       }, {
         type: "namespace",
@@ -272,7 +268,7 @@ describe("Responses parser", () => {
     });
     const mixedMaps = buildToolBridgeMaps(mixedKinds);
     const customCall = buildResponseJSON([
-      { type: "tool_call_start", id: "call_custom", name: "functions__exec" },
+      { type: "tool_call_start", id: "call_custom", name: "mcp__functions__exec" },
       { type: "tool_call_delta", arguments: '{"input":"pwd"}' },
       { type: "tool_call_end" },
       { type: "done" },
@@ -305,6 +301,37 @@ describe("Responses parser", () => {
 
     expect(parsed._webSearch).toEqual({ type: "web_search", search_context_size: "medium" });
     expect(parsed.options.toolChoice).toEqual({ allowedTools: ["web_search"], mode: "required" });
+  });
+
+  test("rejects wire-name collisions instead of dropping one logical tool", () => {
+    expect(() => parseRequest({
+      model: "gpt-5.5",
+      input: "run it",
+      tools: [
+        {
+          type: "namespace",
+          name: "foo",
+          tools: [{ type: "function", name: "bar", parameters: { type: "object" } }],
+        },
+        { type: "function", name: "foo__bar", parameters: { type: "object" } },
+      ],
+    })).toThrow("ambiguous tool catalog: multiple logical tools map to wire name foo__bar");
+  });
+
+  test("rejects a dotted alias that also names a flat tool", () => {
+    expect(() => parseRequest({
+      model: "gpt-5.5",
+      input: "run it",
+      tools: [
+        {
+          type: "namespace",
+          name: "foo",
+          tools: [{ type: "function", name: "bar", parameters: { type: "object" } }],
+        },
+        { type: "function", name: "foo.bar", parameters: { type: "object" } },
+      ],
+      tool_choice: { type: "function", name: "foo.bar" },
+    })).toThrow("ambiguous tool_choice name: foo.bar");
   });
 
   test("maps type-only hosted image_generation tool_choice to required image_gen", () => {
