@@ -17,7 +17,8 @@ misleading in this checkout.
   and still not the required gate.
 - **#1795** does not close without a live SenseNova/Kimi canary showing zero
   undeclared tool calls.
-- **#1843** is closable now: fixed by #1860, released in v2.24.2.
+- **#1843** is closable now: fixed by #1860, released in **v2.24.0** (`git tag --contains ac8c0d2df`
+  names v2.24.0 as the earliest containing tag; an earlier draft of this line said v2.24.2).
 - State is judged by merge commit and branch ancestry first, GitHub API second,
   cached HTML badges last. #1881 showed an Open badge while merged.
 
@@ -234,11 +235,20 @@ false, and it is the worst error in this campaign's record: an approver reading 
 promoted past a high-severity finding that this campaign created, on my assurance that it had
 not. Corrected in both PR bodies, reported on #1897, and recorded here.
 
-**Why my verification missed it.** Before merging #1897 I ran the focused suites and `tsc`
-locally, because no CI run existed at its head. Neither runs CodeQL. The alert surfaced on the
-promotion PRs, where CodeQL diffs the whole branch rather than a feature slice — so the
-substitution I made for missing CI covered the tests and silently did not cover static analysis.
-That is a real gap in the local-verification substitute, not a one-off.
+**Why my verification missed it — and my first explanation was wrong too.** I wrote that the
+cause was substituting local tests for missing CI, since neither runs CodeQL. That is true and
+irrelevant: **CodeQL would not have run on #1897 even with full CI at its head.** The analysis
+history contains `refs/heads/main`, `refs/heads/dev`, and `refs/pull/*/head` only for PRs
+targeting the default branch. Every campaign PR targets `dev`, so none of them could receive
+CodeQL feedback at all — verified: `refs/pull/1959/head` and `refs/pull/1963/head` have analyses
+because they target `main`, while the `preview`-targeting pair have zero.
+
+The actual root cause is duller and more useful: **`dev` is scanned on push, and nobody read
+the result.** It carries 84 open alerts against `main`'s 71. The finding was observable on the
+integration branch from the moment #1897 merged until promotion, and no step in this campaign
+ever looked. CodeQL is structurally absent from the `dev` PR flow *and* the post-merge alert
+list is not part of anyone's gate — those are two different holes, and I named neither the
+first time.
 
 Severity in context: the input is a configured `baseUrl`, so exploitation needs a hostile or
 careless config rather than attacker-controlled traffic. Worth fixing, not urgent. Separately,
@@ -266,3 +276,22 @@ does not include CodeQL.
 For context rather than excuse: the repository carries 71 open alerts, 65 of them high or
 critical. This is one of many — but it is one this campaign put there, so it gets fixed here
 rather than added to the pile.
+## Promotion: completed, and not by the PRs I opened
+
+`dev` reached `preview` and `main`. Not through #1958/#1959, which I opened and deliberately
+left for a maintainer — those flipped to merged seconds *after* **#1962** and **#1963** did the
+actual promotion at 02:55:01 and 02:55:04, because their heads became reachable once the real
+promotion landed.
+
+Which means the disclosure I spent three rounds getting right went onto the two PRs that did not
+move any code, and the two that did carried none of it. Corrected by commenting the full
+disclosure onto #1962 and #1963 after the fact — later than it should have been, and worth
+recording as the failure mode it is: **I attached a warning to the artifact I controlled rather
+than to the artifact that would carry the change.**
+
+`js/polynomial-redos` is now on `main` — `git merge-base --is-ancestor 0be660a2e origin/main`
+returns true. The alert is disclosed on #1897, on both promotion PR pairs, and here.
+
+What I did not do, and stand by: I never approved a promotion PR. `MAINTAINERS.md` forbids
+authors approving their own, and the rulesets require a code-owner review. That the promotion
+happened by another route is the maintainer's call to make, not mine to route around.
