@@ -5,6 +5,7 @@ import type { OcxAssistantContentPart, OcxMessage, OcxToolResultMessage } from "
 import { namespacedToolName } from "../../types";
 import type { CursorRunRequest } from "./types";
 import { isCursorExternalWireModel } from "./discovery";
+import { normalizeCursorToolResultText } from "./tool-result-normalize";
 import { debugProviderDiagnostic } from "../../lib/debug";
 import {
   createCursorBlobRequestScope,
@@ -240,7 +241,9 @@ function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobR
       }
       // Assistant tool CALLS are intentionally NOT replayed as visible "[Tool Call]" text here.
     } else if (message.role === "toolResult") {
-      const prefix = message.isError ? "[Tool Error]" : "[Tool Result]";
+      // #1920: the prefix must reflect the NORMALIZED error state (an empty
+      // node_repl result is an error even when the runtime said isError=false).
+      const prefix = normalizedToolResult(message, contentToText(message.content)).isError ? "[Tool Error]" : "[Tool Result]";
       const text = `${prefix}\n${toolResultToText(message)}`;
       entries.push(rootBlobCandidate(
         toolResultRootPayload(text),
@@ -427,7 +430,11 @@ function toolResultContentItems(
 ) {
   const parts = decoded ?? decodeResultParts(message);
   if (!parts) {
-    const text = typeof message.content === "string" ? message.content : "";
+    const raw = typeof message.content === "string" ? message.content : "";
+    // #1920/#1866: empty or failure-state Computer Use / node_repl results are
+    // normalized before they reach the native wire (isError is applied in
+    // toolResultPart via normalizedToolResult below).
+    const { text } = normalizedToolResult(message, raw);
     return [create(McpToolResultContentItemSchema, {
       content: { case: "text" as const, value: create(McpTextContentSchema, { text }) },
     })];
@@ -483,14 +490,28 @@ function toolResultContentItems(
 }
 
 function toolResultToText(message: OcxToolResultMessage): string {
+  const normalized = normalizedToolResult(message, contentToText(message.content));
   return [
     "[tool_result]",
     `call_id: ${message.toolCallId}`,
     `name: ${namespacedToolName(message.toolNamespace, message.toolName)}`,
-    `is_error: ${message.isError}`,
+    `is_error: ${normalized.isError}`,
     "output:",
-    contentToText(message.content),
+    normalized.text,
   ].join("\n");
+}
+
+/**
+ * Shared #1920 normalization entry: pure-text results only. Image-bearing or
+ * encrypted results pass through untouched (their content is not plain text).
+ */
+function normalizedToolResult(message: OcxToolResultMessage, text: string): { text: string; isError: boolean } {
+  if (message.containsEncryptedContent) return { text, isError: message.isError };
+  return normalizeCursorToolResultText(text, {
+    toolName: message.toolName,
+    toolNamespace: message.toolNamespace,
+    isError: message.isError,
+  });
 }
 
 function argBytes(value: unknown): Uint8Array {
@@ -546,11 +567,15 @@ function toolCallStep(
 }
 
 function toolResultPart(message: OcxToolResultMessage, decoded?: DecodedResultPart[], maxImages?: number) {
+  const parts = decoded ?? decodeResultParts(message);
+  const normalizedIsError = parts
+    ? message.isError
+    : normalizedToolResult(message, typeof message.content === "string" ? message.content : "").isError;
   return create(McpToolResultSchema, {
     result: {
       case: "success",
       value: create(McpSuccessSchema, {
-        isError: message.isError,
+        isError: normalizedIsError,
         content: toolResultContentItems(message, decoded, maxImages),
       }),
     },
@@ -643,11 +668,15 @@ function conversationTurns(
     if (message.role === "toolResult") {
       if (!current) continue;
       if (externalModel) {
-        const prefix = message.isError ? "[Tool Error]" : "[Tool Result]";
+        // #1920/#1866: this external-replay site bypasses toolResultToText, so it
+        // must consume the normalizer directly — cursor/grok-4.6 is the exact
+        // reported repro path for empty Computer Use results.
+        const normalized = normalizedToolResult(message, contentToText(message.content));
+        const prefix = normalized.isError ? "[Tool Error]" : "[Tool Result]";
         current.steps.push(storeCursorBlob(toBinary(ConversationStepSchema, create(ConversationStepSchema, {
           message: {
             case: "assistantMessage",
-            value: create(AssistantMessageSchema, { text: `${prefix}\n${contentToText(message.content)}` }),
+            value: create(AssistantMessageSchema, { text: `${prefix}\n${normalized.text}` }),
           },
         })), requestScope));
         continue;
