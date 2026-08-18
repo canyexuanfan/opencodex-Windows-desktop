@@ -854,7 +854,7 @@ export async function collectCodexAppServerCatalogStateForRequest(
   if (requestCatalogStateCache
     && requestCatalogStateCache.generation === generation
     && sameRequestCatalogStateIdentity(requestCatalogStateCache.identity, identity)
-    && now - requestCatalogStateCache.atMs < CATALOG_STATE_TTL_MS) {
+    && now - requestCatalogStateCache.atMs < catalogStateTtlMs(requestCatalogStateCache.status.state)) {
     return requestCatalogStateCache.status;
   }
   if (requestCatalogStateFlight

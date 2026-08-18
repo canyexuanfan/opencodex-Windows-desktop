@@ -185,6 +185,12 @@ describe("collectCodexAppServerCatalogState (#857)", () => {
     // Failure is advisory and fail-closed, but caching it briefly prevents a
     // broken CIM provider from spawning one PowerShell process per request.
     expect(calls).toBe(1);
+
+    now += 241;
+    await expect(collectCodexAppServerCatalogStateForRequest(io)).resolves.toMatchObject({
+      state: "unknown",
+    });
+    expect(calls).toBe(2);
     resetCodexAppServerCatalogStateCache();
   });
 
