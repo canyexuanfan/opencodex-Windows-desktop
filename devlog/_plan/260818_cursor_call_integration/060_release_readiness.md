@@ -69,6 +69,32 @@ work would be wrong.
     npm         { preview: '2.23.0-preview.20260816', latest: '2.24.2' }
     releases    v2.24.2 (latest), v2.24.1, v2.24.0
 
+`dev` advanced to `aad8e26014dab0921c768a639f9d324af6f1fa27` when this note itself
+merged. That commit adds this file and nothing else
+(`git diff --name-only 4f72d6f755 aad8e2601` → one path), so the gate evidence above
+still describes the code on `dev`.
+
+## Workflow state at the gated SHA — measured, not assumed
+
+The objective asked whether the two workflows `scripts/release.ts` waits for exist
+for this SHA. They do not, and the reasons differ:
+
+| Workflow | State at `4f72d6f755` | Why |
+|----------|----------------------|-----|
+| Cross-platform CI | `in_progress` (run `32104616258`, started 05:53:03Z) | started automatically on the merge; still running when this note was written |
+| Service lifecycle | **never ran** | correct: it triggers only on `src/service.ts`, `src/cli.ts`, `src/cli/index.ts`, `src/lib/bun-runtime.ts`, `package.json`, `bun.lock`, or its own workflow file (`.github/workflows/service-lifecycle.yml:6-16`). This campaign touched none of them — verified with `git diff --name-only` across the whole merge range |
+
+**This is not a blocker, and the distinction matters.** `release.ts:397-401` waits
+for Service lifecycle at the RELEASE commit, and the release commit always bumps
+`package.json` — which is a trigger path. So the workflow will fire when the release
+is cut. Its absence here means the campaign did not touch service-lifecycle surface,
+not that a gate was skipped.
+
+What this does mean: **no cross-platform evidence exists for this code yet.** The CI
+run is unfinished and nothing has waited on it. Windows and macOS remain unverified
+for this diff, and the Linux-only argument above is the whole of the platform
+evidence.
+
 ## Recommendation: 2.25.0
 
 A minor rather than a patch, because the externally observable behaviour of a failed
@@ -93,11 +119,20 @@ The maintainer decides. This note recommends.
 
 Preconditions before running either:
 
-1. Cross-platform CI green at `4f72d6f755` (currently in progress).
-2. Service lifecycle green at the same SHA, since `package.json` is a trigger path
-   for it and the release gate requires it.
-3. A version decision. The promotion itself does not bump; `scripts/release.ts` owns
-   that and is the only sanctioned publish path — never a direct `npm publish`.
+1. **Cross-platform CI green.** Run `32104616258` was still `in_progress` at the
+   time of writing; check it before promoting:
+
+       gh run view 32104616258 --json status,conclusion
+
+   This is the only outstanding technical precondition, and it is the one the
+   owner's CI waiver covered for the merge but does NOT cover for a release —
+   `release.ts` blocks on it regardless of what a human waived earlier.
+2. **Service lifecycle** needs nothing here: it did not run at this SHA because the
+   campaign touched none of its trigger paths, and it will fire on the release
+   commit's `package.json` bump. Do not wait for it on `dev`.
+3. **A version decision** (see the recommendation above). The promotion itself does
+   not bump; `scripts/release.ts` owns that and is the only sanctioned publish path
+   — never a direct `npm publish`.
 
 ## Open follow-ups a reader would otherwise assume were fixed
 
@@ -129,4 +164,3 @@ sweep with explicit notes about what the merge does and does not cover — #1992
 injected-policy prose is untouched, #1938's integer-for-string coercion is a separate
 path, and #1527's rate-limit asymmetry is unaddressed while its silent-collapse half
 is fixed. Each says so and invites a reopen.
-
