@@ -275,13 +275,18 @@ The input is provider config rather than hostile traffic, so the practical risk 
 nothing. Replaced with `stripTrailingSlashes`, verified byte-identical to the regex across the
 edge cases (empty string, all-slashes, no trailing slash, interior slashes).
 
-**The root cause is a process one and belongs in the record.** #1897 merged on local focused
+> **This entire paragraph is superseded by the third explanation above.** It survives as the
+> record of a wrong answer, not as an answer. Full CI would *not* have surfaced this: CodeQL
+> never runs on a `dev`-targeting PR, so no amount of waiting on per-PR CI would have shown it.
+> The signal that was actually missed was a review comment on a promotion PR, not a CI job.
+
+~~**The root cause is a process one and belongs in the record.** #1897 merged on local focused
 tests plus `tsc`. That substitutes for CI on the axis it covers — behavior — and silently skips
-the axis it does not: static analysis. ~~Waiting for full CI would have surfaced this before it~~
+the axis it does not: static analysis. Waiting for full CI would have surfaced this before it
 reached `main`. The instruction for this run was to stop waiting on per-PR CI and gate once at
 the end, which is a reasonable trade for speed; the honest accounting is that it traded away
 exactly this class of finding, and the end-gate I ran (`bun test`, `typecheck`, `privacy:scan`)
-does not include CodeQL.
+does not include CodeQL.~~
 
 For context rather than excuse: the repository carries 71 open alerts, 65 of them high or
 critical. This is one of many — but it is one this campaign put there, so it gets fixed here
