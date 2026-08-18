@@ -98,6 +98,42 @@ Ten defects in a 200-line script, none of which fifteen rounds of reading prose 
 surfaced. That is the case for the rewrite, and also the case for not trusting the
 rewrite until it has been run.
 
+## And round 16 found eight more, one of which bricked the whole thing
+
+The fixes for round 15 introduced a fatal bug and left four holes:
+
+- **The value validator rejected EVERYTHING.** `[[ "$v" == [A-Za-z0-9._/-]## ]]`
+  needs `EXTENDED_GLOB`, which `set -euo pipefail` does not enable. Every `save`
+  died, so `pin` could not record a base and nothing downstream could run at all.
+  The security fix had bricked the script, and `zsh -n` cannot see it because the
+  syntax is valid — only running it shows the match failing.
+- **`LAYERS_GREEN_AT` was a presence check.** It stored `PR2_HEAD` and `merge`
+  only asked whether it was non-empty, so verifying old layers then re-cutting new
+  ones inherited the marker. It now stores `${PR1_HEAD}+${PR2_HEAD}` and `merge`
+  compares it against the current heads.
+- **`--repin` invalidated nothing.** The guard refused a silent re-pin, but the
+  override rewrote `VERIFIED_BASE` and left every downstream artifact looking valid.
+  It now clears them all, which is what makes the guard meaningful.
+- **The MERGED resume path adopted a merge unchecked.** A PR merged by anyone, from
+  any head, into any base, would have been accepted as campaign output. It now
+  asserts base, head, and that the merge commit contains the verified head.
+- **PR3's merge not being on `dev` was a log line.** Now fatal — the release gates
+  would otherwise run on a commit that never landed.
+- **`cleanup` could not clean a failed run.** The worktree paths were saved only
+  after all gates passed, so the failure case left them unreachable. Saved on
+  creation now.
+- **`release_state` did not require the release gates**, so a readiness note could
+  be prepared before anything verified the merged tree.
+- **`rebase` restarted instead of continuing.** `010` expects two conflicts; a
+  re-run mid-rebase would have discarded the resolution. It now detects
+  `rebase-merge`/`rebase-apply` and continues.
+
+Plus one of my own: the driver never passed `$@` to `step_pin`, so `--repin` could
+not reach the guard it was written for.
+
+Verified after the fixes: `pin` records, `record_prs` stores three numbers, the
+re-pin guard refuses, and `pin --repin` clears every downstream key.
+
 `record_prs` is deliberately manual: PR numbers do not exist until `gh pr create`
 returns them, and inventing a way to guess them would reintroduce exactly the
 unbound-value problem this file exists to end.

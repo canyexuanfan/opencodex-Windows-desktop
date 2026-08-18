@@ -11,6 +11,9 @@
 # Nothing here merges or pushes without the operator invoking that step by name.
 
 set -euo pipefail
+# `##` in a pattern needs EXTENDED_GLOB. Without it the validator below rejected
+# every value, including SHAs — the script could not save anything at all (audit r16).
+setopt EXTENDED_GLOB
 
 # Ask git for the root rather than counting `..` — the script lives three levels down
 # (devlog/_plan/<unit>/), and an off-by-one put the state file in devlog/.tmp/, which
@@ -29,7 +32,7 @@ save () {
   local key="$1" value="$2" tmp="$STATE.tmp"
   # The state file is `source`d, so an unvalidated value is code. Only SHAs, PR
   # numbers and plain identifiers ever go in here (audit r15).
-  [[ "$value" == [A-Za-z0-9._/-]## ]] \
+  [[ "$value" == [A-Za-z0-9._/+-]## ]] \
     || die "refusing to save $key: value is not a plain token"
   : >| "$tmp"
   [[ -f "$STATE" ]] && grep -v "^${key}=" "$STATE" >> "$tmp" || true
@@ -77,6 +80,14 @@ step_pin () {
   if [[ -n "${VERIFIED_TIP:-}" && "${1:-}" != "--repin" ]]; then
     die "VERIFIED_TIP already exists; re-pinning invalidates it. Re-run from scratch, or pass --repin and then re-run rebase/push/verify/cut."
   fi
+  # --repin means every downstream artifact describes a base that no longer applies.
+  # Drop them rather than leaving stale values that still look valid (audit r16).
+  if [[ "${1:-}" == "--repin" && -f "$STATE" ]]; then
+    local keep; keep="$STATE.keep"
+    grep -vE '^(VERIFIED_BASE|VERIFIED_TIP|GATES_GREEN_AT|LAYERS_GREEN_AT|PR[123]_HEAD|PR[123]|EXPECTED_DEV|MERGED_DEV|RELEASE_GATES_GREEN_AT|CC_WORKTREE|DEV_WORKTREE)=' "$STATE" > "$keep" || : >| "$keep"
+    mv "$keep" "$STATE"
+    log "--repin: cleared every downstream artifact; re-run rebase, push, verify, cut, verify_layers"
+  fi
   git fetch origin dev
   local base; base="$(live_dev)"
   [[ -n "$base" ]] || die "could not read live dev"
@@ -87,7 +98,15 @@ step_rebase () {
   load_state; need VERIFIED_BASE
   git rev-parse --verify cursor-call-prerebase-260818 >/dev/null \
     || die "snapshot branch missing — it is the only recovery path"
-  git rebase "$VERIFIED_BASE"
+  # 010 EXPECTS two conflicts. Re-running this step mid-rebase must continue, never
+  # restart — `git rebase <base>` on a conflicted tree aborts with its own error and
+  # would lose the resolution (audit r16).
+  if [[ -d "$(git rev-parse --git-path rebase-merge)" || -d "$(git rev-parse --git-path rebase-apply)" ]]; then
+    log "a rebase is in progress — continuing it"
+    git rebase --continue
+  else
+    git rebase "$VERIFIED_BASE"
+  fi
   git merge-base --is-ancestor "$VERIFIED_BASE" cursor-call \
     || die "rebase did not land on VERIFIED_BASE"
   ! grep -rEn "^(<<<<<<<|>>>>>>>|=======$)" src tests >/dev/null 2>&1 \
@@ -122,6 +141,7 @@ step_verify () {
   local wt="/tmp/ocx-cc-${tip:0:9}"
   ssh lidge "cd $LIDGE_HOME && git fetch origin cursor-call dev" || die "lidge fetch failed"
   remote_worktree "$wt" "$tip"
+  save CC_WORKTREE "$wt"
   ssh lidge "cd $wt && bun install --frozen-lockfile"
   local gate
   for gate in "bun x tsc --noEmit" "bun run privacy:scan" "bun run audit:high" "bun run build:gui" "bun test --isolate tests"; do
@@ -130,7 +150,6 @@ step_verify () {
       || die "gate failed at $tip: $gate"
   done
   save GATES_GREEN_AT "$tip"
-  save CC_WORKTREE "$wt"
 }
 
 # --------------------------------------------------------------- 030: the stack
@@ -189,7 +208,9 @@ step_verify_layers () {
   git push --no-verify origin cursor-call-wire cursor-call-cancel
   verify_layer "$PR1_HEAD" "$PR1_TESTS"
   verify_layer "$PR2_HEAD" "$PR2_TESTS"
-  save LAYERS_GREEN_AT "$PR2_HEAD"
+  # Record WHICH heads were verified, so a later re-cut invalidates the marker
+  # instead of inheriting it (audit r16).
+  save LAYERS_GREEN_AT "${PR1_HEAD}+${PR2_HEAD}"
   log "layers verified — open the PRs bottom-up, then run: record_prs <pr1> <pr2> <pr3>"
 }
 
@@ -223,6 +244,15 @@ merge_layer () {
   if [[ "$state" == "MERGED" ]]; then
     local oid; oid="$(gh pr view "$pr" --json mergeCommit --jq .mergeCommit.oid)"
     [[ -n "$oid" ]] || die "PR $pr reports MERGED with no merge commit"
+    # Adopting a merge unchecked would accept a PR someone merged from a different
+    # head, or into a different base, as this campaign's output (audit r16).
+    [[ "$(gh pr view "$pr" --json baseRefName --jq .baseRefName)" == "dev" ]] \
+      || die "PR $pr was merged into a base other than dev"
+    [[ "$(gh pr view "$pr" --json headRefOid --jq .headRefOid)" == "$expected_head" ]] \
+      || die "PR $pr was merged from a head we never verified"
+    git fetch origin dev >/dev/null 2>&1 || true
+    git merge-base --is-ancestor "$expected_head" "$oid" \
+      || die "PR $pr's merge commit does not contain the verified head"
     save EXPECTED_DEV "$oid"
     log "PR $pr already merged — adopted $oid"
     return 0
@@ -246,6 +276,8 @@ step_merge () {
   need PR1; need PR2; need PR3
   need PR1_HEAD; need PR2_HEAD; need PR3_HEAD
   need LAYERS_GREEN_AT
+  [[ "$LAYERS_GREEN_AT" == "${PR1_HEAD}+${PR2_HEAD}" ]] \
+    || die "the layer gates were green for different heads ($LAYERS_GREEN_AT) — re-run verify_layers"
   EXPECTED_DEV="${EXPECTED_DEV:-$VERIFIED_BASE}"
   merge_layer "$PR1" "$PR1_HEAD"
   retarget_to_dev "$PR2"
@@ -258,6 +290,10 @@ step_merge () {
   git fetch origin dev
   git merge-base --is-ancestor "$VERIFIED_TIP" "$merged" \
     || die "the verified tip is not an ancestor of the merge result"
+  # dev may legitimately advance past our merge, but the merge must BE on dev — a
+  # merge commit that never landed there would send the release gates somewhere else.
+  git merge-base --is-ancestor "$merged" "$(live_dev)" \
+    || die "PR3's merge commit is not on dev"
   [[ "$(live_dev)" == "$merged" ]] \
     || log "NOTE: dev has moved past our merge — 050 must say so in the readiness note"
 }
@@ -269,6 +305,7 @@ step_release_gates () {
   local wt="/tmp/ocx-dev-${MERGED_DEV:0:9}"
   ssh lidge "cd $LIDGE_HOME && git fetch origin dev" || die "lidge fetch failed"
   remote_worktree "$wt" "$MERGED_DEV"
+  save DEV_WORKTREE "$wt"
   ssh lidge "cd $wt && bun install --frozen-lockfile"
   local gate
   for gate in "bun x tsc --noEmit" "bun run privacy:scan" "bun run audit:high" "bun run build:gui" "bun test --isolate tests"; do
@@ -276,14 +313,15 @@ step_release_gates () {
     ssh lidge "cd $wt && $gate" || die "release gate failed on dev: $gate"
   done
   save RELEASE_GATES_GREEN_AT "$MERGED_DEV"
-  save DEV_WORKTREE "$wt"
 }
 
 # 050 requires the readiness note to quote LIVE release state, never a cached ref.
 # Printed for the note, not saved: these are facts about a moment, not artifacts the
 # later steps assert against.
 step_release_state () {
-  load_state; need MERGED_DEV
+  load_state; need MERGED_DEV; need RELEASE_GATES_GREEN_AT
+  [[ "$RELEASE_GATES_GREEN_AT" == "$MERGED_DEV" ]] \
+    || die "the release gates were green for $RELEASE_GATES_GREEN_AT, not $MERGED_DEV"
   print -r -- "MERGED_DEV=$MERGED_DEV"
   print -r -- "live main=$(git ls-remote origin refs/heads/main | cut -f1)"
   print -r -- "live dev=$(live_dev)"
@@ -313,7 +351,7 @@ main () {
   [[ -n "$step" ]] || die "usage: cursor-call-integration.zsh <step> [args] — steps: pin rebase push verify cut verify_layers record_prs merge release_gates release_state cleanup state"
   shift
   case "$step" in
-    pin)            step_pin ;;
+    pin)            step_pin "$@" ;;
     rebase)         step_rebase ;;
     push)           step_push ;;
     verify)         step_verify ;;
