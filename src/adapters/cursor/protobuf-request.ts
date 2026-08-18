@@ -122,6 +122,10 @@ function rootBlobCandidate(
   };
 }
 
+function toolResultRootPayload(text: string): { role: "assistant"; content: [{ type: "text"; text: string }] } {
+  return { role: "assistant", content: [{ type: "text", text }] };
+}
+
 function truncateToolResultBlob(entry: RootBlobCandidate, maxBytes: number): RootBlobCandidate | null {
   if (entry.byteLength <= maxBytes) return entry;
   if (entry.role !== "toolResult" || entry.text === undefined) return null;
@@ -134,7 +138,7 @@ function truncateToolResultBlob(entry: RootBlobCandidate, maxBytes: number): Roo
     while (end > 0 && end < encoded.byteLength && (encoded[end]! & 0xc0) === 0x80) end -= 1;
     const truncated = `${decoder.decode(encoded.subarray(0, end))}${marker}`;
     const result = rootBlobCandidate(
-      { role: "user", content: [{ type: "text", text: truncated }] },
+      toolResultRootPayload(truncated),
       "toolResult",
       { messageIndex: entry.messageIndex, text: truncated },
     );
@@ -143,7 +147,7 @@ function truncateToolResultBlob(entry: RootBlobCandidate, maxBytes: number): Roo
     keepBytes = Math.max(0, end - (result.byteLength - maxBytes) - 16);
   }
   const markerOnly = rootBlobCandidate(
-    { role: "user", content: [{ type: "text", text: marker.trimStart() }] },
+    toolResultRootPayload(marker.trimStart()),
     "toolResult",
     { messageIndex: entry.messageIndex, text: marker.trimStart() },
   );
@@ -175,9 +179,8 @@ function assistantRootText(
 // Cursor builds the actual model prompt from rootPromptMessagesJson (turns[] is UI/display metadata),
 // so prior history — including assistant tool calls and tool results — must be replayed here or a
 // ResumeAction has nothing model-visible to continue from. The active user message is excluded
-// because it travels in the action. Tool results are rendered as user-role text with a marker, and
-// each entry is a SHA-256 blob ID (Cursor fetches the bytes back via getBlobArgs). Mirrors the
-// danger-pi reference buildRootPromptMessagesJson.
+// because it travels in the action. Tool results are assistant-role text with a [Tool Result]
+// or [Tool Error] marker so Cursor does not wrap them as `<user_query>` (#1992). Each entry is a SHA-256 blob ID.
 function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobRequestScopeToken): {
   ids: Uint8Array[];
   byteLength: number;
@@ -232,7 +235,7 @@ function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobR
       const prefix = message.isError ? "[Tool Error]" : "[Tool Result]";
       const text = `${prefix}\n${toolResultToText(message)}`;
       entries.push(rootBlobCandidate(
-        { role: "user", content: [{ type: "text", text }] },
+        toolResultRootPayload(text),
         "toolResult",
         { messageIndex: i, text },
       ));
