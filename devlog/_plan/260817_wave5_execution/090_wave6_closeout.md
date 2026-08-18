@@ -76,3 +76,31 @@ of them:
 
 Neither is affected by the close-on-dev-merge decision: both are blocked *before* merge, so the
 policy that governs when a merged fix closes its issue never reaches them.
+## WP9 gate result
+
+Run on the promotion candidate (local `dev`, 6 commits ahead of `origin/dev` at the time):
+
+| Gate | Result |
+|------|--------|
+| `bun test --isolate tests` | **12805 pass, 10 skip, 0 fail**, 159382 expect() calls across 826 files (452s) |
+| `bun run typecheck` | clean |
+| `bun run privacy:scan` | passed |
+
+### What actually closed, under the close-on-dev-merge decision
+
+| Closed | Landed via |
+|--------|-----------|
+| #1894 | #1739 through PR #1921 |
+| #1843 | #1860, already released in v2.24.0 |
+| #1899 | superseded by the ordering assertion in PR #1923 |
+
+Everything else stayed open, and none of it for release-timing reasons — which is the point
+worth making about the policy change. It removed a gate that was never what held these back.
+
+### Promotion state
+
+`dev` carries nine merged PRs from this campaign. `preview` and `main` are both behind it, and
+`dev`'s own hosted CI has no completed green run on its current head — the runs at `2b12521ee`
+and `aca3c0241` were both cancelled by supersession as later merges landed. The local full
+suite above is the evidence that exists; a hosted run on the exact promotion head is the
+evidence that does not, and promotion should carry that distinction rather than bury it.
