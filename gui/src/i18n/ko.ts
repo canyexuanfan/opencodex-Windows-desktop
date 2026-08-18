@@ -1269,6 +1269,7 @@ export const ko: Record<TKey, string> = {
   "api.clientConfig.clientGajae": "Gajae Code",
   "api.clientConfig.clientDsh": "DeepSeek Harness (DSH)",
   "api.clientConfig.clientMcode": "MiniMax Code",
+  "api.clientConfig.clientZcode": "ZCode",
   "api.clientConfig.copy": "설정 복사",
   "api.clientConfig.download": "다운로드",
   "api.clientConfig.loading": "클라이언트 설정 생성 중…",

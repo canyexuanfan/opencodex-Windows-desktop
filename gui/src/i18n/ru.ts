@@ -1716,6 +1716,7 @@ export const ru: Record<TKey, string> = {
   "api.clientConfig.clientGajae": "Gajae Code",
   "api.clientConfig.clientDsh": "DeepSeek Harness (DSH)",
   "api.clientConfig.clientMcode": "MiniMax Code",
+  "api.clientConfig.clientZcode": "ZCode",
   "api.clientConfig.copy": "Копировать конфигурацию",
   "api.clientConfig.download": "Скачать",
   "api.clientConfig.loading": "Формируется конфигурация клиента…",

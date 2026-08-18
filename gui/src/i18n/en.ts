@@ -1735,6 +1735,7 @@ export const en = {
   "api.clientConfig.clientGajae": "Gajae Code",
   "api.clientConfig.clientDsh": "DeepSeek Harness (DSH)",
   "api.clientConfig.clientMcode": "MiniMax Code",
+  "api.clientConfig.clientZcode": "ZCode",
   "api.clientConfig.copy": "Copy config",
   "api.clientConfig.download": "Download",
   "api.clientConfig.loading": "Building client config…",

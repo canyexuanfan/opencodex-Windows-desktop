@@ -1262,6 +1262,7 @@ export const zh: Record<TKey, string> = {
   "api.clientConfig.clientGajae": "Gajae Code",
   "api.clientConfig.clientDsh": "DeepSeek Harness (DSH)",
   "api.clientConfig.clientMcode": "MiniMax Code",
+  "api.clientConfig.clientZcode": "ZCode",
   "api.clientConfig.copy": "复制配置",
   "api.clientConfig.download": "下载",
   "api.clientConfig.loading": "正在生成客户端配置…",

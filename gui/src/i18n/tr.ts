@@ -1723,6 +1723,7 @@ export const tr: Record<TKey, string> = {
   "api.clientConfig.clientGajae": "Gajae Code",
   "api.clientConfig.clientDsh": "DeepSeek Harness (DSH)",
   "api.clientConfig.clientMcode": "MiniMax Code",
+  "api.clientConfig.clientZcode": "ZCode",
   "api.clientConfig.copy": "JSON Kopyala",
   "api.clientConfig.download": "İndir",
   "api.clientConfig.loading": "İstemci konfigürasyonu oluşturuluyor…",

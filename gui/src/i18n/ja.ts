@@ -1665,6 +1665,7 @@ export const ja: Record<TKey, string> = {
   "api.clientConfig.clientGajae": "Gajae Code",
   "api.clientConfig.clientDsh": "DeepSeek Harness (DSH)",
   "api.clientConfig.clientMcode": "MiniMax Code",
+  "api.clientConfig.clientZcode": "ZCode",
   "api.clientConfig.copy": "設定をコピー",
   "api.clientConfig.download": "ダウンロード",
   "api.clientConfig.loading": "クライアント設定を生成中…",

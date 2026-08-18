@@ -66,9 +66,9 @@ afterEach(() => {
 });
 
 describe("the client registries cannot drift apart", () => {
-  test("every list of clients holds exactly the same nine ids", async () => {
+  test("every list of clients holds exactly the same ten ids", async () => {
     /*
-     * Five lists name the same nine clients, and two of them are maintained by
+     * Five lists name the same ten clients, and two of them are maintained by
      * hand: the GUI cannot import the backend registry, because that would
      * pull node:os and node:path into the browser bundle. A client added
      * server-side renders no row until someone remembers the tuple, and the
@@ -78,7 +78,7 @@ describe("the client registries cannot drift apart", () => {
     const guiIntegrations = await import("../gui/src/pages/integrations/integration-api");
 
     const expected = [...EXPORT_CLIENT_IDS].sort();
-    expect(expected).toHaveLength(9);
+    expect(expected).toHaveLength(10);
 
     expect([...INTEGRATION_CLIENT_IDS].sort()).toEqual(expected);
     expect([...gui.CLIENTS].sort()).toEqual(expected);
@@ -141,6 +141,7 @@ describe("every client survives a full lifecycle", () => {
     gajae: "providers:\n  mine:\n    api: http://keep-me\n",
     dsh: "llm-pi-ai:\n  providers:\n    mine:\n      api: openai-completions\n",
     mcode: "custom_provider:\n  mine:\n    name: Keep Me\n",
+    zcode: '{\n  "provider": {\n    "builtin:zai-start-plan": { "name": "Keep Me", "kind": "anthropic" }\n  }\n}\n',
   };
 
   for (const clientId of INTEGRATION_CLIENT_IDS) {

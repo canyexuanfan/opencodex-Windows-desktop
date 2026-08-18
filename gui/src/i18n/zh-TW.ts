@@ -1991,6 +1991,7 @@ export const zhTW: Record<TKey, string> = {
   "api.clientConfig.clientGajae": "Gajae Code",
   "api.clientConfig.clientDsh": "DeepSeek Harness (DSH)",
   "api.clientConfig.clientMcode": "MiniMax Code",
+  "api.clientConfig.clientZcode": "ZCode",
   "cws.tabsLabel": "Combo 詳細區段",
   "cws.field.nativeAlias": "原生 OpenAI 別名",
   "cws.field.nativeAliasHint": "讓此 combo 擁有受支援的未限定原生 OpenAI 模型 ID。帶有帳號或供應商限定的 OpenAI 路由仍保持獨立。",
