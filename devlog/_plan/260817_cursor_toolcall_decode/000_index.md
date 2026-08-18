@@ -263,3 +263,43 @@ measurement cycle in `030` stands, and the phase closes NOOP unless the user
 supplies a failing case. Note the probe did not isolate the top-level freeform
 surface — the cursor agent reached `apply_patch` through code mode — so this is
 "not reproduced", not "proven absent".
+
+## Final status — all phases
+
+| Phase | Outcome | Verified |
+|-------|---------|----------|
+| `010` clean-EOF terminal | **SHIPPED** `54f68daf5` | 7 rounds; lidge 608/0 |
+| `020` tool-result images | **SHIPPED** `878b067e8..cc906b0fc` | 5 rounds; byte-equality verified twice; lidge 624/0 |
+| `030` xai apply_patch | **NOT REPRODUCED** | live probe: both providers used `apply_patch` |
+| `040` server-side cancel | **SHIPPED** `f145fd513..c9681d043` | lidge 630/0 |
+| `050` terminal-less turns + #422 | **SHIPPED** `aa800ae65..1651002c5` | 8 rounds; lidge 12800/0 across 830 files |
+
+Final full suite at `1651002c59`: **12800 pass / 0 fail**, typecheck clean.
+Pre-campaign baseline was 12761/0 across 826 files.
+
+### What the campaign actually found
+
+The user's report was "Computer Use keeps disconnecting mid tool call". The decode
+found three distinct ways a Cursor turn could lose work, and the last one turned
+out not to be Cursor-specific at all:
+
+1. A clean stream EOF dropped an open tool call and reported success (`010`).
+2. Every screenshot reached the model as placeholder text, though the wire had
+   always supported images (`020`).
+3. A cancel Cursor sent us was indistinguishable from one we sent, so the turn
+   vanished entirely (`040`).
+4. Underneath all three: the bridge reported a turn with no terminal as
+   `completed` — and on a compaction turn installed its partial output as
+   replacement history (`050`). That one affected every provider.
+
+The xai `apply_patch` symptom did not reproduce when probed live, so no code was
+written for it.
+
+### Remaining follow-ups
+
+- **Kiro** `completionMode: "disabled"` and **ordinary Google mode** erase
+  truncation reasons before the bridge can act (`050`). Adapter-side, each its
+  own unit.
+- **User-message images** are still placeholdered although `SelectedImage`
+  supports blob/inline data (`002`). Separate capability.
+- **`030`** stays open as a measurement cycle pending a reproducible failing case.
