@@ -49,3 +49,22 @@ with the full payload in bounded separate storage.
 Train order preserved; exactly one of #1887/#1896 lands; no credential reaches a
 remote plain-HTTP endpoint in any test; #1866 either lands structured payloads or
 is reported with its real terminal outcome.
+## WP7 outcome
+
+**One merged, four carried — and one plan decision reversed.**
+
+| PR | Outcome | Evidence |
+|----|---------|----------|
+| #1900 | merged | `2b12521ee`; run `32010651646` `completed/success` — four shards, macOS, gates, npm-global ×3, keyring ×3 |
+| #1895 | held | draft + `CHANGES_REQUESTED`; its own review blocker |
+| #1896 | held | draft; carries the migration list before it can be canonical |
+| #1887 | **kept open** | plan said close as superseded; reversed — it holds the catalog-aware guard |
+| #1903 | rebase needed | conflicts in `src/types.ts` against `dev` on its own |
+| #1866 | untouched | issue, no PR exists |
+
+**Process correction that stuck.** WP6 faulted me for merging #1902 about eight minutes before
+its CI could be judged. For #1900 the fork run was approved, waited to `completed/success` at
+`01:12:10Z`, and merged at `01:15:18Z` — three minutes after, verified independently.
+
+`#1866` needs no decision here: it is an issue with no PR, and the structured Computer Use
+payload it describes is a design task rather than a merge.
