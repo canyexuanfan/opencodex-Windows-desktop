@@ -48,7 +48,7 @@ import {
   type InteractionResponse,
 } from "./gen/agent_pb";
 import { debugProviderDiagnostic } from "../../lib/debug";
-import { classifyCursorError, isCursorBenignCancelError, safeCursorErrorMessage } from "./cursor-errors";
+import { classifyCursorError, CursorUnexpectedCancelError, isCursorBenignCancelError, safeCursorErrorMessage } from "./cursor-errors";
 import { mcpArgsFromToolCall } from "./protobuf-events";
 import { OCX_RESPONSES_TOOL_PROVIDER } from "./tool-definitions";
 import {
@@ -529,6 +529,22 @@ class LiveCursorTransport implements CursorTransport {
       }
       return err;
     };
+    /**
+     * A cancel we did not request is a real transport failure, but as a raw `NGHTTP2_CANCEL` it
+     * gets swallowed twice over: the adapter re-decides "benign" from the error code alone
+     * (`cursor.ts:181`) and drops the turn, and any message that survives is re-matched
+     * downstream and labelled an intentional "Cursor stream suspended". Raising a typed error
+     * carries the provenance this class already holds.
+     *
+     * Suppressed once a terminal was emitted: the turn already ended, and a second terminal flips
+     * a completed buffered response to failed.
+     */
+    const classifyTurnFailure = (err: Error): Error => {
+      if (!this.expectedClose && !this.emittedTerminal && isCursorBenignCancelError(err)) {
+        return summarizeFailure(new CursorUnexpectedCancelError(err));
+      }
+      return summarizeFailure(err);
+    };
     const wake = () => {
       const fn = notify;
       notify = undefined;
@@ -628,7 +644,7 @@ class LiveCursorTransport implements CursorTransport {
         // A CANCEL is benign only on the client-tool suspend path (expectedClose); an
         // unexpected server-side NGHTTP2_CANCEL must surface as a real transport error.
         if (this.expectedClose && isCursorBenignCancelError(failure)) return;
-        throw attachPartialUsage(summarizeFailure(failure), state);
+        throw attachPartialUsage(classifyTurnFailure(failure), state);
       }
       if (done) break;
       await new Promise<void>(resolve => {
@@ -637,7 +653,7 @@ class LiveCursorTransport implements CursorTransport {
     }
     if (failure) {
       if (this.expectedClose && isCursorBenignCancelError(failure)) return;
-      throw attachPartialUsage(summarizeFailure(failure), state);
+      throw attachPartialUsage(classifyTurnFailure(failure), state);
     }
   }
 

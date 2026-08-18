@@ -46,7 +46,37 @@ export class CursorStreamTruncatedError extends Error {
   }
 }
 
+/**
+ * A cancel-shaped stream failure that WE did not request. `cancelCursorRun` is the only place
+ * that cancels our own stream, and it sets `expectedClose` first, so a cancel arriving without it
+ * came from Cursor or the network and is a real transport failure.
+ *
+ * It carries its own message on purpose. Left as a raw `NGHTTP2_CANCEL` error, the text is
+ * re-matched downstream (`classifyCursorError`) and labelled "Cursor stream suspended" — a turn
+ * that failed unexpectedly would report an intentional suspension and misdirect diagnosis.
+ */
+export class CursorUnexpectedCancelError extends Error {
+  /**
+   * The originating error's transport code (typically `NGHTTP2_CANCEL`), re-exposed so the
+   * per-turn `turn-failed` diagnostic still records how the stream actually died. Wrapping
+   * without this made the summary for exactly this failure the one with no code.
+   */
+  public readonly code?: string;
+
+  constructor(public readonly cause?: unknown) {
+    super("Cursor connection was cancelled by the server before the turn completed");
+    this.name = "CursorUnexpectedCancelError";
+    const causeCode = errorCode(cause);
+    if (causeCode) this.code = causeCode;
+  }
+}
+
 export function isCursorBenignCancelError(value: unknown): boolean {
+  // An unexpected cancel is never benign, however it is spelled. This class is raised only when
+  // the transport knows WE did not request the cancel, so its provenance outranks the code match
+  // below — otherwise the adapter would re-decide the same question from the error code alone
+  // and swallow a real transport failure (cursor.ts:181).
+  if (value instanceof CursorUnexpectedCancelError) return false;
   const message = errorMessage(value).toLowerCase();
   const code = errorCode(value).toUpperCase();
   if (code === "NGHTTP2_CANCEL") return true;
