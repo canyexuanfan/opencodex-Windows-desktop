@@ -140,15 +140,25 @@ meant to inform an approval: a maintainer reading it would have approved a promo
 it excluded a change it contained. Corrected in all three places.
 
 The underlying concern *is* addressed on this head, by a different route than the hold pointed
-at: **#1957** changed `ide_version` to `ANTIGRAVITY_IDE_VERSION`, so the body field no longer
-carries the User-Agent at all. The hold was right about the defect and wrong about which PR
-would fix it.
+at: **#1955** (merge `19464a720`, commit `e9b2a0a63`) changed `ide_version` to
+`ANTIGRAVITY_IDE_VERSION`, so the body field no longer carries the User-Agent at all. The hold
+was right about the defect and wrong about which PR would fix it.
+
+*Attribution corrected: I first credited this to **#1957**, which is documentation-only — its
+merge `c3bf2c295` touches two devlog files and zero code. Its title mentions the fix because it
+carried the record of it, three minutes after #1955 landed the code. `git log -S 'ide_version:
+ANTIGRAVITY_IDE_VERSION'` returns exactly one commit, and it is #1955's. A maintainer checking
+#1957's diff to verify the claim would have found no code and had good reason to distrust the
+rest of this document.*
 
 Two smaller corrections in the same pass:
 
-- **"every subsequent hosted run on `dev` is green"** was not backed. Four of the runs after
-  `9dbc5fc42` are *cancelled* by supersession, and cancelled is not green. The accurate
-  statement is that the completed runs after it are green, and several never completed.
-- **The campaign landed ten functional PRs, not nine** — the count predated #1891 merging.
+- **"every subsequent hosted run on `dev` is green"** was not backed. **Six or more** of the runs
+  after `9dbc5fc42` are *cancelled* by supersession, and cancelled is not green. The accurate
+  statement is that the completed runs after it are green, and most never completed — this
+  branch supersedes its own runs faster than they finish.
+- **The PR count is dropped rather than corrected.** I wrote nine, then ten; neither was derived.
+  Seventeen merges into `dev` during this campaign touch `src/` or `tests/`. Rather than guess a
+  third time, the accounting that matters is per-PR and lives in the wave documents.
 - The closure-rules section still says #1843 was "released in v2.24.2"; the results table saying
   **v2.24.0** is the correct one, confirmed by `ac8c0d2df` being contained in that tag.
