@@ -132,29 +132,24 @@ differing backup and rewrites known legacy namespaced selected ids to bare ids.
 
 ### FastWire B1 capability migration
 
-Fast capability and caller-tier forwarding are independent after FastWire B1. Three wire-visible
-changes affect configurations that previously relied on the transitional Chat serializer gate:
+Fast capability and arbitrary Chat caller-tier forwarding are independent after FastWire B1. The
+[provider-field definitions](#provider-entries-ocxproviderconfig) above remain the authoritative
+contract; existing configurations see these migration deltas:
 
-1. A Chat provider with `supportsServiceTier: true` is now Fast-capable even when
-   `chatServiceTier` is absent or false and the exact model has no `true` override. Its catalog row
-   publishes Fast, `require.serviceTier: "supported"` can select it, its compatibility fingerprint
-   reports support, and `fastMode: true` injects the canonical wire value. This affects custom Chat
-   providers that declared capability but relied on the missing caller-forward opt-in to suppress
-   Fast. To keep rejecting canonical Fast, set `supportsServiceTier: false` for the provider or
-   `modelSupportsServiceTier.<model>: false` for a specific model.
-2. On a classified supported route, caller spellings `fast` and `FAST` are canonical Fast requests.
-   They now serialize as `fastWire.canonicalToWire.priority` (the built-in value is `priority`);
-   caller `priority` remains `priority`. This affects callers that depended on the literal `fast`
-   spelling reaching upstream. To retain inert verbatim behavior, leave a Responses route
-   unclassified, or leave a Chat route unclassified and set `chatServiceTier: true`; alternatively,
-   declare a verified custom FastWire mapping to `fast` when that is the upstream's canonical value.
-3. Exact-model `true` no longer authorizes foreign Chat tiers such as `flex` or unknown vendor
-   strings. Without `chatServiceTier: true`, those values are removed and recorded as a dropped
-   caller tier. Add `chatServiceTier: true` only when the Chat gateway documents arbitrary caller
-   tiers. Exact-model `true` still authorizes canonical Fast injection and normalization.
+1. A Chat provider/model declared Fast-capable no longer needs `chatServiceTier: true` for canonical
+   Fast. Publication, routing eligibility, and injection still require an eligible policy and a
+   compatible FastWire mapping on the final adapter. On classified routes, `fastMode: false` still
+   removes canonical Fast. Set `supportsServiceTier: false` or an exact-model `false` when the route
+   is not Fast-capable.
+2. On an eligible classified route, caller spellings `fast` and `FAST` normalize through
+   `fastWire.canonicalToWire.priority`; caller `priority` remains canonical. Configure a verified
+   mapping to `fast` only when that is the upstream's canonical value. Unclassified routes retain
+   their existing forwarding behavior.
+3. Exact-model `true` no longer authorizes foreign Chat tiers such as `flex` or vendor-specific
+   values. Those still require `chatServiceTier: true`; otherwise they are removed and recorded as
+   dropped caller tiers.
 
-Explicit `supportsServiceTier: false`, unclassified behavior under CallerTierForward,
-`fastMode: false`, and Responses caller-tier forwarding retain their existing contracts.
+Explicit capability `false` and Responses caller-tier forwarding retain their existing contracts.
 
 API-key providers may hold a literal key or an environment reference. OAuth providers use the
 credential store populated by `ocx login`; subscription-backed Claude Code launch behavior is

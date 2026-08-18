@@ -217,7 +217,7 @@ describe("resolveFastPolicy matrix", () => {
         declaration: "null",
         overrideAllowed: true,
         capability: "true",
-        legacyChatEligible: true,
+        chatForeignTierForward: true,
       }),
       hardPins: { [MODEL]: "anthropic" },
     }, MODEL);
@@ -243,7 +243,7 @@ describe("resolveFastPolicy matrix", () => {
       declaration: "undefined",
       overrideAllowed: true,
       capability: "true",
-      legacyChatEligible: true,
+      chatForeignTierForward: true,
     });
     const responsesAuthority = { ...authority, providerAdapter: "openai-responses" };
     expect(resolveFastPolicy(responsesAuthority, "constructor")).toMatchObject({
