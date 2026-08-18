@@ -38,7 +38,14 @@ describe("antigravity project discovery", () => {
 
   test("falls back to onboardUser poll loop (not-done then done)", async () => {
     let onboardCalls = 0;
-    routeFetch((url) => {
+    routeFetch((url, init) => {
+      if (url.includes(":onboardUser")) {
+        // #1889: the synthetic x-goog-api-client header is dropped from onboarding — the real
+        // Antigravity client does not send it, so emitting it was a fingerprint mismatch.
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        expect(headers["x-goog-api-client"]).toBeUndefined();
+        expect(headers["User-Agent"]).toMatch(/^antigravity\/ide\//);
+      }
       if (url.includes(":loadCodeAssist")) return new Response(JSON.stringify({}), { status: 200 }); // no project
       if (url.includes(":onboardUser")) {
         onboardCalls++;

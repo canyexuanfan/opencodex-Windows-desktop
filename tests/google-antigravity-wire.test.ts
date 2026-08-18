@@ -63,7 +63,7 @@ describe("antigravity CCA envelope", () => {
     );
     // The literal "antigravity" giveaway UA must no longer be sent.
     expect(req.headers["User-Agent"]).not.toBe("antigravity");
-    // x-goog-api-client is NOT sent on runtime requests (CLIProxyAPI only uses it during onboarding).
+    // x-goog-api-client is never sent — not on runtime requests, and (since #1889) not on onboarding either.
     expect(req.headers["x-goog-api-client"]).toBeUndefined();
     // sessionId lives only at request.sessionId (no top-level / snake_case duplicate).
     expect(env.request.sessionId).toMatch(/^-/);
