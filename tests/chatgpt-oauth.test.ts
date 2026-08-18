@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { decodeJwtPayload, extractAccountId, extractEmail } from "../src/oauth/chatgpt";
+import { decodeJwtPayload, extractAccountId, extractChatgptPlanType, extractEmail } from "../src/oauth/chatgpt";
 
 function fakeJwt(payload: Record<string, unknown>): string {
   const header = Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url");
@@ -77,6 +77,29 @@ describe("ChatGPT OAuth JWT helpers", () => {
     const id = fakeJwt({ email: "id@test.com" });
     const access = fakeJwt({ email: "access@test.com" });
     expect(extractEmail(id, access)).toBe("id@test.com");
+  });
+
+  test("extractChatgptPlanType reads the namespaced claim", () => {
+    const jwt = fakeJwt({
+      "https://api.openai.com/auth": { chatgpt_plan_type: "pro" },
+    });
+    expect(extractChatgptPlanType(jwt)).toBe("pro");
+  });
+
+  test("extractChatgptPlanType reads a top-level chatgpt_plan_type", () => {
+    const jwt = fakeJwt({ chatgpt_plan_type: "plus" });
+    expect(extractChatgptPlanType(jwt)).toBe("plus");
+  });
+
+  test("extractChatgptPlanType prefers id_token over access_token", () => {
+    const id = fakeJwt({ chatgpt_plan_type: "team" });
+    const access = fakeJwt({ chatgpt_plan_type: "free" });
+    expect(extractChatgptPlanType(id, access)).toBe("team");
+  });
+
+  test("extractChatgptPlanType ignores a non-JWT access token", () => {
+    expect(extractChatgptPlanType(undefined, "access-not-a-jwt")).toBeUndefined();
+    expect(extractChatgptPlanType()).toBeUndefined();
   });
 });
 

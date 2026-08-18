@@ -46,6 +46,27 @@ export function extractEmail(idToken?: string, accessToken?: string): string | u
   return undefined;
 }
 
+/**
+ * ChatGPT plan label from a live access/id token (`chatgpt_plan_type`).
+ * Used when WHAM has not run yet so a stale stored `free` cannot outrank the token (#1989).
+ */
+export function extractChatgptPlanType(idToken?: string, accessToken?: string): string | undefined {
+  for (const token of [idToken, accessToken]) {
+    if (!token) continue;
+    const payload = decodeJwtPayload(token);
+    if (!payload) continue;
+    if (typeof payload.chatgpt_plan_type === "string" && payload.chatgpt_plan_type.trim()) {
+      return payload.chatgpt_plan_type.trim();
+    }
+    const ns = payload["https://api.openai.com/auth"];
+    if (ns && typeof ns === "object") {
+      const nested = (ns as Record<string, unknown>).chatgpt_plan_type;
+      if (typeof nested === "string" && nested.trim()) return nested.trim();
+    }
+  }
+  return undefined;
+}
+
 function credsFromToken(data: Record<string, unknown>): OAuthCredentials {
   const idToken = typeof data.id_token === "string" ? data.id_token : undefined;
   const accessToken = data.access_token as string;

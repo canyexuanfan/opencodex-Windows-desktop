@@ -82,7 +82,7 @@ export {
   setAccountQuotaFromParsed,
   updateAccountQuota,
 } from "./quota";
-import { extractAccountId } from "../oauth/chatgpt";
+import { extractAccountId, extractChatgptPlanType } from "../oauth/chatgpt";
 import { getMainAccountPlan, MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "./main-account";
 import { captureConfigGeneration, registerStateSweepAfterTick } from "../lib/state-store-sweeper";
 import { reconcileLiveStateStores } from "../lib/state-store-registrations";
@@ -697,8 +697,16 @@ async function fetchMainAccountInfoWhileOwned(
   }
   const tokens = tokenRead.tokens;
   const requestAccountId = extractAccountId(tokens.id_token, tokens.access_token) ?? (tokens.account_id || null);
+  const jwtPlan = extractChatgptPlanType(tokens.id_token, tokens.access_token);
   const cached = getMainAccountInfoCache();
   if (!forceRefresh && cached && Date.now() - cached.ts < MAIN_CACHE_TTL) {
+    const plan = nonEmptyPlan(jwtPlan) ?? cached.plan;
+    if (plan && plan !== cached.plan) {
+      const info = { ...cached, plan };
+      setMainAccountInfoCache(info);
+      setMainAccountPlan(plan);
+      return { info, credentialChecked: true, hasCredential: true };
+    }
     return { info: cached, credentialChecked: true, hasCredential: true };
   }
   try {
@@ -719,7 +727,10 @@ async function fetchMainAccountInfoWhileOwned(
     const data = (await resp.json()) as WhamUsageResponse;
     const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining, nativeMainLease);
     if (retried) return retried;
-    const plan = nonEmptyPlan(data.plan_type) ?? nonEmptyPlan(cached?.plan) ?? nonEmptyPlan(getMainAccountPlan());
+    const plan = nonEmptyPlan(data.plan_type)
+      ?? nonEmptyPlan(jwtPlan)
+      ?? nonEmptyPlan(cached?.plan)
+      ?? nonEmptyPlan(getMainAccountPlan());
     const quota = parseUsageQuota({ ...data, ...(plan ? { plan_type: plan } : {}) });
     const freshResetCredits = quota?.resetCredits;
     const result = {
@@ -875,6 +886,24 @@ function reconcileFreshPoolAccountPlans(runtimeConfig: OcxConfig, updates: Fresh
       liveAccount.plan = update.plan;
     }
   }
+}
+
+function jwtPlanFromPoolCredential(accountId: string): string | undefined {
+  const cred = getCodexAccountCredential(accountId);
+  return cred ? extractChatgptPlanType(undefined, cred.accessToken) : undefined;
+}
+
+/** Local JWT claim vs persisted plan, generation-gated. WHAM `freshPlan` still wins when present. */
+function collectJwtPoolPlanUpdates(runtimeConfig: OcxConfig): FreshPoolPlanUpdate[] {
+  const updates: FreshPoolPlanUpdate[] = [];
+  for (const account of (runtimeConfig.codexAccounts ?? []).filter(isSelectableCodexPoolAccount)) {
+    const jwtPlan = jwtPlanFromPoolCredential(account.id);
+    if (!jwtPlan || nonEmptyPlan(account.plan) === jwtPlan) continue;
+    const generation = readCodexAccountRecord(account.id)?.generation;
+    if (generation === undefined) continue;
+    updates.push({ accountId: account.id, plan: jwtPlan, credentialGeneration: generation });
+  }
+  return updates;
 }
 
 async function fetchFreshPoolAccountQuota(
@@ -1114,6 +1143,8 @@ export async function primeCodexPoolQuotas(
     } catch {
       // Priming is best-effort; never propagate.
     }
+    // Token claims are local: a stale stored `free` must not wait for the next WHAM TTL (#1989).
+    reconcileFreshPoolAccountPlans(runtimeConfig, collectJwtPoolPlanUpdates(runtimeConfig));
     if (process.env.OPENCODEX_DEBUG_QUOTA === "1") {
       console.warn(`[codex-quota] prime done (reason=${reason}, pool=${pool.length}, refreshed=${stale.length})`);
     }
@@ -1179,6 +1210,11 @@ export async function listCodexAuthAccountsSnapshot(
       : [];
   });
   reconcileFreshPoolAccountPlans(runtimeConfig, planUpdates);
+  const whamAccountIds = new Set(planUpdates.map(update => update.accountId));
+  reconcileFreshPoolAccountPlans(
+    runtimeConfig,
+    collectJwtPoolPlanUpdates(runtimeConfig).filter(update => !whamAccountIds.has(update.accountId)),
+  );
 
   const withQuota = refreshedPool.flatMap(({ accountId, quotaResult }) => {
     const currentAccount = configuredPoolAccount(runtimeConfig, accountId);
@@ -1199,10 +1235,13 @@ export async function listCodexAuthAccountsSnapshot(
     const effectiveQuotaResult = !generationLive
       ? { quota: null, needsReauth: false }
       : quotaResult;
-    // Response DTO can show the WHAM plan even when disk persistence fails closed (lock busy /
-    // missing config). Persistence still remains generation-gated via reconcileFreshPoolAccountPlans.
-    const dtoAccount = generationLive && quotaResult.freshPlan
-      ? { ...currentAccount, plan: quotaResult.freshPlan }
+    // WHAM plan wins when this probe produced one; otherwise a live JWT claim may correct
+    // a stale stored plan even on a quota cache hit (#1989).
+    const dtoPlan = generationLive
+      ? (quotaResult.freshPlan ?? jwtPlanFromPoolCredential(accountId))
+      : undefined;
+    const dtoAccount = dtoPlan
+      ? { ...currentAccount, plan: dtoPlan }
       : currentAccount;
     return [poolAccountDto(
       dtoAccount,
