@@ -25,11 +25,11 @@ import { clearModelCache, getProviderDiscoveryStatus } from "../src/codex/model-
 import { handleManagementAPI } from "../src/server/management-api";
 
 async function withDiscoveryServer<T>(
-  handler: (stream: http2.ServerHttp2Stream) => void,
+  handler: (stream: http2.ServerHttp2Stream, headers: http2.IncomingHttpHeaders) => void,
   run: (baseUrl: string) => Promise<T>,
 ): Promise<T> {
   const server = http2.createServer();
-  server.on("stream", handler);
+  server.on("stream", (stream, headers) => handler(stream, headers));
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => reject(error);
     server.once("error", onError);
@@ -442,6 +442,34 @@ describe("Cursor live transport unexpected EOF", () => {
       expect(messages).toContainEqual({ type: "text", text: "hello" });
       expect(messages.at(-1)).toMatchObject({ type: "done" });
     });
+  });
+  test("sends the injected session id as Connect x-session-id", async () => {
+    let seenSessionId: string | undefined;
+    await withDiscoveryServer((stream, headers) => {
+      const raw = headers["x-session-id"];
+      seenSessionId = Array.isArray(raw) ? raw[0] : raw;
+      stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+      stream.end();
+    }, async baseUrl => {
+      const transport = createLiveCursorTransport({
+        provider: { adapter: "cursor", baseUrl, apiKey: "test-token" },
+        translatorBudget: createTestTranslatorBudget(),
+        firstFrameTimeoutMs: 2_000,
+        sessionId: "cursor_from_gjc_session",
+      });
+      try {
+        for await (const _ of transport.run({
+          modelId: "composer-2",
+          conversationId: "cursor_header_test",
+          system: [],
+          messages: [{ role: "user", content: "hello" }],
+        })) { /* drain */ }
+      } catch { /* fixture closes immediately */ }
+      finally {
+        await transport.close?.();
+      }
+    });
+    expect(seenSessionId).toBe("cursor_from_gjc_session");
   });
 
   test("synthesizes done after createPlanRequestQuery text on clean Connect EOF", async () => {
