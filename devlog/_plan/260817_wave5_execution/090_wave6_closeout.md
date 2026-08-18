@@ -41,3 +41,38 @@ resolved: close-on-dev vs close-on-release; #1059 consecutive-green count;
 Cursor non-loopback HTTP; Antigravity undocumented protocol posture;
 needs-info lifetime; upstream-tracker accounting; #1795 recovery shape;
 #1899 disposition; #1836 disposition; #1903 HTTP/1.1 default.
+## Closure policy for THIS run (user decision, 2026-08-18)
+
+> "이슈는 dev 머지되면 일단 닫아놔 이번 런만 그런거야"
+
+Close issues when the fix reaches `dev`, not when it reaches a stable release. **Scoped to this
+run only** — the standing preference remains close-on-release, so a future campaign should not
+read this as precedent.
+
+What this changes: the `released-in:vX.Y.Z` step no longer gates closure. What it does *not*
+change is the evidence bar — a close still needs the fix demonstrably on `origin/dev` by
+ancestry, and still must not close an umbrella from a partial fix. The three policy holds keep
+their own reasons, which are about missing evidence rather than about release timing:
+
+| Issue | Still open because |
+|-------|--------------------|
+| #1059 | needs hosted Windows shard evidence; no local batch substitutes |
+| #1795 | needs a live SenseNova/Kimi canary showing zero undeclared calls |
+| #1852 | the reported defect (sync enumeration blocking the event loop) is #1876's unmerged async work |
+| #1849 | umbrella; its root cause is #1942 and unstarted |
+| #1049 | assessed and unstarted; needs the publication protocol |
+| #1926 | destination scope landed, but credential scope and emit-before-commit are still live in `src/bridge.ts` |
+| #1866 | explicitly scoped out of #1900; no PR addresses it |
+| #1730 | different provider and round from #1884's ClinePass replay fix |
+
+Two **pull requests** are also held, and they belong in this record even though the table
+above is about issues — a reader working only from this document would otherwise see no trace
+of them:
+
+| PR | Held because |
+|----|--------------|
+| #1891 | it makes `GOOGLE_ANTIGRAVITY_USER_AGENT` steerable into the `onboardUser` request body, violating this wave's accept criterion. Needs #1889 first, which is the one-line fix that makes `ide_version` a real constant. Detail in `080`. |
+| #1889 | unsponsored `src/oauth/` surface, plus still draft. The `maintainer-sponsored` label is the record that a security review happened, so an agent applying it would falsify that record. |
+
+Neither is affected by the close-on-dev-merge decision: both are blocked *before* merge, so the
+policy that governs when a merged fix closes its issue never reaches them.
