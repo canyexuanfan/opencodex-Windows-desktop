@@ -333,3 +333,18 @@ introduced exactly one and fixed exactly that one* — is accurate. But they tak
 attacker-influenceable `baseUrl` input my own fix comment argues about, so leaving them
 unmentioned would be the convenient framing rather than the honest one. They are out of scope
 here and worth their own pass.
+### Post-scan resolution
+
+The prediction above held. GitHub flipped **alert #87 to `fixed` at 03:17:06Z**, after
+`refs/heads/main` re-analyzed at `c49fed608`. So the fix is now confirmed on both axes: the code
+is right, and the scanner agrees.
+
+One artifact to expect: `refs/pull/1959/head` will keep listing an `open` instance of #87 until
+that PR closes or its ref ages out. Anyone auditing by instance list rather than alert *state*
+will see it and reasonably ask — the alert itself reads `fixed`.
+
+**Correction to the omissions count.** I wrote "30 occurrences" of `/\/+$/` across `src/`. 30 was
+the *file* count; measured now it is **39 occurrences across 27 files**, one of which is the
+comment explaining the removal. Understating the remaining debt inside the section whose whole
+purpose is to not understate it was the wrong direction to be wrong in. Repo-wide open alerts
+have also drifted from 71 to 70 with the same rescan.
