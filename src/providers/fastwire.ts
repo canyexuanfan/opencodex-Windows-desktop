@@ -1,5 +1,12 @@
-import type { FastWire, OcxProviderConfig, TierDecision } from "../types";
+import type {
+  AttemptTierOutcome,
+  FastWire,
+  OcxProviderConfig,
+  TierDecision,
+  TierObservationContext,
+} from "../types";
 import { MODEL_ADAPTER_OVERRIDE_ALLOWED } from "../types";
+import { sanitizeLogMetadataString } from "../lib/redact";
 import type { InboundWire, ModelWireDefault } from "./registry";
 
 const SERVICE_TIER_ADAPTERS = new Set(["openai-chat", "openai-responses"]);
@@ -50,6 +57,33 @@ export interface ResolvedFastPolicy {
   readonly forwardCallerTier: boolean;
 }
 
+/** Adapter-owned response observer paired with the exact body that adapter serialized. */
+export interface AdapterTierMetadata {
+  readonly outcome: AttemptTierOutcome;
+  observeResponseServiceTier(value: unknown): void;
+  markResponseUnparseable(): void;
+}
+
+/** Detach a FastWire declaration from config or registry ownership. */
+export function cloneFastWire(
+  value: FastWire | null | undefined,
+  options: { freeze?: boolean } = {},
+): FastWire | null | undefined {
+  if (value === null || value === undefined) return value;
+  const canonicalToWire = { ...value.canonicalToWire };
+  const betas = value.betas ? [...value.betas] : undefined;
+  if (options.freeze) {
+    Object.freeze(canonicalToWire);
+    if (betas) Object.freeze(betas);
+  }
+  const clone: FastWire = {
+    ...value,
+    canonicalToWire,
+    ...(betas ? { betas } : {}),
+  };
+  return options.freeze ? Object.freeze(clone) : clone;
+}
+
 function exactModelValue<T>(record: Readonly<Record<string, T>>, modelId: string): T | undefined {
   if (Object.prototype.hasOwnProperty.call(record, modelId)) return record[modelId];
   const folded = modelId.toLowerCase();
@@ -81,7 +115,9 @@ function registryDefaultForModel(
   modelId: string,
   inbound: InboundWire,
 ): string | undefined {
-  const declared = defaults[modelId.trim().toLowerCase()];
+  const normalizedModelId = modelId.trim().toLowerCase();
+  if (!Object.hasOwn(defaults, normalizedModelId)) return undefined;
+  const declared = defaults[normalizedModelId];
   if (declared === undefined) return undefined;
   if (typeof declared !== "string" && !declared.inbound.includes(inbound)) return undefined;
   const wire = typeof declared === "string" ? declared : declared.wire;
@@ -95,11 +131,15 @@ function resolvePolicyAdapter(
 ): { adapter: string; hardPinned: boolean } {
   // Hard pins and configured overrides deliberately use the same exact-key semantics as
   // resolveWireProtocolOverride(). Registry defaults alone normalize ids at their boundary.
-  const hardPin = authority.hardPins[modelId];
-  if (hardPin !== undefined) return { adapter: hardPin, hardPinned: true };
+  const hardPin = Object.hasOwn(authority.hardPins, modelId)
+    ? authority.hardPins[modelId]
+    : undefined;
+  if (typeof hardPin === "string") return { adapter: hardPin, hardPinned: true };
   if (authority.modelWireOverrideAllowed) {
-    const configured = authority.modelAdapters[modelId];
-    if (configured !== undefined && MODEL_ADAPTER_OVERRIDE_ALLOWED.has(configured)) {
+    const configured = Object.hasOwn(authority.modelAdapters, modelId)
+      ? authority.modelAdapters[modelId]
+      : undefined;
+    if (typeof configured === "string" && MODEL_ADAPTER_OVERRIDE_ALLOWED.has(configured)) {
       return { adapter: configured, hardPinned: false };
     }
     if (MODEL_ADAPTER_OVERRIDE_ALLOWED.has(authority.providerAdapter)) {
@@ -108,13 +148,6 @@ function resolvePolicyAdapter(
     }
   }
   return { adapter: authority.providerAdapter, hardPinned: false };
-}
-
-/** A1's retained Chat serializer gate (`chatServiceTier || exact model true`). */
-export function legacyChatEligibility(authority: FastPolicyAuthority, modelId: string): boolean {
-  const exact = exactModelValue(authority.capability.models, modelId);
-  if (authority.capability.provider === false || exact === false) return false;
-  return authority.capability.chatServiceTier === true || exact === true;
 }
 
 export function resolveFastPolicy(
@@ -131,12 +164,16 @@ export function resolveFastPolicy(
     ? defaultFastWireForAdapter(adapter)
     : authority.fastWireDeclaration;
   const wireAvailable = fastWire !== null && FAST_WIRE_ADAPTERS[fastWire.kind].has(adapter);
-  const chatEligible = adapter !== "openai-chat" || legacyChatEligibility(authority, modelId);
   // Explicit null disables Fast injection, but the defensive true+null branch still preserves
   // a caller tier on an existing OpenAI service-tier wire.
   const callerWireAvailable = wireAvailable
     || (fastWire === null && SERVICE_TIER_ADAPTERS.has(adapter));
-  const forwardCallerTier = capability !== false && callerWireAvailable && chatEligible;
+  // On classified routes this permission applies only to a caller's foreign tier: proxy-owned
+  // canonical Fast has already passed capability validation. On unclassified routes every caller
+  // tier still needs the final wire's forwarding permission.
+  const forwardCallerTier = capability !== false
+    && callerWireAvailable
+    && (adapter !== "openai-chat" || authority.capability.chatServiceTier === true);
 
   let eligibility: ResolvedFastPolicy["eligibility"];
   if (capability === false) eligibility = "capability-unsupported";
@@ -145,7 +182,6 @@ export function resolveFastPolicy(
       ? "pin-unavailable"
       : "wire-unavailable";
   }
-  else if (!chatEligible) eligibility = "capability-unsupported";
   else if (capability === undefined) eligibility = "unclassified";
   else eligibility = "eligible";
 
@@ -157,7 +193,149 @@ export function canonicalFastTierMarker(callerTier: string | undefined): "priori
   return folded === "priority" || folded === "fast" ? "priority" : undefined;
 }
 
-/** Pure A1 tier state machine. It never changes a caller spelling on inherit. */
+/** Capture Fast demand before the final A1 serialization action rewrites the parsed tier view. */
+export function tierObservationContext(
+  policy: ResolvedFastPolicy,
+  fastMode: boolean | undefined,
+  callerTier: string | undefined,
+): TierObservationContext {
+  return {
+    capability: policy.capability,
+    eligibility: policy.eligibility,
+    fastWire: policy.fastWire,
+    demandDecision: fastMode === true ? "force-fast" : fastMode === false ? "force-default" : "inherit",
+    ...(callerTier !== undefined ? { callerTier } : {}),
+  };
+}
+
+function canonicalFromWire(
+  fastWire: FastWire | null,
+  wireValue: string,
+): string | undefined {
+  if (!fastWire) return undefined;
+  for (const [canonical, mapped] of Object.entries(fastWire.canonicalToWire)) {
+    if (mapped === wireValue) return canonical;
+  }
+  return undefined;
+}
+
+function downgradeReasonForUnavailable(
+  context: TierObservationContext,
+): AttemptTierOutcome["fastDowngradeReason"] {
+  if (context.capability === false || context.eligibility === "capability-unsupported") {
+    return "route-unsupported";
+  }
+  return "wire-unavailable";
+}
+
+/**
+ * Build the mutable observation record only after an adapter has completed serialization.
+ * `wireKind`/`wireValue` describe the field the adapter actually emitted, never a route guess.
+ */
+export function createAdapterTierMetadata(
+  context: TierObservationContext | undefined,
+  decision: TierDecision | undefined,
+  wireKind: FastWire["kind"] | null,
+  wireValue: string | null,
+): AdapterTierMetadata | undefined {
+  if (!context || !decision) return undefined;
+
+  const callerCanonicalFast = canonicalFastTierMarker(context.callerTier) === "priority";
+  const callerTierDropped = context.callerTier !== undefined
+    && !callerCanonicalFast
+    && wireValue === null;
+  const callerFastSuppressedByConfig = context.capability !== undefined
+    && context.demandDecision === "force-default"
+    && callerCanonicalFast;
+  const loggedWireValue = wireValue === null ? null : sanitizeLogMetadataString(wireValue);
+  const outcome: AttemptTierOutcome = {
+    wireKind,
+    ...(wireValue === null
+      ? { wireValue: null }
+      : loggedWireValue ? { wireValue: loggedWireValue } : {}),
+    fastOutcome: "unknown",
+    confirmation: "unknown",
+    ...(callerTierDropped ? { callerTierDropped: true } : {}),
+    ...(callerFastSuppressedByConfig ? { callerFastSuppressedByConfig: true } : {}),
+  };
+
+  // A0/A1 deliberately make fastMode inert for unclassified routes. Preserve that uncertainty:
+  // do not infer demand, suppression, or a canonical tier from a verbatim caller passthrough.
+  if (context.capability === undefined || context.eligibility === "unclassified") {
+    delete outcome.callerFastSuppressedByConfig;
+    return {
+      outcome,
+      observeResponseServiceTier(value: unknown) {
+        const sanitized = sanitizeLogMetadataString(value);
+        if (sanitized) outcome.responseServiceTier = sanitized;
+      },
+      markResponseUnparseable() {},
+    };
+  }
+
+  const effectiveFastRequested = context.capability === true
+    && context.fastWire !== null
+    && (context.demandDecision === "force-fast"
+      || (context.demandDecision === "inherit" && callerCanonicalFast));
+  // Known-unsupported routes still need a downgrade when the caller/config expressed Fast intent,
+  // but they are deliberately outside the effective-demand calculation above.
+  const fastIntent = context.demandDecision === "force-fast"
+    || (context.demandDecision === "inherit" && callerCanonicalFast);
+
+  if (!fastIntent) {
+    outcome.fastOutcome = "not-requested";
+  } else if (!effectiveFastRequested || context.eligibility !== "eligible" || wireValue === null) {
+    outcome.fastOutcome = "downgraded";
+    outcome.fastDowngradeReason = downgradeReasonForUnavailable(context);
+    outcome.confirmation = "downgraded";
+  } else if (canonicalFromWire(context.fastWire, wireValue) === "priority") {
+    outcome.canonical = "priority";
+    outcome.fastOutcome = "applied";
+    outcome.confirmation = "assumed";
+  }
+
+  const responseCanConfirmFast = effectiveFastRequested
+    && context.eligibility === "eligible"
+    && wireValue !== null;
+  return {
+    outcome,
+    observeResponseServiceTier(value: unknown) {
+      if (typeof value !== "string" || !value.trim()) {
+        if (value !== undefined && responseCanConfirmFast) {
+          delete outcome.canonical;
+          delete outcome.fastDowngradeReason;
+          outcome.fastOutcome = "unknown";
+          outcome.confirmation = "unknown";
+        }
+        return;
+      }
+      const sanitized = sanitizeLogMetadataString(value);
+      if (sanitized) outcome.responseServiceTier = sanitized;
+      if (!responseCanConfirmFast) return;
+      if (canonicalFromWire(context.fastWire, value) === "priority") {
+        outcome.canonical = "priority";
+        delete outcome.fastDowngradeReason;
+        outcome.fastOutcome = "applied";
+        outcome.confirmation = "confirmed";
+      } else {
+        delete outcome.canonical;
+        outcome.fastOutcome = "downgraded";
+        outcome.fastDowngradeReason = "response-declined";
+        outcome.confirmation = "downgraded";
+      }
+    },
+    markResponseUnparseable() {
+      if (!responseCanConfirmFast) return;
+      delete outcome.canonical;
+      delete outcome.fastDowngradeReason;
+      delete outcome.responseServiceTier;
+      outcome.fastOutcome = "unknown";
+      outcome.confirmation = "unknown";
+    },
+  };
+}
+
+/** Pure tier state machine. B1 normalizes canonical Fast on classified inherit routes. */
 export function decideTier(
   policy: ResolvedFastPolicy,
   fastMode: boolean | undefined,
@@ -178,9 +356,16 @@ export function decideTier(
       : { kind: "drop" };
   }
   if (fastMode === false) return { kind: "drop" };
+  const callerCanonicalFast = canonicalFastTierMarker(callerTier);
+  if (callerCanonicalFast !== undefined) {
+    const value = policy.fastWire.canonicalToWire[callerCanonicalFast];
+    return typeof value === "string" && value.length > 0
+      ? { kind: "set", value }
+      : { kind: "drop" };
+  }
+  if (callerTier !== undefined && !policy.forwardCallerTier) return { kind: "drop" };
   if (
     callerTier !== undefined
-    && canonicalFastTierMarker(callerTier) === undefined
     && policy.fastWire.foreignCallerTiers === "drop"
   ) {
     return { kind: "drop" };

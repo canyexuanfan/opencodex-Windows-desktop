@@ -4,16 +4,23 @@ import { createResponsesPassthroughAdapter } from "../src/adapters/openai-respon
 import { validateConfigCandidate } from "../src/config";
 import {
   canonicalFastTierMarker,
+  cloneFastWire,
   decideTier,
-  legacyChatEligibility,
   resolveFastPolicy,
   tierValueAfterDecision,
   type FastPolicyAuthority,
   type ResolvedFastPolicy,
 } from "../src/providers/fastwire";
-import { fastPolicyForModel } from "../src/providers/service-tier";
+import { captureFastPolicyAuthority, fastPolicyForModel } from "../src/providers/service-tier";
 import { PROVIDER_REGISTRY, providerRegistryFastWireError } from "../src/providers/registry";
-import type { FastWire, OcxConfig, OcxParsedRequest, TierDecision } from "../src/types";
+import {
+  captureWireAdapterHardPins,
+  isWirePinnedModel,
+  type FastWire,
+  type OcxConfig,
+  type OcxParsedRequest,
+  type TierDecision,
+} from "../src/types";
 import { withTestTranslatorBudget } from "./helpers/translator-budget";
 
 const MODEL = "model";
@@ -32,7 +39,7 @@ function authorityForMatrix(args: {
   declaration: DeclarationState;
   overrideAllowed: boolean;
   capability: CapabilityState;
-  legacyChatEligible: boolean;
+  chatForeignTierForward: boolean;
 }): FastPolicyAuthority {
   const providerAdapter = args.source === "provider-adapter" ? "openai-chat" : "openai-responses";
   return {
@@ -45,7 +52,7 @@ function authorityForMatrix(args: {
     capability: {
       ...(args.capability === "undefined" ? {} : { provider: args.capability === "true" }),
       models: {},
-      chatServiceTier: args.legacyChatEligible,
+      chatServiceTier: args.chatForeignTierForward,
     },
     modelAdapters: args.source === "hard-pin" || args.source === "override"
       ? { [MODEL]: args.source === "override" ? "openai-chat" : "openai-responses" }
@@ -61,12 +68,12 @@ const policyMatrix = (["undefined", "null", "explicit"] as const).flatMap(declar
   ([false, true] as const).flatMap(overrideAllowed =>
     (["hard-pin", "override", "registry-default", "provider-adapter"] as const).flatMap(source =>
       (["false", "undefined", "true"] as const).flatMap(capability =>
-        ([false, true] as const).map(legacyChatEligible => ({
+        ([false, true] as const).map(chatForeignTierForward => ({
           declaration,
           overrideAllowed,
           source,
           capability,
-          legacyChatEligible,
+          chatForeignTierForward,
         })),
       ),
     ),
@@ -75,7 +82,7 @@ const policyMatrix = (["undefined", "null", "explicit"] as const).flatMap(declar
 
 describe("resolveFastPolicy matrix", () => {
   test.each(policyMatrix)(
-    "$declaration declaration, overrideAllowed=$overrideAllowed, $source, capability=$capability, legacy=$legacyChatEligible",
+    "$declaration declaration, overrideAllowed=$overrideAllowed, $source, capability=$capability, chatForeign=$chatForeignTierForward",
     row => {
       const authority = authorityForMatrix(row);
       const policy = resolveFastPolicy(authority, MODEL);
@@ -85,15 +92,12 @@ describe("resolveFastPolicy matrix", () => {
         : overrideCanWin ? "openai-chat"
           : row.source === "provider-adapter" ? "openai-chat" : "openai-responses";
       const capability = row.capability === "undefined" ? undefined : row.capability === "true";
-      const chatEligible = expectedAdapter !== "openai-chat" || row.legacyChatEligible;
       const wireAvailable = row.declaration !== "null";
       const expectedEligibility: ResolvedFastPolicy["eligibility"] = capability === false
         ? "capability-unsupported"
         : !wireAvailable
           ? "wire-unavailable"
-          : !chatEligible
-            ? "capability-unsupported"
-            : capability === undefined ? "unclassified" : "eligible";
+          : capability === undefined ? "unclassified" : "eligible";
 
       expect(policy.adapter).toBe(expectedAdapter);
       expect(policy.capability).toBe(capability);
@@ -101,7 +105,10 @@ describe("resolveFastPolicy matrix", () => {
       expect(policy.fastWire === null ? null : policy.fastWire?.kind).toBe(
         row.declaration === "null" ? null : "service-tier",
       );
-      expect(policy.forwardCallerTier).toBe(capability !== false && chatEligible);
+      expect(policy.forwardCallerTier).toBe(
+        capability !== false
+          && (expectedAdapter !== "openai-chat" || row.chatForeignTierForward),
+      );
     },
   );
 
@@ -112,7 +119,7 @@ describe("resolveFastPolicy matrix", () => {
         declaration: "undefined",
         overrideAllowed: true,
         capability: "true",
-        legacyChatEligible: true,
+        chatForeignTierForward: true,
       }),
       providerAdapter: "openai-responses",
       registryWireDefaults: { [MODEL]: { wire: "openai-chat", inbound: ["chat"] } },
@@ -128,7 +135,7 @@ describe("resolveFastPolicy matrix", () => {
         declaration: "undefined",
         overrideAllowed: true,
         capability: "true",
-        legacyChatEligible: true,
+        chatForeignTierForward: true,
       }),
       providerAdapter: "openai-responses",
       modelAdapters: { Model: "openai-chat" },
@@ -147,7 +154,7 @@ describe("resolveFastPolicy matrix", () => {
         declaration: "undefined",
         overrideAllowed: true,
         capability: "true",
-        legacyChatEligible: true,
+        chatForeignTierForward: true,
       }),
       modelAdapters: { [MODEL]: "anthropic" },
       registryWireDefaults: { [MODEL]: "openai-chat" },
@@ -162,7 +169,7 @@ describe("resolveFastPolicy matrix", () => {
         declaration: "undefined",
         overrideAllowed: true,
         capability: "true",
-        legacyChatEligible: true,
+        chatForeignTierForward: true,
       }),
       providerAdapter: "anthropic",
       registryWireDefaults: { [MODEL]: "openai-chat" },
@@ -177,7 +184,7 @@ describe("resolveFastPolicy matrix", () => {
         declaration: "explicit",
         overrideAllowed: true,
         capability: "true",
-        legacyChatEligible: true,
+        chatForeignTierForward: true,
       }),
       fastWireDeclaration: {
         kind: "anthropic-speed",
@@ -196,11 +203,60 @@ describe("resolveFastPolicy matrix", () => {
         declaration: "explicit",
         overrideAllowed: true,
         capability: "true",
-        legacyChatEligible: true,
+        chatForeignTierForward: true,
       }),
       hardPins: { [MODEL]: "anthropic" },
     }, MODEL);
     expect(policy).toMatchObject({ adapter: "anthropic", eligibility: "pin-unavailable" });
+  });
+
+  test("an explicitly disabled wire reports wire-unavailable even when hard pinned", () => {
+    const policy = resolveFastPolicy({
+      ...authorityForMatrix({
+        source: "provider-adapter",
+        declaration: "null",
+        overrideAllowed: true,
+        capability: "true",
+        chatForeignTierForward: true,
+      }),
+      hardPins: { [MODEL]: "anthropic" },
+    }, MODEL);
+    expect(policy).toMatchObject({ adapter: "anthropic", eligibility: "wire-unavailable" });
+  });
+
+  test("mutable providers rebuild authority after a capture", () => {
+    const provider = {
+      adapter: "openai-responses",
+      baseUrl: "https://fixture.example/v1",
+      supportsServiceTier: true,
+    };
+    expect(captureFastPolicyAuthority("fixture", provider, false).capability.provider).toBe(true);
+    provider.supportsServiceTier = false;
+    expect(fastPolicyForModel(provider, MODEL, "fixture").capability).toBe(false);
+  });
+
+  test("prototype-named providers and models use only own wire-policy rows", () => {
+    expect(captureWireAdapterHardPins("toString")).toEqual({});
+    expect(isWirePinnedModel("toString", MODEL)).toBe(false);
+    const authority = authorityForMatrix({
+      source: "provider-adapter",
+      declaration: "undefined",
+      overrideAllowed: true,
+      capability: "true",
+      chatForeignTierForward: true,
+    });
+    const responsesAuthority = { ...authority, providerAdapter: "openai-responses" };
+    expect(resolveFastPolicy(responsesAuthority, "constructor")).toMatchObject({
+      adapter: "openai-responses",
+      eligibility: "eligible",
+    });
+    expect(resolveFastPolicy({
+      ...responsesAuthority,
+      hardPins: Object.fromEntries([["constructor", "anthropic"]]),
+    }, "constructor")).toMatchObject({
+      adapter: "anthropic",
+      eligibility: "pin-unavailable",
+    });
   });
 
   test("a missing provider name preserves the legacy provider-adapter short circuit", () => {
@@ -220,51 +276,6 @@ describe("resolveFastPolicy matrix", () => {
       capability: true,
       eligibility: "eligible",
     });
-  });
-});
-
-describe("legacyChatEligibility", () => {
-  test.each([
-    {
-      label: "chatServiceTier opt-in",
-      provider: undefined,
-      models: {},
-      chatServiceTier: true,
-      expected: true,
-    },
-    {
-      label: "case-insensitive exact-model opt-in",
-      provider: undefined,
-      models: { MODEL: true },
-      chatServiceTier: false,
-      expected: true,
-    },
-    {
-      label: "provider false closes an exact-model opt-in",
-      provider: false,
-      models: { model: true },
-      chatServiceTier: true,
-      expected: false,
-    },
-    {
-      label: "exact false closes a provider Chat opt-in",
-      provider: true,
-      models: { model: false },
-      chatServiceTier: true,
-      expected: false,
-    },
-  ])("$label", ({ provider, models, chatServiceTier, expected }) => {
-    const authority = authorityForMatrix({
-      source: "provider-adapter",
-      declaration: "undefined",
-      overrideAllowed: true,
-      capability: "undefined",
-      legacyChatEligible: false,
-    });
-    expect(legacyChatEligibility({
-      ...authority,
-      capability: { ...(provider === undefined ? {} : { provider }), models, chatServiceTier },
-    }, MODEL)).toBe(expected);
   });
 });
 
@@ -296,10 +307,14 @@ describe("TierDecision state machine", () => {
       const expectedValue = support === false
         ? undefined
         : support === undefined ? callerTier
-          : fastMode === true ? "priority" : fastMode === false ? undefined : callerTier;
+          : fastMode === true ? "priority" : fastMode === false ? undefined
+            : callerTier === "fast" ? "priority" : callerTier;
+      const inheritedCanonicalFast = support === true
+        && fastMode === undefined
+        && (callerTier === "priority" || callerTier === "fast");
       const expectedKind: TierDecision["kind"] = support === false || (support === true && fastMode === false)
         ? "drop"
-        : support === true && fastMode === true ? "set" : "forward-caller";
+        : support === true && (fastMode === true || inheritedCanonicalFast) ? "set" : "forward-caller";
       expect(decision.kind).toBe(expectedKind);
       expect(tierValueAfterDecision(decision, callerTier)).toBe(expectedValue);
       expect(canonicalFastTierMarker(callerTier)).toBe(
@@ -322,14 +337,16 @@ describe("TierDecision state machine", () => {
     expect(tierValueAfterDecision(decision, callerTier)).toBe(callerTier);
   });
 
-  test.each(["Priority", "FAST", " fast "])("normalizes %s only into an internal marker", callerTier => {
+  test.each(["Priority", "FAST", " fast "])("normalizes inherited canonical spelling %s to the wire value", callerTier => {
     expect(canonicalFastTierMarker(callerTier)).toBe("priority");
-    expect(tierValueAfterDecision({ kind: "forward-caller" }, callerTier)).toBe(callerTier);
+    const decision = decideTier(tierPolicy(true), undefined, callerTier);
+    expect(decision).toEqual({ kind: "set", value: "priority" });
+    expect(tierValueAfterDecision(decision, callerTier)).toBe("priority");
   });
 
   test.each([
-    { callerTier: "priority", expected: { kind: "forward-caller" } },
-    { callerTier: "fast", expected: { kind: "forward-caller" } },
+    { callerTier: "priority", expected: { kind: "set", value: "priority" } },
+    { callerTier: "fast", expected: { kind: "set", value: "priority" } },
     { callerTier: "flex", expected: { kind: "drop" } },
     { callerTier: undefined, expected: { kind: "forward-caller" } },
   ])("foreign-tier drop policy resolves caller=$callerTier to $expected.kind", ({ callerTier, expected }) => {
@@ -339,11 +356,30 @@ describe("TierDecision state machine", () => {
     }, undefined, callerTier)).toEqual(expected);
   });
 
-  test("unclassified capability keeps the full caller passthrough contract", () => {
+  test("Chat foreign-tier permission is independent from canonical Fast", () => {
+    const policy = { ...tierPolicy(true), adapter: "openai-chat", forwardCallerTier: false };
+    expect(decideTier(policy, undefined, "flex")).toEqual({ kind: "drop" });
+    expect(decideTier(policy, undefined, "fast")).toEqual({ kind: "set", value: "priority" });
+  });
+
+  test("unclassified Responses capability keeps the full caller passthrough contract", () => {
     expect(decideTier({
       ...tierPolicy(undefined),
       fastWire: { ...SERVICE_WIRE, foreignCallerTiers: "drop" },
     }, true, "flex")).toEqual({ kind: "forward-caller" });
+  });
+
+  test("unclassified caller tiers honor the final adapter forwarding permission", () => {
+    expect(decideTier({
+      ...tierPolicy(undefined),
+      adapter: "openai-chat",
+      forwardCallerTier: false,
+    }, undefined, "fast")).toEqual({ kind: "drop" });
+    expect(decideTier({
+      ...tierPolicy(undefined),
+      adapter: "openai-responses",
+      forwardCallerTier: true,
+    }, undefined, "fast")).toEqual({ kind: "forward-caller" });
   });
 });
 
@@ -364,6 +400,26 @@ function configWithFastWire(fastWire: unknown, capability?: { provider?: boolean
 }
 
 describe("FastWire config and registry validation", () => {
+  test("the shared clone detaches nested FastWire records and arrays", () => {
+    const canonicalToWire = { priority: "priority" };
+    const betas = ["beta-one"];
+    const original: FastWire = {
+      kind: "service-tier",
+      canonicalToWire,
+      foreignCallerTiers: "verbatim",
+      betas,
+    };
+    const cloned = cloneFastWire(original)!;
+    canonicalToWire.priority = "performance";
+    betas[0] = "changed";
+    expect(cloned).toEqual({
+      kind: "service-tier",
+      canonicalToWire: { priority: "priority" },
+      foreignCallerTiers: "verbatim",
+      betas: ["beta-one"],
+    });
+  });
+
   test("accepts a complete declaration and trims its wire values", () => {
     const result = validateConfigCandidate(configWithFastWire({
       kind: "service-tier",
@@ -403,12 +459,33 @@ describe("FastWire config and registry validation", () => {
     expect(validateConfigCandidate(configWithFastWire(null, capability)).ok).toBe(false);
   });
 
+  test("redacts a token-shaped provider name in a FastWire conflict path", () => {
+    const providerName = ["sk", "proj", "fastwire", "A".repeat(40)].join("-");
+    const result = validateConfigCandidate({
+      port: 10100,
+      defaultProvider: providerName,
+      providers: {
+        [providerName]: {
+          adapter: "openai-responses",
+          baseUrl: "https://fixture.example/v1",
+          supportsServiceTier: true,
+          fastWire: null,
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).not.toContain(providerName);
+      expect(result.error).toContain("providers.[REDACTED].fastWire");
+    }
+  });
+
   test("provider-level false keeps null valid even with an exact-model true", () => {
     expect(validateConfigCandidate(configWithFastWire(null, { provider: false, exact: true })).ok)
       .toBe(true);
   });
 
-  test("rejects null against an inherited registry capability", () => {
+  test("accepts and preserves null against an inherited registry capability", () => {
     expect(validateConfigCandidate({
       port: 10100,
       defaultProvider: "openai-apikey",
@@ -420,7 +497,10 @@ describe("FastWire config and registry validation", () => {
           fastWire: null,
         },
       },
-    }).ok).toBe(false);
+    })).toMatchObject({
+      ok: true,
+      config: { providers: { "openai-apikey": { fastWire: null } } },
+    });
   });
 
   test("provider-level false closes an inherited registry capability", () => {
