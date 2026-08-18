@@ -30,10 +30,11 @@ ssh lidge 'cd /tmp/ocx-cc-<SHORTSHA> && git log --oneline -1'
 ssh lidge 'cd /tmp/ocx-cc-<SHORTSHA> && bun install --frozen-lockfile'
 ```
 
-`<SHA>` is the PUSHED rebase tip. `010` step 7 pushes it and asserts
-`git ls-remote` matches `git rev-parse cursor-call` — without that, this fetch brings
-the pre-rebase branch and the worktree either fails on an unknown revision or tests
-stale code (audit `r7`). Confirm the SHA here too before installing:
+`<SHA>` is the tip pushed at the END of WP2b, not `010`'s post-rebase checkpoint
+push (audit `r8`). WP2b changes code after `010` step 7 runs, so verifying the
+earlier tip would authoritatively bless a tree without WP2b in it. Both work-phases
+push and assert `git ls-remote` matches `git rev-parse cursor-call`; this phase
+consumes the later one. Confirm the SHA here too before installing:
 
 ```
 ssh lidge 'cd ~/Developer/opencodex && git rev-parse origin/cursor-call'   # == local rebase tip

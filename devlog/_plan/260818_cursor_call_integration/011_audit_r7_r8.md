@@ -50,6 +50,25 @@ with the reasoning inline so a future reader does not delete it as redundant.
 choice and re-export, and the governance position, and found no first-failing step
 once the assertion is added.
 
+## r8's blocking finding: the push handed off the wrong tip
+
+`010` step 7 pushes the rebase tip, and `020` verifies whatever `origin/cursor-call`
+points at. But the declared order is WP2 → WP2b → WP3, and WP2b changes code AFTER
+step 7 runs while carrying only local checks. So lidge would have authoritatively
+verified a tree without WP2b in it, and PR3's WP2b implementation would have reached
+`dev` backed by nothing but a local `bun test`.
+
+The earlier push is not wrong, it is just not the handoff. `015` now ends with its
+own push and SHA assertion, and `020` says explicitly which of the two pushes it
+consumes:
+
+    git push --force-with-lease --no-verify origin cursor-call
+    test "$(git ls-remote origin refs/heads/cursor-call | cut -f1)" = "$(git rev-parse cursor-call)"
+
+This is the same class as `r7`'s finding — a phase boundary where the artifact one
+side produces is not the artifact the other side reads — which is why it survived
+seven rounds of reading each document on its own terms.
+
 ## Round tally
 
 | Round | Verdict | Findings | Recorded |
@@ -66,4 +85,3 @@ once the assertion is added.
 26 findings, every one verified against the tree and absorbed. Four of the eight
 rounds attacked the same question (how to split the stack) and the fourth failure
 was the signal that the question itself was wrong — recorded in `009`.
-

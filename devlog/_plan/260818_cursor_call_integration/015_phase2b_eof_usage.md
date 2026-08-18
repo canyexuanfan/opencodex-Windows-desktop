@@ -140,3 +140,19 @@ so the two docs do not conflict (confirmed in audit `r2`).
 
 `tests/cursor-interaction-query.test.ts:148-185` is in the list because it is the
 existing contract for partial-usage reporting; this change must not disturb it.
+
+## Push before handing off to WP3 (audit `r8`)
+
+`010` step 7 pushes the rebase tip, and that push happens BEFORE this work-phase
+exists. WP3 then verifies whatever `origin/cursor-call` points at — so without a
+second push here, lidge would authoritatively verify a tip that does not contain
+WP2b, and PR3's WP2b implementation would reach `dev` with only local checks behind
+it.
+
+So this work-phase ends with:
+
+    git push --force-with-lease --no-verify origin cursor-call
+    test "$(git ls-remote origin refs/heads/cursor-call | cut -f1)" = "$(git rev-parse cursor-call)"
+
+This is the push WP3 hands off from. `010`'s earlier push stays (it is a harmless
+checkpoint after the rebase), but it is not the verification handoff.
