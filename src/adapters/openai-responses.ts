@@ -574,8 +574,10 @@ function toolOutputText(output: unknown): string {
  * prior items and 400 upstream:
  * - `function_call`/`local_shell_call`/`custom_tool_call` without their paired output item
  *   ("No tool output found for tool call <call_id>"). A stateless upstream cannot resolve
- *   the pair from its own storage, so a placeholder output is synthesized right after the
- *   call to keep the turn continuable without pretending the result was real. Gated on
+ *   the pair from its own storage, so a placeholder output is synthesized to keep the
+ *   turn continuable without pretending the result was real. Synthetic outputs are
+ *   deferred until after the complete parallel call batch so the adjacency normalizer can
+ *   still recognize the batch as one reasoning-bearing assistant turn (#1477). Gated on
  *   `synthesizeMissingCallOutputs` (stateless AND non-forward wires); forward replay keeps
  *   fail-closed behavior.
  * - `function_call_output`/`custom_tool_call_output` without their paired call item
@@ -632,12 +634,19 @@ function repairOrphanedInputItems(body: unknown, dropReasoning: boolean, synthes
 
   let changed = false;
   const repaired: unknown[] = [];
+  const pendingSyntheticOutputs: unknown[] = [];
+  const flushPendingSyntheticOutputs = (): void => {
+    if (pendingSyntheticOutputs.length === 0) return;
+    repaired.push(...pendingSyntheticOutputs);
+    pendingSyntheticOutputs.length = 0;
+  };
   for (const item of input) {
-    if (!isPlainObject(item)) { repaired.push(item); continue; }
+    if (!isPlainObject(item)) { flushPendingSyntheticOutputs(); repaired.push(item); continue; }
     if (dropReasoning && item.type === "reasoning") { changed = true; continue; }
     const isFnOutput = item.type === "function_call_output";
     const isCustomOutput = item.type === "custom_tool_call_output";
     if (isFnOutput || isCustomOutput) {
+      flushPendingSyntheticOutputs();
       const callId = typeof item.call_id === "string" ? item.call_id : "";
       const paired = isFnOutput ? functionCallIds.has(callId) : customCallIds.has(callId);
       if (!paired) {
@@ -661,15 +670,17 @@ function repairOrphanedInputItems(body: unknown, dropReasoning: boolean, synthes
           changed = true;
           const name = typeof item.name === "string" && item.name.length > 0 ? item.name : callId;
           const text = `[ocx] no tool result was recorded for "${name}"; execution status unknown — do not treat this as success, failure, or user-provided input.`;
-          repaired.push(isFnCall
+          pendingSyntheticOutputs.push(isFnCall
             ? { type: "function_call_output", call_id: callId, output: text }
             : { type: "custom_tool_call_output", call_id: callId, output: text });
         }
       }
       continue;
     }
+    flushPendingSyntheticOutputs();
     repaired.push(item);
   }
+  flushPendingSyntheticOutputs();
 
   return changed ? { ...body, input: repaired } : body;
 }

@@ -915,13 +915,17 @@ describe("stateless Responses upstreams get no stateful parameters", () => {
 
     const body = buildBody(deepseekProvider(), { input }) as { input: unknown[] };
     const repaired = body.input as Array<Record<string, unknown>>;
-    const callAIndex = repaired.findIndex(item => (item as { call_id?: string }).call_id === "call_a");
-    const synthesized = repaired[callAIndex + 1] as Record<string, unknown>;
+    // The parallel call batch stays contiguous: the synthetic output for call_a is
+    // emitted after call_b, and the injected context moves after the whole batch.
+    expect(repaired[0]).toMatchObject({ type: "function_call", call_id: "call_a" });
+    expect(repaired[1]).toMatchObject({ type: "function_call", call_id: "call_b" });
+    const synthesized = repaired[2] as Record<string, unknown>;
     expect(synthesized.type).toBe("function_call_output");
     expect(synthesized.call_id).toBe("call_a");
     expect(String(synthesized.output)).toContain("no tool result was recorded");
     // The real result for call_b survives untouched.
-    expect(repaired.some(item => (item as { type?: string }).type === "function_call_output" && (item as { call_id?: string }).call_id === "call_b" && (item as { output?: unknown }).output === "B")).toBe(true);
+    expect(repaired[3]).toMatchObject({ type: "function_call_output", call_id: "call_b", output: "B" });
+    expect(repaired[4]).toMatchObject({ type: "message", role: "developer" });
   });
 
   test("DeepSeek fails closed when a collected call/result pair is backwards", () => {

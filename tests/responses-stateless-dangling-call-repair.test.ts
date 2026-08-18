@@ -78,6 +78,37 @@ describe("stateless Responses wire repairs orphaned tool calls", () => {
     expect(String((input[1] as { output: unknown }).output)).toContain("no tool result was recorded");
   });
 
+  test("keeps a parallel call batch together before synthesizing a missing output", async () => {
+    const { body } = await drive([
+      { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "thinking" }] },
+      { type: "function_call", id: "fc_a", call_id: "call_a", name: "exec_command", arguments: "{}" },
+      { type: "function_call", id: "fc_b", call_id: "call_b", name: "exec_command", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_b", output: "ok" },
+    ]);
+    const input = body.input as Array<Record<string, unknown>>;
+    expect(input).toHaveLength(5);
+    expect(input[0]).toMatchObject({ type: "reasoning" });
+    expect(input[1]).toMatchObject({ type: "function_call", call_id: "call_a" });
+    expect(input[2]).toMatchObject({ type: "function_call", call_id: "call_b" });
+    expect(input[3]).toMatchObject({ type: "function_call_output", call_id: "call_a" });
+    expect(String((input[3] as { output: unknown }).output)).toContain("no tool result was recorded");
+    expect(input[4]).toMatchObject({ type: "function_call_output", call_id: "call_b", output: "ok" });
+  });
+
+  test("synthesizes missing outputs after the whole parallel batch", async () => {
+    const { body } = await drive([
+      { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "thinking" }] },
+      { type: "function_call", id: "fc_a", call_id: "call_a", name: "exec_command", arguments: "{}" },
+      { type: "function_call", id: "fc_b", call_id: "call_b", name: "exec_command", arguments: "{}" },
+    ]);
+    const input = body.input as Array<Record<string, unknown>>;
+    expect(input).toHaveLength(5);
+    expect(input[1]).toMatchObject({ type: "function_call", call_id: "call_a" });
+    expect(input[2]).toMatchObject({ type: "function_call", call_id: "call_b" });
+    expect(input[3]).toMatchObject({ type: "function_call_output", call_id: "call_a" });
+    expect(input[4]).toMatchObject({ type: "function_call_output", call_id: "call_b" });
+  });
+
   test("leaves intact call/output pairs untouched", async () => {
     const { body } = await drive([
       { type: "function_call", id: "fc_ok", call_id: "call_ok", name: "exec_command", arguments: "{}" },
