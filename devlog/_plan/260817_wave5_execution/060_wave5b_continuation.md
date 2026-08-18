@@ -80,3 +80,42 @@ One thing to carry into #1888's eventual review: it now also touches
 the three files WP4 changed for the durable destination identity. It will need a rebase, and
 the reviewer should check that its account-scoping work composes with the destination scoping
 rather than duplicating it.
+## Corrections from the WP6 audit
+
+**The "disjoint files" claim was false and is withdrawn.** #1892 and #1904 both modify
+`tests/fastwire-characterization-routing.test.ts` and
+`tests/fastwire-characterization-wire.test.ts`. Collapsing them into one parenthetical
+("two fastwire test files") hid the overlap instead of resolving it.
+
+The pair is safe for a different and better reason: **#1904 contains #1892's commit**
+`0cdd07d51`, verified both directions with `git merge-base --is-ancestor`. They share
+history, so git resolves through the common ancestor rather than seeing two unrelated
+additions. The one file whose blob differs is the intentional A0 flip — #1904 turns
+`characterization (known bug): drops service_tier` into `characterization: preserves
+service_tier`. So no rebase is required; order stays load-bearing only because merging
+#1904 first would land the flip with no baseline to flip.
+
+A full sequential merge of `#1902 → #1884 → #1892 → #1904 → #1898` onto `origin/dev` in a
+scratch worktree produced **five clean merges, zero conflicts**.
+
+**#1888's sponsorship label is its third blocker, not its first.** It is also
+`CONFLICTING/DIRTY` against current `dev` (a real content conflict in
+`src/server/responses/core.ts`) and carries `CHANGES_REQUESTED`. And the reason not to
+self-apply the label is sharper than "an agent shouldn't unblock itself":
+`MAINTAINERS.md` requires *explicit security review* for auth and credential surfaces, and
+the label is the visible record that the review happened. Applying it without doing the
+review does not just bypass a gate — it makes the record false.
+
+**The train's real gate is maintainer approval.** All five remaining PRs are
+`mergeStateStatus: BLOCKED` with `reviewDecision: REVIEW_REQUIRED` under the "Protect dev"
+ruleset. Merge order was never the binding constraint.
+
+### Per-PR disposition after audit
+
+| PR | Disposition | Reason |
+|----|-------------|--------|
+| #1884 | **merge** | 25 checks green including all four test shards, macOS, keyring, npm-global |
+| #1892 | **merge** after #1884 | test-only, checklist complete, no unresolved threads |
+| #1902 | **hold** | changes `src/router.ts` and `src/providers/derive.ts` — production routing — with no `ci`, no `test 1/4..4/4`, no `gates` at this head. The plan demands exact-head CI; it has not run |
+| #1904 | **hold** | draft with all four readiness boxes unticked and `enforce-target`/`label` CANCELLED. The draft state is the gate working |
+| #1898 | **defer, reason recorded** | draft. Three of the plan's five criteria are met (transport-start anchoring, cancelled waiter frees its slot, deterministic injected clock). Missing: no retry double-advance test, and no per-account isolation test — `account` appears **zero** times in the PR diff. Its body also still says the production fix has not landed while the diff carries it |
