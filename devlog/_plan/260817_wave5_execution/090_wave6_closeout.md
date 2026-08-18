@@ -350,11 +350,23 @@ One artifact to expect: `refs/pull/1959/head` will keep listing an `open` instan
 that PR closes or its ref ages out. Anyone auditing by instance list rather than alert *state*
 will see it and reasonably ask — the alert itself reads `fixed`.
 
-**Correction to the omissions count.** I wrote "30 occurrences" of `/\/+$/` across `src/`. 30 was
-the *file* count; measured now it is **39 occurrences across 27 files**, one of which is the
-comment explaining the removal. Understating the remaining debt inside the section whose whole
-purpose is to not understate it was the wrong direction to be wrong in. Repo-wide open alerts
-have also drifted from 71 to 70 with the same rescan.
+**Correction to the omissions count — twice, and the second attempt was also short.** I first
+wrote "30 occurrences" of `/\/+$/` across `src/`, which was actually the *file* count. Correcting
+it, I said **39 across 27 files** — but that was `.replace(/\/+$/` specifically, a filtered subset
+that silently dropped the two hoisted `const TRAILING_SLASHES = /\/+$/` uses in
+`openai-chat-url.ts` and `openai-responses-url.ts`, which are live call sites of the same regex.
+
+The literal count is **43 occurrences across 30 files** (42 lines; one line carries two matches),
+one of them the comment explaining the removal here.
+
+A reviewer caught the giveaway I had missed: the sentence claimed "one of which is the comment,"
+but a comment is not a `.replace(` call, so it could not be inside a number derived from
+`.replace(`. The description and the figure contradicted each other, which is the cheapest
+available signal that a count was measured with the wrong pattern.
+
+Both errors ran the same direction — understating remaining debt inside the section whose entire
+purpose is to not understate it. Repo-wide open alerts have also drifted from 71 to 70 with the
+same rescan.
 **Correction to the alert list.** The six I named included **#84**, which had already been fixed
 at 03:03:30Z — before I wrote the list — and omitted **#50**, which is open. Still six, but one
 member was wrong. The live open set is #83, #60, #53, #52, #51, #50, all created 2026-08-12/13,
