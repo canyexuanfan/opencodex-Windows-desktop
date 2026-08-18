@@ -17,7 +17,8 @@ misleading in this checkout.
   and still not the required gate.
 - **#1795** does not close without a live SenseNova/Kimi canary showing zero
   undeclared tool calls.
-- **#1843** is closable now: fixed by #1860, released in v2.24.2.
+- **#1843** is closable now: fixed by #1860, released in **v2.24.0** (`git tag --contains ac8c0d2df`
+  names v2.24.0 as the earliest containing tag; an earlier draft of this line said v2.24.2).
 - State is judged by merge commit and branch ancestry first, GitHub API second,
   cached HTML badges last. #1881 showed an Open badge while merged.
 
