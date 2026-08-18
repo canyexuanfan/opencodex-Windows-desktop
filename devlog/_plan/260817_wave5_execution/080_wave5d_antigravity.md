@@ -242,7 +242,23 @@ and pre-existing**, established three ways rather than assumed:
    this campaign;
 3. all four `test 1/4..4/4` shards passed in the dev CI run for `9eb3a101a`.
 
-The test writes a shim into a temp directory, `chmod 0755`s it, and `spawnSync`s it. 126 is the
-shell's "found but not executable" — this sandbox blocks execution from that path. Recording it
-rather than skipping it: the right fix is an environment note, not a test change, and it is
-outside this campaign's scope.
+**Correction — I had the mechanism wrong, and a reviewer traced the real one.** I wrote that 126
+was the shell's "found but not executable" and that this sandbox blocks execution from a temp
+path. Neither is true: a `chmod 755` script in `mktemp -d` runs fine here, and `/var/folders` is
+not mounted `noexec`.
+
+126 is **opencodex's own recursion-guard sentinel**. This shell exports
+`OCX_SHIM_ACTIVE_DEPTH=1` and `OCX_SHIM_ACTIVE_PID`, because the session itself was launched
+through an installed Codex shim. The test deleted only the pid, so the outer shim started at
+depth 1 instead of 0, the child re-entry reached depth 2, and the guard fired with its
+launcher-loop message — the shim behaving exactly as designed, on a test that meant to start
+from a clean slate. CI is green because CI has no shimmed ancestor, which is what made the
+failure look environmental rather than under-sanitized.
+
+So the fix is a one-line test change, not an environment note: `delete env.OCX_SHIM_ACTIVE_DEPTH`
+beside the existing pid deletion. Left alone it stays red for every developer running the suite
+under an installed shim. Fixed here; the suite is now **12806 pass, 0 fail** locally.
+
+Worth keeping as the lesson: "environmental" was the right disposition and the wrong
+explanation, and a plausible-sounding mechanism in a durable devlog is exactly what misleads
+whoever hits this next.
