@@ -19,7 +19,17 @@ mkdir -p "${STATE:h}"
 
 log ()  { print -r -- "[cc] $*" >&2 }
 die ()  { print -r -- "[cc] FATAL: $*" >&2; exit 1 }
-save () { print -r -- "$1=$2" >> "$STATE"; log "recorded $1=$2" }
+# Rewrite the key rather than appending: a re-run must not leave two rows for one
+# artifact, because `source` would take the last and a reader would see the first.
+save () {
+  local key="$1" value="$2" tmp="$STATE.tmp"
+  : >| "$tmp"
+  [[ -f "$STATE" ]] && grep -v "^${key}=" "$STATE" >> "$tmp" || true
+  print -r -- "${key}=${value}" >> "$tmp"
+  mv "$tmp" "$STATE"
+  typeset -g "$key"="$value"
+  log "recorded $key=$value"
+}
 
 # Re-reading state is what makes each step independently re-runnable after a
 # compaction, a disconnect, or a day off.
@@ -54,6 +64,7 @@ step_rebase () {
 }
 
 step_push () {
+  load_state
   git push --force-with-lease --no-verify origin cursor-call
   [[ "$(live_branch cursor-call)" == "$(git rev-parse cursor-call)" ]] \
     || die "remote cursor-call does not match local after push"
@@ -119,6 +130,7 @@ step_cut () {
 # PR numbers are recorded by the operator right after `gh pr create`, because only
 # then do they exist. Every later step asserts them rather than assuming.
 step_record_prs () {
+  load_state
   [[ $# -eq 3 ]] || die "usage: step_record_prs <pr1> <pr2> <pr3>"
   save PR1 "$1"; save PR2 "$2"; save PR3 "$3"
 }
