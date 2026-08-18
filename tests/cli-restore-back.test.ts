@@ -99,7 +99,9 @@ describe("ocx restore back", () => {
         CI: "1",
       });
       expect(result.status).toBe(0);
-      expect(`${result.stdout}\n${result.stderr}`).toContain("Codex integration is OFF; sync skipped and no Codex files changed.");
+      // #1931: explicit sync now refreshes the ocx-side catalog/cache while OFF; the
+      // durable policy result is still "Codex config untouched" (mtime asserted below).
+      expect(`${result.stdout}\n${result.stderr}`).toContain("Codex integration is OFF; catalog and models cache refreshed, Codex config untouched.");
       expect(statSync(configPath).mtimeMs).toBe(before);
     } finally {
       rmSync(codexHome, { recursive: true, force: true });
