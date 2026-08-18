@@ -134,6 +134,44 @@ not reach the guard it was written for.
 Verified after the fixes: `pin` records, `record_prs` stores three numbers, the
 re-pin guard refuses, and `pin --repin` clears every downstream key.
 
+## Round 16's second pass: seven more, and a rule about save ordering
+
+- **A MERGED layer did not prove its predecessor.** It checked base, head, and that
+  the merge contained the verified head — but not that it was merged ONTO the
+  `EXPECTED_DEV` this campaign produced. A merge made after an unrelated commit
+  landed on `dev` would have been adopted as the next layer. Now the merge commit's
+  first parent must equal `EXPECTED_DEV`.
+- **`MERGED_DEV` was saved BEFORE its proofs.** A disconnect or a failing ancestry
+  assertion left a durable key that `release_gates` trusts on the next invocation —
+  reopening the exact bypass the proof existed to close. It is now the last thing
+  `merge` does.
+
+  The general rule this produces: **a durable key is a CLAIM that its proofs passed,
+  so it is written after them, never before.** That is now true of every `save` in
+  the file except the worktree paths, which are deliberately the opposite — they are
+  cleanup handles, so they must exist BEFORE the thing that might fail.
+- **`--repin` orphaned the remote worktrees.** It cleared `CC_WORKTREE` and
+  `DEV_WORKTREE` without removing them first, so `cleanup` lost its only handle. It
+  now removes them before forgetting them.
+- **A failed per-layer gate left an untracked worktree.** `LAYER_WORKTREE` is
+  recorded before the gates and cleared on success.
+- **`subject_sha` could return two SHAs.** Two commits sharing a subject would have
+  produced a two-line "SHA" that every later assertion compared against. It now
+  fails unless exactly one matches.
+- **Gate markers were not evidence.** `020` and `050` require the command, its
+  output and the SHA. Every gate now appends a receipt to
+  `.tmp/cursor-call-receipts.log`, including on failure, and the readiness note
+  quotes from it.
+- **`record_prs` recorded three unchecked numbers.** It now verifies each PR points
+  at its layer head and carries all three template sections. The body's SUBSTANCE
+  stays the agent's to write; its STRUCTURE is checkable, so it is checked.
+
+Round 16 also drew the line the script should not cross: creating the PRs and
+authoring their descriptions, the `docs-site/` determination, the readiness note's
+judgment, and semantic conflict resolution are all work that requires understanding
+what the change means. The script validates those afterwards rather than inventing
+them.
+
 `record_prs` is deliberately manual: PR numbers do not exist until `gh pr create`
 returns them, and inventing a way to guess them would reintroduce exactly the
 unbound-value problem this file exists to end.
