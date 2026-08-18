@@ -1,5 +1,11 @@
 # 040 — WP5: merge the stack onto dev + ancestry proof
 
+> **EXECUTION AUTHORITY: `cursor-call-integration.zsh merge`.**
+> The commands below are the reasoning, not the runbook. Seven audit rounds proved a
+> markdown file cannot enforce that a variable is bound before it is read (`019`), so
+> the script owns what runs and this doc owns why. If they disagree the script is
+> right and this doc is stale — fix the doc.
+
 Revised by `r1` F2 (governance honesty), `r3` F1 (base pinning), and `r4` F1 (the
 pin has to EVOLVE through the stack).
 

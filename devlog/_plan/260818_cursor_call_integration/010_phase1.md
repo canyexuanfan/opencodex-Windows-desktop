@@ -1,5 +1,11 @@
 # 010 — WP2: rebase cursor-call onto dev with evidence-based conflict resolution
 
+> **EXECUTION AUTHORITY: `cursor-call-integration.zsh pin | rebase | push`.**
+> The commands below are the reasoning, not the runbook. Seven audit rounds proved a
+> markdown file cannot enforce that a variable is bound before it is read (`019`), so
+> the script owns what runs and this doc owns why. If they disagree the script is
+> right and this doc is stale — fix the doc.
+
 Two conflicts. Both were investigated by an independent read-only agent before any
 rebase step ran; the verdicts below are the resolution contract.
 

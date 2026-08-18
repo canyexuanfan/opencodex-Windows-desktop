@@ -1,5 +1,11 @@
 # 030 — WP4: the stacked pull requests against dev
 
+> **EXECUTION AUTHORITY: `cursor-call-integration.zsh cut | record_prs`.**
+> The commands below are the reasoning, not the runbook. Seven audit rounds proved a
+> markdown file cannot enforce that a variable is bound before it is read (`019`), so
+> the script owns what runs and this doc owns why. If they disagree the script is
+> right and this doc is stale — fix the doc.
+
 Five versions. `r1` F4 killed a fabricated split; `r3` F3 found phase boundaries;
 `r4` F2 killed the commit-range version for "ownership impurity"; `r5` killed the
 ownership version's procedure; `r6` killed the forward-construction version on

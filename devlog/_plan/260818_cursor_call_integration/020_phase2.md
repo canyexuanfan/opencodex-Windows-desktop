@@ -1,5 +1,11 @@
 # 020 — WP3: full remote verification on ssh lidge
 
+> **EXECUTION AUTHORITY: `cursor-call-integration.zsh verify`.**
+> The commands below are the reasoning, not the runbook. Seven audit rounds proved a
+> markdown file cannot enforce that a variable is bound before it is read (`019`), so
+> the script owns what runs and this doc owns why. If they disagree the script is
+> right and this doc is stale — fix the doc.
+
 Revised by audit `r1` F5 (gates moved before the PR) and audit `r3` F1+F2 (base
 pinning, and never `checkout -f` a shared checkout).
 

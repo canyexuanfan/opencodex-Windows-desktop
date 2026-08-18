@@ -1,5 +1,11 @@
 # 050 — WP6: release gates on dev + go/no-go note
 
+> **EXECUTION AUTHORITY: `cursor-call-integration.zsh release_gates`.**
+> The commands below are the reasoning, not the runbook. Seven audit rounds proved a
+> markdown file cannot enforce that a variable is bound before it is read (`019`), so
+> the script owns what runs and this doc owns why. If they disagree the script is
+> right and this doc is stale — fix the doc.
+
 Revised by audit `r1` F5 (these are a RE-RUN, not first contact — first contact is
 `020`, before the PRs) and audit `r3` F2/F4/F5.
 
