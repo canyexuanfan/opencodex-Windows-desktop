@@ -49,8 +49,40 @@ describe("an upstream error stop_reason is a failure, not a stop", () => {
       status: 200, headers: { "content-type": "text/event-stream" },
     }))) events.push(e);
 
-    expect(events.some(e => e.type === "error")).toBe(true);
+    const error = events.find(e => e.type === "error") as { usage?: { inputTokens?: number; outputTokens?: number } } | undefined;
+    expect(error).toBeDefined();
     expect(events.some(e => e.type === "done")).toBe(false);
+    // Assert the usage this test is named for: without it the title was a claim the test
+    // never checked, and removing usage would have kept it green.
+    expect(error?.usage?.inputTokens).toBe(10);
+    expect(error?.usage?.outputTokens).toBe(4);
+  });
+
+  test("streaming EOF without message_stop also fails, and keeps usage", async () => {
+    // A compatible provider may close after message_delta without message_stop. That branch
+    // bypasses emitDone entirely, so it needs its own check — an audit found it still
+    // reporting success while the two other terminal paths were fixed.
+    const adapter = createAnthropicAdapter(provider);
+    const frames = [
+      'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":10}}}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"error"},"usage":{"output_tokens":4}}\n\n',
+      // no message_stop: the stream just ends
+    ].join('');
+    const events: AdapterEvent[] = [];
+    for await (const e of adapter.parseStream(new Response(frames, {
+      status: 200, headers: { "content-type": "text/event-stream" },
+    }))) events.push(e);
+
+    const error = events.find(e => e.type === "error") as { usage?: { inputTokens?: number } } | undefined;
+    expect(error).toBeDefined();
+    expect(events.some(e => e.type === "done")).toBe(false);
+    expect(error?.usage?.inputTokens).toBe(10);
+
+    const json = buildResponseJSON(events, "anthropic/claude-opus-5", { compaction: true });
+    expect(json.status).toBe("failed");
+    expect((json.output as { type: string }[]).some(o => o.type === "compaction")).toBe(false);
   });
 
   test("a turn that failed upstream installs no compaction history", async () => {
@@ -80,4 +112,3 @@ describe("an upstream error stop_reason is a failure, not a stop", () => {
     expect(events.some(e => e.type === "error")).toBe(false);
   });
 });
-

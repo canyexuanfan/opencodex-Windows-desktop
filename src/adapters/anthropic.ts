@@ -1155,6 +1155,21 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
       if (!emittedDone) {
         // Fail closed on transport EOF. Compatible providers may omit message_stop after message_delta.stop_reason.
         if (pendingStopReason !== undefined) {
+          // Same rule as emitDone: an `error` stop reason is a failed generation, not a stop.
+          // This branch bypasses emitDone entirely (it exists for providers that close after
+          // message_delta without message_stop), so the check has to be repeated here or the
+          // EOF route silently reports success.
+          if (pendingStopReason === "error") {
+            emittedDone = true;
+            yield {
+              type: "error",
+              message: "upstream ended the turn with stop_reason \"error\"",
+              status: 502,
+              errorType: "upstream_error",
+              usage: usageFromAnthropic(pendingUsage),
+            };
+            return;
+          }
           const stopReason = pendingStopReason === "max_tokens"
             ? "max_tokens"
             : pendingStopReason === "refusal" || pendingStopReason === "content_filter"
