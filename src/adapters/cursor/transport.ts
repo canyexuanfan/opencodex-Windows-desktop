@@ -34,9 +34,8 @@ export interface CursorTransportFactoryInput {
    */
   requestDeclaresFullAccess?: boolean;
   /**
-   * Stable Cursor Connect `x-session-id`. Must survive transport rebuilds for the
-   * same GJC/OCX client thread; a fresh UUID per turn looks like a new IDE session
-   * and trips Cursor Connect resource limits.
+   * Stable Cursor Connect `x-session-id` across transport rebuilds for the same
+   * client thread. Distinct from the per-transport native-exec/shell owner.
    */
   sessionId?: string;
 }

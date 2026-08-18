@@ -433,6 +433,8 @@ class LiveCursorTransport implements CursorTransport {
  private firstFrameLogged = false;
   /** Stable session identifier sent as x-session-id; mirrors IDE session semantics. */
   private readonly sessionId: string;
+  /** Per-transport owner for native-exec / background shells. Must not share conversationId. */
+  private readonly shellOwnerId = crypto.randomUUID();
 
   constructor(private readonly input: CursorTransportFactoryInput) {
     this.sessionId = input.sessionId?.trim() || crypto.randomUUID();
@@ -447,7 +449,7 @@ class LiveCursorTransport implements CursorTransport {
     this.desktopDeps = desktopDepsFromConfig(input.provider.desktopExecutor);
     this.execContext = {
       ...this.desktopDeps,
-      sessionId: this.sessionId,
+      sessionId: this.shellOwnerId,
       unsafeAllowNativeLocalExec: effectiveCursorNativeExecAllow(input.provider, input.requestDeclaresFullAccess === true),
     };
     const servers = resolveMcpServers(input.provider);
@@ -482,7 +484,7 @@ class LiveCursorTransport implements CursorTransport {
             ...this.desktopDeps,
             ...mcpDepsFromManager(this.mcpManager!),
             mcpToolDefs,
-            sessionId: this.sessionId,
+            sessionId: this.shellOwnerId,
             unsafeAllowNativeLocalExec: effectiveCursorNativeExecAllow(this.input.provider, this.input.requestDeclaresFullAccess === true),
           };
         } catch (err) {
@@ -678,7 +680,7 @@ class LiveCursorTransport implements CursorTransport {
   }
 
   private startShellCleanup(): Promise<BackgroundShellTerminationReport> {
-    return this.shellCleanup ??= terminateBackgroundShellsForSession(this.sessionId);
+    return this.shellCleanup ??= terminateBackgroundShellsForSession(this.shellOwnerId);
   }
 
   async close(): Promise<void> {

@@ -66,10 +66,9 @@ export const CURSOR_EXTERNAL_ROOT_BLOB_LIMIT = 192;
 export const CURSOR_EXTERNAL_ROOT_BYTE_LIMIT = 512 * 1024;
 
 /**
- * Action text for external-model tool-result continuations. External wire models cannot use
- * resumeAction (Connect rejects replayed-history resumes past a few thousand tokens with
- * resource_exhausted), so the continuation is driven as a userMessageAction; the tool results
- * themselves are already in the history blobs.
+ * Action text for external-model tool-result continuations. Native models keep
+ * resumeAction; external wire models continue as userMessageAction so the
+ * results already stored in history blobs are visible without a ResumeAction.
  */
 export const CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT =
   "Continue: the requested tool results are provided in the conversation history above.";
@@ -587,13 +586,9 @@ function buildPreparedCursorRunRequest(
     ? appendCursorGenericToolUseHint(request.tools, rawText)
     : rawText;
   const lastRawIsToolResult = request.rawMessages?.at(-1)?.role === "toolResult";
-  // Tool-result-only turns on NATIVE models resume the remembered Cursor conversation with
-  // results in history. EXTERNAL wire models must NOT use resumeAction: after the client-tool
-  // suspend the server holds no live step, and Connect deterministically rejects external
-  // resume runs whose replayed history exceeds a few thousand tokens with resource_exhausted
-  // ("resource limit exceeded", surfaced as a 429). Verified live 2026-08-17: identical
-  // 45k-token histories pass as userMessageAction and fail as resumeAction. Results stay in
-  // the history blobs either way; the action text only tells the model to continue.
+  // Native models resume the remembered Cursor conversation. External wire
+  // models continue as userMessageAction so history-blob tool results stay
+  // visible without a ResumeAction.
   const externalToolContinuation = lastRawIsToolResult && isCursorExternalWireModel(request.modelId);
   const actionCase = (externalToolContinuation || (!lastRawIsToolResult && text.trim().length > 0))
     ? "userMessageAction"

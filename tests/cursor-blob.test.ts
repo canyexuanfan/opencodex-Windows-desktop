@@ -622,9 +622,8 @@ describe("Cursor blob handshake", () => {
   });
 
   test("drives external-model tool-result continuations as userMessageAction", () => {
-    // Connect deterministically rejects external resumeAction runs whose replayed history
-    // exceeds a few thousand tokens (resource_exhausted). The continuation must be a
-    // userMessageAction; the tool results stay in the history blobs.
+    // External wire models encode tool-result hops as userMessageAction; native
+    // models keep resumeAction. Tool results stay in the history blobs.
     const bytes = encodeCursorRunRequest({
       modelId: "claude-fable-5",
       conversationId: "c-ext-cont",
