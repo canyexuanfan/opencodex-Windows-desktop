@@ -32,7 +32,8 @@ export function applyProviderContextCap(contextWindow: number | undefined, cap: 
  * 128k 只是 Codex 解析器的兼容底线，不能当成“已发现窗口”再拿去和 cap 做 min。
  */
 export function resolveUnknownRoutedContextWindow(cap: number | undefined): number {
-  return isValidContextCap(cap) ? Math.floor(cap) : 128_000;
+  const window = isValidContextCap(cap) ? Math.floor(cap) : 0;
+  return window > 0 ? window : 128_000;
 }
 
 /** Effective global cap value: explicit config value, else the built-in default. */

@@ -18,4 +18,8 @@ describe("unknown routed context windows", () => {
   test("no cap keeps the conservative 128k fallback", () => {
     expect(resolveUnknownRoutedContextWindow(undefined)).toBe(128_000);
   });
+
+  test("a fractional cap that floors to zero does not invent a zero window", () => {
+    expect(resolveUnknownRoutedContextWindow(0.5)).toBe(128_000);
+  });
 });
