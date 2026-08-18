@@ -29,6 +29,19 @@ function jwtPlanFromPoolCredential(accountId: string): string | undefined {
   return cred ? extractChatgptPlanType(undefined, cred.accessToken) : undefined;
 }
 
+/**
+ * WHAM-wins gate (release-audit fix). A JWT-derived plan may be persisted only when no
+ * WHAM-sourced plan exists for the CURRENT credential generation. A token refresh bumps the
+ * generation, and the refreshed JWT is then genuinely newer information than the previous
+ * generation's WHAM read, so it may write again until WHAM re-observes. Records without
+ * provenance (legacy) stay writable so the original #1989 recovery still works.
+ */
+function jwtMayWritePlan(account: CodexAccount, generation: number): boolean {
+  if (account.planSource !== "wham") return true;
+  const whamGeneration = account.planCredentialGeneration;
+  return whamGeneration !== undefined && generation > whamGeneration;
+}
+
 function collectJwtPoolPlanUpdates(runtimeConfig: OcxConfig): FreshPoolPlanUpdate[] {
   const updates: FreshPoolPlanUpdate[] = [];
   for (const account of (runtimeConfig.codexAccounts ?? []).filter(isSelectableCodexPoolAccount)) {
@@ -36,6 +49,7 @@ function collectJwtPoolPlanUpdates(runtimeConfig: OcxConfig): FreshPoolPlanUpdat
     if (!jwtPlan || codexPlanValue(account.plan) === jwtPlan) continue;
     const generation = readCodexAccountRecord(account.id)?.generation;
     if (generation === undefined) continue;
+    if (!jwtMayWritePlan(account, generation)) continue;
     updates.push({ accountId: account.id, plan: jwtPlan, credentialGeneration: generation });
   }
   return updates;
@@ -55,9 +69,17 @@ function persistJwtPlanUpdates(runtimeConfig: OcxConfig, updates: FreshPoolPlanU
         const liveAccount = configuredPoolAccount(runtimeConfig, update.accountId);
         const persistedAccount = configuredPoolAccount(persistedConfig, update.accountId);
         if (!liveAccount || !persistedAccount) continue;
+        // Re-check against the PERSISTED row: another process may have landed a WHAM
+        // observation between collect and this mutation.
+        if (!jwtMayWritePlan(persistedAccount, update.credentialGeneration)) continue;
         accepted.push(update);
         if (persistedAccount.plan !== update.plan) {
           persistedAccount.plan = update.plan;
+          changed = true;
+        }
+        if (persistedAccount.planSource !== "jwt" || persistedAccount.planCredentialGeneration !== update.credentialGeneration) {
+          persistedAccount.planSource = "jwt";
+          persistedAccount.planCredentialGeneration = update.credentialGeneration;
           changed = true;
         }
       }
@@ -73,6 +95,8 @@ function persistJwtPlanUpdates(runtimeConfig: OcxConfig, updates: FreshPoolPlanU
     const liveAccount = configuredPoolAccount(runtimeConfig, update.accountId);
     if (liveAccount) {
       liveAccount.plan = update.plan;
+      liveAccount.planSource = "jwt";
+      liveAccount.planCredentialGeneration = update.credentialGeneration;
       appliedJwtPlans.set(update.accountId, update.plan);
     }
   }
@@ -107,6 +131,7 @@ export function noteCodexAccountAccessToken(
       appliedJwtPlans.set(accountId, jwtPlan);
       return;
     }
+    if (!jwtMayWritePlan(live, credentialGeneration)) return;
     persistJwtPlanUpdates(runtimeConfig, [{ accountId, plan: jwtPlan, credentialGeneration }]);
     if (codexPlanValue(live.plan) === jwtPlan) appliedJwtPlans.set(accountId, jwtPlan);
   } catch {

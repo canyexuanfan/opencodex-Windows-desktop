@@ -210,9 +210,18 @@ export function serviceTierSupportForModel(
 
 /** Compatibility projection shared by catalog, routing, and request logging. */
 export function serviceTierSupportFromPolicy(
-  policy: Pick<ResolvedFastPolicy, "eligibility">,
+  policy: Pick<ResolvedFastPolicy, "eligibility" | "adapter" | "forwardCallerTier">,
 ): boolean | undefined {
   if (policy.eligibility === "eligible") return true;
-  if (policy.eligibility === "unclassified") return undefined;
+  if (policy.eligibility === "unclassified") {
+    // B1 regression guard: an unclassified chat-wire route whose final adapter will not
+    // forward any tier cannot serialize service_tier, so projecting "unknown" would let
+    // require.serviceTier: "unsupported" routing stop matching groq/ollama-class providers
+    // that main projected as false. Chat + no forwarding stays a definitive false; a
+    // chat route with chatServiceTier: true (forwarding allowed) keeps the historical
+    // unknown, as does every unclassified Responses-wire route.
+    if (policy.adapter === "openai-chat" && !policy.forwardCallerTier) return false;
+    return undefined;
+  }
   return false;
 }

@@ -803,11 +803,12 @@ describe("Responses bridge reasoning and usage parity", () => {
     expect(frames.some(f => f.data.type === "heartbeat")).toBe(false);
   });
 
-  test("wire keepalive comment keeps firing while only adapter heartbeats flow", async () => {
+  test("wire keepalive keeps firing while only adapter heartbeats flow", async () => {
     // Issue #521: web-search buffers semantic events and yields invisible adapter heartbeats from
     // raw-byte progress. Those must not suppress wire keepalives, or Codex Desktop idle-timeouts
-    // (~5 min) while OCX still considers the upstream alive. The wire keepalive is an SSE comment
-    // line (": opencodex heartbeat") so it never triggers deserialization on any client.
+    // (~5 min) while OCX still considers the upstream alive. The default keep-alive is the typed
+    // response.heartbeat frame (codex-rs re-arms only on parsed EVENTS — 110 RCA); the grok
+    // surface swaps to comment lines via heartbeatStyle.
     const heartbeatMs = 50;
     const stallTimeoutSec = 1;
     const cycles = 4;
@@ -870,15 +871,14 @@ describe("Responses bridge reasoning and usage parity", () => {
       const lines = trimmed.split("\n");
       const event = lines.find(l => l.startsWith("event: "))?.slice(7);
       const dataLine = lines.find(l => l.startsWith("data: "));
-      // Skip comment-only frames (e.g. ": opencodex heartbeat"); they have no data
-      // line and must not become fake deserializable events.
+      // Skip data-less frames; a keep-alive frame carries its own data line now.
       if (!dataLine) continue;
       frames.push({ event, data: JSON.parse(dataLine?.slice(6) ?? "{}") as Record<string, unknown> });
     }
 
-    // Wire keepalives are SSE comment lines (": opencodex heartbeat") — they keep the
-    // idle timer alive without producing a typed event any client must deserialize.
-    const keepaliveCount = (rawText.match(/^: opencodex heartbeat$/gm) ?? []).length;
+    // Wire keepalives are typed response.heartbeat frames — codex-rs ignores the unknown
+    // variant but its eventsource layer still yields an event, re-arming the idle timer.
+    const keepaliveCount = (rawText.match(/^event: response.heartbeat$/gm) ?? []).length;
     expect(keepaliveCount).toBeGreaterThan(1);
     expect(frames.some(f => f.event === "response.completed")).toBe(true);
     expect(frames.some(f => (f.data.response as Record<string, unknown> | undefined)?.incomplete_details)).toBe(false);

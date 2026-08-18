@@ -124,3 +124,77 @@ describe("getMainAccountPlan JWT fallback", () => {
     expect(getMainAccountPlan()).toBe("pro");
   });
 });
+
+describe("WHAM-wins plan provenance gate (release-audit fix)", () => {
+  test("a same-generation JWT cannot overwrite a WHAM-sourced plan", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      providers: {},
+      defaultProvider: "openai",
+      codexAccounts: [{
+        id: "pool-wham-fence", email: "fence@example.test", plan: "pro",
+        planSource: "wham", planCredentialGeneration: 1, isMain: false,
+      }],
+    };
+    saveConfig(config);
+    saveCodexAccountCredential("pool-wham-fence", {
+      accessToken: chatgptPlanJwt("plus", "acct-pool-wham-fence"),
+      refreshToken: "refresh-pool-wham-fence",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acct-pool-wham-fence",
+    });
+    // credential save above starts at generation 1 == fence generation
+    reconcileCodexPlansFromTokens(config);
+    expect(config.codexAccounts?.[0]?.plan).toBe("pro");
+    expect(loadConfig().codexAccounts?.[0]?.plan).toBe("pro");
+  });
+
+  test("a newer-generation JWT (token refresh after the WHAM read) may write again", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      providers: {},
+      defaultProvider: "openai",
+      codexAccounts: [{
+        id: "pool-wham-stale", email: "stale@example.test", plan: "pro",
+        planSource: "wham", planCredentialGeneration: 0, isMain: false,
+      }],
+    };
+    saveConfig(config);
+    saveCodexAccountCredential("pool-wham-stale", {
+      accessToken: chatgptPlanJwt("plus", "acct-pool-wham-stale"),
+      refreshToken: "refresh-pool-wham-stale",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acct-pool-wham-stale",
+    });
+    // saved credential generation (>=1) is newer than the WHAM fence at 0
+    reconcileCodexPlansFromTokens(config);
+    expect(config.codexAccounts?.[0]?.plan).toBe("plus");
+    const persisted = loadConfig().codexAccounts?.[0];
+    expect(persisted?.plan).toBe("plus");
+    expect(persisted?.planSource).toBe("jwt");
+  });
+
+  test("the gate survives a restart because provenance is persisted, not in-memory", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      providers: {},
+      defaultProvider: "openai",
+      codexAccounts: [{
+        id: "pool-wham-restart", email: "restart@example.test", plan: "pro",
+        planSource: "wham", planCredentialGeneration: 1, isMain: false,
+      }],
+    };
+    saveConfig(config);
+    saveCodexAccountCredential("pool-wham-restart", {
+      accessToken: chatgptPlanJwt("plus", "acct-pool-wham-restart"),
+      refreshToken: "refresh-pool-wham-restart",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "acct-pool-wham-restart",
+    });
+    resetJwtPlanNotesForTests(); // simulate a fresh process: in-memory notes gone
+    const reloaded = loadConfig(); // startup path reads persisted config
+    reconcileCodexPlansFromTokens(reloaded);
+    expect(loadConfig().codexAccounts?.[0]?.plan).toBe("pro");
+  });
+});
+

@@ -854,6 +854,15 @@ function reconcileFreshPoolAccountPlans(runtimeConfig: OcxConfig, updates: Fresh
         accepted.push(update);
         if (persistedAccount.plan !== update.plan) {
           persistedAccount.plan = update.plan;
+          // WHAM is the authoritative plan source: stamp provenance so a later JWT
+          // reconcile cannot overwrite this observation within the same credential
+          // generation (src/codex/plan-from-token.ts jwtMayWritePlan). Stamped only
+          // alongside a real plan change: a steady-state refresh whose plan is
+          // unchanged must stay write-free (no-config-write contract), and an
+          // unchanged value needs no fence — a JWT rewrite to the same text is a
+          // no-op under the caller's own equality check.
+          persistedAccount.planSource = "wham";
+          persistedAccount.planCredentialGeneration = update.credentialGeneration;
           changed = true;
         }
       }
@@ -873,6 +882,8 @@ function reconcileFreshPoolAccountPlans(runtimeConfig: OcxConfig, updates: Fresh
     const liveAccount = configuredPoolAccount(runtimeConfig, update.accountId);
     if (liveAccount) {
       liveAccount.plan = update.plan;
+      liveAccount.planSource = "wham";
+      liveAccount.planCredentialGeneration = update.credentialGeneration;
     }
   }
 }

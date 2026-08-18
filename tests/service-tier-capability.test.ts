@@ -11,7 +11,7 @@ import { providerConfigSeed, enrichProviderFromRegistry } from "../src/providers
 import { getProviderRegistryEntry } from "../src/providers/registry";
 import type { RequestLogContext } from "../src/server/request-log";
 import { applyServiceTierGate, handleResponses } from "../src/server/responses/core";
-import { canForwardServiceTierForModel, supportsServiceTierForModel } from "../src/providers/service-tier";
+import { canForwardServiceTierForModel, serviceTierSupportForModel, supportsServiceTierForModel } from "../src/providers/service-tier";
 import { serviceTierAdapterForModel } from "../src/providers/service-tier";
 import { candidateCapabilityEvidence } from "../src/routing/capability";
 import { resolveProductionBehaviorValues } from "../src/routing/compatibility/behavior";
@@ -311,3 +311,21 @@ describe("the gate fires on the live handleResponses path", () => {
     expect(undeclared).not.toHaveProperty("service_tier");
   });
 });
+
+describe("unclassified chat-wire tier projection (release-audit fix)", () => {
+  test("unclassified openai-chat without chatServiceTier projects false (require.serviceTier unsupported keeps matching)", () => {
+    const provider = { adapter: "openai-chat" } as OcxProviderConfig;
+    expect(serviceTierSupportForModel(provider, "some-model")).toBe(false);
+  });
+
+  test("unclassified openai-chat WITH chatServiceTier: true keeps the historical unknown", () => {
+    const provider = { adapter: "openai-chat", chatServiceTier: true } as OcxProviderConfig;
+    expect(serviceTierSupportForModel(provider, "some-model")).toBeUndefined();
+  });
+
+  test("unclassified Responses-wire provider stays unknown", () => {
+    const provider = { adapter: "openai-responses" } as OcxProviderConfig;
+    expect(serviceTierSupportForModel(provider, "some-model")).toBeUndefined();
+  });
+});
+
