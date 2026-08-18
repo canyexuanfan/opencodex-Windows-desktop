@@ -80,6 +80,11 @@ let previousCodexHome: string | undefined;
 let previousManualImportEnv: string | undefined;
 let previousFetch: typeof fetch;
 
+function jwtWithExp(exp: number): string {
+  const enc = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  return enc({ alg: "RS256", typ: "JWT" }) + "." + enc({ exp }) + ".sig";
+}
+
 function makeConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
   return {
     port: 10100,
@@ -742,7 +747,9 @@ describe("codex-auth API", () => {
     expect(main?.needsReauth).toBe(true);
   });
 
-  test("main account 401 marks needsReauth and exposes it in the DTO (#327)", async () => {
+  test("main account 401 with an undecodable-exp token is terminal and marks needsReauth (#327, #1932)", async () => {
+    // "expired-main" is not a decodable JWT, so its exp cannot vouch for liveness.
+    // Undecodable exp must fail toward reauth: only a decodable future exp counts as live.
     writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
       tokens: { access_token: "expired-main", account_id: "acct-main" },
     }));
@@ -755,6 +762,54 @@ describe("codex-auth API", () => {
 
     expect(main).toMatchObject({ hasCredential: true, needsReauth: true });
     expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(true);
+  });
+
+  test("bare main account 401 with a verifiably live token is transient, not reauth (#1932)", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: jwtWithExp(Math.floor(Date.now() / 1000) + 3600), account_id: "acct-main" },
+    }));
+    globalThis.fetch = (async () => new Response("", { status: 401 })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1");
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+    const data = await resp!.json() as { accounts: Array<{ id: string; hasCredential: boolean; needsReauth?: boolean }> };
+    const main = data.accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID);
+
+    expect(main).toMatchObject({ hasCredential: true, needsReauth: false });
+    expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(false);
+  });
+
+  test("main account 401 with a live token but terminal body code is still terminal (#1932)", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: jwtWithExp(Math.floor(Date.now() / 1000) + 3600), account_id: "acct-main" },
+    }));
+    globalThis.fetch = (async () => Response.json(
+      { detail: { code: "invalid_refresh_token" } },
+      { status: 401 },
+    )) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1");
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+    const data = await resp!.json() as { accounts: Array<{ id: string; needsReauth?: boolean }> };
+
+    expect(data.accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)?.needsReauth).toBe(true);
+    expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(true);
+    clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+  });
+
+  test("main account 401 with an expired access token is terminal (#1932)", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: jwtWithExp(1), account_id: "acct-main" },
+    }));
+    globalThis.fetch = (async () => new Response("", { status: 401 })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1");
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+    const data = await resp!.json() as { accounts: Array<{ id: string; needsReauth?: boolean }> };
+
+    expect(data.accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)?.needsReauth).toBe(true);
+    expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(true);
+    clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
   });
 
   test("main account invalid-workspace 403 is terminal but a generic 403 is not (#327)", async () => {

@@ -49,3 +49,20 @@ export function isMainAccountTokenLive(now = Date.now()): boolean {
   const exp = typeof payload?.exp === "number" ? payload.exp * 1000 : undefined;
   return exp === undefined || exp > now;
 }
+
+/**
+ * Strict liveness for auth-terminality decisions: true only when the access-token JWT
+ * carries a decodable `exp` that is still in the future.
+ *
+ * Unlike {@link isMainAccountTokenLive}, an undecodable `exp` counts as NOT live here.
+ * This gate decides whether a bare WHAM 401 is downgraded to a transient failure; if an
+ * undecodable token could vouch for itself, a genuinely dead credential would keep every
+ * 401 "transient" and needsReauth could never flip.
+ */
+export function isMainAccountTokenVerifiablyLive(now = Date.now()): boolean {
+  const tokens = readCodexTokens();
+  if (!tokens?.access_token) return false;
+  const payload = decodeJwtPayload(tokens.access_token);
+  const exp = typeof payload?.exp === "number" ? payload.exp * 1000 : undefined;
+  return exp !== undefined && exp > now;
+}

@@ -83,7 +83,7 @@ export {
   updateAccountQuota,
 } from "./quota";
 import { extractAccountId } from "../oauth/chatgpt";
-import { getMainAccountPlan, MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "./main-account";
+import { getMainAccountPlan, isMainAccountTokenVerifiablyLive, MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "./main-account";
 import { captureConfigGeneration, registerStateSweepAfterTick } from "../lib/state-store-sweeper";
 import { reconcileLiveStateStores } from "../lib/state-store-registrations";
 import {
@@ -566,12 +566,31 @@ const MAIN_TERMINAL_AUTH_CODES = new Set([
   "invalid_refresh_token",
 ]);
 
-async function isTerminalMainAuthResponse(resp: Response): Promise<boolean> {
-  if (resp.status === 401) return true;
+/**
+ * A WHAM 401 is not itself proof the local credential died. Upstream edges can
+ * transiently reject a still-valid access token (region/anti-abuse/rotation
+ * races), and fail-closing on every bare 401 makes a healthy main account flip
+ * needs-reauth on the next GUI quota poll. Only treat the response as terminal
+ * when the body carries a known terminal code or the local access token is not
+ * verifiably live (`accessTokenLive`). Liveness must be strict: a JWT whose
+ * `exp` cannot be decoded is NOT live — an undecodable token that vouched for
+ * itself would make a real 401 permanently transient.
+ */
+async function isTerminalMainAuthResponse(resp: Response, accessTokenLive: boolean): Promise<boolean> {
+  if (resp.status === 401) {
+    if (!accessTokenLive) return true;
+    const code = await readMainAuthErrorCode(resp);
+    return typeof code === "string" && MAIN_TERMINAL_AUTH_CODES.has(code);
+  }
   if (resp.status !== 403) return false;
+  const code = await readMainAuthErrorCode(resp);
+  return typeof code === "string" && MAIN_TERMINAL_AUTH_CODES.has(code);
+}
+
+async function readMainAuthErrorCode(resp: Response): Promise<unknown> {
   try {
     const body = await readBoundedResponseBody(resp, { totalTimeoutMs: 1_000, inactivityTimeoutMs: 1_000 });
-    if (!body.displaySafe) return false;
+    if (!body.displaySafe) return undefined;
     const parsed = JSON.parse(body.text) as {
       detail?: { code?: unknown } | string;
       error?: { code?: unknown } | string;
@@ -582,9 +601,9 @@ async function isTerminalMainAuthResponse(resp: Response): Promise<boolean> {
       : typeof parsed.error === "object" && parsed.error !== null
         ? parsed.error.code
         : parsed.code;
-    return typeof code === "string" && MAIN_TERMINAL_AUTH_CODES.has(code);
+    return code;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -704,7 +723,7 @@ async function fetchMainAccountInfoWhileOwned(
       signal: AbortSignal.timeout(8000),
     });
     if (!resp.ok) {
-      const terminalAuthFailure = await isTerminalMainAuthResponse(resp);
+      const terminalAuthFailure = await isTerminalMainAuthResponse(resp, isMainAccountTokenVerifiablyLive());
       const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining, nativeMainLease);
       if (retried) return retried;
       if (terminalAuthFailure) {
