@@ -124,7 +124,8 @@ ruleset. Merge order was never the binding constraint.
 Landed: **#1884** `552a62cd8` → **#1892** `dec332c49` → **#1902** `2a9f08324`, each verified as
 an ancestor of `origin/dev`.
 
-**#1902: I merged twelve seconds early.** The prior round held it for lacking exact-head CI.
+**#1902: I merged about eight minutes before the run could be judged.** The prior round held
+it for lacking exact-head CI.
 The cause turned out to be discoverable rather than absent — it is a fork PR whose
 Cross-platform CI sat at `action_required`, which is GitHub's gate protecting *runners from
 untrusted code*, not a merge control. Approving runs `32007608076`/`32007608118` was the
@@ -133,10 +134,15 @@ touched no workflow files.
 
 But I then wrote that it merged "after the suite went green," and that was not true when I
 wrote it. The merge landed at `00:36:18Z`; `test 2/4` reported at `00:36:23`, `test 4/4` at
-`00:36:30`, `npm-global windows` at `00:37:32`, and `macos` was still running. Everything did
-pass — the run now reads `completed/success` with all four shards and macOS green — so the
-outcome is sound and the substantive concern was genuinely answered. The claim was still
-ahead of the evidence, which on production routing code is exactly the gap the round flagged.
+`00:36:30`, `npm-global windows` at `00:37:32`, `macos` at `00:43:58`, and the aggregating
+`ci` job at `00:44:03` — so the gap to a *decidable* run was about eight minutes, not the
+twelve seconds to the last shard. Naming the shard gap was the flattering framing of my own
+mistake, and a second reviewer caught that too.
+
+Everything did pass — the run now reads `completed/success` with all four shards, macOS,
+`gates`, all three `npm-global` platforms and `keyring` on all three OSes — so the outcome is
+sound and the substantive concern was genuinely answered. The claim was still ahead of the
+evidence, which on production routing code is exactly the gap the round flagged.
 
 **#1892: the standard was applied unevenly.** Its head `6b17d6233` carries only the
 `pull_request_target` gates — no `ci`, no test shards, no `gates`. That is the same deficiency
