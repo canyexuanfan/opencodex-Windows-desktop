@@ -32,15 +32,17 @@ comparing PR2 against the original value would fail by construction.
 The invariant is: **before merging layer N, the live `dev` head must equal the SHA
 that layer N's base was verified against.** Maintain one variable:
 
-    EXPECTED_DEV := VERIFIED_BASE          # from 020, the rebase target
-    before PR1:  git ls-remote origin refs/heads/dev  == EXPECTED_DEV
-    merge PR1
-    EXPECTED_DEV := <PR1 merge result on dev>
-    retarget PR2 to dev, then:  live dev == EXPECTED_DEV
-    merge PR2
-    EXPECTED_DEV := <PR2 merge result on dev>
-    retarget PR3 to dev, then:  live dev == EXPECTED_DEV
-    merge PR3
+    EXPECTED_DEV="$VERIFIED_BASE"                       # from 020, the rebase target
+
+    # per layer N, with PRN and PRN_HEAD from 030 step 5:
+    test "$(git ls-remote origin refs/heads/dev | cut -f1)" = "$EXPECTED_DEV"
+    test "$(gh pr view $PRN --json headRefOid --jq .headRefOid)" = "$PRN_HEAD"
+    gh pr merge $PRN --merge --admin
+    EXPECTED_DEV=$(gh pr view $PRN --json mergeCommit --jq .mergeCommit.oid)
+    gh pr edit $PR_NEXT --base dev                      # retarget the next layer
+
+`EXPECTED_DEV` advances to the MERGE COMMIT of the layer just landed, not to a fresh
+read of `dev` — same reason as `MERGED_DEV` below (audit `r13`).
 
 Read the live head with `git ls-remote origin refs/heads/dev` every time, never
 `origin/dev` — the tracking ref goes stale within minutes
@@ -57,11 +59,9 @@ to prevent it.
 
 Merge in dependency order, PR1 → PR2 → PR3, with the base check before each:
 
-```
-git ls-remote origin refs/heads/dev        # must equal EXPECTED_DEV
-gh pr merge <n> --merge --admin
-gh pr edit <child> --base dev              # retarget the next layer
-```
+    test "$(git ls-remote origin refs/heads/dev | cut -f1)" = "$EXPECTED_DEV"
+    gh pr merge $PRN --merge --admin
+    gh pr edit $PR_NEXT --base dev              # retarget the next layer
 
 ### Also assert the PR HEAD, not just the base (audit `r10`)
 
@@ -118,20 +118,6 @@ attribute someone else's commit to this campaign (audit `r13`):
 If the third assertion fails, someone pushed after PR3 landed. That is not
 necessarily wrong, but `050` must then gate `MERGED_DEV` explicitly and say in the
 readiness note that `dev` has moved past it.
-
-`050` gates exactly that SHA. Same reason as every other named artifact here: a
-phase that re-reads a mutable ref is not verifying what the previous phase produced
-(audits `r7`, `r8`, `r10`).
-
-## Hand `MERGED_DEV` to WP6
-
-After PR3 merges, name the result and pass it on rather than letting `050` re-read a
-moving ref:
-
-```
-MERGED_DEV=$(git ls-remote origin refs/heads/dev | cut -f1)
-git merge-base --is-ancestor "$VERIFIED_TIP" "$MERGED_DEV"      # exit 0
-```
 
 `050` gates exactly that SHA. Same reason as every other named artifact here: a
 phase that re-reads a mutable ref is not verifying what the previous phase produced

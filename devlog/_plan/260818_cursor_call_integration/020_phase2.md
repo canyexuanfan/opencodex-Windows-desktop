@@ -50,11 +50,10 @@ the shared checkout's HEAD.
 
 `dev` moves. Record, at the moment the rebase runs:
 
-```
-git ls-remote origin refs/heads/dev     # LIVE head, not the tracking ref
-```
+    VERIFIED_BASE=$(git ls-remote origin refs/heads/dev | cut -f1)
+    test -n "$VERIFIED_BASE"
 
-That SHA is `VERIFIED_BASE`, and it is what `010` step 1 rebases ONTO — not
+That is `VERIFIED_BASE`, and it is what `010` step 1 rebases ONTO — not
 `origin/dev`, which can be minutes stale (`scripts/release.ts:327-335` uses
 `ls-remote` for exactly this reason). Observed drift during planning alone:
 `87f7f970b` → `e1bdbc1e5` → `1645bb924`.
