@@ -74,9 +74,11 @@ ancestor of a superset.
 So before EACH merge, compare the PR's live head against the SHA `030` step 5
 recorded:
 
-```
-gh pr view <n> --json headRefOid --jq .headRefOid    # must equal PR<N>_HEAD
-```
+    test "$(gh pr view <n> --json headRefOid --jq .headRefOid)" = "$PR1_HEAD"
+    gh pr merge <n> --merge --admin
+
+`test`, not a printed value: a comparison the operator has to eyeball is not a gate
+(audit `r13`). Repeat with `$PR2_HEAD` and `$PR3_HEAD` for the other two layers.
 
 PR3's expected head is `VERIFIED_TIP` — the exact SHA `020` ran the full suite
 against. If any head differs, stop: either re-verify that tree through `020` or
@@ -103,11 +105,19 @@ the `origin/dev` log showing all three merges.
 
 ## Hand `MERGED_DEV` to WP6
 
-After PR3 merges, name the result and pass it on rather than letting `050` re-read a
-moving ref:
+After PR3 merges, take the result from the MERGE ITSELF rather than re-reading a
+mutable ref — a fresh `ls-remote` would silently pick up a concurrent push and
+attribute someone else's commit to this campaign (audit `r13`):
 
-    MERGED_DEV=$(git ls-remote origin refs/heads/dev | cut -f1)
-    git merge-base --is-ancestor "$VERIFIED_TIP" "$MERGED_DEV"      # exit 0
+    MERGED_DEV=$(gh pr view <pr3> --json mergeCommit --jq .mergeCommit.oid)
+    test -n "$MERGED_DEV"
+    git fetch origin dev
+    test "$(git ls-remote origin refs/heads/dev | cut -f1)" = "$MERGED_DEV"   # nobody pushed after us
+    git merge-base --is-ancestor "$VERIFIED_TIP" "$MERGED_DEV"                # exit 0
+
+If the third assertion fails, someone pushed after PR3 landed. That is not
+necessarily wrong, but `050` must then gate `MERGED_DEV` explicitly and say in the
+readiness note that `dev` has moved past it.
 
 `050` gates exactly that SHA. Same reason as every other named artifact here: a
 phase that re-reads a mutable ref is not verifying what the previous phase produced

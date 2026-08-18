@@ -23,14 +23,17 @@ would silently discard any tracked uncommitted work. `git worktree list` on lidg
 already shows a dozen `/tmp/ocx-*` verification worktrees, so this is the
 established pattern there:
 
-```
-ssh lidge 'cd ~/Developer/opencodex && git fetch origin cursor-call dev'
-ssh lidge 'cd ~/Developer/opencodex && git worktree add /tmp/ocx-cc-<SHORTSHA> <SHA>'
-ssh lidge 'cd /tmp/ocx-cc-<SHORTSHA> && git log --oneline -1'
-ssh lidge 'cd /tmp/ocx-cc-<SHORTSHA> && bun install --frozen-lockfile'
-```
+Capture the tip FIRST and build the worktree AT it, so the SHA this phase records is
+provably the SHA it tested (audit `r13`):
 
-`<SHA>` is the tip pushed at the END of WP2b, not `010`'s post-rebase checkpoint
+    VERIFIED_TIP=$(git ls-remote origin refs/heads/cursor-call | cut -f1)
+    test "$VERIFIED_TIP" = "$(git rev-parse cursor-call)"     # local and remote agree
+    ssh lidge "cd ~/Developer/opencodex && git fetch origin cursor-call dev && git worktree add /tmp/ocx-cc-${VERIFIED_TIP:0:9} $VERIFIED_TIP"
+    ssh lidge "cd /tmp/ocx-cc-${VERIFIED_TIP:0:9} && test \"\$(git rev-parse HEAD)\" = \"$VERIFIED_TIP\" && bun install --frozen-lockfile"
+
+Every gate below then runs in `/tmp/ocx-cc-${VERIFIED_TIP:0:9}`.
+
+`VERIFIED_TIP` is the tip pushed at the END of WP2b, not `010`'s post-rebase checkpoint
 push (audit `r8`). WP2b changes code after `010` step 7 runs, so verifying the
 earlier tip would authoritatively bless a tree without WP2b in it. Both work-phases
 push and assert `git ls-remote` matches `git rev-parse cursor-call`; this phase
@@ -115,9 +118,9 @@ recorded `VERIFIED_BASE`.
 ## Record `VERIFIED_TIP` (audit `r10`)
 
 The SHA these gates ran against is the ONLY tree this campaign has authoritative
-evidence for. Name it:
-
-    VERIFIED_TIP=$(git rev-parse cursor-call)     # after WP2b's push, before any gate
+evidence for. It is captured ABOVE, before the worktree is created — not here, and
+not after the gates (audit `r13`): a value read afterwards could differ from the tree
+that was actually tested if `cursor-call` moved during the ~8-minute suite.
 
 Every later phase binds to it: `030` refuses to cut branches unless `cursor-call`
 still equals `VERIFIED_TIP`, and `040` compares each PR's `headRefOid` against its
@@ -145,3 +148,34 @@ PR1 makes a truncated turn reportable, PR3 makes it report tokens.
 
 `tests/cursor-eof-terminal.test.ts` appears in both PR1 and PR3 because WP2b adds
 cases to it. Each layer runs the file as it stands at that layer.
+
+### Run them AT the layer tips, not at the stack tip (audit `r12`)
+
+The table above says WHAT each layer runs; without this it never said WHERE. Running
+PR1's tests at `VERIFIED_TIP` proves nothing about PR1, because that tree already
+contains PR2's and PR3's code — a PR1 test could pass only because of something a
+reviewer of PR1 will never see.
+
+The layer branches do not exist until `030` step 2, so this half of WP3 runs AFTER
+that step and before the PRs are opened. Order inside the work-phase, not a new
+work-phase:
+
+1. `020` first half: gates at `VERIFIED_TIP` (full suite, typecheck, privacy:scan,
+   audit:high, build:gui) — this is the stack-tip evidence PR3 cites.
+2. `030` steps 0-3: bind to `VERIFIED_TIP`, cut `cursor-call-wire` and
+   `cursor-call-cancel`, prove the partition.
+3. `020` this half: one dedicated worktree per layer, pinned to that layer's head:
+
+       for LAYER_SHA in "$PR1_HEAD" "$PR2_HEAD"; do
+         ssh lidge "cd ~/Developer/opencodex && git fetch origin && git worktree add /tmp/ocx-L-${LAYER_SHA:0:9} $LAYER_SHA"
+         ssh lidge "cd /tmp/ocx-L-${LAYER_SHA:0:9} && test \"\$(git rev-parse HEAD)\" = \"$LAYER_SHA\" && bun install --frozen-lockfile"
+         ssh lidge "cd /tmp/ocx-L-${LAYER_SHA:0:9} && bun x tsc --noEmit"
+         ssh lidge "cd /tmp/ocx-L-${LAYER_SHA:0:9} && bun test <that layer's files from the table>"
+       done
+
+   `PR3_HEAD` is `VERIFIED_TIP`, already covered by step 1 — do not re-run it.
+4. `030` step 4: push the branches and open the PRs, each citing ITS OWN run.
+
+Every layer's evidence therefore names a SHA equal to that PR's head, which is the
+same SHA `040` asserts with `gh pr view --json headRefOid` before merging. Remove the
+worktrees when the phase closes.

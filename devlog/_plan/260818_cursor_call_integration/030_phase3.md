@@ -88,6 +88,13 @@ anything.
        git show --stat <PR1_TIP>   # must be the 010/020 shipped-record doc commit
        git show --stat <PR2_TIP>   # must be the 040 shipped-record doc commit
 
+   Bind them to variables rather than reading them by eye, so step 5's assertions
+   have something to compare against:
+
+       PR1_TIP=$(git log --format='%H %s' "$VERIFIED_BASE"..cursor-call | grep -F 'record what shipped for 010 and 020' | cut -d' ' -f1)
+       PR2_TIP=$(git log --format='%H %s' "$VERIFIED_BASE"..cursor-call | grep -F 'record what shipped for 040' | cut -d' ' -f1)
+       test -n "$PR1_TIP" && test -n "$PR2_TIP"
+
 2. Create the branches at those commits:
 
        git branch cursor-call-wire   <PR1_TIP>
@@ -115,12 +122,22 @@ anything.
 
 4. Push the two new branches and open the PRs bottom-up.
 
-5. **Record each PR's expected head SHA.** `040` asserts these immediately before
-   merging:
+5. **Record each PR's expected head SHA as real variables.** `040` asserts these
+   immediately before merging. Written as executable assignments, not a legend — a
+   probe of the earlier prose form exited 127 under zsh because `NAME = value` runs
+   `NAME` as a command (audit `r13`):
 
-       PR1_HEAD = <PR1_TIP>
-       PR2_HEAD = <PR2_TIP>
-       PR3_HEAD = $VERIFIED_TIP
+       PR1_HEAD=$(git rev-parse cursor-call-wire)
+       PR2_HEAD=$(git rev-parse cursor-call-cancel)
+       PR3_HEAD=$(git rev-parse cursor-call)
+
+   Then assert they are the SHAs step 1 identified and step 0 pinned, which is what
+   binds the branch tips to the verified tree (the ancestry and count checks above
+   prove topology, not identity):
+
+       test "$PR1_HEAD" = "$PR1_TIP"
+       test "$PR2_HEAD" = "$PR2_TIP"
+       test "$PR3_HEAD" = "$VERIFIED_TIP"
 
 ## Policy constraints (`AGENTS.md`)
 
