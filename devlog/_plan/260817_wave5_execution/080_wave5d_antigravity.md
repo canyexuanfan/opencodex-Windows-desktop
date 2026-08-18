@@ -1,5 +1,11 @@
 # WP8 — Wave 5D: Antigravity fingerprint and discovery
 
+> **Read the two correction sections below before the original text.** The order and the
+> #1836 disposition in this header were both overturned during execution: the real order is
+> `#1891 → #1897 → #1889` for merge-cleanliness but **`#1889` must land first** for
+> correctness, and #1836 was already closed. The original text is left standing as the record
+> of what changed.
+
 ```
 #1889 → #1891 → #1897   (then close #1836 as superseded)
 ```
