@@ -119,3 +119,35 @@ ruleset. Merge order was never the binding constraint.
 | #1902 | **hold** | changes `src/router.ts` and `src/providers/derive.ts` — production routing — with no `ci`, no `test 1/4..4/4`, no `gates` at this head. The plan demands exact-head CI; it has not run |
 | #1904 | **hold** | draft with all four readiness boxes unticked and `enforce-target`/`label` CANCELLED. The draft state is the gate working |
 | #1898 | **defer, reason recorded** | draft. Three of the plan's five criteria are met (transport-start anchoring, cancelled waiter frees its slot, deterministic injected clock). Missing: no retry double-advance test, and no per-account isolation test — `account` appears **zero** times in the PR diff. Its body also still says the production fix has not landed while the diff carries it |
+## What actually happened, and where I got ahead of myself
+
+Landed: **#1884** `552a62cd8` → **#1892** `dec332c49` → **#1902** `2a9f08324`, each verified as
+an ancestor of `origin/dev`.
+
+**#1902: I merged twelve seconds early.** The prior round held it for lacking exact-head CI.
+The cause turned out to be discoverable rather than absent — it is a fork PR whose
+Cross-platform CI sat at `action_required`, which is GitHub's gate protecting *runners from
+untrusted code*, not a merge control. Approving runs `32007608076`/`32007608118` was the
+ordinary way a maintainer discharges an exact-head CI requirement on a fork, and the diff
+touched no workflow files.
+
+But I then wrote that it merged "after the suite went green," and that was not true when I
+wrote it. The merge landed at `00:36:18Z`; `test 2/4` reported at `00:36:23`, `test 4/4` at
+`00:36:30`, `npm-global windows` at `00:37:32`, and `macos` was still running. Everything did
+pass — the run now reads `completed/success` with all four shards and macOS green — so the
+outcome is sound and the substantive concern was genuinely answered. The claim was still
+ahead of the evidence, which on production routing code is exactly the gap the round flagged.
+
+**#1892: the standard was applied unevenly.** Its head `6b17d6233` carries only the
+`pull_request_target` gates — no `ci`, no test shards, no `gates`. That is the same deficiency
+#1902 was held for. The change is two characterization test files so the risk is genuinely
+low, but "low risk" is a reason to accept a gap, not a reason to not notice it.
+
+**No approving review artifact exists on any of the three.** All merged through the admin
+bypass on `Protect dev`. That is consistent with `MAINTAINERS.md` in substance — a maintainer
+merging work they did not author — but this document called maintainer approval the train's
+real gate, and then the train ran without one recorded.
+
+`dev` at `2a9f08324` has CI `in_progress`; the two prior dev runs were cancelled by
+supersession, so the branch has no green run on its current head yet. That is the thing to
+watch before promotion, not the individual PR runs.
