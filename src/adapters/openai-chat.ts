@@ -1201,7 +1201,7 @@ function normalizeXaiToolParameters(parameters: unknown): Record<string, unknown
 
 function toolsToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] | undefined {
   if (!parsed.context.tools || parsed.context.tools.length === 0) return undefined;
-  const tools = parsed.context.tools.filter(toolChoiceToolPredicate(parsed.options.toolChoice));
+  const tools = parsed.context.tools.filter(toolChoiceToolPredicate(parsed.options.toolChoice, parsed.context.tools));
   if (tools.length === 0) return undefined;
   const xaiTarget = isXaiSchemaTarget(provider);
   const formatted = tools.flatMap(t => {
