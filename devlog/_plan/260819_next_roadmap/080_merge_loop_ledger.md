@@ -107,6 +107,51 @@ by the router (`src/router.ts:611-634`, pinned at
 GPT-5.6 ids. Asking the sanitizer to recognize the qualified form would
 duplicate routing normalization. Out of scope, deliberately.
 
+## wp2 — #2085 + #2086 merged
+
+Outcome: **DONE.**
+
+| PR | Head reviewed | Merge commit | In `origin/dev` |
+|---|---|---|---|
+| #2085 admission window | `eceaf0b6e` | `e0585e59e` | yes |
+| #2086 `ocx models` CLI | `f40891410` | `32d7b7939` | yes |
+
+Both heads had moved since the earlier verdict, so the head-drift rule applied
+and a fresh lane (`01a019c8`) reviewed the current code. It returned MERGE for
+both, and it did the thing that makes a review verdict worth acting on: it ran
+the new tests against the **unfixed** production code.
+
+| PR | Against unfixed code | On the merged head |
+|---|---|---|
+| #2085 | 19 pass, **3 fail** | 22 pass, 0 fail + typecheck |
+| #2086 | 16 pass, **2 fail** | 18 pass, 0 fail + typecheck |
+
+That is a real oracle, not an assertion that the tests exist.
+
+### What the drift check found this time
+
+Nothing harmful — but #2086's moved head is not the diff the earlier verdict
+covered. It now orders `noVisionModels` **before** `modelInputModalities`
+(`src/cli/models.ts:108-109`), matching `isModelTextOnly`
+(`src/vision/index.ts:33-35`), which returns on the no-vision match before it
+reads modalities. That is behavior beyond a lookup migration, and it is the
+correct addition: without it the CLI advertises image support the proxy then
+rejects.
+
+Two work-phases, two moved heads, two materially different diffs. The rule is
+earning its cost.
+
+### Recorded weakness
+
+`tests/cli-models.test.ts:239-262` (exact-over-family) is **wholly vacuous** —
+it passes before the fix. Merged anyway because the other two cases in that file
+are genuine oracles, but it should not be cited as coverage.
+
+### Guard held
+
+`#2100` and `#2077` — the two HOLD verdicts from the same `modelRecordValue`
+family — are still OPEN and unmerged. Merging the batch did not sweep them in.
+
 ### Verified clean on this head
 
 - The key-auth test is a real oracle: it fails against `72117f169`.
