@@ -102,8 +102,11 @@ function collectModels(config: OcxConfig, providerFilter?: string): ModelEntry[]
       // proxy will not honour: `isModelTextOnly` matches noVisionModels with modelInList
       // and reads modelInputModalities with modelRecordValue, so a `gpt-oss` entry covers
       // `gpt-oss:120b`. A bare lookup reported that model as unclassified on every field.
+      // noVisionModels is checked first because `isModelTextOnly` returns true on that
+      // match before it ever reads modelInputModalities: a `gpt-oss` noVision entry beats
+      // an exact `gpt-oss:120b` entry that lists "image", and the proxy rejects the image.
       const noVision = modelInList(prov.noVisionModels, model);
-      const modalities = modelRecordValue(inputModalities, model) ?? (noVision ? ["text"] : null);
+      const modalities = noVision ? ["text"] : (modelRecordValue(inputModalities, model) ?? null);
       const efforts = modelRecordValue(reasoningEfforts, model) ?? prov.reasoningEfforts ?? null;
 
       entries.push({

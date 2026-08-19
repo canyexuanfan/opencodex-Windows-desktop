@@ -203,6 +203,39 @@ describe("ocx models richer metadata", () => {
     }
   });
 
+  test("a noVision family entry beats an exact modality entry, as the runtime does", () => {
+    // isModelTextOnly returns true on the noVisionModels match before it ever reads
+    // modelInputModalities, so an exact entry listing "image" does not grant vision.
+    // Reporting ["text", "image"] here would advertise support the proxy then rejects.
+    const dir = mkdtempSync(join(tmpdir(), "ocx-models-novision-"));
+    const provider = {
+      adapter: "openai-chat",
+      baseUrl: "http://localhost:8080/v1",
+      allowPrivateNetwork: true,
+      defaultModel: "gpt-oss:120b",
+      models: ["gpt-oss:120b"],
+      noVisionModels: ["gpt-oss"],
+      modelInputModalities: { "gpt-oss:120b": ["text", "image"] },
+    };
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({ port: 10123, providers: { test: provider }, defaultProvider: "test" }),
+      "utf8",
+    );
+    try {
+      // Ground truth first: the proxy treats this model as text-only.
+      expect(isModelTextOnly(provider as unknown as OcxProviderConfig, "gpt-oss:120b")).toBe(true);
+
+      const result = runCli(["models", "--json"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(0);
+      const row = JSON.parse(result.stdout).models
+        .find((m: { model: string }) => m.model === "gpt-oss:120b");
+      expect(row.inputModalities).toEqual(["text"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("an exact entry still wins over the family entry", () => {
     const dir = mkdtempSync(join(tmpdir(), "ocx-models-exact-"));
     const provider = {
