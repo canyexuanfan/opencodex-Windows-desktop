@@ -274,7 +274,10 @@ describe("could not ask is not an answer", () => {
    * reached the bus, which is the opposite conclusion.
    */
   test("a non-zero systemctl status is unknown even though a missing unit exits zero", () => {
-    const { run } = recorder(() => ({ status: 1, stderr: "Failed to connect to bus" }));
+    // Amended for #2114, not deleted: the rule still holds for every non-zero exit whose
+    // stderr does not prove the bus itself was unreachable. The bus-down family is handled
+    // by reading the unit file instead, and is asserted separately below.
+    const { run } = recorder(() => ({ status: 1, stderr: "Job for opencodex-proxy.service failed" }));
     expect(inspectServiceManagerInstallation({ run, platform: "linux", home }).kind).toBe("unknown");
   });
 
@@ -1006,5 +1009,55 @@ describe("ownership refuses what it cannot prove", () => {
       currentHomes: { codexHome, opencodexHome },
     });
     expect(result.ownership).toBe("owned");
+  });
+});
+
+/*
+ * #2114: systemctl exists and runs, but the user session bus does not answer.
+ *
+ * The old branch called every non-zero exit `unknown`, which fences native-main for the
+ * whole process — the reporter's 503. But "the question never reached the bus" is evidence
+ * about the BUS, not evidence that a foreign service owns this home.
+ *
+ * Widening the exit code alone would fail open, because with the bus down systemctl cannot
+ * see a foreign unit either. So the classification asks the DISK, which needs no bus.
+ */
+describe("systemd probe: the bus is unreachable (#2114)", () => {
+  const BUS_DOWN = "Failed to connect to user scope bus via local transport: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined";
+
+  test("no unit file on disk means nothing can own this home — absent, not fenced", () => {
+    const { run } = recorder(() => ({ status: 1, stderr: BUS_DOWN }));
+
+    expect(inspectServiceManagerInstallation({ run, platform: "linux", home }).kind).toBe("absent");
+  });
+
+  test("a unit naming THIS home is still ours, read off disk", () => {
+    const definitionPath = writeUnit(join(home, ".codex"), join(home, ".opencodex"));
+    const { run } = recorder(() => ({ status: 1, stderr: BUS_DOWN }));
+
+    const result = inspectServiceManagerInstallation({ run, platform: "linux", home });
+
+    expect(result.kind).toBe("present");
+    // Registration is genuinely unknowable with the bus down; the claim must not invent it.
+    expect(result.kind === "present" && result.claims[0]?.definitionPath).toBe(definitionPath);
+    expect(result.kind === "present" && result.claims[0]?.homes.codexHome).toBe(join(home, ".codex"));
+  });
+
+  // The guard that keeps this fail-closed. A foreign unit is exactly the case the old
+  // `unknown` existed to protect, and it must survive the widening.
+  test("a unit naming a FOREIGN home still blocks", () => {
+    writeUnit("/other/.codex", "/other/.opencodex");
+    const { run } = recorder(() => ({ status: 1, stderr: BUS_DOWN }));
+
+    const result = inspectServiceManagerInstallation({ run, platform: "linux", home });
+
+    expect(result.kind).toBe("present");
+    expect(result.kind === "present" && result.claims[0]?.homes.codexHome).toBe("/other/.codex");
+  });
+
+  test("a non-bus failure is untouched — it stays unknown", () => {
+    const { run } = recorder(() => ({ status: 1, stderr: "Job for opencodex-proxy.service failed" }));
+
+    expect(inspectServiceManagerInstallation({ run, platform: "linux", home }).kind).toBe("unknown");
   });
 });
