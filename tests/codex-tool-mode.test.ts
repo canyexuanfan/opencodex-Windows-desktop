@@ -191,7 +191,7 @@ describe("Codex tool mode configuration (#2106)", () => {
   test("buildCatalogEntries with codexForwardNativeCapabilityAlias applies codexToolMode = shell", () => {
     const { buildCatalogEntries, NATIVE_DAYBREAK_BLUE_MODEL, upstreamNativeEntry } = require("../src/codex/catalog");
     const { CODEX_CUSTOM_MODEL_CATALOG_KIND, findNativeTemplate } = require("../src/codex/catalog/parsing");
-    const nativeTemplate = () => findNativeTemplate(upstreamNativeEntry("gpt-5.6-sol")!);
+    const nativeTemplate = () => findNativeTemplate({ models: [upstreamNativeEntry("gpt-5.6-sol")!] });
     const models = [{
       id: NATIVE_DAYBREAK_BLUE_MODEL,
       provider: "openai",

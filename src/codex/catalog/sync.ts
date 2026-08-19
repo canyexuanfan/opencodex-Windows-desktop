@@ -360,8 +360,8 @@ export function deriveEntry(
     });
   }
   // Fallback when no template is available (best-effort; strict parser may need more).
-  // All routed fallbacks enable deferred code-mode tool exposure; otherwise the nested catalog
-  // expands into `exec.description` and can exceed Cursor's 120 KB serialized tool limit (#1830).
+  // Routed fallbacks default to code-mode tool exposure (or shell mode when codexToolMode === "shell");
+  // otherwise the nested catalog expands into `exec.description` and can exceed Cursor's 120 KB serialized tool limit (#1830).
   // Cursor still omits hosted web-search metadata because runTurn bypasses that separate sidecar.
   const isCursorFallback = isRouted && model?.provider === "cursor";
   const entry: RawEntry = {
