@@ -689,6 +689,44 @@ describe("FastWire per-attempt cost", () => {
     expect(openAi.priorityLowerBound).toBeUndefined();
   });
 
+  test("an ASSUMED OpenRouter priority attempt is a lower bound, not a definite standard price", () => {
+    // The provider never echoed a tier, so we do not know which price was billed. Reporting
+    // the standard total unmarked would tell the UI "this cost 1.6" for a request that may
+    // have been served -- and billed -- as priority. The confirmed case is a lower bound
+    // because the premium price is not bundled; the assumed case is a lower bound because
+    // the OUTCOME itself was never observed. Both must carry the marker.
+    const usage = { inputTokens: 1_000_000, outputTokens: 0, cachedInputTokens: 0 };
+    const assumedPriority = {
+      canonical: "priority" as const,
+      wireKind: "service-tier" as const,
+      wireValue: "priority",
+      fastOutcome: "applied" as const,
+      confirmation: "assumed" as const,
+    };
+    const openRouterOverlays: ExpectedPriceOverlay[] = [{
+      provider: "openrouter",
+      modelId: "openai/gpt-5.6-sol",
+      cost4: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+      source: "test",
+      verifiedAt: "2026-08-18",
+      status: "verified",
+    }];
+
+    const assumed = estimateComboCost([{
+      ordinal: 1,
+      provider: "openrouter",
+      model: "openai/gpt-5.6-sol",
+      usageStatus: "reported",
+      usage,
+      tierOutcome: assumedPriority,
+    }], openRouterOverlays)!;
+
+    expect(assumed.priorityLowerBound).toBe(true);
+    expect(assumed.attempts?.[0]?.priorityLowerBound).toBe(true);
+    // No premium multiplier is applied — the standard rate IS the floor being reported.
+    expect(assumed.priorityMultiplier).toBeUndefined();
+  });
+
   test("management cost metadata exposes the aligned priority_lower_bound reason", () => {
     const result = costResult({
       provider: "openrouter",

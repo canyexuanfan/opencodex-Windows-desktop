@@ -459,6 +459,12 @@ function applyPriorityMultiplier(
  * branch does not bundle its provider-specific priority endpoint prices. A confirmed canonical
  * priority result can therefore use the standard price only as a provable lower bound. Do not
  * extend this to flex (cheaper) or to other providers without the same pricing contract.
+ *
+ * An ASSUMED priority attempt needs the same marker for a different reason. There the provider
+ * never echoed a tier at all, so the standard price is not merely a lower bound on a known
+ * premium — it is a floor under an outcome we did not observe. Returning it unmarked reports a
+ * definite standard cost for a request that may well have been billed as priority, which is the
+ * one thing a cost estimate must never do.
  */
 function isOpenRouterPriorityLowerBound(
   provider: string,
@@ -467,7 +473,7 @@ function isOpenRouterPriorityLowerBound(
   return baseProviderLabel(provider) === "openrouter"
     && outcome?.canonical === "priority"
     && outcome.fastOutcome === "applied"
-    && outcome.confirmation === "confirmed";
+    && (outcome.confirmation === "confirmed" || outcome.confirmation === "assumed");
 }
 
 /**
