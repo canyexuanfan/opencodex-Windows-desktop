@@ -151,6 +151,11 @@ class Fixture {
       // A fixed fixture value avoids reading the generated credential file.
       OPENCODEX_ADMIN_AUTH_TOKEN: this.managementToken,
       NO_PROXY: "127.0.0.1,localhost",
+      // The env is a whitelist, so CI does not reach the child unless it is named. It must:
+      // the CLI's Windows identity lookup keeps an 8s budget locally and widens on CI, and
+      // without this the child spawned by a CI runner refuses with "Windows effective-account
+      // lookup timed out" while powershell.exe is still starting.
+      ...(process.env.CI === "true" ? { CI: "true" } : {}),
       ...this.serviceManagerEnv,
     };
   }
