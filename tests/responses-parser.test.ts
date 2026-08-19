@@ -606,4 +606,57 @@ describe("codex-rs compat surface (260707)", () => {
     expect(parseRequest({ model: "p/m", input: "hi", reasoning: { effort: "banana" } }).options.reasoning).toBeUndefined();
     expect(() => parseRequest({ model: "p/m", input: "hi", reasoning: { effort: null } })).toThrow();
   });
+
+  test("a replayed custom_tool_call recovers the namespace it was declared under", () => {
+    // The round trip loses it otherwise. The bridge emits a client-facing custom call with
+    // only the BARE name — `{"type":"custom_tool_call","name":"exec"}` even for a tool
+    // declared as `mcp__functions__exec`. On the next request the adapters replay tool
+    // history through `namespacedToolName(namespace, name)`, so a missing namespace makes
+    // the replayed call target a bare `exec` the provider may not expose.
+    //
+    // `function_call` items do not need this: they carry `namespace` on the wire.
+    const parsed = parseRequest({
+      model: "p/m",
+      tools: [{
+        type: "namespace",
+        name: "mcp__tools",
+        tools: [{ type: "custom", name: "exec", description: "run", format: { type: "text" } }],
+      }],
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "go" }] },
+        { type: "custom_tool_call", call_id: "call_1", name: "exec", input: "ls" },
+      ],
+    });
+
+    const assistant = parsed.context.messages.find(msg => msg.role === "assistant");
+    const call = (assistant?.content as Array<{ type: string; name?: string; namespace?: string }> | undefined)
+      ?.find(part => part.type === "toolCall");
+    expect(call?.name).toBe("exec");
+    expect(call?.namespace).toBe("mcp__tools");
+  });
+
+  test("a replayed custom_tool_call under the reserved functions namespace stays bare", () => {
+    // Companion guard. Codex 0.147 groups ordinary client tools under `functions`, and
+    // buildTools deliberately flattens those WITHOUT a namespace. Reconstructing one here
+    // would invent a namespace the request never advertised and break the reverse mapping
+    // in the other direction.
+    const parsed = parseRequest({
+      model: "p/m",
+      tools: [{
+        type: "namespace",
+        name: "functions",
+        tools: [{ type: "custom", name: "apply_patch", description: "patch", format: { type: "text" } }],
+      }],
+      input: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "go" }] },
+        { type: "custom_tool_call", call_id: "call_2", name: "apply_patch", input: "*** Begin Patch" },
+      ],
+    });
+
+    const assistant = parsed.context.messages.find(msg => msg.role === "assistant");
+    const call = (assistant?.content as Array<{ type: string; name?: string; namespace?: string }> | undefined)
+      ?.find(part => part.type === "toolCall");
+    expect(call?.name).toBe("apply_patch");
+    expect(call?.namespace).toBeUndefined();
+  });
 });

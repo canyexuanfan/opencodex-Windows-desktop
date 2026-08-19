@@ -328,6 +328,35 @@ function attachPendingReasoningToCallOwner(
 
 const REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
+/**
+ * Namespace a custom tool was declared under, by its bare name.
+ *
+ * A `custom_tool_call` echoed back by the client carries only the bare name — the bridge
+ * emits `{"type":"custom_tool_call","name":"exec"}` even when the tool was declared as
+ * `mcp__functions__exec`. Without this lookup the namespace is lost on the return trip,
+ * and the adapters replay history through `namespacedToolName(namespace, name)`, which
+ * then produces a bare `exec` the provider may not have. Ordinary `function_call` items
+ * do not need this: they carry `namespace` on the wire.
+ */
+function customToolNamespaces(tools: unknown): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!Array.isArray(tools)) return out;
+  for (const spec of tools) {
+    if (!isObj(spec) || spec.type !== "namespace" || !Array.isArray(spec.tools)) continue;
+    const namespace = typeof spec.name === "string" ? spec.name : undefined;
+    // Codex 0.147 groups ordinary client tools under the reserved `functions` namespace and
+    // buildTools deliberately flattens those without a namespace. Mirror that here, or the
+    // reconstruction would invent a namespace the request never advertised.
+    if (!namespace || namespace === "functions") continue;
+    for (const inner of spec.tools) {
+      if (!isObj(inner) || inner.type !== "custom" || typeof inner.name !== "string") continue;
+      // Ambiguous bare names are already rejected upstream, so first declaration wins.
+      if (!out.has(inner.name)) out.set(inner.name, namespace);
+    }
+  }
+  return out;
+}
+
 export function parseRequest(
   body: unknown,
   parseOptions?: { replayCacheScope?: OcxReasoningReplayScopeRef },
@@ -341,6 +370,9 @@ export function parseRequest(
   const data = parsed.data;
   const now = Date.now();
   const messages: OcxMessage[] = [];
+  // Built before the item loop: a custom_tool_call echoed back in `input` needs the
+  // namespace from the request's own tool catalog to survive the round trip.
+  const customToolNamespacesByName = customToolNamespaces(data.tools);
   const systemPrompt: string[] = [];
   // Responses reasoning siblings belong to the following assistant, including across call items.
   // Keep them off the message list until that assistant arrives; turn boundaries clear the array.
@@ -574,10 +606,15 @@ export function parseRequest(
       if (effectiveType === "custom_tool_call") {
         const call = item as { id?: string; call_id: string; name: string; input: string };
         const remembered = typeof call.call_id === "string" ? replayThoughtSignatureMetadata(call.call_id, replayCacheScope) : undefined;
+        // Reconstruct the namespace the request declared this tool under. The wire item
+        // carries only the bare name, so without this the round trip loses it and adapters
+        // replay the call as an unnamespaced tool the provider may not expose.
+        const customNamespace = customToolNamespacesByName.get(call.name);
         const toolCall: OcxToolCall = {
           type: "toolCall", id: call.call_id, name: call.name,
           arguments: { input: call.input ?? "" },
           customWireName: call.name,
+          ...(customNamespace ? { namespace: customNamespace } : {}),
           ...(remembered ? { providerMetadata: remembered } : {}),
         };
         assistantHolderWithReasoning().content.push(toolCall);
