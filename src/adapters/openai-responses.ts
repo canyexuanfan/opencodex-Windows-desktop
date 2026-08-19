@@ -186,6 +186,28 @@ function stripUnsupportedReasoningParams(body: unknown): unknown {
 }
 
 /**
+ * GPT-5.6 replaced the legacy 24-hour retention field with `prompt_cache_options.ttl`, and the
+ * ChatGPT backend 400s the whole request when the retired field is present (issue #2092).
+ *
+ * The retired field is NOT translated to the replacement: 5.6 carries a different TTL contract,
+ * and implicit caching still applies when the caller sent no replacement options. Inventing a
+ * value here would silently change a caching decision the caller never made.
+ *
+ * Deliberately narrow on both axes, because a wider strip is a behavior change rather than a fix:
+ * only the gpt-5.6 family (an older model may still honor the field), and only on the canonical
+ * ChatGPT backend, which is the deployment that rejects it. Matching is exact-or-dashed-prefix so
+ * a future `gpt-5.60` is not swept up by a bare `startsWith`.
+ */
+function stripDeprecatedPromptCacheRetention(body: unknown, modelId: unknown): unknown {
+  if (!isPlainObject(body)) return body;
+  if (typeof modelId !== "string") return body;
+  if (modelId !== "gpt-5.6" && !modelId.startsWith("gpt-5.6-")) return body;
+  if (!Object.hasOwn(body, "prompt_cache_retention")) return body;
+  const { prompt_cache_retention: _retention, ...rest } = body;
+  return rest;
+}
+
+/**
  * A false model capability prevents Codex from emitting summary fields after the catalog refresh.
  * Strip them here as well so an already-running client with a stale catalog cannot keep sending an
  * upstream-rejected `reasoning_summary_delivery` value (issue #323).
@@ -1491,6 +1513,11 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       }
       if (forward) {
         outBody = stripUnsupportedForwardParams(outBody);
+        // Only the canonical ChatGPT backend rejects the retired field; a self-hosted or
+        // third-party forward gateway may still accept it, so this must not be widened.
+        if (isCanonicalOpenAiForwardProvider(provider)) {
+          outBody = stripDeprecatedPromptCacheRetention(outBody, parsed.modelId);
+        }
       } else {
         outBody = preferConfiguredHostedTools(
           outBody,
