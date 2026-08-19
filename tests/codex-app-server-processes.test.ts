@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTrustedWindowsElevationExecutablesForTests } from "../src/lib/windows-elevation";
 import {
@@ -17,7 +18,6 @@ import {
   parseWindowsSnapshotOutput,
   resetCodexAppServerCatalogStateCache,
   restartCodexAppServers,
-  setWindowsSnapshotExecAsyncForTest,
   STALE_CODEX_APP_SERVER_HINT,
   warnIfStaleCodexAppServersAfterStartupWrite,
   WINDOWS_CODEX_BASENAME_CANDIDATE_RE,
@@ -102,33 +102,53 @@ describe("collectCodexAppServerCatalogState (#857)", () => {
   // production default is async: reverting the default to `execFileSync` leaves every
   // assertion in it passing. It describes the intended design without guarding it.
   //
-  // This one drives the DEFAULT wiring — no `listSnapshotsAsync` override — through the
-  // exec seam, so a synchronous enumeration is observable as what it actually is: a
-  // blocked event loop. That is the defect #1852 reported.
-  test("the default Windows request enumeration does not block the event loop (#1852)", async () => {
+  // The one below guards it. It replaces the *executable* rather than the code under
+  // test, so BOTH default PowerShell calls — process enumeration and start-time
+  // discovery — run for real through their production wiring. A synchronous
+  // implementation parks the event loop for the script's whole duration; an
+  // asynchronous one does not. That difference is the entire content of #1852.
+  test("the default Windows request path keeps the event loop alive through both PowerShell calls (#1852)", async () => {
     resetCodexAppServerCatalogStateCache();
-    const restore = setWindowsSnapshotExecAsyncForTest(async () => {
-      // Stand in for a slow CIM walk. A synchronous implementation spends this time
-      // inside execFileSync with the loop parked; an async one leaves it running.
-      await new Promise(resolve => setTimeout(resolve, 30));
-      return `42\t${APP_SERVER_CMD}\tCONTOSO\\jun`;
-    });
+    const dir = mkdtempSync(join(tmpdir(), "ocx-ps-fake-"));
+    const fake = join(dir, "powershell.sh");
+    // Ignores its arguments and stalls, then prints one enumeration row. Both the
+    // snapshot call and the start-time call land here; each sleeps, so a synchronous
+    // runner blocks twice.
+    writeFileSync(fake, [
+      "#!/bin/sh",
+      "sleep 0.2",
+      `printf '%s\\t%s\\t%s\\n' 42 '${APP_SERVER_CMD}' 'CONTOSO\\\\jun'`,
+    ].join("\n"));
+    chmodSync(fake, 0o755);
+    setTrustedWindowsElevationExecutablesForTests({ powershell: fake });
+
+    let ticks = 0;
+    let status: Awaited<ReturnType<typeof collectCodexAppServerCatalogStateForRequest>>;
+    const timer = setInterval(() => { ticks += 1; }, 10);
     try {
-      let ticks = 0;
-      const timer = setInterval(() => { ticks += 1; }, 5);
-      const status = await collectCodexAppServerCatalogStateForRequest({
+      status = await collectCodexAppServerCatalogStateForRequest({
         platform: "win32",
-        readStartMsBatchAsync: async pids => new Map(pids.map(pid => [pid, 2_000])),
         catalogMtimeMs: () => 1_000,
       });
-      clearInterval(timer);
-      expect(status.state).toBe("fresh");
-      // The whole point of the fix: other work ran while enumeration was in flight.
-      expect(ticks).toBeGreaterThan(0);
     } finally {
-      restore();
+      clearInterval(timer);
+      setTrustedWindowsElevationExecutablesForTests(null);
+      rmSync(dir, { recursive: true, force: true });
       resetCodexAppServerCatalogStateCache();
     }
+
+    // Assert the fake was actually parsed. Without this the test passes on
+    // "not_running" — which is what a failed exec also produces — so a broken
+    // enumeration would look identical to a fast one.
+    expect(status.processes.map(proc => proc.pid)).toEqual([42]);
+
+    // The fake stalls ~200ms per call against a 10ms timer, and the request path makes
+    // TWO calls (enumeration, then start-time discovery). Measured on this repo:
+    // async default ~42 ticks, synchronous default ~19. The gap is real but not total —
+    // Bun's execFileSync still lets a few timers through — so the threshold sits between
+    // the two measurements rather than at zero. Isolated probe for the same runtime:
+    // execFileSync("sleep 0.3") admits 1 tick against a 10ms timer.
+    expect(ticks).toBeGreaterThan(28);
   });
 
   test("Windows request collection shares one in-flight refresh and its short cache (#1852)", async () => {

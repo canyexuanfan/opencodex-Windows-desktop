@@ -4,14 +4,15 @@
  * the Proactive delegation prompt when they arrive with the synthetic top tier.
  */
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { injectDeveloperMessage, multiAgentGuidanceText, sanitizeEncryptedContentInPlace } from "../src/server/responses";
 import { parseRequest } from "../src/responses/parser";
 import type { OcxParsedRequest } from "../src/types";
 import { CODEX_ACCOUNT_BOUND_CATALOG_KIND, effectiveSubagentRoster } from "../src/codex/catalog";
-import { collectCodexAppServerCatalogState } from "../src/codex/app-server-processes";
+import { collectCodexAppServerCatalogState, resetCodexAppServerCatalogStateCache } from "../src/codex/app-server-processes";
+import { setTrustedWindowsElevationExecutablesForTests } from "../src/lib/windows-elevation";
 import { clearDebugSettings, setDebugSettings } from "../src/lib/debug-settings";
 import {
   getInjectionDebugLogEntries,
@@ -116,6 +117,56 @@ describe("multiAgentGuidanceText", () => {
     codexHomeFixture(V2_OFF);
     expect(await multiAgentGuidanceText(parsedFixture({ reasoning: "max", tools: [{ name: "spawn_agent" }] }))).toBeNull();
     expect(await multiAgentGuidanceText(parsedFixture({ reasoning: "max", tools: [{ name: "shell" }] }))).toBeNull();
+  });
+
+  // Every catalog-state test in this file injects `collectCatalogState`, which means none
+  // of them observes which collector the DEFAULT path picks. Rewiring the v2 boundary back
+  // to the synchronous collector left this whole suite green — the regression #1852 exists
+  // to prevent would have shipped unnoticed. This pins the default wiring itself.
+  test("the v2 default catalog path uses the request collector, not the synchronous one (#1852)", async () => {
+    const dir = codexHomeFixture(V2_ON);
+    catalogFixture(dir, [{
+      slug: "anthropic/claude-sonnet-5",
+      efforts: ["low", "medium", "high", "xhigh"],
+    }]);
+    const parsed = parsedFixture({ reasoning: "medium", tools: [{ name: "spawn_agent" }] });
+
+    // Force the default dependency by passing NO collectCatalogState, and make the
+    // underlying process enumeration observable through the trusted-executable seam:
+    // a stalling fake stands in for a slow CIM walk. The async request collector leaves
+    // the loop free; the synchronous collector parks it.
+    const fakeDir = mkdtempSync(join(tmpdir(), "ocx-collab-ps-"));
+    const fake = join(fakeDir, "powershell.sh");
+    writeFileSync(fake, ["#!/bin/sh", "sleep 0.2", "printf ''"].join("\n"));
+    chmodSync(fake, 0o755);
+    setTrustedWindowsElevationExecutablesForTests({ powershell: fake });
+    const realPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    resetCodexAppServerCatalogStateCache();
+    // This suite sets a hermetic state override at module load so the host's real
+    // app-server cannot leak in. That override short-circuits before any collector runs,
+    // so it has to come off for exactly this test — which is the one test that needs the
+    // real default path.
+    delete process.env.OPENCODEX_APP_SERVER_CATALOG_STATE_OVERRIDE;
+
+    let ticks = 0;
+    const timer = setInterval(() => { ticks += 1; }, 10);
+    try {
+      await multiAgentGuidanceText(parsed, { injectionModel: "anthropic/claude-sonnet-5" });
+    } finally {
+      clearInterval(timer);
+      Object.defineProperty(process, "platform", realPlatform);
+      setTrustedWindowsElevationExecutablesForTests(null);
+      rmSync(fakeDir, { recursive: true, force: true });
+      resetCodexAppServerCatalogStateCache();
+      process.env.OPENCODEX_APP_SERVER_CATALOG_STATE_OVERRIDE = "fresh";
+    }
+
+    // Measured on this repo against the stalling fake: the async request collector admits
+    // ~23 ticks, the synchronous collector admits 0 — it parks the loop for the whole
+    // enumeration. Any positive count proves the async wiring; the margin to 8 is
+    // generous enough that a loaded CI box cannot flake it.
+    expect(ticks).toBeGreaterThan(8);
   });
 
   test("v2 guidance suppresses positive model claims while the app-server catalog is stale or unknown (#857)", async () => {
