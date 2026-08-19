@@ -413,6 +413,7 @@ function captureProviderGather(
     name,
     provider,
     registryTransportMatch,
+    configured,
   );
   const observedAuth = authResolver.kind === "observed"
     && provider.authMode !== "forward"
