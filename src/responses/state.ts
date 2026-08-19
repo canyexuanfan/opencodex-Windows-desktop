@@ -506,6 +506,18 @@ export interface ResponseStateTempRecoveryResult {
   removed: number;
   failed: number;
   bytesRemoved: number;
+  /** Entries that passed EVERY gate and would be reclaimed. In a dry run nothing is
+   *  unlinked, so this is the only honest count to show an operator: `matched` is
+   *  incremented before the file-type, age, boot-floor, and liveness gates. */
+  eligible: number;
+  /** Total size of the `eligible` entries. */
+  eligibleBytes: number;
+  /** The scan stopped on a budget (entry cap, cleanup cap, or deadline) rather than reaching
+   *  the end of the directory, so the counts below describe a prefix of the backlog and not
+   *  the backlog. `eligible > removed + failed` cannot express this: outside a dry run every
+   *  eligible entry is unlinked or failed on the same iteration, so the two are always equal
+   *  and a comparison between them is dead code. */
+  truncated: boolean;
 }
 
 interface ResponseStateTempRecoveryIO {
@@ -518,11 +530,13 @@ interface ResponseStateTempRecoveryIO {
   unlink: (path: string) => void;
 }
 
-type ResponseStateTempRecoveryOptions = Partial<ResponseStateTempRecoveryIO> & {
+export type ResponseStateTempRecoveryOptions = Partial<ResponseStateTempRecoveryIO> & {
   maxEntries?: number;
   maxCleanups?: number;
   /** Wall-clock ceiling for the scan, or null/undefined for no deadline (startup path). */
   deadlineMs?: number | null;
+  /** Report only: apply every gate, count what would be reclaimed, unlink nothing. */
+  dryRun?: boolean;
 };
 
 function processIsAlive(pid: number): boolean {
@@ -570,6 +584,7 @@ export function recoverStaleResponseStateTemps(
     maxEntries = STALE_TEMP_MAX_ENTRIES,
     maxCleanups = STALE_TEMP_MAX_CLEANUPS,
     deadlineMs = null,
+    dryRun = false,
     ...overrides
   } = options;
   const io = { ...responseStateTempRecoveryIO, ...overrides };
@@ -578,6 +593,9 @@ export function recoverStaleResponseStateTemps(
     removed: 0,
     failed: 0,
     bytesRemoved: 0,
+    eligible: 0,
+    eligibleBytes: 0,
+    truncated: false,
   };
   const startedAt = io.now();
   // One probe per scan, not one per entry. A non-finite or future-dated boot is anomalous, and
@@ -607,8 +625,11 @@ export function recoverStaleResponseStateTemps(
     if (next.done) break;
     const name = next.value;
     scanned += 1;
-    if (scanned > maxEntries || result.removed + result.failed >= maxCleanups) return stopScan();
-    if (deadlineMs !== null && io.now() - startedAt > deadlineMs) return stopScan();
+    // A dry run performs no cleanups, so bounding it by the cleanup budget would truncate
+    // the very report an operator uses to size the problem.
+    if (scanned > maxEntries) { result.truncated = true; return stopScan(); }
+    if (!dryRun && result.removed + result.failed >= maxCleanups) { result.truncated = true; return stopScan(); }
+    if (deadlineMs !== null && io.now() - startedAt > deadlineMs) { result.truncated = true; return stopScan(); }
     const match = RESPONSE_STATE_TEMP_NAME.exec(name);
     if (!match) continue;
     result.matched += 1;
@@ -630,6 +651,10 @@ export function recoverStaleResponseStateTemps(
     const predatesBoot = file.mtimeMs < bootMs - BOOT_FLOOR_SKEW_MS;
     if (pid === process.pid) continue;
     if (!predatesBoot && io.isProcessAlive(pid)) continue;
+
+    result.eligible += 1;
+    result.eligibleBytes += file.size;
+    if (dryRun) continue;
 
     try {
       io.unlink(path);
@@ -988,7 +1013,9 @@ export function sweepExpiredResponseStates(at = now()): number {
 export function reclaimAbandonedResponseStateTemps(
   options: ResponseStateTempRecoveryOptions = {},
 ): ResponseStateTempRecoveryResult {
-  const total: ResponseStateTempRecoveryResult = { matched: 0, removed: 0, failed: 0, bytesRemoved: 0 };
+  const total: ResponseStateTempRecoveryResult = {
+    matched: 0, removed: 0, failed: 0, bytesRemoved: 0, eligible: 0, eligibleBytes: 0, truncated: false,
+  };
   // The try encloses responseStateSweepDirectories() deliberately: recoverStaleResponseStateTemps
   // already swallows its own enumeration failures, so a catch around only that call would be
   // unreachable. snapshotPath()/getConfigDir() are the paths that can genuinely throw.
@@ -999,11 +1026,24 @@ export function reclaimAbandonedResponseStateTemps(
       total.removed += result.removed;
       total.failed += result.failed;
       total.bytesRemoved += result.bytesRemoved;
+      total.eligible += result.eligible;
+      total.eligibleBytes += result.eligibleBytes;
+      // Truncation anywhere makes the whole total a prefix.
+      total.truncated ||= result.truncated;
     }
   } catch {
     /* best-effort: disk reclaim must never destabilize the caller */
   }
   return total;
+}
+
+/**
+ * Report-only counterpart for `ocx doctor`: applies every selection gate and unlinks
+ * nothing. It runs the SAME predicate as the reclaim, so the report and the subsequent
+ * removal cannot disagree about which files are reclaimable.
+ */
+export function inspectAbandonedResponseStateTemps(): ResponseStateTempRecoveryResult {
+  return reclaimAbandonedResponseStateTemps({ dryRun: true });
 }
 
 /** Sweeper adapter: narrows the reclaim to the `() => number` the liveness tick expects. */
