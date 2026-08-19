@@ -1,8 +1,23 @@
 import { describe, expect, test } from "bun:test";
-import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
-import type { OcxParsedRequest, OcxTool } from "../src/types";
+import {
+  createOpenAIChatAdapter as createOpenAIChatAdapterProduction,
+} from "../src/adapters/openai-chat";
+import type {
+  OcxParsedRequest,
+  OcxTool,
+} from "../src/types";
+import { withTestTranslatorBudget } from "./helpers/translator-budget";
 
-function parsedRequest(tool: OcxTool): Parameters<ReturnType<typeof createOpenAIChatAdapter>["buildRequest"]>[0] {
+const createOpenAIChatAdapter = (
+  ...args: Parameters<typeof createOpenAIChatAdapterProduction>
+) =>
+  withTestTranslatorBudget(
+    createOpenAIChatAdapterProduction(...args),
+  );
+
+function parsedRequest(
+  tool: OcxTool,
+): OcxParsedRequest {
   return {
     modelId: "grok-4.6",
     context: {
@@ -17,7 +32,7 @@ function parsedRequest(tool: OcxTool): Parameters<ReturnType<typeof createOpenAI
     },
     stream: true,
     options: {},
-  } as never;
+  };
 }
 
 function xaiAdapter() {
@@ -29,7 +44,7 @@ function xaiAdapter() {
 }
 
 describe("xAI Grok CLI tool schema normalization", () => {
-  test("keeps Claude Code tools with a root $schema", () => {
+  test("keeps Claude Code tools with a root $schema", async () => {
     const tool: OcxTool = {
       name: "Bash",
       description: "Execute a shell command",
@@ -46,9 +61,11 @@ describe("xAI Grok CLI tool schema normalization", () => {
       },
     };
 
-    const body = JSON.parse(
-      xaiAdapter().buildRequest(parsedRequest(tool)).body,
-    ) as {
+    const request = await xaiAdapter().buildRequest(
+      parsedRequest(tool),
+    );
+
+    const body = JSON.parse(request.body) as {
       tools?: Array<{
         type: string;
         function: {
@@ -70,12 +87,15 @@ describe("xAI Grok CLI tool schema normalization", () => {
       required: ["command"],
       additionalProperties: false,
     });
-    expect(body.tools?.[0]?.function.parameters).not.toHaveProperty("$schema");
+    expect(
+      body.tools?.[0]?.function.parameters,
+    ).not.toHaveProperty("$schema");
   });
 
-  test("does not reintroduce $schema when flattening a root union", () => {
+  test("does not reintroduce $schema when flattening a root union", async () => {
     const tool: OcxTool = {
       name: "Bash",
+      description: "Execute a shell command",
       parameters: {
         $schema: "https://json-schema.org/draft/2020-12/schema",
         oneOf: [
@@ -104,9 +124,11 @@ describe("xAI Grok CLI tool schema normalization", () => {
       },
     };
 
-    const body = JSON.parse(
-      xaiAdapter().buildRequest(parsedRequest(tool)).body,
-    ) as {
+    const request = await xaiAdapter().buildRequest(
+      parsedRequest(tool),
+    );
+
+    const body = JSON.parse(request.body) as {
       tools?: Array<{
         function: {
           parameters: Record<string, unknown>;
@@ -115,7 +137,11 @@ describe("xAI Grok CLI tool schema normalization", () => {
     };
 
     expect(body.tools).toHaveLength(1);
-    expect(body.tools?.[0]?.function.parameters).not.toHaveProperty("$schema");
-    expect(body.tools?.[0]?.function.parameters).not.toHaveProperty("oneOf");
+    expect(
+      body.tools?.[0]?.function.parameters,
+    ).not.toHaveProperty("$schema");
+    expect(
+      body.tools?.[0]?.function.parameters,
+    ).not.toHaveProperty("oneOf");
   });
 });
