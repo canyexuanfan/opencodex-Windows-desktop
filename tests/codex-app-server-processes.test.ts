@@ -17,6 +17,7 @@ import {
   parseWindowsSnapshotOutput,
   resetCodexAppServerCatalogStateCache,
   restartCodexAppServers,
+  setWindowsSnapshotExecAsyncForTest,
   STALE_CODEX_APP_SERVER_HINT,
   warnIfStaleCodexAppServersAfterStartupWrite,
   WINDOWS_CODEX_BASENAME_CANDIDATE_RE,
@@ -95,6 +96,39 @@ describe("collectCodexAppServerCatalogState (#857)", () => {
 
     releaseSnapshots?.([{ pid: 42, commandLine: APP_SERVER_CMD }]);
     await expect(collection).resolves.toMatchObject({ state: "fresh" });
+  });
+
+  // The test above injects an ALREADY-async seam, so it stays green whether or not the
+  // production default is async: reverting the default to `execFileSync` leaves every
+  // assertion in it passing. It describes the intended design without guarding it.
+  //
+  // This one drives the DEFAULT wiring — no `listSnapshotsAsync` override — through the
+  // exec seam, so a synchronous enumeration is observable as what it actually is: a
+  // blocked event loop. That is the defect #1852 reported.
+  test("the default Windows request enumeration does not block the event loop (#1852)", async () => {
+    resetCodexAppServerCatalogStateCache();
+    const restore = setWindowsSnapshotExecAsyncForTest(async () => {
+      // Stand in for a slow CIM walk. A synchronous implementation spends this time
+      // inside execFileSync with the loop parked; an async one leaves it running.
+      await new Promise(resolve => setTimeout(resolve, 30));
+      return `42\t${APP_SERVER_CMD}\tCONTOSO\\jun`;
+    });
+    try {
+      let ticks = 0;
+      const timer = setInterval(() => { ticks += 1; }, 5);
+      const status = await collectCodexAppServerCatalogStateForRequest({
+        platform: "win32",
+        readStartMsBatchAsync: async pids => new Map(pids.map(pid => [pid, 2_000])),
+        catalogMtimeMs: () => 1_000,
+      });
+      clearInterval(timer);
+      expect(status.state).toBe("fresh");
+      // The whole point of the fix: other work ran while enumeration was in flight.
+      expect(ticks).toBeGreaterThan(0);
+    } finally {
+      restore();
+      resetCodexAppServerCatalogStateCache();
+    }
   });
 
   test("Windows request collection shares one in-flight refresh and its short cache (#1852)", async () => {

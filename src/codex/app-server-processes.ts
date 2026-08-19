@@ -450,12 +450,32 @@ export function listWindowsSnapshots(runPowerShell?: (psCommand: string) => stri
   return parseWindowsSnapshotOutput(output);
 }
 
-async function listWindowsSnapshotsAsync(): Promise<ProcessSnapshot[]> {
-  const output = await execFileTextAsync(resolveTrustedWindowsPowerShellExe(), [
+/**
+ * Exec seam for the async enumeration. Without it the default request path is
+ * untestable off Windows: `resolveTrustedWindowsPowerShellExe()` fails immediately, so a
+ * synchronous and an asynchronous implementation are indistinguishable from a test — which
+ * is exactly how a test asserting "yields to the event loop" stayed green after the async
+ * call was reverted to `execFileSync`. Overriding this lets a test drive the real default
+ * wiring and observe whether the event loop keeps running during enumeration.
+ */
+let windowsSnapshotExecAsync: (command: string, timeoutMs: number) => Promise<string> =
+  (command, timeoutMs) => execFileTextAsync(resolveTrustedWindowsPowerShellExe(), [
     "-NoProfile", "-NoLogo", "-NonInteractive",
     "-Command",
-    windowsSnapshotPowerShellCommand(),
-  ], 8_000);
+    command,
+  ], timeoutMs);
+
+/** Test-only: swap the async enumeration exec. Returns a restore function. */
+export function setWindowsSnapshotExecAsyncForTest(
+  exec: (command: string, timeoutMs: number) => Promise<string>,
+): () => void {
+  const previous = windowsSnapshotExecAsync;
+  windowsSnapshotExecAsync = exec;
+  return () => { windowsSnapshotExecAsync = previous; };
+}
+
+async function listWindowsSnapshotsAsync(): Promise<ProcessSnapshot[]> {
+  const output = await windowsSnapshotExecAsync(windowsSnapshotPowerShellCommand(), 8_000);
   return parseWindowsSnapshotOutput(output);
 }
 
