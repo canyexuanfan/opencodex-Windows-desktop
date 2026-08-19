@@ -71,4 +71,12 @@ ocx doctor --reclaim-response-temps
 ```
 
 Both commands work without a running proxy. Files currently locked by another
-process are reported rather than forced, and are retried later.
+process are reported rather than forced. They are retried on the next reclaim —
+automatically while the proxy is running, otherwise the next time you run this
+command.
+
+If a very large backlog exceeds one pass, the command says how many files remain
+so you can run it again.
+
+This covers response-state snapshot temps specifically. Other components write
+their own temp files with a similar name, and those are not touched here.

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import {
   collectPaths,
   detectFsType,
@@ -16,6 +16,7 @@ import {
   probeWham,
   proxyDownRestartHint,
   resolveCodexHomeDir,
+  runDoctor,
   type ServiceMemoryData,
 } from "../src/cli/doctor";
 import { collectOrcaCodexHomeDiagnostic } from "../src/codex/home";
@@ -654,14 +655,82 @@ describe("doctor abandoned response-state temps", () => {
     expect(lines.join("\n")).not.toContain("--reclaim-response-temps");
   });
 
-  test("locked files are surfaced honestly and described as retried", () => {
+  test("locked files are surfaced honestly", () => {
     const lines = formatResponseTempLines(result({ matched: 3, removed: 1, failed: 2, bytesRemoved: 24 * 1024 * 1024 }), true);
     expect(lines.join("\n")).toContain("2 file(s) could not be removed");
-    expect(lines.join("\n")).toContain("retried automatically");
+    expect(lines.join("\n")).toContain("in use or locked");
   });
 
   test("a clean machine says so in both modes", () => {
     expect(formatResponseTempLines(result(), false)).toEqual(["  ok  No abandoned response-state temp files."]);
     expect(formatResponseTempLines(result(), true)).toEqual(["  ok  No abandoned response-state temp files."]);
+  });
+
+  test("a partial reclaim tells the operator to run again instead of silently stopping", () => {
+    const lines = formatResponseTempLines(result({ eligible: 816, removed: 512, bytesRemoved: 512 * 24 * 1024 * 1024 }), true);
+    expect(lines.join("\n")).toContain("304 file(s) remain");
+    expect(lines.join("\n")).toContain("Run the command again");
+  });
+
+  test("locked files are never described as retried automatically", () => {
+    // This command exists for the operator whose proxy will not start; in that state nothing
+    // retries anything, so promising automatic retry would be a lie to its target reader.
+    const lines = formatResponseTempLines(result({ removed: 1, failed: 2 }), true).join("\n");
+    expect(lines).not.toContain("retried automatically");
+    expect(lines).toContain("re-run this command");
+  });
+});
+
+describe("doctor reclaim wiring (end to end)", () => {
+  // The formatter tests above cannot observe deletion. This covers the call site itself:
+  // inverting the report/reclaim ternary in runDoctor must fail a test.
+  let tempHome: string;
+  let previousHome: string | undefined;
+  let logged: string[];
+  const realLog = console.log;
+
+  beforeEach(() => {
+    previousHome = process.env.OPENCODEX_HOME;
+    tempHome = join(tmpdir(), `ocx-doctor-temps-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    mkdirSync(tempHome, { recursive: true });
+    process.env.OPENCODEX_HOME = tempHome;
+    logged = [];
+    console.log = (...parts: unknown[]) => { logged.push(parts.join(" ")); };
+  });
+  afterEach(() => {
+    console.log = realLog;
+    if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = previousHome;
+    rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  const seedStaleTemp = (): string => {
+    const deadPid = process.pid === 4242 ? 4243 : 4242;
+    const path = join(tempHome, `responses-state.json.ocx.${deadPid}.1.tmp`);
+    writeFileSync(path, "abandoned snapshot");
+    const old = new Date(Date.now() - 48 * 60 * 60 * 1_000);
+    utimesSync(path, old, old);
+    return path;
+  };
+
+  test("the default run reports the file and leaves it on disk", async () => {
+    const path = seedStaleTemp();
+    await runDoctor([]);
+    expect(existsSync(path)).toBe(true);
+    expect(logged.join("\n")).toContain("reclaimable");
+  });
+
+  test("the opt-in flag removes it", async () => {
+    const path = seedStaleTemp();
+    await runDoctor(["--reclaim-response-temps"]);
+    expect(existsSync(path)).toBe(false);
+    expect(logged.join("\n")).toContain("Reclaimed 1");
+  });
+
+  test("a mistyped flag warns instead of silently reporting", async () => {
+    const path = seedStaleTemp();
+    await runDoctor(["--reclaim-response-temp"]);
+    expect(existsSync(path)).toBe(true);
+    expect(logged.join("\n")).toContain("Unrecognized flag");
   });
 });

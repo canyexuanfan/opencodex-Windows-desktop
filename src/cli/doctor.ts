@@ -683,6 +683,12 @@ export async function fetchServiceMemory(
 
 const mb = (bytes: number): string => `${Math.round(bytes / (1024 * 1024))}MB`;
 
+export const RECLAIM_RESPONSE_TEMPS_FLAG = "--reclaim-response-temps";
+/** Matches the dry run's entry bound so report and reclaim agree on a large backlog. */
+const RESPONSE_TEMP_RECLAIM_MAX_CLEANUPS = 4_096;
+/** Names the subsystem: other components mint temps with the same shape and are not covered. */
+const CLEAN_RESPONSE_TEMP_LINE = "  ok  No abandoned response-state temp files.";
+
 /**
  * Render the abandoned-temp section (testable without console capture).
  *
@@ -699,14 +705,19 @@ export function formatResponseTempLines(
   reclaimed: boolean,
 ): string[] {
   if (reclaimed) {
-    if (result.removed === 0 && result.failed === 0) return ["  ok  No abandoned response-state temp files."];
+    if (result.removed === 0 && result.failed === 0) return [CLEAN_RESPONSE_TEMP_LINE];
     const lines = [`  ok  Reclaimed ${result.removed} abandoned response-state temp file(s), ${mb(result.bytesRemoved)} freed.`];
     if (result.failed > 0) {
-      lines.push(`  !!  ${result.failed} file(s) could not be removed (in use or locked). They are retried automatically.`);
+      // Never "retried automatically": this command exists for the operator whose proxy will
+      // NOT start, and in that state nothing retries anything.
+      lines.push(`  !!  ${result.failed} file(s) could not be removed (in use or locked). Retried on the next reclaim — automatically while the proxy runs, otherwise re-run this command.`);
+    }
+    if (result.eligible > result.removed + result.failed) {
+      lines.push(`  !!  Cleanup budget reached; ${result.eligible - result.removed - result.failed} file(s) remain. Run the command again to continue.`);
     }
     return lines;
   }
-  if (result.eligible === 0) return ["  ok  No abandoned response-state temp files."];
+  if (result.eligible === 0) return [CLEAN_RESPONSE_TEMP_LINE];
   return [
     `  !!  ${result.eligible} abandoned response-state temp file(s), ${mb(result.eligibleBytes)} reclaimable.`,
     "      These are interrupted snapshot writes (continuation cache only) and are safe to remove.",
@@ -843,10 +854,21 @@ export async function runDoctor(args: string[] = []): Promise<void> {
 
   // Runs without the proxy on purpose: the worst accumulation happens when the proxy will
   // not start, which is exactly when the in-process periodic reclaim never ticks.
-  const reclaimTemps = args.includes("--reclaim-response-temps");
+  const reclaimTemps = args.includes(RECLAIM_RESPONSE_TEMPS_FLAG);
   console.log("\nResponse-state temp files");
+  // A typo must not silently degrade into "nothing to reclaim" — the operator would read the
+  // report as an answer to a question they never actually asked.
+  for (const arg of args) {
+    if (arg !== RECLAIM_RESPONSE_TEMPS_FLAG && /^--reclaim/.test(arg)) {
+      console.log(`  !!  Unrecognized flag ${arg}; did you mean ${RECLAIM_RESPONSE_TEMPS_FLAG}? Reporting only.`);
+    }
+  }
   for (const line of formatResponseTempLines(
-    reclaimTemps ? reclaimAbandonedResponseStateTemps() : inspectAbandonedResponseStateTemps(),
+    // The reclaim budget matches the report budget: a report bounded by entries and a removal
+    // bounded by a smaller cleanup cap would tell an operator 816 and then silently free 512.
+    reclaimTemps
+      ? reclaimAbandonedResponseStateTemps({ maxCleanups: RESPONSE_TEMP_RECLAIM_MAX_CLEANUPS })
+      : inspectAbandonedResponseStateTemps(),
     reclaimTemps,
   )) console.log(line);
 
