@@ -182,14 +182,102 @@ identifiers go through `--body-file`, never `--body`.
 - wp2 (R1 split rebase) — pending.
 - wp3 (R3 collisions + eight retargets) — pending.
 
+## wp1 — R2 merge, completed
+
+Outcome: **DONE.**
+
+| PR | Merge commit | In `origin/dev` |
+|---|---|---|
+| #2084 sweeper | `973258488` | yes |
+| #2089 doctor | `c4bf833c9` | yes |
+
+Order held: `#2084` merged to `dev` first, `#2089` retargeted from
+`codex/tmp-reclaim-1-sweeper` to `dev`, then merged. After the retarget the
+child's diff showed exactly the nine phase-two files and none of the parent's,
+which is what the review predicted a correct retarget would look like.
+
+Both fix commits are in `dev` ancestry: `1fbac66f8` (iterator close) and
+`e298cf8ea` (truncation signal).
+
 ## wp2 — R1 rebase split stack
 
-Pending.
+Outcome: **DONE** (rebased and pushed; CI running on the new heads).
+
+| PR | Old head | New head | Rebase |
+|---|---|---|---|
+| #2019 WP1 | `194f9f2a9` | `35990f6ea` | clean, no conflicts |
+| #2023 WP1b | `b2ac2500c` | `874598bd3` | **recut**, see below |
+| #2036 WP2a | `7561e5551` | `6c6925a4d` | clean, no conflicts |
+
+`#2019` and `#2036` rebased without a single conflict, which is itself
+evidence for the stale-base reading: 102 and 42 commits of drift produced zero
+textual disagreement.
+
+### WP1b was recut, not rebased — and that is the honest description
+
+The rebase conflicted across the entire file. The reason is structural rather
+than semantic: WP1b rewrites `types.ts` from 1884 lines into a 103-line barrel,
+so *any* dev commit that adds a declaration to the old file collides with the
+rewrite everywhere. Three conflict hunks spanning lines 1-3450 is what "the
+file was replaced" looks like to a three-way merge.
+
+Resolving hunk-by-hunk would have been guesswork. Instead the leaves were
+re-applied onto the rebased parent and the actual dev delta was re-homed
+deliberately. That delta was exactly three declarations:
+
+| Declaration | Origin | New home |
+|---|---|---|
+| `OcxReasoningReplayIdentity.credentialDurableIdentity` | #2078 | `src/types/request.ts` |
+| `CodexAccount.planSource` | dev | `src/types/accounts.ts` |
+| `CodexAccount.planCredentialGeneration` | dev | `src/types/accounts.ts` |
+
+Taking "ours" on that conflict would have silently dropped all three. Verified
+after: `tsc --noEmit` clean, 150 tests pass, `types.ts` at 103 lines.
+
+### The hygiene gate still fails, correctly
+
+All three still fail `hygiene: missing_regression_test` and `enforce-target`.
+The first is right and is not fixed by rebasing: a pure-move PR changes `src/`
+without changing a test. The honest resolution is `test-exception-approved` —
+the oracle for a barrel extraction is the ~400 files that import through it
+plus `tsc`, and a test asserting "the barrel re-exports `OcxTool`" restates
+the compiler.
 
 ## wp3 — R3 collisions and retargets
 
-Pending.
+Outcome: **DONE** (decisions recorded, retargets applied, no merges).
+
+All eight wrong-branch PRs retargeted `main` -> `dev`: #2110, #2109, #2099,
+#2082, #2063, #2062, #2032, #2029. Seven are `MERGEABLE` after the retarget;
+#2063 is `CONFLICTING` and overlaps the already-merged #2055, so it needs an
+author rebase and a rescope. No contributor head was rewritten — every one of
+those heads lives in a fork.
+
+`prompt_cache_retention` (#2092): **#2102 wins.** Comment posted there with
+the reasoning and the one pre-merge request (its sanitizer sits outside the
+`if (forward)` branch, so it also touches API-key and third-party passthroughs
+and needs an API-key regression). #2091 and #2099 told why they were not
+chosen rather than closed silently.
+
+K12 (#2047): **neither #2056 nor #2062 merges.** Same root cause posted on
+both, with the asymmetry named — #2062 is narrower on reachability, #2056 is
+ahead on preservation, both carry the scoring fail-open.
 
 ## wp4 — R4 modelRecordValue batch review
 
-Pending.
+Outcome: **DONE** (four verdicts posted, no merges).
+
+| PR | Verdict |
+|---|---|
+| #2085 admission ceiling | merge |
+| #2086 `ocx models` CLI | merge (draft) |
+| #2100 routing evidence | hold — missing `noVisionModels` precedence |
+| #2077 Lab fingerprint | hold — over-broad migration |
+
+The batch framing paid for itself by refuting its own premise. The contract as
+first written implied every per-model map should move to `modelRecordValue`;
+two maps (`modelPreferHostedTools`, `modelOpenRouterRouting`) are deliberately
+exact-own-only, so that migration is a regression for them — which is exactly
+what #2077 does. The corrected contract is "read it the way the runtime reads
+*that* map", and `modelRecordValue` is only its implementation for the
+family-aware set. Four separate reviews would likely have missed it.
