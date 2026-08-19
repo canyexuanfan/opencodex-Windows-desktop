@@ -137,11 +137,18 @@ describe("xAI Grok CLI tool schema normalization", () => {
     };
 
     expect(body.tools).toHaveLength(1);
-    expect(
-      body.tools?.[0]?.function.parameters,
-    ).not.toHaveProperty("$schema");
-    expect(
-      body.tools?.[0]?.function.parameters,
-    ).not.toHaveProperty("oneOf");
+    expect(body.tools?.[0]?.function.parameters).toEqual({
+    type: "object",
+    properties: {
+        command: {
+        anyOf: [
+            { type: "string" },
+            { type: "string", minLength: 1 },
+        ],
+        },
+    },
+    required: ["command"],
+    additionalProperties: false,
+    });
   });
 });
