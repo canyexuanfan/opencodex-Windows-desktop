@@ -407,6 +407,12 @@ describe("WP13 composed toggle acceptance", () => {
     const enteredGather = new Promise<void>(resolveEntered => { entered = resolveEntered; });
     const provider = Bun.serve({
       port: 0,
+      // This fixture HOLDS the /models response open on purpose — that hold is the test's
+      // instrument for keeping a provider-discovery request in flight while the toggle flips.
+      // Bun's default request idleTimeout is 10s, so on a loaded Windows shard the runtime
+      // cancelled the very request the test was holding and the assertion saw a 500 instead
+      // of the 200 it was waiting for. The hold is bounded by `released`, not by this value.
+      idleTimeout: 255,
       fetch: async request => {
         if (new URL(request.url).pathname.endsWith("/models")) {
           if (hold) {
