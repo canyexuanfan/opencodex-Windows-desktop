@@ -22,10 +22,25 @@ an operator a way to reclaim them when the proxy will not start at all.
 
 ## Root cause
 
-The reclaim is attached to the request path. A proxy that crashes before serving a
-continuation request leaves its temp behind and never reaches the code that would
-reclaim it. The condition that produces the garbage is the same condition that
-disables the collector, so the file count only ever grows.
+**Corrected after the late round-1 audit (`002_audit_round1_late.md`); the original
+narrative here was falsified.** It claimed a crashing proxy never reaches the reclaim.
+That is wrong: a temp only exists if a snapshot write ran, and every `schedulePersist`
+site (`:897`, `:929`, `:956`, `:971`, `:1214`) is downstream of `ensureLoaded`, so a
+process that produced a temp had ALREADY run the reclaim.
+
+The reclaim runs **once per process, at load, before that process writes anything**.
+Three properties then combine:
+
+1. **One-shot per process.** `ensureLoaded` sets `loaded = true` and never sweeps again,
+   so any temp a process abandons after startup is invisible to it forever.
+2. **The 15-minute grace excludes the predecessor.** `:581` skips files younger than 15
+   minutes, so a proxy restarting promptly after a crash cannot reclaim the temp that
+   crash just produced — and by (1) it never looks again.
+3. **`maxCleanups = 512` caps a single pass** below the ~816 files implied by
+   19.6 GB ÷ 24 MiB, so even a well-timed sweep cannot drain the backlog in one pass.
+
+A restart loop therefore accumulates monotonically: each process sweeps once, too early
+to see its predecessor's fresh temp, then adds one of its own.
 
 This is a scheduling defect, not a missing-feature defect. Both layers below move or
 add a CALLER; neither loosens a reclaim safety gate.

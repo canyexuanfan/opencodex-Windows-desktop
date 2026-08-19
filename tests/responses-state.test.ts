@@ -36,6 +36,7 @@ import {
   previousResponseScopeMismatch,
   recoverStaleResponseStateTemps,
   rememberResponseState,
+  sweepAbandonedResponseStateTemps,
   responseAdmissionCountersForTests,
   responseStateMetrics,
   responseStatePersistPendingForTests,
@@ -1521,6 +1522,10 @@ describe("Responses previous_response_id state", () => {
 
     const result = recoverStaleResponseStateTemps(home, {
       isProcessAlive: pid => pid === 5252,
+      // Pin the boot floor out of this case: it ages fixtures by exactly 60 minutes, so on a
+      // host booted more recently (a normal CI runner) the floor would retire the liveness
+      // probe and reclaim `live` too. The floor has its own tests below.
+      bootTime: () => 0,
     });
 
     expect(result).toMatchObject({ matched: 5, removed: 1, failed: 0 });
@@ -1575,6 +1580,7 @@ describe("Responses previous_response_id state", () => {
     const result = recoverStaleResponseStateTemps(home, {
       isProcessAlive: () => false,
       unlink: () => { throw new Error("locked"); },
+      bootTime: () => 0,
     });
 
     expect(result).toMatchObject({ matched: 1, removed: 0, failed: 1, bytesRemoved: 0 });
@@ -1618,6 +1624,127 @@ describe("Responses previous_response_id state", () => {
     });
 
     expect(result).toEqual({ matched: 0, removed: 0, failed: 0, bytesRemoved: 0 });
+  });
+
+  test("periodic reclaim frees abandoned temps without any continuation access", () => {
+    // The defect this fixes: the reclaim ran only from ensureLoaded, which every
+    // schedulePersist site sits downstream of, so a process had its only look BEFORE it
+    // wrote anything. Here nothing touches the continuation store at all.
+    const old = new Date(Date.now() - 60 * 60 * 1_000);
+    const deadPid = process.pid === 4242 ? 4243 : 4242;
+    const stale = join(home, `responses-state.json.ocx.${deadPid}.1.tmp`);
+    const young = join(home, "responses-state.json.ocx.6262.4.tmp");
+    for (const path of [stale, young]) writeFileSync(path, "private state");
+    utimesSync(stale, old, old);
+
+    const removed = sweepAbandonedResponseStateTemps();
+
+    expect(removed).toBe(1);
+    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(young)).toBe(true);
+  });
+
+  test("boot floor reclaims a pre-boot temp whose pid has been reused", () => {
+    // Without the floor this file is immortal: the liveness probe matches a recycled pid
+    // and the 15-minute grace is a lower bound that never expires the skip.
+    const old = new Date(Date.now() - 60 * 60 * 1_000);
+    const path = join(home, "responses-state.json.ocx.9101.1.tmp");
+    writeFileSync(path, "private state");
+    utimesSync(path, old, old);
+
+    const result = recoverStaleResponseStateTemps(home, {
+      isProcessAlive: () => true,
+      bootTime: () => Date.now() - 30 * 60 * 1_000,
+    });
+
+    expect(result).toMatchObject({ matched: 1, removed: 1, failed: 0 });
+    expect(existsSync(path)).toBe(false);
+  });
+
+  test("the 15-minute grace outranks the boot floor", () => {
+    // A temp written after boot but younger than the grace must survive even though the
+    // floor would otherwise retire its liveness probe. This ordering is the safety argument.
+    const path = join(home, "responses-state.json.ocx.9102.1.tmp");
+    writeFileSync(path, "private state");
+
+    const result = recoverStaleResponseStateTemps(home, {
+      isProcessAlive: () => true,
+      bootTime: () => Date.now() - 24 * 60 * 60 * 1_000,
+    });
+
+    expect(result).toMatchObject({ matched: 1, removed: 0, failed: 0 });
+    expect(existsSync(path)).toBe(true);
+  });
+
+  test("this process's own temps are never reclaimed, even before boot", () => {
+    const old = new Date(Date.now() - 60 * 60 * 1_000);
+    const path = join(home, `responses-state.json.ocx.${process.pid}.1.tmp`);
+    writeFileSync(path, "private state");
+    utimesSync(path, old, old);
+
+    const result = recoverStaleResponseStateTemps(home, {
+      isProcessAlive: () => false,
+      bootTime: () => Date.now(),
+    });
+
+    expect(result).toMatchObject({ matched: 1, removed: 0, failed: 0 });
+    expect(existsSync(path)).toBe(true);
+  });
+
+  test("a future or non-finite boot time disables the floor instead of trusting it", () => {
+    const old = new Date(Date.now() - 60 * 60 * 1_000);
+    const path = join(home, "responses-state.json.ocx.9103.1.tmp");
+    writeFileSync(path, "private state");
+    utimesSync(path, old, old);
+
+    for (const bootTime of [() => Date.now() + 60 * 60 * 1_000, () => Number.NaN]) {
+      const result = recoverStaleResponseStateTemps(home, { isProcessAlive: () => true, bootTime });
+      expect(result).toMatchObject({ matched: 1, removed: 0, failed: 0 });
+      expect(existsSync(path)).toBe(true);
+    }
+  });
+
+  test("a temp another process already removed counts as reclaimed, not failed", () => {
+    // Two proxies sharing one config dir race every tick. Reporting the loser's ENOENT as a
+    // failure would tell an operator a file is "in use or locked" when nobody holds it.
+    const old = new Date(Date.now() - 60 * 60 * 1_000);
+    const path = join(home, "responses-state.json.ocx.9104.1.tmp");
+    writeFileSync(path, "private state");
+    utimesSync(path, old, old);
+
+    const result = recoverStaleResponseStateTemps(home, {
+      isProcessAlive: () => false,
+      bootTime: () => 0,
+      unlink: () => {
+        const error = new Error("gone") as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      },
+    });
+
+    expect(result).toMatchObject({ matched: 1, removed: 1, failed: 0 });
+  });
+
+  test("the periodic scan stops at its wall-clock deadline", () => {
+    const old = new Date(Date.now() - 60 * 60 * 1_000);
+    const names = ["responses-state.json.ocx.9201.1.tmp", "responses-state.json.ocx.9202.2.tmp"];
+    for (const name of names) {
+      const path = join(home, name);
+      writeFileSync(path, "private state");
+      utimesSync(path, old, old);
+    }
+    // Clock jumps past the deadline on the first in-loop read.
+    let ticks = 0;
+    const result = recoverStaleResponseStateTemps(home, {
+      list: () => names,
+      isProcessAlive: () => false,
+      bootTime: () => 0,
+      now: () => (ticks++ === 0 ? 0 : 10_000),
+      deadlineMs: 25,
+    });
+
+    expect(result.removed).toBe(0);
+    for (const name of names) expect(existsSync(join(home, name))).toBe(true);
   });
 
   test("v1 Cursor snapshot migrates to versioned provider state", () => {
