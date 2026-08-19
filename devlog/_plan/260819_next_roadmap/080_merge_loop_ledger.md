@@ -296,6 +296,17 @@ the batching rule doing its job: had these been merged as one stage-1 sweep,
 two defects would have landed behind a green CI, and the shell-hook one deletes
 user configuration.
 
+### Composition check for wp5 and wp6
+
+| wp | PRs | Files | Note |
+|---|---|---|---|
+| wp5 | #1876 | Windows catalog discovery | closes issue #1852 |
+| wp6 | #2112, #1934, #2080 | `types.ts` / `config.ts` overlap set | must land before the split rewrites those files |
+
+wp6 is the one with a deadline attached: those three are the PRs the split
+would otherwise force back onto their authors. #2112 and #1934 are bug fixes,
+so the cost of leaving them is paid by users, not just by the queue.
+
 ### Verified clean on this head
 
 - The key-auth test is a real oracle: it fails against `72117f169`.
