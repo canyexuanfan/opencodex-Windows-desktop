@@ -516,3 +516,35 @@ with three blockers; two were fixed and one was not, and the merge did not
 distinguish between them. A hold is only worth what the re-check before merge is
 worth — and `.passthrough()` is exactly the kind of defect that leaves no trace
 at the merge boundary, because nothing fails.
+
+### The exception argument was wrong, and the review proved it
+
+A lane reviewing `#2019` was asked to judge whether the
+`test-exception-approved` argument actually held. Its answer: **no**, and it
+named the cheap test that would have caught the plausible mistake.
+
+The exception said a pure move's oracle is `tsc` plus the ~400 files importing
+through the barrel. That is true for the **types** — they are erased, so a wrong
+one fails compilation. It is false for the **runtime values**, and nobody had
+separated the two cases.
+
+No test imported `src/types/tools.ts` or `src/types/wire.ts` directly. Every
+import went through the barrel, so barrel and leaf were never compared to each
+other. A barrel that re-declared a value instead of re-exporting it would pass
+every suite in the repository.
+
+Demonstrated rather than argued: forking `MODEL_ADAPTER_OVERRIDE_ALLOWED` into a
+second `Set` inside the barrel leaves `tsc --noEmit` at **exit 0**. Two `Set`
+instances where the code assumes one — the singleton-forking hazard the original
+split risk assessment listed as a MEDIUM program risk and left to *review greps*.
+
+Added as `8f0c1e674`: `tests/types-barrel-identity.test.ts` asserts reference
+identity between barrel and leaf for all 15 moved runtime values, plus a
+both-directions reachability check. An ESM re-export binds the same object, so
+`toBe` passes for a genuine re-export and fails for a copy, a wrapper, or a
+re-declaration. Driven red: the forked `Set` fails exactly two assertions.
+
+**"No test is possible" was a claim, not a fact.** It survived three campaigns
+of this document asserting it — including one where I wrote that a barrel test
+"restates the compiler". It does not. It states something the compiler cannot
+see.
