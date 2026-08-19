@@ -4,23 +4,44 @@ Work-phase: wp2. Scope: **review + rebase + push. No merges.**
 
 ## Why the CI is red, precisely
 
-`#2019` shows four red test shards. None of them is a defect in the change.
+**Corrected 2026-08-19 after an independent audit lane refuted the first
+version of this section.** The original text named the right mechanism and the
+wrong direction; both corrections are below.
 
-The failing assertion in shard 2/4 looks for the literal string
-`invalidateCodexModelsCacheWithPermit(permit, owningCodexHome)`. That string
-exists on the PR head (three files: `src/cli/dispatch.ts`,
-`src/codex/catalog/sync.ts`, `tests/codex-app-server-processes.test.ts`) and
-does not exist anywhere on `dev` — `6c0bde453` removed it.
+The failing assertion in shard 2/4 is a source-invariant test that reads code
+as text. Run `32130164359` reports:
 
-GitHub merges the PR head with the base before running CI. So the run
-executed **dev's newer test file against the PR's older source**. The other
-three shards fail the same shape (hidden raw reasoning, Command Code catalog,
-GUI models page).
+```
+Expected to contain: "invalidateCodexModelsCacheWithPermit(permit, owningCodexHome)"
+Received source:     invalidateCodexModelsCacheWithPermit(permit, owningCodexHome, { allowWhenDesiredDisabled: true })
+```
 
-The control that proves it: `#2023` is a strict superset of `#2019`'s changes,
-and on its own base it is **fully green** — 4/4 test shards, gates, macos,
-every keyring and npm-global leg. A defect in the extraction would fail there
-too.
+So the **test** carried the old two-argument assertion and the **source**
+carried the new three-argument call. The three-argument call arrived on dev in
+`91979cf14`; `6c0bde453` then updated the assertion to match — but it landed
+*after* this run. GitHub merges the PR head with the base before running CI, so
+the run executed **dev's newer source against the PR's older test**.
+
+That is the inverse of what this document first claimed ("dev's newer test
+against the PR's older source"). The conclusion — stale-base merge skew, not a
+defect in the extraction — survives; the mechanism statement had to be fixed.
+
+The failure set is also larger than first recorded. Actual reds: test 1/4
+(hidden raw reasoning), 2/4 (the sync-cache assertion above), 3/4 (Command Code
+catalog), 4/4 (server local API auth), gates (Models-page GUI), and macos
+(multiple). Six legs, not four.
+
+The control: `#2023` is a strict history superset of `#2019`
+(`git merge-base --is-ancestor 194f9f2a b2ac2500` exits 0), and **every
+cross-platform job passes on its base** — shards 1-4, gates, macos, keyring,
+npm-global. It is *not* "fully green": `hygiene` and `enforce-target` fail on
+it, as they do on every PR in this stack.
+
+**What the control does and does not prove.** It shows the extraction does not
+break the suite when the suite and the source agree. It does not prove the
+rebased `#2019` head is defect-free against *current* dev — only a CI run on
+the new head can. Treat "stale base" as the hypothesis this rebase tests, not
+as an established fact.
 
 ## Verified rebase cost
 

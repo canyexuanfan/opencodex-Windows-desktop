@@ -37,6 +37,15 @@ Action: recommend #2102; close #2091 and #2099 with this rationale. #2099 is
 also on the wrong branch and appears in the retarget list below — retargeting
 it and closing it are the same decision, taken once.
 
+**One risk to raise with #2102 rather than silently accept.** Its sanitizer is
+called *outside* the `if (forward)` branch, so it also strips the field from
+API-key and third-party `openai-responses` passthroughs — not just the ChatGPT
+forward path the issue is about. Current OpenAI guidance (replace
+`prompt_cache_retention` with `prompt_cache_options.ttl` on GPT-5.6) makes
+that defensible for genuine OpenAI endpoints, but the tests exercise only the
+forward-mode provider. Ask for an API-key regression test and an explicit
+decision about custom OpenAI-compatible endpoints before merging.
+
 ## Collision B — K12 short-window quota (issue #2047), two PRs
 
 This one is **not** a duplicate, and reading it as one would reintroduce a bug
@@ -60,12 +69,35 @@ Its test suite covers the saturated-burst direction
 (`{weeklyPercent: 1, shortPercent: 100}` → 100) but never the short-only case
 the review flagged.
 
-So #2062 does not supersede #2056; it re-implements it including the blocker.
-Neither should merge until the short window is treated as an **additional
-pressure signal gated on a governing long window being present**.
+`pickLowestUsageAmong` keeps the lowest score, so a short-only 0 beats an
+account with verified long-window usage.
+
+**Reachability differs from #2056, and an audit lane was right to narrow
+this.** #2056 adds `shortPercent` to `hasKnownQuotaValue`, so a short-only
+WHAM snapshot enters the valid cache and reaches the scorer on the ordinary
+parser path. #2062 does not: its `hasKnownQuotaValue` still checks only weekly
+and monthly, so a short-only parse returns `null`. On #2062 the fail-open is
+reachable through unvalidated disk hydration or direct cache insertion, not
+through a normal WHAM response.
+
+That makes #2062's fail-open narrower, not absent — and it is still the same
+defect class the #2056 review named, sitting in code that will be asked to
+accept short-only state as soon as anyone finishes the feature.
+
+**A second defect in #2062 that #2056 does not have:** it preserves the short
+tuple only during `creditsOnly` refreshes. A later weekly/monthly partial
+snapshot without short fields rebuilds `next` and drops the tuple, and
+`updateAccountQuota` likewise omits existing `shortPercent`/`shortResetAt`/
+`shortWindowSeconds`. #2056 handles both preservation cases explicitly.
+
+So neither supersedes the other: on preservation #2056 is ahead, on
+reachability #2062 is accidentally safer, and both carry the scoring
+fail-open. Neither should merge until the short window is treated as an
+**additional pressure signal gated on a governing long window being present**.
 
 Action: neither merges this phase. Post the shared root cause on both, so two
-contributors are not each debugging half of it.
+contributors are not each debugging half of it, and name the preservation gap
+on #2062 specifically.
 
 ## Wrong-branch retargets — eight PRs
 
