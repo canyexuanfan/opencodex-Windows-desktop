@@ -110,6 +110,54 @@ describe("systemd service unit", () => {
     expect(unit).not.toContain('StandardError="append:');
   });
 
+  test("bakes outbound proxy env into the unit so the service is not cut off from upstream (#2107)", () => {
+    // systemd does not inherit the installing shell's environment, and ExecStart runs
+    // /bin/sh -lc — which is dash on Ubuntu/WSL and reads .profile, not .bashrc. A user
+    // whose proxy lives in the shell therefore gets a service that dials upstream direct,
+    // the socket is reset, and the request surfaces as 502 Provider unreachable.
+    const saved = { ...process.env };
+    try {
+      process.env.HTTP_PROXY = "http://127.0.0.1:7890";
+      process.env.HTTPS_PROXY = "http://127.0.0.1:7890";
+      process.env.NO_PROXY = "localhost,127.0.0.1";
+      delete process.env.ALL_PROXY;
+
+      const unit = buildUnit();
+      expect(unit).toContain('Environment="HTTP_PROXY=http://127.0.0.1:7890"');
+      expect(unit).toContain('Environment="HTTPS_PROXY=http://127.0.0.1:7890"');
+      expect(unit).toContain("NO_PROXY=");
+      // An unset key must not produce an empty assignment.
+      expect(unit).not.toContain('Environment="ALL_PROXY="');
+
+      const plist = buildPlist();
+      expect(plist).toContain("<key>HTTP_PROXY</key><string>http://127.0.0.1:7890</string>");
+      expect(plist).not.toContain("<key>ALL_PROXY</key>");
+    } finally {
+      for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"]) {
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+      }
+    }
+  });
+
+  test("omits proxy env entirely when the installing shell has none (#2107)", () => {
+    const saved = { ...process.env };
+    try {
+      for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy"]) delete process.env[key];
+
+      const unit = buildUnit();
+      for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]) {
+        expect(unit).not.toContain(`${key}=`);
+      }
+    } finally {
+      for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy"]) {
+        if (saved[key] !== undefined) process.env[key] = saved[key];
+      }
+    }
+  });
+
   test("preserves custom Codex and OpenCodex homes", () => {
     const oldCodexHome = process.env.CODEX_HOME;
     const oldCodexSqliteHome = process.env.CODEX_SQLITE_HOME;

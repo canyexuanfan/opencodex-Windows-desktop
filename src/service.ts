@@ -19,6 +19,7 @@ import { BUN_RUNTIME_PATH_ENV, BUN_RUNTIME_SOURCE_ENV, durableBunRuntime } from 
 import type { BunRuntimeSource } from "./lib/bun-runtime";
 import { isProcessAlive, stopProxy } from "./lib/process-control";
 import { serviceApiTokenFilePath } from "./lib/service-secrets";
+import { PROXY_ENV_KEYS } from "./lib/proxy-env";
 import { randomUUID } from "node:crypto";
 import {
   ELEVATION_REQUEST_TIMEOUT_MS,
@@ -404,6 +405,8 @@ export function buildPlist(): string {
     codexHome ? `    <key>CODEX_HOME</key><string>${plistString(codexHome)}</string>` : null,
     codexSqliteHome ? `    <key>CODEX_SQLITE_HOME</key><string>${plistString(codexSqliteHome)}</string>` : null,
     opencodexHome ? `    <key>OPENCODEX_HOME</key><string>${plistString(opencodexHome)}</string>` : null,
+    ...resolvedProxyEnv().map(({ name, value }) =>
+      `    <key>${name}</key><string>${plistString(value)}</string>`),
   ].filter((line): line is string => Boolean(line)).join("\n");
   const command = buildServiceShellCommand(bun, cli);
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -638,6 +641,31 @@ function systemdQuote(value: string): string {
 function systemdEnvironmentAssignment(name: string, value: string | undefined): string | null {
   if (!value) return null;
   return `Environment=${systemdQuote(`${name}=${value}`)}`;
+}
+
+/**
+ * Outbound proxy settings the installing shell had, resolved for baking into a service
+ * definition.
+ *
+ * A service manager does not inherit the environment of the shell that installed it, and
+ * `ExecStart=/bin/sh -lc` is dash on Ubuntu/WSL — login dash reads `.profile`, not
+ * `.bashrc`, which is where proxy exports usually live. So a user who needs a proxy to
+ * reach the upstream got a service that dialed direct: the socket was reset, the retry
+ * budget drained, and the request surfaced as `502 Provider unreachable` (#2107). The
+ * same install driven through `ocx codex-shim` worked, because that path spawns with
+ * `{ ...process.env }`.
+ *
+ * Lower-case variants are honored because curl-style tooling sets them and the runtime's
+ * own `applyProxyEnv` already treats both cases as equivalent. Only the canonical
+ * upper-case name is baked, so a definition never carries two spellings of one setting.
+ */
+function resolvedProxyEnv(env: NodeJS.ProcessEnv = process.env): { name: string; value: string }[] {
+  const resolved: { name: string; value: string }[] = [];
+  for (const key of PROXY_ENV_KEYS) {
+    const value = env[key]?.trim() || env[key.toLowerCase()]?.trim();
+    if (value) resolved.push({ name: key, value });
+  }
+  return resolved;
 }
 
 function systemdOutputTarget(value: string): string {
@@ -1531,6 +1559,7 @@ export function buildWindowsServiceScript(entry = cliEntry(), port = resolveServ
     windowsBatchSet("CODEX_HOME", process.env.CODEX_HOME?.trim(), "path"),
     windowsBatchSet("CODEX_SQLITE_HOME", currentCodexSqliteHomeAbsolute("windows"), "path"),
     windowsBatchSet("OPENCODEX_HOME", process.env.OPENCODEX_HOME?.trim(), "path"),
+    ...resolvedProxyEnv().map(({ name, value }) => windowsBatchSet(name, value)),
     windowsBatchSet("OCX_API_TOKEN_FILE", serviceApiTokenFilePath(), "path"),
     windowsBatchSet("OCX_SERVICE_LOG", serviceLogPath(), "path"),
     windowsBatchSet("OCX_BUN", bun, "path"),
@@ -2430,6 +2459,7 @@ export function buildUnit(): string {
     codexHome,
     codexSqliteHome,
     opencodexHome,
+    ...resolvedProxyEnv().map(({ name, value }) => systemdEnvironmentAssignment(name, value)),
   ].filter((line): line is string => Boolean(line)).join("\n");
   return `[Unit]
 Description=OpenCodex Proxy Server
