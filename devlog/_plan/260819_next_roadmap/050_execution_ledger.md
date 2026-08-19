@@ -61,7 +61,75 @@ forward into the next document.
 
 ## wp1 — R2 merge temp-reclaim stack
 
-Pending.
+In progress. A pre-merge review lane (sol-medium, agent `01a0196e`) returned
+**DO-NOT-MERGE** on the original heads. Three of its findings were confirmed
+against the code and fixed; the blocking one was adjudicated down and is
+recorded here rather than silently dropped.
+
+### Fixed on `codex/tmp-reclaim-1-sweeper` (`1fbac66f8`)
+
+**Directory handle leak on every truncated scan.** `list` is a generator that
+closes its handle in a `finally`, but the consumer drove it with manual
+`iterator.next()` calls and left the loop with `break`. A `finally` does not
+run when a consumer simply stops calling `next()` — only `return()` resumes the
+generator to completion. The periodic reclaim truncates *by design* (entry cap,
+cleanup cap, 25 ms deadline), so this leaked one handle per truncated tick,
+every minute, on exactly the slow filesystems the deadline exists for.
+Every early exit now routes through a `stopScan()` that calls
+`iterator.return()`.
+
+**The deadline test was vacuous.** Its fake clock started at `0` while the
+fixtures carried real epoch mtimes, so every computed age was negative and the
+files survived the 15-minute grace whether or not a deadline check existed —
+the test passed against its own ablation. The clock is now anchored to real
+time and the test carries an explicit unbounded-run assertion, so the deadline
+is the only reason nothing is removed.
+
+Both fixes were **driven red**: reverting `stopScan()` fails the new closure
+test and nothing else; deleting the deadline check fails the repaired deadline
+test and nothing else.
+
+### Fixed on `codex/tmp-reclaim-2-doctor` (`e298cf8ea`)
+
+**The budget warning could never print.** It keyed on
+`eligible > removed + failed`, but outside a dry run an entry is counted
+eligible and then unlinked or failed on the same iteration, so those two are
+always equal. An operator whose backlog exceeded the 4096-file budget was told
+the reclaim had finished. The scan now carries an explicit `truncated` flag,
+set wherever the loop stops on a budget rather than on the end of the
+directory, OR-ed across swept directories. The dry-run report is bounded by the
+entry cap too, so a truncated report now says its count is a floor.
+
+The partial-reclaim test asserted a state production cannot reach
+(`eligible: 816, removed: 512`); it now uses a reachable one and is paired
+with an ablation guard. Driven red: restoring the old comparison fails it.
+
+Verification: 174 pass / 0 fail across `doctor`, `responses-state`, and
+`state-store-sweeper`; `tsc --noEmit` clean.
+
+### Adjudicated, not fixed
+
+**The reviewer's stated blocker — the boot floor can unlink a live writer's
+temp — is real but narrower than "blocking".** When `predatesBoot` is true the
+liveness probe is genuinely skipped. But reaching it requires a writer that has
+been stalled past the 15-minute grace *and* whose temp mtime predates this
+machine's boot. On a single host that is self-contradictory: a process running
+now cannot have written before the boot it is running after. The scenario needs
+a config dir shared across hosts or containers — which the code comment already
+names as the case where the computed boot can be wrong.
+
+Left as-is deliberately: the alternative is to gate the floor on
+single-host ownership, which needs a durable host identity we do not have. The
+comment documents the limit honestly. Revisit if shared-config-dir deployments
+become supported rather than incidental.
+
+**Two smaller findings deferred with reasons.** (a) An aliased config dir
+(literal and resolved paths pointing at one directory through a symlink) makes
+the `Set` hold two strings for one directory, so a dry run double-counts.
+Cosmetic, and the fix is a `realpath` dedupe worth doing with a test that can
+build the alias. (b) `resolveWriteTarget` follows a snapshot symlink out of the
+config dir, so scanning follows it too. That is the intended dotfiles-managed
+behavior; containment would be a separate design decision, not a fix.
 
 ## wp2 — R1 rebase split stack
 
