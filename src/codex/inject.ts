@@ -227,9 +227,13 @@ export function buildProviderTableBlock(
     "requires_openai_auth = true",
   ];
   if (includeApiAuthHeader) {
-    lines.push(
-      'env_http_headers = { "x-opencodex-api-key" = "OPENCODEX_API_AUTH_TOKEN" }',
-    );
+    // codex-cli 0.146+ contract (#2073): env_key sends Authorization: Bearer $VAR and
+    // hard-errors on a missing/empty variable instead of silently omitting auth. It
+    // coexists with requires_openai_auth (env_key wins wire auth; the flag keeps the
+    // login/account UX), and the server substitutes stored main auth for our admission
+    // bearer (#1686), so the modern form is strictly better than the legacy
+    // env_http_headers table this line used to emit.
+    lines.push('env_key = "OPENCODEX_API_AUTH_TOKEN"');
   }
   if (supportsWebsockets) lines.push("supports_websockets = true");
   return lines.join("\n") + "\n";

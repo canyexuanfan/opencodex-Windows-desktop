@@ -26,6 +26,7 @@ import { identifyRoutedModel } from "./identity";
 import { antigravityUsesReplayCache, applyAntigravityReplay, clearAntigravityReplay, observeAntigravityReplay } from "./google-antigravity-replay";
 import { resolveAntigravityEffortWireModel } from "../providers/antigravity-models";
 import { googleVertexLocationConfigError } from "../providers/google-vertex-location";
+import { lookupReplayThoughtSignature } from "../responses/thought-signature-replay";
 import {
   isTranslatorBudgetExceededError,
   retainTranslatedEventBatch,
@@ -215,7 +216,13 @@ function messagesToGeminiFormat(
             const part: Record<string, unknown> = { functionCall };
             // Prefer the metadata that travelled with this exact call; fall back to the legacy
             // field for callers that have not been migrated. Never merge or synthesize.
-            const signature = tc.providerMetadata?.google?.thoughtSignature ?? tc.thoughtSignature;
+            // Final fallback (#1926): the durable store, read AT SERIALIZATION TIME. The
+            // Responses parser runs before the route/credential scope is bound, so its
+            // parse-time lookup can never hit; by the time this adapter serializes, the
+            // credential-scoped identity is bound and the durable lookup is meaningful.
+            const signature = tc.providerMetadata?.google?.thoughtSignature
+              ?? tc.thoughtSignature
+              ?? lookupReplayThoughtSignature(tc.id, parsed._reasoningReplayScope);
             if (isLikelyRealThoughtSignature(signature)) part.thoughtSignature = signature;
             parts.push(part);
           }
