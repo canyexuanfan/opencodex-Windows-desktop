@@ -281,13 +281,34 @@ class Fixture {
   }
 
   async cleanup(): Promise<void> {
+    // Teardown must not be able to leave a child behind. A case that timed out has a live
+    // `ocx start`, and if the wait below throws — or an earlier child refuses SIGTERM — the
+    // rest of this loop never runs. The survivor is then killed by Bun's between-file
+    // "killed N dangling process" sweep, which on the Windows shard surfaced as the NEXT
+    // case failing with exit 143: one slow case cascading into unrelated ones.
+    //
+    // So: SIGTERM every child, wait for each independently, then SIGKILL whatever is still
+    // alive. Errors are collected rather than thrown mid-loop.
     for (const child of this.children) {
       if (child.exitCode === null) child.kill("SIGTERM");
     }
+    const stubborn: Array<ReturnType<typeof Bun.spawn>> = [];
     for (const child of this.children) {
-      if (child.exitCode === null) await Promise.race([
+      if (child.exitCode === null) {
+        const exited = await Promise.race([
+          child.exited.then(() => true),
+          new Promise<boolean>(resolve => setTimeout(() => resolve(false), 10_000)),
+        ]);
+        if (!exited) stubborn.push(child);
+      }
+    }
+    for (const child of stubborn) {
+      // SIGKILL is not graceful and does not need to be: the case is already over, and a
+      // survivor is strictly worse than an ungraceful exit.
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+      await Promise.race([
         child.exited,
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`child ${child.pid} did not exit`)), 10_000)),
+        new Promise<void>(resolve => setTimeout(resolve, 2_000)),
       ]);
     }
     // Re-resolve before the limited four-name removal: never glob or inspect a
@@ -308,7 +329,19 @@ function fixture(): Fixture {
 }
 
 afterEach(async () => {
-  while (roots.length) await roots.pop()!.cleanup();
+  // One fixture's teardown failure must not strand the next fixture's children. Drain every
+  // fixture, then report. Without this, a throw here leaves live `ocx start` processes for
+  // Bun's between-file sweep to kill, and the next case fails with exit 143 for a reason
+  // that has nothing to do with it.
+  const failures: unknown[] = [];
+  while (roots.length) {
+    try {
+      await roots.pop()!.cleanup();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) throw failures[0];
 });
 
 describe("WP13 composed toggle acceptance", () => {
