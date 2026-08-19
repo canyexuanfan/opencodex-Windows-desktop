@@ -17,6 +17,7 @@ import {
   clearCodexQuotaPrimeState, primeCodexPoolQuotas, seedCodexAuthAdmissionForTests,
   type CodexAuthAccountDto,
   listCodexAuthAccounts,
+  setAccountQuotaFromParsed,
 } from "../src/codex/auth-api";
 import {
   getCodexAccountCredential,
@@ -44,6 +45,7 @@ import type { WsData } from "../src/server/ws-bridge";
 import { handleNativeProfileAPI } from "../src/codex/native-profile-api";
 import type { NativeProfileManager } from "../src/codex/native-profile-manager";
 import { MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "../src/codex/main-account";
+import { reconcileCodexPlansFromTokens, resetJwtPlanNotesForTests } from "../src/codex/plan-from-token";
 import {
   deleteCodexAccount,
   reconcileMainCodexAccountRuntimeState,
@@ -77,6 +79,11 @@ let previousOpencodexHome: string | undefined;
 let previousCodexHome: string | undefined;
 let previousManualImportEnv: string | undefined;
 let previousFetch: typeof fetch;
+
+function jwtWithExp(exp: number): string {
+  const enc = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  return enc({ alg: "RS256", typ: "JWT" }) + "." + enc({ exp }) + ".sig";
+}
 
 function makeConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
   return {
@@ -210,6 +217,15 @@ async function completeMockCodexOAuth(options: {
   }
 }
 
+function chatgptPlanJwt(plan: string, accountId = "acct"): string {
+  const header = Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url");
+  const body = Buffer.from(JSON.stringify({
+    chatgpt_account_id: accountId,
+    "https://api.openai.com/auth": { chatgpt_account_id: accountId, chatgpt_plan_type: plan },
+  })).toString("base64url");
+  return `${header}.${body}.sig`;
+}
+
 function seedPoolAccount(
   config: OcxConfig,
   account: {
@@ -255,6 +271,7 @@ beforeEach(() => {
   clearPoolRotationState();
   clearCodexWebSocketRegistry();
   resetMainCodexAccountIdentityTrackingForTests();
+  resetJwtPlanNotesForTests();
 });
 
 afterEach(() => {
@@ -730,7 +747,9 @@ describe("codex-auth API", () => {
     expect(main?.needsReauth).toBe(true);
   });
 
-  test("main account 401 marks needsReauth and exposes it in the DTO (#327)", async () => {
+  test("main account 401 with an undecodable-exp token is terminal and marks needsReauth (#327, #1932)", async () => {
+    // "expired-main" is not a decodable JWT, so its exp cannot vouch for liveness.
+    // Undecodable exp must fail toward reauth: only a decodable future exp counts as live.
     writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
       tokens: { access_token: "expired-main", account_id: "acct-main" },
     }));
@@ -743,6 +762,54 @@ describe("codex-auth API", () => {
 
     expect(main).toMatchObject({ hasCredential: true, needsReauth: true });
     expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(true);
+  });
+
+  test("bare main account 401 with a verifiably live token is transient, not reauth (#1932)", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: jwtWithExp(Math.floor(Date.now() / 1000) + 3600), account_id: "acct-main" },
+    }));
+    globalThis.fetch = (async () => new Response("", { status: 401 })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1");
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+    const data = await resp!.json() as { accounts: Array<{ id: string; hasCredential: boolean; needsReauth?: boolean }> };
+    const main = data.accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID);
+
+    expect(main).toMatchObject({ hasCredential: true, needsReauth: false });
+    expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(false);
+  });
+
+  test("main account 401 with a live token but terminal body code is still terminal (#1932)", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: jwtWithExp(Math.floor(Date.now() / 1000) + 3600), account_id: "acct-main" },
+    }));
+    globalThis.fetch = (async () => Response.json(
+      { detail: { code: "invalid_refresh_token" } },
+      { status: 401 },
+    )) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1");
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+    const data = await resp!.json() as { accounts: Array<{ id: string; needsReauth?: boolean }> };
+
+    expect(data.accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)?.needsReauth).toBe(true);
+    expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(true);
+    clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+  });
+
+  test("main account 401 with an expired access token is terminal (#1932)", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: jwtWithExp(1), account_id: "acct-main" },
+    }));
+    globalThis.fetch = (async () => new Response("", { status: 401 })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1");
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+    const data = await resp!.json() as { accounts: Array<{ id: string; needsReauth?: boolean }> };
+
+    expect(data.accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)?.needsReauth).toBe(true);
+    expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(true);
+    clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
   });
 
   test("main account invalid-workspace 403 is terminal but a generic 403 is not (#327)", async () => {
@@ -1306,6 +1373,11 @@ describe("codex-auth API", () => {
       id: "pool-plan-unchanged",
       email: "pool-plan-unchanged@example.com",
       plan: "plus",
+      // Provenance already stamped: steady state. The FIRST WHAM observation after the
+      // provenance feature landed performs one migration write; that case is covered by
+      // the WHAM-wins gate tests. Steady-state refreshes must stay write-free.
+      planSource: "wham",
+      planCredentialGeneration: 1,
     });
     saveConfig(structuredClone(config));
     let configCommits = 0;
@@ -1323,6 +1395,77 @@ describe("codex-auth API", () => {
     expect(config.codexAccounts?.find(account => account.id === "pool-plan-unchanged")?.plan).toBe("plus");
     expect(loadConfig().codexAccounts?.find(account => account.id === "pool-plan-unchanged")?.plan).toBe("plus");
     expect(configCommits).toBe(0);
+  });
+
+  test("quota cache hit still corrects a stale stored pool plan from the access-token JWT (#1989)", async () => {
+    const config = makeConfig();
+    const accountId = "pool-jwt-plan";
+    seedPoolAccount(config, {
+      id: accountId,
+      email: "pool-jwt-plan@example.com",
+      plan: "free",
+      accessToken: chatgptPlanJwt("pro", `acct-${accountId}`),
+      chatgptAccountId: `acct-${accountId}`,
+    });
+    saveConfig(structuredClone(config));
+    setAccountQuotaFromParsed(accountId, { weeklyPercent: 4 }, captureConfigGeneration());
+    reconcileCodexPlansFromTokens(config);
+    let whamCalls = 0;
+    globalThis.fetch = (async () => {
+      whamCalls += 1;
+      return Response.json({ plan_type: "free" });
+    }) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+
+    expect(whamCalls).toBe(0);
+    expect(data.accounts.find(account => account.id === accountId)?.plan).toBe("pro");
+    expect(config.codexAccounts?.find(account => account.id === accountId)?.plan).toBe("pro");
+    expect(loadConfig().codexAccounts?.find(account => account.id === accountId)?.plan).toBe("pro");
+  });
+
+  test("a live WHAM plan_type still outranks a contradicting access-token JWT", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "pool-wham-wins",
+      email: "pool-wham-wins@example.com",
+      plan: "free",
+      accessToken: chatgptPlanJwt("plus", "acct-pool-wham-wins"),
+      chatgptAccountId: "acct-pool-wham-wins",
+    });
+    saveConfig(structuredClone(config));
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "prolite",
+      rate_limit: { primary_window: { used_percent: 11, reset_at: 1782628379 } },
+    })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string }> };
+
+    expect(data.accounts.find(account => account.id === "pool-wham-wins")?.plan).toBe("prolite");
+    expect(loadConfig().codexAccounts?.find(account => account.id === "pool-wham-wins")?.plan).toBe("prolite");
+  });
+
+  test("main account list uses chatgpt_plan_type when WHAM omits plan_type (#1989)", async () => {
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: {
+        access_token: chatgptPlanJwt("pro", "acct-main-jwt"),
+        account_id: "acct-main-jwt",
+      },
+    }));
+    globalThis.fetch = (async () => Response.json({
+      email: "main-jwt@example.test",
+      rate_limit: { primary_window: { used_percent: 2, reset_at: 1782628379 } },
+    })) as typeof fetch;
+
+    const req = new Request("http://localhost/api/codex-auth/accounts", { method: "GET" });
+    const resp = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+    const data = await resp!.json() as { accounts: Array<{ id: string; plan?: string | null }> };
+
+    expect(data.accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)?.plan).toBe("pro");
   });
 
   test("pool plan refresh does not recreate a config file deleted while the server is running", async () => {
@@ -3363,6 +3506,189 @@ describe("codex-auth API", () => {
     const resp = await handleCodexAuthAPI(req, url, {} as any);
     const data = await resp!.json() as { status: string };
     expect(data.status).toBe("expired");
+  });
+
+  test("Codex OAuth login responses project raw provider errors", async () => {
+    const oauth = await import("../src/oauth");
+    const startSpy = spyOn(oauth, "startLoginFlow").mockImplementation(async () => {
+      throw new Error("already in progress at C:\\Users\\Alice\\.opencodex\\auth.json.ocx-tmp sk-secret-provider-key");
+    });
+    try {
+      const req = new Request("http://localhost/api/codex-auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+      const data = await resp!.json() as { error?: string };
+
+      expect(resp!.status).toBe(500);
+      expect(data.error).toBe("OAuth authentication failed. Check the OpenCodex account status and retry.");
+      expect(JSON.stringify(data)).not.toContain("Alice");
+      expect(JSON.stringify(data)).not.toContain("sk-secret-provider-key");
+    } finally {
+      startSpy.mockRestore();
+    }
+  });
+
+  test("Codex OAuth login responses preserve actionable OAuth errors", async () => {
+    const oauth = await import("../src/oauth");
+    const { OAuthMutationBusyError } = await import("../src/oauth/store");
+    const startSpy = spyOn(oauth, "startLoginFlow");
+    const cases: Array<{ error: Error; expected: string }> = [
+      {
+        error: new oauth.OAuthLoginRequiredError("chatgpt"),
+        expected: "Not logged in to chatgpt. Run: ocx login chatgpt",
+      },
+      {
+        error: new oauth.OAuthTokenRefreshBusyError(),
+        expected: "OAuth token refresh capacity reached",
+      },
+      {
+        error: new oauth.OAuthTokenRefreshStaleError(),
+        expected: "OAuth token refresh owner became stale",
+      },
+      {
+        error: new OAuthMutationBusyError(),
+        expected: "OAuth mutation queue is busy",
+      },
+    ];
+    try {
+      for (const { error, expected } of cases) {
+        startSpy.mockRejectedValueOnce(error);
+        const req = new Request("http://localhost/api/codex-auth/login", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        });
+        const response = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+        const body = await response!.json() as { error?: string };
+
+        expect(response!.status).toBe(500);
+        expect(body.error).toBe(expected);
+      }
+    } finally {
+      startSpy.mockRestore();
+    }
+  });
+
+  test("Codex OAuth login status projects late provider errors", async () => {
+    const oauth = await import("../src/oauth");
+    const openUrlMod = await import("../src/lib/open-url");
+    const originalLogin = oauth.OAUTH_PROVIDERS.chatgpt.login;
+    oauth.OAUTH_PROVIDERS.chatgpt.login = async (controller) => {
+      controller.onAuth({ url: "https://example.test/oauth" });
+      throw new Error("late failure at /home/alice/.opencodex/auth.json.ocx-tmp sk-secret-provider-key");
+    };
+    const openSpy = spyOn(openUrlMod, "openUrl").mockImplementation(() => {});
+    const timeoutSpy = spyOn(globalThis, "setTimeout").mockImplementation(((
+      callback: (...args: unknown[]) => void,
+      delay?: number,
+      ...args: unknown[]
+    ) => {
+      if (delay === 2_000) queueMicrotask(() => callback(...args));
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout);
+    try {
+      const req = new Request("http://localhost/api/codex-auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      const startResponse = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+      const started = await startResponse!.json() as { flowId: string };
+      expect(startResponse!.status).toBe(200);
+
+      let state: { status?: string; error?: string } = {};
+      for (let attempt = 0; attempt < 50 && state.status !== "error"; attempt += 1) {
+        const statusReq = new Request(
+          `http://localhost/api/codex-auth/login-status?flowId=${encodeURIComponent(started.flowId)}`,
+        );
+        const statusResponse = await handleCodexAuthAPI(statusReq, new URL(statusReq.url), makeConfig());
+        state = await statusResponse!.json() as typeof state;
+        if (state.status !== "error") await new Promise<void>(resolve => setImmediate(resolve));
+      }
+
+      expect(state).toMatchObject({
+        status: "error",
+        error: "OAuth authentication failed. Check the OpenCodex account status and retry.",
+      });
+      expect(JSON.stringify(state)).not.toContain("/home/alice");
+      expect(JSON.stringify(state)).not.toContain("sk-secret-provider-key");
+    } finally {
+      timeoutSpy.mockRestore();
+      openSpy.mockRestore();
+      oauth.OAUTH_PROVIDERS.chatgpt.login = originalLogin;
+      oauth.clearLoginState("chatgpt");
+    }
+  });
+
+  test("Codex OAuth login status preserves actionable late OAuth errors", async () => {
+    const oauth = await import("../src/oauth");
+    const { OAuthMutationBusyError } = await import("../src/oauth/store");
+    const openUrlMod = await import("../src/lib/open-url");
+    const originalLogin = oauth.OAUTH_PROVIDERS.chatgpt.login;
+    const openSpy = spyOn(openUrlMod, "openUrl").mockImplementation(() => {});
+    const timeoutSpy = spyOn(globalThis, "setTimeout").mockImplementation(((
+      callback: (...args: unknown[]) => void,
+      delay?: number,
+      ...args: unknown[]
+    ) => {
+      if (delay === 2_000) queueMicrotask(() => callback(...args));
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout);
+    const cases: Array<{ error: Error; expected: string }> = [
+      {
+        error: new oauth.OAuthLoginRequiredError("chatgpt"),
+        expected: "Not logged in to chatgpt. Run: ocx login chatgpt",
+      },
+      {
+        error: new oauth.OAuthTokenRefreshBusyError(),
+        expected: "OAuth token refresh capacity reached",
+      },
+      {
+        error: new oauth.OAuthTokenRefreshStaleError(),
+        expected: "OAuth token refresh owner became stale",
+      },
+      {
+        error: new OAuthMutationBusyError(),
+        expected: "OAuth mutation queue is busy",
+      },
+    ];
+    try {
+      for (const { error, expected } of cases) {
+        oauth.OAUTH_PROVIDERS.chatgpt.login = async (controller) => {
+          controller.onAuth({ url: "https://example.test/oauth" });
+          throw error;
+        };
+        const req = new Request("http://localhost/api/codex-auth/login", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        });
+        const startResponse = await handleCodexAuthAPI(req, new URL(req.url), makeConfig());
+        const started = await startResponse!.json() as { flowId: string };
+        expect(startResponse!.status).toBe(200);
+
+        let state: { status?: string; error?: string } = {};
+        for (let attempt = 0; attempt < 50 && state.status !== "error"; attempt += 1) {
+          const statusReq = new Request(
+            `http://localhost/api/codex-auth/login-status?flowId=${encodeURIComponent(started.flowId)}`,
+          );
+          const statusResponse = await handleCodexAuthAPI(statusReq, new URL(statusReq.url), makeConfig());
+          state = await statusResponse!.json() as typeof state;
+          if (state.status !== "error") await new Promise<void>(resolve => setImmediate(resolve));
+        }
+
+        expect(state).toMatchObject({ status: "error", error: expected });
+        oauth.clearLoginState("chatgpt");
+      }
+    } finally {
+      timeoutSpy.mockRestore();
+      openSpy.mockRestore();
+      oauth.OAUTH_PROVIDERS.chatgpt.login = originalLogin;
+      oauth.clearLoginState("chatgpt");
+    }
   });
 
   test("POST /api/codex-auth/login/cancel expires the pending flow", async () => {

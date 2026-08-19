@@ -1201,6 +1201,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           ...admissionFields(admission),
           inboundProtocol: "responses",
         };
+        if (req.headers.get("x-opencodex-grok") === "1") logCtx.surface = "grok";
         let logged = false;
         const finalizeNativePassthroughLog = (
           status: number,
@@ -1728,7 +1729,15 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
     && isCanonicalOpenAiForwardProvider(openAiProvider)
     && providerCodexAccountMode("openai", openAiProvider) === "pool"
   ) {
-    import("../codex/auth-api")
+    import("../codex/plan-from-token")
+      .then(({ reconcileCodexPlansFromTokens }) => {
+        try {
+          reconcileCodexPlansFromTokens(config);
+        } catch {
+          // Derived plan metadata must not block WHAM priming.
+        }
+        return import("../codex/auth-api");
+      })
       .then(({ primeCodexPoolQuotas }) => primeCodexPoolQuotas(config, "startup"))
       .catch(() => {});
   }

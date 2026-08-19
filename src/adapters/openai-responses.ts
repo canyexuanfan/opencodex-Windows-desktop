@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { IncomingMeta, ProviderAdapter } from "./base";
-import { namespacedToolName, type AdapterEvent, type OcxParsedRequest, type OcxProviderConfig, type OcxUsage } from "../types";
+import { namespacedToolName, type AdapterEvent, type OcxParsedRequest, type OcxProviderConfig, type OcxUsage, type TierDecision } from "../types";
 import { catalogModelSupportsReasoningSummaries } from "../codex/catalog";
 import { COMPACT_PROMPT, decodeCompactionSummary, SUMMARY_PREFIX } from "../responses/compaction";
 import { collectResponsesToolGroups } from "../responses/tool-groups";
@@ -12,6 +12,9 @@ import { modelRecordValue } from "../reasoning-effort";
 import type { TranslatorBudget } from "../lib/translator-budget";
 import { rewriteRoutedCustomToolsForUpstream } from "../responses/custom-tool-compat";
 import { openaiResponsesUrl } from "./openai-responses-url";
+import {
+  createAdapterTierMetadata,
+} from "../providers/fastwire";
 
 // Headers relayed verbatim from the caller in OAuth-passthrough ("forward") mode.
 // Exported so the web-search sidecar reuses the exact same forwarded-auth set for its ChatGPT call.
@@ -572,6 +575,15 @@ function toolOutputText(output: unknown): string {
  * expansion misses (proxy restart, unrecorded prior turn), previous_response_id is stripped
  * (the ChatGPT backend rejects it), so the delta may carry items that reference now-absent
  * prior items and 400 upstream:
+ * - `function_call`/`local_shell_call`/`custom_tool_call` without their paired output item
+ *   ("No tool output found for tool call <call_id>"). A stateless upstream cannot resolve
+ *   the pair from its own storage, so a placeholder output is synthesized to keep the
+ *   turn continuable without pretending the result was real. Synthetic outputs are
+ *   emitted after the complete parallel call batch, in call order alongside any real
+ *   outputs, so the adjacency normalizer can still recognize the batch as one
+ *   reasoning-bearing assistant turn (#1477). Gated on
+ *   `synthesizeMissingCallOutputs` (stateless AND non-forward wires); forward replay keeps
+ *   fail-closed behavior.
  * - `function_call_output`/`custom_tool_call_output` without their paired call item
  *   ("No tool call found for function call output with call_id ..."). Converted to user
  *   messages so the result text survives. `function_call_output` also pairs with
@@ -608,26 +620,38 @@ function backfillWebSearchQueries(body: unknown): unknown {
   return changed ? { ...body, input } : body;
 }
 
-function repairOrphanedInputItems(body: unknown, dropReasoning: boolean): unknown {
+function repairOrphanedInputItems(body: unknown, dropReasoning: boolean, synthesizeMissingCallOutputs = false): unknown {
   if (!isPlainObject(body) || !Array.isArray(body.input)) return body;
   const input = body.input;
 
   const functionCallIds = new Set<string>();
   const customCallIds = new Set<string>();
+  const functionOutputIds = new Set<string>();
+  const customOutputIds = new Set<string>();
   for (const item of input) {
     if (!isPlainObject(item) || typeof item.call_id !== "string") continue;
     if (item.type === "function_call" || item.type === "local_shell_call") functionCallIds.add(item.call_id);
     else if (item.type === "custom_tool_call") customCallIds.add(item.call_id);
+    else if (item.type === "function_call_output") functionOutputIds.add(item.call_id);
+    else if (item.type === "custom_tool_call_output") customOutputIds.add(item.call_id);
   }
 
   let changed = false;
   const repaired: unknown[] = [];
+  const syntheticKeys = new Set<string>();
+  const pendingSyntheticOutputs: unknown[] = [];
+  const flushPendingSyntheticOutputs = (): void => {
+    if (pendingSyntheticOutputs.length === 0) return;
+    repaired.push(...pendingSyntheticOutputs);
+    pendingSyntheticOutputs.length = 0;
+  };
   for (const item of input) {
-    if (!isPlainObject(item)) { repaired.push(item); continue; }
+    if (!isPlainObject(item)) { flushPendingSyntheticOutputs(); repaired.push(item); continue; }
     if (dropReasoning && item.type === "reasoning") { changed = true; continue; }
     const isFnOutput = item.type === "function_call_output";
     const isCustomOutput = item.type === "custom_tool_call_output";
     if (isFnOutput || isCustomOutput) {
+      flushPendingSyntheticOutputs();
       const callId = typeof item.call_id === "string" ? item.call_id : "";
       const paired = isFnOutput ? functionCallIds.has(callId) : customCallIds.has(callId);
       if (!paired) {
@@ -640,10 +664,83 @@ function repairOrphanedInputItems(body: unknown, dropReasoning: boolean): unknow
         continue;
       }
     }
+    const isFnCall = item.type === "function_call" || item.type === "local_shell_call";
+    const isCustomCall = item.type === "custom_tool_call";
+    if (isFnCall || isCustomCall) {
+      repaired.push(item);
+      if (synthesizeMissingCallOutputs) {
+        const callId = typeof item.call_id === "string" ? item.call_id : "";
+        const hasOutput = isFnCall ? functionOutputIds.has(callId) : customOutputIds.has(callId);
+        if (!hasOutput && callId) {
+          changed = true;
+          const name = typeof item.name === "string" && item.name.length > 0 ? item.name : callId;
+          const text = `[ocx] no tool result was recorded for "${name}"; execution status unknown — do not treat this as success, failure, or user-provided input.`;
+          syntheticKeys.add(`${isFnCall ? "function" : "custom"}:${callId}`);
+          pendingSyntheticOutputs.push(isFnCall
+            ? { type: "function_call_output", call_id: callId, output: text }
+            : { type: "custom_tool_call_output", call_id: callId, output: text });
+        }
+      }
+      continue;
+    }
+    flushPendingSyntheticOutputs();
     repaired.push(item);
   }
+  flushPendingSyntheticOutputs();
 
-  return changed ? { ...body, input: repaired } : body;
+  const callKeyOf = (item: unknown): string | null => {
+    if (!isPlainObject(item) || typeof item.call_id !== "string") return null;
+    if (item.type === "function_call" || item.type === "local_shell_call") return `function:${item.call_id}`;
+    if (item.type === "custom_tool_call") return `custom:${item.call_id}`;
+    return null;
+  };
+  const outputKeyOf = (item: unknown): string | null => {
+    if (!isPlainObject(item) || typeof item.call_id !== "string") return null;
+    if (item.type === "function_call_output") return `function:${item.call_id}`;
+    if (item.type === "custom_tool_call_output") return `custom:${item.call_id}`;
+    return null;
+  };
+  const reorderBatchOutputs = (items: unknown[]): unknown[] => {
+    const ordered: unknown[] = [];
+    let index = 0;
+    while (index < items.length) {
+      const key = callKeyOf(items[index]);
+      if (key === null) { ordered.push(items[index]); index += 1; continue; }
+      const batch: unknown[] = [];
+      const batchKeys: string[] = [];
+      let cursor = index;
+      while (cursor < items.length) {
+        const nextKey = callKeyOf(items[cursor]);
+        if (nextKey === null) break;
+        batch.push(items[cursor]);
+        batchKeys.push(nextKey);
+        cursor += 1;
+      }
+      const hasSynthetic = batchKeys.some(batchKey => syntheticKeys.has(batchKey));
+      if (!hasSynthetic) {
+        ordered.push(...batch);
+        index = cursor;
+        continue;
+      }
+      const remainder: unknown[] = [];
+      const batchOutputs: Array<{ key: string; item: unknown }> = [];
+      for (let probe = cursor; probe < items.length; probe += 1) {
+        const outputKey = outputKeyOf(items[probe]);
+        if (outputKey !== null && batchKeys.includes(outputKey)) {
+          batchOutputs.push({ key: outputKey, item: items[probe] });
+        } else {
+          remainder.push(items[probe]);
+        }
+      }
+      batchOutputs.sort((left, right) => batchKeys.indexOf(left.key) - batchKeys.indexOf(right.key));
+      ordered.push(...batch, ...batchOutputs.map(output => output.item));
+      ordered.push(...reorderBatchOutputs(remainder));
+      return ordered;
+    }
+    return ordered;
+  };
+
+  return changed ? { ...body, input: reorderBatchOutputs(repaired) } : body;
 }
 
 /**
@@ -764,6 +861,15 @@ function stripPreviousResponseId(body: unknown, strip: boolean): unknown {
   return rest;
 }
 
+/** Apply the settled tier only to a fresh outbound object; `_rawBody` remains caller-owned. */
+function applyTierDecisionToResponsesBody(body: unknown, decision: TierDecision | undefined): unknown {
+  if (!decision || decision.kind === "forward-caller" || !isPlainObject(body)) return body;
+  const next: Record<string, unknown> = { ...body };
+  if (decision.kind === "set") next.service_tier = decision.value;
+  else delete next.service_tier;
+  return next;
+}
+
 /**
  * Drop request parameters a stateless Responses upstream cannot implement, and pin
  * `store` false.
@@ -778,8 +884,8 @@ function stripPreviousResponseId(body: unknown, strip: boolean): unknown {
  * `prompt` is a reference to a server-stored prompt template — the most stateful
  * field in the accepted schema.
  *
- * `service_tier` is deliberately NOT dropped: the server writes it for fast mode
- * (`responses/core.ts`), and silently deleting a configured knob inside an adapter is
+ * `service_tier` is deliberately NOT dropped: the final TierDecision is applied to a
+ * detached outbound body before this sanitizer chain, and silently deleting a configured knob is
  * worse than forwarding a parameter the upstream ignores.
  *
  * MUST run before the composed sanitize chain below: `stripItemIdsWhenUnstored` keys
@@ -1367,6 +1473,9 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         parsed._rawBody,
         forward || parsed._previousResponseInputExpanded === true,
       );
+      // stripPreviousResponseId() intentionally returns its input on a no-op. Detach before the
+      // tier write so a force-fast/default decision can never mutate parsed._rawBody.
+      outBody = applyTierDecisionToResponsesBody(outBody, parsed.options?.tierDecision);
       const stateless = provider.statelessResponses === true;
       if (stateless) outBody = stripStatefulResponsesParams(outBody);
       // A replay miss can leave a function_call_output whose paired function_call sat
@@ -1375,7 +1484,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       // backend gets — dropping previous_response_id is not much use if the body that
       // reaches the wire is unparseable.
       if (forward || stateless) {
-        outBody = repairOrphanedInputItems(outBody, unexpandedMiss);
+        outBody = repairOrphanedInputItems(outBody, unexpandedMiss, stateless && !forward);
       }
       if (provider.requiresAdjacentResponsesToolResults === true) {
         outBody = normalizeResponsesToolResultAdjacency(outBody);
@@ -1414,11 +1523,21 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         convertedRoutedCustomToolNames = rewritten.names;
       }
       const sanitizedBody = normalizeToolSchemas(stripSparkCompatibility(stripUnsupportedReasoningParams(stripItemIdsWhenUnstored(stripInvalidItemIds(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(outBody), { preserveRawReasoningContent: provider.preserveResponsesReasoningContent === true })))))));
-      const body = JSON.stringify(stripDisabledReasoningSummaries(
+      const finalBody = stripDisabledReasoningSummaries(
         normalizeConfiguredReasoningSummaryDelivery(sanitizedBody, provider, parsed.modelId),
         provider,
         parsed.modelId,
-      ));
+      );
+      const actualServiceTier = isPlainObject(finalBody) && typeof finalBody.service_tier === "string"
+        ? finalBody.service_tier
+        : null;
+      const tierLog = createAdapterTierMetadata(
+        parsed.options?.tierObservation,
+        parsed.options?.tierDecision,
+        actualServiceTier === null ? null : "service-tier",
+        actualServiceTier,
+      );
+      const body = JSON.stringify(finalBody);
       const releaseBodyObservation = translatorBudget.observeExternallyCapped(
         "passthrough_serialization",
         new TextEncoder().encode(body).byteLength,
@@ -1430,6 +1549,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         body,
         releaseBodyObservation,
         ...(convertedRoutedCustomToolNames ? { convertedRoutedCustomToolNames } : {}),
+        ...(tierLog ? { tierLog } : {}),
       };
     },
 

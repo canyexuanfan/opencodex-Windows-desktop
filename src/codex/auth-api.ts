@@ -83,7 +83,7 @@ export {
   updateAccountQuota,
 } from "./quota";
 import { extractAccountId } from "../oauth/chatgpt";
-import { getMainAccountPlan, MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "./main-account";
+import { getMainAccountPlan, isMainAccountTokenVerifiablyLive, MAIN_CODEX_ACCOUNT_ID, setMainAccountPlan } from "./main-account";
 import { captureConfigGeneration, registerStateSweepAfterTick } from "../lib/state-store-sweeper";
 import { reconcileLiveStateStores } from "../lib/state-store-registrations";
 import {
@@ -98,7 +98,7 @@ import {
 } from "./main-account-cache";
 export { clearMainAccountInfoCache } from "./main-account-cache";
 import { maskEmail } from "../lib/privacy";
-import { CodexWarmupError, codexWarmupFailureReason, warmCodexAccount } from "./warmup";
+import { codexWarmupFailureReason, warmCodexAccount } from "./warmup";
 export { maskEmail } from "../lib/privacy";
 import type { CodexAccount, CodexAccountCredentials, OcxConfig } from "../types";
 import type { CatalogDisposition } from "./convergence-types";
@@ -396,13 +396,10 @@ async function verifyCodexAccountWarmup(
     return { ok: true, validatedAt: Date.now() };
   } catch (err) {
     const reason = codexWarmupFailureReason(err);
-    const upstream = err instanceof CodexWarmupError ? err.upstreamDetail : undefined;
     return {
       ok: false,
       response: jsonResponse({
-        error: upstream
-          ? `Codex account warmup failed: ${upstream}`
-          : "Codex account warmup failed. Reauthenticate the account and try again.",
+        error: "Codex account warmup failed. Reauthenticate the account and try again.",
         code: "codex_warmup_failed",
         reason,
         accountId,
@@ -569,12 +566,31 @@ const MAIN_TERMINAL_AUTH_CODES = new Set([
   "invalid_refresh_token",
 ]);
 
-async function isTerminalMainAuthResponse(resp: Response): Promise<boolean> {
-  if (resp.status === 401) return true;
+/**
+ * A WHAM 401 is not itself proof the local credential died. Upstream edges can
+ * transiently reject a still-valid access token (region/anti-abuse/rotation
+ * races), and fail-closing on every bare 401 makes a healthy main account flip
+ * needs-reauth on the next GUI quota poll. Only treat the response as terminal
+ * when the body carries a known terminal code or the local access token is not
+ * verifiably live (`accessTokenLive`). Liveness must be strict: a JWT whose
+ * `exp` cannot be decoded is NOT live — an undecodable token that vouched for
+ * itself would make a real 401 permanently transient.
+ */
+async function isTerminalMainAuthResponse(resp: Response, accessTokenLive: boolean): Promise<boolean> {
+  if (resp.status === 401) {
+    if (!accessTokenLive) return true;
+    const code = await readMainAuthErrorCode(resp);
+    return typeof code === "string" && MAIN_TERMINAL_AUTH_CODES.has(code);
+  }
   if (resp.status !== 403) return false;
+  const code = await readMainAuthErrorCode(resp);
+  return typeof code === "string" && MAIN_TERMINAL_AUTH_CODES.has(code);
+}
+
+async function readMainAuthErrorCode(resp: Response): Promise<unknown> {
   try {
     const body = await readBoundedResponseBody(resp, { totalTimeoutMs: 1_000, inactivityTimeoutMs: 1_000 });
-    if (!body.displaySafe) return false;
+    if (!body.displaySafe) return undefined;
     const parsed = JSON.parse(body.text) as {
       detail?: { code?: unknown } | string;
       error?: { code?: unknown } | string;
@@ -585,9 +601,9 @@ async function isTerminalMainAuthResponse(resp: Response): Promise<boolean> {
       : typeof parsed.error === "object" && parsed.error !== null
         ? parsed.error.code
         : parsed.code;
-    return typeof code === "string" && MAIN_TERMINAL_AUTH_CODES.has(code);
+    return code;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -707,7 +723,7 @@ async function fetchMainAccountInfoWhileOwned(
       signal: AbortSignal.timeout(8000),
     });
     if (!resp.ok) {
-      const terminalAuthFailure = await isTerminalMainAuthResponse(resp);
+      const terminalAuthFailure = await isTerminalMainAuthResponse(resp, isMainAccountTokenVerifiablyLive());
       const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining, nativeMainLease);
       if (retried) return retried;
       if (terminalAuthFailure) {
@@ -854,6 +870,15 @@ function reconcileFreshPoolAccountPlans(runtimeConfig: OcxConfig, updates: Fresh
         accepted.push(update);
         if (persistedAccount.plan !== update.plan) {
           persistedAccount.plan = update.plan;
+          // WHAM is the authoritative plan source: stamp provenance so a later JWT
+          // reconcile cannot overwrite this observation within the same credential
+          // generation (src/codex/plan-from-token.ts jwtMayWritePlan). Stamped only
+          // alongside a real plan change: a steady-state refresh whose plan is
+          // unchanged must stay write-free (no-config-write contract), and an
+          // unchanged value needs no fence — a JWT rewrite to the same text is a
+          // no-op under the caller's own equality check.
+          persistedAccount.planSource = "wham";
+          persistedAccount.planCredentialGeneration = update.credentialGeneration;
           changed = true;
         }
       }
@@ -873,6 +898,8 @@ function reconcileFreshPoolAccountPlans(runtimeConfig: OcxConfig, updates: Fresh
     const liveAccount = configuredPoolAccount(runtimeConfig, update.accountId);
     if (liveAccount) {
       liveAccount.plan = update.plan;
+      liveAccount.planSource = "wham";
+      liveAccount.planCredentialGeneration = update.credentialGeneration;
     }
   }
 }
@@ -1791,7 +1818,7 @@ export async function handleCodexAuthAPI(
     const loginOwner: CodexLoginStateRow = { status: "starting", startedAt: Date.now() };
     codexAuthLoginState.set(flowId, loginOwner);
     try {
-      const { startLoginFlow, getLoginStatus } = await import("../oauth");
+      const { startLoginFlow, getLoginStatus, publicOAuthAuthenticationErrorMessage } = await import("../oauth");
       const result = await startLoginFlow("chatgpt", { forceLogin: true });
 
       // Open the browser server-side (same pattern as /api/oauth/login in management-api.ts).
@@ -1993,7 +2020,13 @@ export async function handleCodexAuthAPI(
               break;
             }
             if (st.done && st.error) {
-              setCodexLoginState(flowId, { status: "error", error: st.error, doneAt: Date.now() });
+              setCodexLoginState(flowId, {
+                status: "error",
+                // startLoginFlow projects background failures before storing login status, so
+                // fixed actionable OAuth messages retain their type-derived remediation here.
+                error: st.error,
+                doneAt: Date.now(),
+              });
               completed = true;
               break;
             }
@@ -2011,7 +2044,7 @@ export async function handleCodexAuthAPI(
             ? "Configuration is busy; retry login shortly."
             : error instanceof CodexCredentialRefreshBusyError || error instanceof CodexCredentialRefreshStaleError
               ? "Credential refresh is busy; retry login shortly."
-            : error instanceof Error ? error.message : String(error);
+            : publicOAuthAuthenticationErrorMessage(error);
           setCodexLoginState(flowId, {
             status: "error",
             error: message,
@@ -2028,7 +2061,7 @@ export async function handleCodexAuthAPI(
     } catch (e) {
       if (codexAuthLoginState.get(flowId) === loginOwner) codexAuthLoginState.delete(flowId);
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes("already in progress")) {
+      if (msg === "A login for chatgpt is already in progress") {
         return jsonResponse({ error: msg, status: "pending" }, 409);
       }
       if (e instanceof CodexCredentialRefreshBusyError || e instanceof CodexCredentialRefreshStaleError) {
@@ -2036,7 +2069,8 @@ export async function handleCodexAuthAPI(
         response.headers.set("Retry-After", "1");
         return response;
       }
-      return jsonResponse({ error: msg }, 500);
+      const { publicOAuthAuthenticationErrorMessage } = await import("../oauth");
+      return jsonResponse({ error: publicOAuthAuthenticationErrorMessage(e) }, 500);
     }
   }
 

@@ -44,12 +44,17 @@ OpenAI-compatible service-tier support is resolved only after the final provider
 known. `supportsServiceTier` remains the provider fallback, while the exact
 `modelSupportsServiceTier` map can override it per upstream model, including an explicit `false`.
 The catalog and request path share this decision: a routed row publishes `service_tiers` only when
-the resolved adapter is capable, and the final-route normalizer applies the same gate to
-`service_tier`. `openai-responses` uses the resolved provider/model declaration directly;
-`openai-chat` accepts either its provider-wide `chatServiceTier` serializer opt-in or an exact-model
-`true` declaration. Exact `false` narrows provider defaults, and provider-level
-`supportsServiceTier: false` cannot be reopened. Capability is namespaced by the selected provider
-and model; model-name similarity and adapter type alone never opt a gateway in.
+the resolved policy is eligible, and the final-route normalizer applies the same gate to
+`service_tier`. Both `openai-responses` and `openai-chat` use the resolved provider/model capability
+for catalog publication, routing evidence, and fingerprints. Canonical Fast injection additionally
+requires a compatible FastWire mapping on the final adapter and an eligible policy. Setting
+`fastMode: false` drops it. On classified Chat routes, `chatServiceTier` separately authorizes
+foreign caller values; an exact-model `true` does not grant that forwarding permission. On
+unclassified Chat routes it gates every caller tier because no canonical Fast capability has been
+validated. Exact `false`
+narrows provider defaults, and provider-level `supportsServiceTier: false` cannot be reopened.
+Capability is namespaced by the selected provider and model; model-name similarity and adapter type
+alone never opt a gateway in.
 
 `POST /v1/responses/compact` handles remote compaction v1 before the generic `/v1/responses` branch
 and before the `/v1/*` guard. Unknown `/v1/*` paths return JSON 404 errors instead of falling through
@@ -323,13 +328,14 @@ frame rather than always emitting `response.completed`. If the response status i
 
 ## Heartbeat and stall deadline
 
-The HTTP/SSE bridge emits `response.heartbeat` events during upstream silence to re-arm Codex's idle
-timer (Codex's default `stream_idle_timeout` is 300 s and ANY SSE event re-arms it). Those
-bridge-enqueued keepalive frames do NOT count as activity for the bridge's own watchdog: a bounded
-stall deadline (default 300 s, configurable via `stallTimeoutSec`, checked on the 2 s heartbeat tick)
-closes the stream with `response.incomplete` / `upstream_stall_timeout` and cancels the upstream
-request if no real adapter events arrive. Adapter-yielded `{ type: "heartbeat" }` events DO reset
-the watchdog.
+The HTTP/SSE bridge emits an SSE comment-line keep-alive (`: opencodex heartbeat`) during upstream
+silence to re-arm Codex's idle timer (Codex's default `stream_idle_timeout` is 300 s and ANY SSE
+bytes re-arm it). A comment line is discarded by every eventsource parser without producing an event,
+so strict Responses decoders never see an unknown variant. Those bridge-enqueued keepalive frames do
+NOT count as activity for the bridge's own watchdog: a bounded stall deadline (default 300 s,
+configurable via `stallTimeoutSec`, checked on the 2 s heartbeat tick) closes the stream with
+`response.incomplete` / `upstream_stall_timeout` and cancels the upstream request if no real
+adapter events arrive. Adapter-yielded `{ type: "heartbeat" }` events DO reset the watchdog.
 
 Top-level `emptyCompletionRetry: true` opts Responses turns into one identical replay when a
 successful upstream completion contains neither output text nor a tool call. The default is off
@@ -653,9 +659,12 @@ normalization, credential and provider headers, capability-specific fields, and 
 `openaiChatCompletionsUrl()` path. The passthrough builder uses an explicit Chat-field whitelist so
 messages (including `name` and separate `system`/`developer` entries), Chat token controls,
 sampling/logprob fields, caller identity/metadata, and caller stream options retain their wire
-shape. For streams, caller `stream_options` are merged with mandatory `include_usage: true`.
-`service_tier` remains gated by `chatServiceTier: true`; `parallel_tool_calls` is emitted only for
-providers opted into parallel tools (or pinned false by the existing provider opt-out contract).
+shape. For streams, caller `stream_options` are merged with mandatory `include_usage: true`. On
+the native passthrough there is no canonical Fast injection and no wire mapping: every caller
+`service_tier` — canonical or foreign — is forwarded raw and only under `chatServiceTier: true`,
+and `fastMode` injects nothing here. Resolved-Fast-policy injection applies only to routes that
+take the Chat -> Responses -> Chat bridge below. `parallel_tool_calls` is emitted only for providers opted into
+parallel tools (or pinned false by the existing provider opt-out contract).
 Combo/policy routes and requests that need Responses-only hosted tools, continuation, background,
 or storage semantics retain the existing Chat -> Responses -> Chat bridge.
 
@@ -851,7 +860,7 @@ surface is listed here so a maintainer can find the owner without grepping:
 | Mimo Free | `src/adapters/mimo-free.ts` | Client identity and JWT handling are transport-local; the per-install client id lives in the opencodex state root. |
 | Anthropic image ingress | `src/adapters/anthropic-image-guard.ts`, `src/adapters/anthropic-image-normalize.ts` | Oversized or unsupported images are normalized or rejected before reaching upstream. |
 | Adapter execution support | `src/adapters/run-turn-queue.ts`, `src/adapters/tool-catalog-nudge.ts`, `src/adapters/identity.ts`, `src/adapters/image.ts`, `src/adapters/upstream-http-error.ts` | Shared machinery: turn ordering, tool-catalog nudging, client fingerprinting, image conversion, upstream error normalization. |
-| Cursor (beyond the sections above) | `src/adapters/cursor/live-transport.ts`, `src/adapters/cursor/transport-retry.ts`, `src/adapters/cursor/mcp-manager.ts`, `src/adapters/cursor/thread-continuity.ts` | Thread continuity is the point: a retry must not start a new Cursor thread. |
+| Cursor (beyond the sections above) | `src/adapters/cursor/live-transport.ts`, `src/adapters/cursor/http1-bidi.ts`, `src/adapters/cursor/live-models.ts`, `src/adapters/cursor/transport-retry.ts`, `src/adapters/cursor/mcp-manager.ts`, `src/adapters/cursor/thread-continuity.ts` | Thread continuity is the point: a retry must not start a new Cursor thread. HTTP/2 remains the default; an explicit `http1.1`/`h1` pin maps the bidi run onto Cursor's `RunSSE` receive stream plus sequenced `BidiAppend` sends, and applies to live discovery too. |
 | Claude Messages | `src/server/claude-messages.ts` | Routed translation, a native Anthropic passthrough branch, and `count_tokens`. |
 | Chat Completions inbound | `src/server/chat-completions.ts`, `src/chat/` | Inbound translation onto the same routing pipeline. |
 | Hosted search relay | `src/server/search.ts` | Direct relay; distinct from the web-search sidecar loop below. |

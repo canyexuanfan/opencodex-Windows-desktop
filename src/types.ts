@@ -14,6 +14,12 @@ export interface OcxReasoningReplayIdentity {
   modelId: string;
   /** Opaque process-local credential identity; never a raw token or API key. */
   credentialIdentity: string;
+  /**
+   * Salted-HMAC credential identity that survives restarts, for the durable
+   * thought-signature store (#1926). Absent when no durable identity could be
+   * derived — the durable store then refuses to key the entry (fail closed).
+   */
+  credentialDurableIdentity?: string;
 }
 
 /**
@@ -301,6 +307,10 @@ export interface OcxRequestOptions {
   reasoning?: string;
   hideThinkingSummary?: boolean;
   serviceTier?: string;
+  /** Final outbound tier action, resolved after the provider/model wire is settled. */
+  tierDecision?: TierDecision;
+  /** Internal B0 observation inputs; adapters combine these with the wire they actually serialize. */
+  tierObservation?: TierObservationContext;
   presencePenalty?: number;
   frequencyPenalty?: number;
   /** Responses prompt-cache affinity key. Passthrough preserves it via _rawBody; routed adapters do not consume it unless their upstream wire supports it. */
@@ -1315,6 +1325,51 @@ export interface ProviderRequestPacingConfig extends RequestPacingRule {
   models?: Record<string, RequestPacingRule>;
 }
 
+export interface FastWire {
+  kind: "service-tier" | "anthropic-speed";
+  /** Canonical tier name to upstream wire spelling. */
+  canonicalToWire: Readonly<Record<string, string>>;
+  /** Policy for non-canonical caller-provided tier values. */
+  foreignCallerTiers: "verbatim" | "drop";
+  /** Anthropic speed headers/betas reserved for the later wire implementation. */
+  betas?: readonly string[];
+}
+
+/** Durable per-attempt service-tier fact produced at the adapter serialization boundary. */
+export interface AttemptTierOutcome {
+  canonical?: "priority";
+  wireKind?: FastWire["kind"] | null;
+  wireValue?: string | null;
+  fastOutcome: "not-requested" | "applied" | "downgraded" | "unknown";
+  fastDowngradeReason?: "route-unsupported" | "wire-unavailable" | "response-declined";
+  callerTierDropped?: boolean;
+  callerFastSuppressedByConfig?: boolean;
+  confirmation: "confirmed" | "assumed" | "downgraded" | "unknown";
+  responseServiceTier?: string;
+}
+
+/**
+ * Request-local observation inputs captured before the final tier action mutates the parsed view.
+ * This is not persisted; the final adapter turns it into AttemptTierOutcome after serialization.
+ */
+export interface TierObservationContext {
+  capability: boolean | undefined;
+  eligibility:
+    | "eligible"
+    | "capability-unsupported"
+    | "unclassified"
+    | "wire-unavailable"
+    | "pin-unavailable";
+  fastWire: FastWire | null;
+  demandDecision: "force-fast" | "force-default" | "inherit";
+  callerTier?: string;
+}
+
+export type TierDecision =
+  | { readonly kind: "forward-caller" }
+  | { readonly kind: "drop" }
+  | { readonly kind: "set"; readonly value: string };
+
 /**
  * One configured provider entry. `authMode` (default `"key"`) decides whether same-target 429
  * retries are allowed; OAuth/forward credentials and local runtimes are never replayed.
@@ -1338,6 +1393,11 @@ export interface OcxProviderConfig {
    * as before.
    */
   modelAdapters?: Record<string, string>;
+  /**
+   * Fast-wire declaration. `null` explicitly disables adapter-derived defaults;
+   * absence derives from the final model adapter.
+   */
+  fastWire?: FastWire | null;
   baseUrl: string;
   /**
    * Optional relative resource path for key-auth openai-responses requests. Must start with `/`
@@ -1365,14 +1425,14 @@ export interface OcxProviderConfig {
    */
   requiresAdjacentResponsesToolResults?: boolean;
   /**
-   * Provider fallback for the OpenAI `service_tier` parameter. On Responses routes this
-   * is the complete wire opt-in; Chat routes additionally require `chatServiceTier` or an
-   * exact-model true declaration.
-   * Tri-state: `true` lets fast mode inject/remove the field (an unset
-   * fast mode preserves a caller-supplied value); `false` strips the field and
+   * Provider fallback for canonical Fast capability over an OpenAI `service_tier` wire.
+   * This pure tri-state feeds catalog publication, routing eligibility, compatibility
+   * fingerprints, and proxy-owned canonical Fast injection on both Responses and Chat routes.
+   * Tri-state: `true` lets fast mode inject/remove the canonical field; `false` strips it and
    * never injects, because an upstream documented as not supporting the parameter
-   * must not receive it; absent (`undefined`) leaves the provider unclassified —
-   * caller-supplied values are preserved untouched, and fast mode never injects.
+   * must not receive it; absent (`undefined`) leaves the provider unclassified — fast mode never
+   * injects or translates, and caller values pass only under the final wire's forwarding permission.
+   * On Chat, that CallerTierForward permission is `chatServiceTier`; Responses retains passthrough.
    * An explicit config value always wins over the registry default.
    */
   supportsServiceTier?: boolean;
@@ -1396,8 +1456,10 @@ export interface OcxProviderConfig {
    * HTTP/2 via TLS ALPN by default; some Cloudflare-fronted SSE endpoints hang on
    * HTTP/2 streaming responses (issue #1668). "http1.1" / "h1" forces HTTP/1.1,
    * "http2" / "h2" forces HTTP/2. Absent or "auto" keeps Bun's default negotiation
-   * (current behavior unchanged). Only meaningful for https: base URLs.
-  */
+   * (current behavior unchanged). Explicit pins require an https: target and fail locally when the
+   * pin cannot be honored. Cursor additionally maps an HTTP/1.1 pin onto its RunSSE + BidiAppend
+   * compatibility transport.
+   */
   upstreamHttpVersion?: UpstreamHttpVersion;
   /**
    * Google only. When `false`, the AI Studio (direct) path sends Gemini Flash ids
@@ -1589,13 +1651,16 @@ export interface OcxProviderConfig {
    */
   promptCacheKey?: boolean;
   /**
-   * Opt-in: forward `service_tier` to the upstream `/chat/completions` body.
+   * Opt-in: forward caller `service_tier` values to the upstream `/chat/completions` body.
+   * On a classified route it governs foreign values (for example `flex`), not proxy-owned
+   * canonical Fast after capability validation. On an unclassified route it governs every caller
+   * value, including canonical spellings, because no Fast capability has been validated.
    * OpenAI-specific extension with the same hazard as `promptCacheKey` — strict backends
    * reject unknown fields, and 66 registry providers share the `openai-chat` adapter, so a
    * caller-supplied `service_tier` would otherwise turn working requests into upstream 400s.
-   * Exact models may opt in through `modelSupportsServiceTier` instead; provider-level
-   * `supportsServiceTier: false` remains a global denial. Default off; only enable for
-   * providers that document this parameter on the chat wire.
+   * Exact-model `true` enables canonical Fast capability but does not grant foreign-tier
+   * forwarding; provider-level `supportsServiceTier: false` remains a global denial. Default off;
+   * only enable for providers that document this parameter on the chat wire.
    */
   chatServiceTier?: boolean;
   /**
@@ -1750,6 +1815,19 @@ const ANTHROPIC_WIRE_MODELS: Record<string, ReadonlySet<string>> = {
   "opencode-go": new Set(["minimax-m2.5", "minimax-m2.7", "minimax-m3"]),
 };
 
+function anthropicWireModelsForProvider(providerName: string): ReadonlySet<string> | undefined {
+  return Object.hasOwn(ANTHROPIC_WIRE_MODELS, providerName)
+    ? ANTHROPIC_WIRE_MODELS[providerName]
+    : undefined;
+}
+
+/** Detached provider-local hard-pin table for pure wire-policy resolution. */
+export function captureWireAdapterHardPins(providerName: string): Readonly<Record<string, string>> {
+  const models = anthropicWireModelsForProvider(providerName);
+  if (!models) return Object.freeze({});
+  return Object.freeze(Object.fromEntries([...models].map(modelId => [modelId, "anthropic"])));
+}
+
 /**
  * True when the upstream speaks exactly one wire for this model, so a configured
  * override must not apply.
@@ -1759,7 +1837,7 @@ const ANTHROPIC_WIRE_MODELS: Record<string, ReadonlySet<string>> = {
  * adapter" would pass on the first pass and then let the override win on the second.
  */
 export function isWirePinnedModel(providerName: string, modelId: string): boolean {
-  return ANTHROPIC_WIRE_MODELS[providerName]?.has(modelId) ?? false;
+  return anthropicWireModelsForProvider(providerName)?.has(modelId) ?? false;
 }
 
 /** The wire a pinned model must use, or undefined when the model is not pinned. */
@@ -1773,6 +1851,15 @@ export interface CodexAccount {
   /** User-owned display label; never participates in routing or identity checks. */
   alias?: string;
   plan?: string;
+  /**
+   * Provenance of `plan`. WHAM (live quota API) is authoritative; the JWT
+   * `chatgpt_plan_type` claim is a fallback that may lag a plan change. A JWT write
+   * must never overwrite a WHAM-sourced plan observed for the same credential
+   * generation — only a newer generation (token refresh after the WHAM read) may.
+   */
+  planSource?: "jwt" | "wham";
+  /** Credential generation at which `plan`/`planSource` was recorded. */
+  planCredentialGeneration?: number;
   chatgptAccountId?: string;
   logLabel?: string;
   isMain: boolean;

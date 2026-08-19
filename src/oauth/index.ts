@@ -292,10 +292,54 @@ export class UnsupportedOAuthProviderError extends Error {
 }
 
 export class OAuthLoginRequiredError extends Error {
+  readonly provider: string;
+
   constructor(provider: string) {
     super(`Not logged in to ${provider}. Run: ocx login ${provider}`);
     this.name = "OAuthLoginRequiredError";
+    this.provider = provider;
   }
+}
+
+export class OAuthProviderPublicationError extends Error {
+  constructor() {
+    super("OAuth credential was saved, but the provider entry was not written. Resolve the account namespace collision, then retry login.");
+    this.name = "OAuthProviderPublicationError";
+  }
+}
+
+export class OAuthReauthIdentityMismatchError extends Error {
+  constructor() {
+    super("Signed-in account does not match the selected account. Sign in with the same account.");
+    this.name = "OAuthReauthIdentityMismatchError";
+  }
+}
+
+export class OAuthReauthIdentityUnverifiedError extends Error {
+  constructor() {
+    super("Could not verify signed-in account identity for reauth.");
+    this.name = "OAuthReauthIdentityUnverifiedError";
+  }
+}
+
+/** Project arbitrary OAuth failures onto the small, stable public error vocabulary. */
+export function publicOAuthAuthenticationErrorMessage(error: unknown): string {
+  if (error instanceof OAuthMutationBusyError) {
+    return error.message === "OAuth mutation queue wait timed out"
+      ? "OAuth mutation queue wait timed out"
+      : "OAuth mutation queue is busy";
+  }
+  if (
+    (error instanceof OAuthLoginRequiredError && isOAuthProvider(error.provider))
+    || error instanceof OAuthProviderPublicationError
+    // Reauth identity outcomes carry fixed, account-free remediation text. Dropping them to the
+    // generic message hides WHICH failure the user must fix (sign in with the selected account).
+    || error instanceof OAuthReauthIdentityMismatchError
+    || error instanceof OAuthReauthIdentityUnverifiedError
+    || error instanceof OAuthTokenRefreshBusyError
+    || error instanceof OAuthTokenRefreshStaleError
+  ) return error.message;
+  return "OAuth authentication failed. Check the OpenCodex account status and retry.";
 }
 
 function accessSnapshot(provider: string, accountId: string, cred: OAuthCredentials): OAuthAccessSnapshot {
@@ -1111,7 +1155,7 @@ export async function runLogin(
       const existing = getAccountCredential(provider, opts.reauthAccountId);
       if (!existing) throw new Error(`Unknown account for reauth: ${opts.reauthAccountId}`);
       if (!existing.accountId && !existing.email) {
-        throw new Error("Could not verify signed-in account identity for reauth.");
+        throw new OAuthReauthIdentityUnverifiedError();
       }
       const identityMatches = existing.accountId && cred.accountId
         ? existing.accountId === cred.accountId
@@ -1119,7 +1163,7 @@ export async function runLogin(
           ? existing.email.toLowerCase() === cred.email.toLowerCase()
           : false;
       if (!identityMatches) {
-        throw new Error("Signed-in account does not match the selected account. Sign in with the same account.");
+        throw new OAuthReauthIdentityMismatchError();
       }
       await (deps.saveAccountCredential ?? saveAccountCredential)(provider, opts.reauthAccountId, cred);
     } else {
@@ -1136,10 +1180,7 @@ export async function runLogin(
         provider,
       );
       if (lateCollision) {
-        throw new Error(
-          `${lateCollision}. The credential for "${provider}" was saved, but the provider entry was not written. `
-          + "Rename the account selector, then re-run the login.",
-        );
+        throw new OAuthProviderPublicationError();
       }
       upsertOAuthProvider(latestConfig, provider);
       saveLatestConfig(latestConfig);
@@ -1381,7 +1422,16 @@ export async function startLoginFlow(
       onManualCodeInput: (expectedState?: string) => waitForManualLoginCode(provider, abort.signal, expectedState),
       signal: abort.signal,
     };
+    const abandonIfNotOwner = (error?: unknown): boolean => {
+      if (loginAbort.get(provider) === abort) return false;
+      if (!urlResolved) reject(error ?? new Error("OAuth login was superseded"));
+      return true;
+    };
     const settle = async (error?: unknown): Promise<void> => {
+      // Cancellation deletes this controller and records its own terminal result. A late provider
+      // rejection (or an older flow settling after a replacement starts) must not overwrite that
+      // state or delete the replacement flow's controller/manual-code slot.
+      if (abandonIfNotOwner(error)) return;
       let finalError = error;
       try {
         await lifecycle?.onSettled?.();
@@ -1390,6 +1440,7 @@ export async function startLoginFlow(
         // runtime config. For an already-failed login, keep the original recovery error.
         if (finalError === undefined) finalError = settleError;
       }
+      if (abandonIfNotOwner(finalError)) return;
       if (finalError === undefined) {
         loginAbort.delete(provider);
         clearManualCodeSlot(provider);
@@ -1403,7 +1454,7 @@ export async function startLoginFlow(
       const e = finalError;
       loginAbort.delete(provider);
       clearManualCodeSlot(provider);
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = publicOAuthAuthenticationErrorMessage(e);
       loginState.set(provider, { done: true, error: msg });
       if (!urlResolved) reject(e);
     };
@@ -1414,9 +1465,10 @@ export async function startLoginFlow(
       (e: unknown) => settle(e),
     ).catch((e: unknown) => {
       // settle catches lifecycle failures, so this is only a defensive promise-boundary guard.
+      if (abandonIfNotOwner(e)) return;
       loginAbort.delete(provider);
       clearManualCodeSlot(provider);
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = publicOAuthAuthenticationErrorMessage(e);
       loginState.set(provider, { done: true, error: msg });
       if (!urlResolved) reject(e);
     });

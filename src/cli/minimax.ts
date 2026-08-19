@@ -190,12 +190,18 @@ export function startMmxTextBridge(
         ? null
         : clearableDeadline(options.headerTimeoutMs, req.signal);
       try {
-        return await fetch(new Request(target, {
+        const upstreamRequest = new Request(target, {
           method: "POST",
           headers,
           body: req.body,
           signal: headerDeadline?.signal ?? req.signal,
-        }));
+        });
+        return await fetch(upstreamRequest, {
+          // Override HTTP(S)_PROXY with the loopback listener itself. Bun sends
+          // the HTTP proxy-form request directly to this exact origin, so the
+          // hop cannot leave the machine even when the parent has proxy vars.
+          proxy: { url: upstreamOrigin },
+        });
       } catch {
         return Response.json({
           type: "error",
