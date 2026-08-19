@@ -14,7 +14,7 @@ Loop: HOTL, session `01a01949`, goalplan
 - **No contributor branch is ever rewritten.** Defects on a fork head are
   requested, not pushed.
 
-## wp1 — #2102 + close #2091/#2099
+## wp1 — #2102 re-reviewed and deferred
 
 Outcome: **partially blocked on the author — merge deferred, not abandoned.**
 
@@ -58,8 +58,37 @@ Requested on the PR ([5341457142](https://github.com/lidge-jun/opencodex/pull/21
 with the in-file precedent quoted, rather than pushing to
 `lilinxiong/fix/gpt56-prompt-cache-retention` — it is a fork head.
 
-`#2091` and `#2099` stay open until #2102 lands. Closing them now would leave
-#2092 with no open fix.
+`#2091` and `#2099` stay open until #2102 resolves — but **not** because #2092
+needs an open PR attached to it. The re-audit corrected that reasoning: an issue
+can sit open without a mergeable fix, and "otherwise the issue has zero open
+fixes" is not a correctness requirement. The real reason is narrower: disposing
+of them now would be a premature verdict while the winner is still in flight.
+
+Neither is a viable fallback if #2102 stalls. #2091 strips from every forward
+request including GPT-5.5 and custom-forward providers. #2099 has the right
+model-scoped intent but carries the same custom-forward defect, uses the looser
+`startsWith("gpt-5.6")` predicate, and includes an unrelated `package.json`
+version change. If #2102 stalls, #2092 stays open.
+
+### One collision to watch
+
+`#2040` also changes `src/adapters/openai-responses.ts` and
+`tests/openai-responses-passthrough.test.ts`. The hunks are disjoint — #2040
+works on the tool-search rewrite further down the outbound chain — so neither
+blocks the other, but whichever lands second needs a rebase and a fresh look.
+
+Worth noting: **#2040 already uses `isCanonicalOpenAiForwardProvider`
+correctly.** Two open PRs touching the same file, one getting the canonical
+check right and one not, is the clearest argument that the blocker on #2102 is
+a repo convention rather than a reviewer preference.
+
+### Not folded into the author request
+
+Provider-qualified ids (`openai/gpt-5.6-sol`) are decoded to the bare native id
+by the router (`src/router.ts:611-634`, pinned at
+`tests/codex-routing.test.ts:304-309`), so the adapter only ever sees bare
+GPT-5.6 ids. Asking the sanitizer to recognize the qualified form would
+duplicate routing normalization. Out of scope, deliberately.
 
 ### Verified clean on this head
 
