@@ -2227,7 +2227,11 @@ describe("service definitions are not world-readable", () => {
 // leave a proxy password readable by other local principals.
 describe("credential-bearing definitions harden the Windows ACL strictly", () => {
   test("a proxy URL with userinfo is treated as a secret publication", () => {
-    const unit = buildUnit(resolvedProxyEnv({ HTTPS_PROXY: "http://user:secret@proxy.invalid:8080" }));
+    // `pw@chatgpt.com` is the repo's existing URL-userinfo fixture: the privacy scanner
+    // reads "pw@host" as an email otherwise, and this exact pair is already allowlisted for
+    // tests/ (scripts/privacy-scan.ts:102). The shape under test is the userinfo authority,
+    // not the particular credential.
+    const unit = buildUnit(resolvedProxyEnv({ HTTPS_PROXY: "https://user:pw@chatgpt.com:8080" }));
 
     expect(definitionCarriesCredential(unit)).toBe(true);
   });
