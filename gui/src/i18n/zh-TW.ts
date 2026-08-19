@@ -2055,4 +2055,18 @@ export const zhTW: Record<TKey, string> = {
   "dash.visionTimeout": "逾時",
   "dash.visionTimeoutInvalid": "請輸入 {min} 到 {max} 毫秒之間的整數。",
   "dash.visionAdvancedPopover": "進階視覺設定",
+  // Windows desktop host (this fork)
+  "dash.externalManaged": "由外部 CLI 管理",
+  "dash.start": "開啟代理",
+  "dash.starting": "正在啟動…",
+  "dash.startFailed": "無法啟動代理。",
+  "dash.updateBuild": "（構建 {revision}）",
+  "dash.updateDesktopInstaller": "Windows 安裝包",
+  "dash.updateDesktopInstallerHint": "桌面端更新會從 fork 儲存庫下載並啟動 Windows 安裝程式；如提示，請先關閉當前 OpenCodex。",
+  "dash.updateDownloadInstaller": "下載安裝包",
+  "dash.updateReleaseNotes": "發布頁",
+  "dash.updateDesktopReleaseUnavailable": "無法從 GitHub 讀取最新桌面版發布。請稍後重試。",
+  "dash.updateReason.desktop_release_unavailable": "無法讀取 GitHub Release",
+  "dash.updateReason.desktop_asset_missing": "最新發布缺少 Windows 安裝包",
+  "dash.updateReason.desktop_installer_manual": "需要下載並執行 Windows 安裝包",
 };

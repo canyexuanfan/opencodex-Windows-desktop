@@ -2092,4 +2092,18 @@ export const tr: Record<TKey, string> = {
   "dash.visionTimeout": "Zaman aşımı",
   "dash.visionTimeoutInvalid": "{min} ile {max} milisaniye arasında bir tam sayı girin.",
   "dash.visionAdvancedPopover": "Gelişmiş görsel ayarları",
+  // Windows desktop host (this fork)
+  "dash.externalManaged": "Harici CLI tarafından yönetiliyor",
+  "dash.start": "Proxy’yi başlat",
+  "dash.starting": "Başlatılıyor…",
+  "dash.startFailed": "Proxy başlatılamadı.",
+  "dash.updateBuild": "(derleme {revision})",
+  "dash.updateDesktopInstaller": "Windows yükleyici",
+  "dash.updateDesktopInstallerHint": "Masaüstü güncellemesi yükleme programını fork deposundan indirip çalıştırır; istenirse OpenCodex’i kapatın.",
+  "dash.updateDownloadInstaller": "Yükleyiciyi indir",
+  "dash.updateReleaseNotes": "Sürüm notları",
+  "dash.updateDesktopReleaseUnavailable": "En son masaüstü sürümü GitHub’dan okunamadı. Daha sonra tekrar deneyin.",
+  "dash.updateReason.desktop_release_unavailable": "GitHub Release okunamadı",
+  "dash.updateReason.desktop_asset_missing": "Son sürümde Windows yükleyicisi eksik",
+  "dash.updateReason.desktop_installer_manual": "Windows yükleyicisini indirip çalıştırmanız gerekiyor",
 };

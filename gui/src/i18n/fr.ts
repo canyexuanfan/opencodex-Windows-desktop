@@ -2057,4 +2057,18 @@ export const fr: Record<TKey, string> = {
   "lab.layer.protocol_conformance": "Conformité du protocole",
   "lab.layer.live_route_compatibility": "Compatibilité des routes en direct",
   "lab.layer.task_effectiveness": "Efficacité des tâches",
+  // Windows desktop host (this fork)
+  "dash.externalManaged": "Géré par le CLI externe",
+  "dash.start": "Démarrer le proxy",
+  "dash.starting": "Démarrage…",
+  "dash.startFailed": "Impossible de démarrer le proxy.",
+  "dash.updateBuild": "(build {revision})",
+  "dash.updateDesktopInstaller": "Programme d’installation Windows",
+  "dash.updateDesktopInstallerHint": "La mise à jour du bureau télécharge et lance le programme d’installation Windows depuis le dépôt du fork ; fermez OpenCodex si demandé.",
+  "dash.updateDownloadInstaller": "Télécharger le programme d’installation",
+  "dash.updateReleaseNotes": "Notes de version",
+  "dash.updateDesktopReleaseUnavailable": "Impossible de lire la dernière version bureau depuis GitHub. Réessayez plus tard.",
+  "dash.updateReason.desktop_release_unavailable": "GitHub Release illisible",
+  "dash.updateReason.desktop_asset_missing": "Le programme d’installation Windows manque dans la dernière version",
+  "dash.updateReason.desktop_installer_manual": "Téléchargez et exécutez le programme d’installation Windows",
 };
