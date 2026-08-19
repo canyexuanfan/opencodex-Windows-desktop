@@ -1623,7 +1623,12 @@ describe("Responses previous_response_id state", () => {
       },
     });
 
-    expect(result).toEqual({ matched: 0, removed: 0, failed: 0, bytesRemoved: 0, eligible: 0, eligibleBytes: 0 });
+    expect(result).toEqual({
+      matched: 0, removed: 0, failed: 0, bytesRemoved: 0, eligible: 0, eligibleBytes: 0,
+      // A read failure is not a budget stop: the caller must not be told the backlog was
+      // merely truncated when enumeration actually broke.
+      truncated: false,
+    });
   });
 
   test("periodic reclaim frees abandoned temps without any continuation access", () => {

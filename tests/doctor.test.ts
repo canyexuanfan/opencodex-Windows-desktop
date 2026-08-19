@@ -628,7 +628,7 @@ describe("service memory section (#314 WP4)", () => {
 
 describe("doctor abandoned response-state temps", () => {
   const result = (over: Partial<Parameters<typeof formatResponseTempLines>[0]> = {}) => ({
-    matched: 0, removed: 0, failed: 0, bytesRemoved: 0, eligible: 0, eligibleBytes: 0, ...over,
+    matched: 0, removed: 0, failed: 0, bytesRemoved: 0, eligible: 0, eligibleBytes: 0, truncated: false, ...over,
   });
 
   test("reports reclaimable files without removing them, and names the opt-in flag", () => {
@@ -667,9 +667,36 @@ describe("doctor abandoned response-state temps", () => {
   });
 
   test("a partial reclaim tells the operator to run again instead of silently stopping", () => {
-    const lines = formatResponseTempLines(result({ eligible: 816, removed: 512, bytesRemoved: 512 * 24 * 1024 * 1024 }), true);
-    expect(lines.join("\n")).toContain("304 file(s) remain");
+    // The shape here is one the scanner can actually produce. It cannot produce
+    // eligible > removed + failed outside a dry run: an entry is counted eligible and then
+    // unlinked or failed on the same iteration, so those are always equal, and the earlier
+    // version of this warning keyed on a comparison between them and therefore never fired.
+    const lines = formatResponseTempLines(
+      result({ eligible: 512, removed: 512, bytesRemoved: 512 * 24 * 1024 * 1024, truncated: true }),
+      true,
+    );
+    expect(lines.join("\n")).toContain("Cleanup budget reached");
     expect(lines.join("\n")).toContain("Run the command again");
+  });
+
+  test("a reclaim that finished does NOT claim files remain", () => {
+    // Ablation guard for the test above: same counts, truncated false. If the warning ever
+    // stops depending on `truncated`, this fails.
+    const lines = formatResponseTempLines(
+      result({ eligible: 512, removed: 512, bytesRemoved: 512 * 24 * 1024 * 1024 }),
+      true,
+    ).join("\n");
+    expect(lines).not.toContain("Cleanup budget reached");
+    expect(lines).not.toContain("Run the command again");
+  });
+
+  test("a truncated report says the total is a floor, not the backlog", () => {
+    const lines = formatResponseTempLines(
+      result({ matched: 4096, eligible: 4096, eligibleBytes: 96 * 1024 * 1024, truncated: true }),
+      false,
+    ).join("\n");
+    expect(lines).toContain("4096 abandoned response-state temp file(s)");
+    expect(lines).toContain("the real total is higher");
   });
 
   test("locked files are never described as retried automatically", () => {
