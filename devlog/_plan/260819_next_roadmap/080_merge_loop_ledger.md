@@ -152,6 +152,24 @@ are genuine oracles, but it should not be cited as coverage.
 `#2100` and `#2077` — the two HOLD verdicts from the same `modelRecordValue`
 family — are still OPEN and unmerged. Merging the batch did not sweep them in.
 
+### Batch composition check for wp3
+
+Recorded before the next cycle so the batch is chosen on evidence rather than
+on the roadmap's guess:
+
+| PR | Owner | Files | Overlap risk |
+|---|---|---|---|
+| #2035 | iF2007 | `providers/antigravity-models.ts` + test | none |
+| #2031 | lidge-jun | `providers/registry.ts`, `structure/03`, 2 tests | registry is a split-program target later, not now |
+| #1878 | lidge-jun | one docs-site page | none |
+
+Disjoint. Safe as one batch of three.
+
+Note `#2031` touches `src/providers/registry.ts`, which WP3 of the split
+program will eventually rewrite — but that work package is not scheduled in
+this loop, so there is no ordering constraint today. Worth carrying forward if
+the registry split is ever queued.
+
 ### Verified clean on this head
 
 - The key-auth test is a real oracle: it fails against `72117f169`.
