@@ -61,7 +61,19 @@ forward into the next document.
 
 ## wp1 — R2 merge temp-reclaim stack
 
-In progress. A pre-merge review lane (sol-medium, agent `01a0196e`) returned
+Outcome: **DONE.** Both PRs merged after three confirmed review findings were
+fixed.
+
+| Step | Evidence |
+|---|---|
+| #2084 merged | `973258488`, ancestor of `origin/dev` |
+| #2089 retargeted to `dev` | diff became the 9 phase-2 files only |
+| #2089 merged | `c4bf833c9`, ancestor of `origin/dev` |
+| Checks at merge | zero FAILURE, zero PENDING on both exact heads |
+| Post-merge CI | runs `32241217016` and `32241261180` on the merge SHAs |
+| Branches deleted | both, after the retarget (never before) |
+
+A pre-merge review lane (sol-medium, agent `01a0196e`) returned
 **DO-NOT-MERGE** on the original heads. Three of its findings were confirmed
 against the code and fixed; the blocking one was adjudicated down and is
 recorded here rather than silently dropped.
@@ -130,6 +142,32 @@ Cosmetic, and the fix is a `realpath` dedupe worth doing with a test that can
 build the alias. (b) `resolveWriteTarget` follows a snapshot symlink out of the
 config dir, so scanning follows it too. That is the intended dotfiles-managed
 behavior; containment would be a separate design decision, not a fix.
+
+## wp4 — R4 modelRecordValue batch review
+
+Outcome: **DONE (review only, no merges).** Lane: sol-medium agent `01a01979`.
+
+The review did not merely confirm the batch premise — it **refuted the shared
+contract as originally written**, which is the whole reason this lane was worth
+running. The draft implied every per-model map should migrate to
+`modelRecordValue`. Two maps (`modelPreferHostedTools`,
+`modelOpenRouterRouting`) are deliberately exact-own-only, so migrating them
+adds family and case-folded inheritance the adapter will not honor. The
+invariant is "read it the way the runtime reads *that map*"; `modelRecordValue`
+is only its implementation for the family-aware set.
+
+Verdicts: `#2085` merge, `#2086` merge, `#2100` hold (missing
+`noVisionModels` precedence lets routing pick a candidate for image work that
+execution rejects), `#2077` hold (over-broad migration reaches
+`modelPreferHostedTools`; `modelOpenRouterRouting` still read raw).
+
+Full reasoning in `040_r4_modelrecordvalue_batch.md`.
+
+## Remaining
+
+- wp2 (R1 split rebase) — pending.
+- wp3 (R3 collisions + eight retargets) — pending.
+- Posting the wp4 verdicts to the four PRs — pending.
 
 ## wp2 — R1 rebase split stack
 
