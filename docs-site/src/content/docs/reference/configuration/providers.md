@@ -154,8 +154,8 @@ Explicit capability `false` and Responses caller-tier forwarding retain their ex
 ### xAI Priority Processing
 
 The built-in `xai` preset advertises and injects Fast only when its effective transport uses
-`authMode: "key"`. API-key mode uses the key transport at `https://api.x.ai/v1` and sends
-`service_tier: "priority"` to xAI's public Chat Completions or Responses API. `ocx login xai`
+`authMode: "key"`. API-key mode targets `https://api.x.ai/v1` through the `openai-chat` adapter and
+sends `service_tier: "priority"` through Chat Completions. `ocx login xai`
 instead stores OAuth credentials for the separate Grok CLI subscription-gateway flow, so OAuth
 remains unclassified: its catalog rows do not advertise Fast and the proxy does not inject a tier.
 
