@@ -24,7 +24,7 @@ describe("Logs priority lower-bound formatting", () => {
   });
 
   test("uses locale-aware USD placement and separators", () => {
-    expect(formatEstimatedUsdValue(1.6, de, "de-DE", false)).toBe("~1,6000\u00a0$");
+    expect(formatEstimatedUsdValue(1.6, de, "de-DE", false)).toBe("ca. 1,6000\u00a0$");
   });
 });
 
