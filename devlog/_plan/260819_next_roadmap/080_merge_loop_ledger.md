@@ -230,6 +230,72 @@ explanation. #2031 was mergeable because the lane had already verified the code
 — registry ordering unchanged by hash, oracle red-driven — and the rebase only
 cleared the noise hiding that.
 
+## wp4 — #2103 merged; #2105 and #2053 held
+
+Outcome: **batch split 1/3.** This is the first work-phase where the batch did
+not survive review, and both holds are real.
+
+| PR | Verdict | Result |
+|---|---|---|
+| #2103 xAI tool schema | MERGE | `18e072c8d` |
+| #2105 Claude shell hook | DO-NOT-MERGE | [5341955684](https://github.com/lidge-jun/opencodex/pull/2105#issuecomment-5341955684) |
+| #2053 OAuth superseded commits | DO-NOT-MERGE | [5341955876](https://github.com/lidge-jun/opencodex/pull/2053#issuecomment-5341955876) |
+
+### #2103 — clean
+
+Removes only the root `$schema` key before xAI normalization, gated on the
+exact `cli-chat-proxy.grok.com` hostname, so the other providers sharing
+`openai-chat.ts` are untouched. Oracle: 2/0 fixed, **0 pass 2 fail** reverted —
+both tests fail at their first assertion, so nothing in them is decorative.
+
+### #2105 — a destructive false negative
+
+`reconcileShellHook(false)` unconditionally removes the hook
+(`src/server/system-env.ts:157-180`), and the call sites collapse every failure
+into that one boolean (`src/cli/index.ts:368-371`, `:458-459`). But
+`injectSystemEnv()` returns false for a custom `ANTHROPIC_BASE_URL`, for
+another instance owning the environment, for a swallowed injection failure, and
+for "`claude` is not on **this process's** `PATH`".
+
+That last case is the one that will actually happen: `claudeCodeCliInstalled()`
+reads `process.env.PATH` (`:134-149`), and a service-started proxy does not
+inherit the interactive login shell's `PATH`. So a user with Claude Code
+installed, running `ocx` as a service, gets their working `.zshrc` hook
+**deleted**.
+
+The false-positive direction is harmless — it installs a hook, which is what
+the old unconditional behavior did anyway. The asymmetry is the whole finding:
+**this change made the safe direction conditional and left the destructive one
+unconditional.**
+
+Requested fix: remove only on an explicit "integration disabled" reason, not on
+"not true".
+
+### #2053 — the code is right and the test is missing
+
+I asked the lane to hunt for a TOCTOU window on this one because it is an auth
+boundary. There is none: the ownership check runs under the file lock with no
+`await` before the synchronous write (`src/oauth/store.ts:468-475`, write at
+`:185-195`).
+
+The blocker is elsewhere. Reauthentication is wired through
+`assertBeforePersist`, but **removing only that wiring leaves every suite green
+— 24 pass, 0 fail.** So a later refactor can delete the reauth protection
+silently while a canceled account's credential gets overwritten and
+`needsReauth` cleared (`src/oauth/store.ts:644-649`).
+
+Worth naming the shape, because it recurs: *the fix is correct, the test proves
+a neighbouring fact.* The superseded-**login** test carries its oracle only in
+its final assertion — the first two pass against the unfixed code
+(`tests/oauth-public-surface.test.ts:496-503`).
+
+### What wp4 changed about the loop
+
+Three work-phases merged everything reviewed. This one merged a third. That is
+the batching rule doing its job: had these been merged as one stage-1 sweep,
+two defects would have landed behind a green CI, and the shell-hook one deletes
+user configuration.
+
 ### Verified clean on this head
 
 - The key-auth test is a real oracle: it fails against `72117f169`.
