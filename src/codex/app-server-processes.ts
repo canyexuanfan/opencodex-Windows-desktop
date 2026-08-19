@@ -900,9 +900,25 @@ export async function collectCodexAppServerCatalogStateForRequest(
   }));
   let flight: RequestCatalogStateFlight;
   const promise = pending.then(status => {
-    // A catalog write can invalidate while slow CIM is still running. Never
-    // let that pre-write result repopulate the post-write cache.
-    if (requestCatalogStateGeneration === generation && requestCatalogStateFlight === flight) {
+    // A catalog write can invalidate while slow CIM is still running. The result
+    // describes the PRE-write world, so it must neither repopulate the post-write
+    // cache nor reach the caller.
+    //
+    // Suppressing only the cache write is not enough. The awaiting request still
+    // received `fresh`, and `fresh` is the one state that authorizes positive
+    // guidance (`src/server/responses/collaboration.ts:279-280` returns null for
+    // `stale`/`unknown` but describes the catalog for `fresh`). So the request
+    // would advertise the newly written disk catalog to an app-server whose
+    // in-memory copy the write just made stale — a wrong answer, which is worse
+    // than the slow answer this whole change exists to fix.
+    //
+    // Degrade to `unknown` instead: it is the honest description of what an
+    // invalidated observation knows, and the guidance path already treats it as
+    // "say nothing positive".
+    if (requestCatalogStateGeneration !== generation) {
+      return { state: "unknown" as const, processes: [], catalogMtimeMs: null };
+    }
+    if (requestCatalogStateFlight === flight) {
       requestCatalogStateCache = {
         generation,
         identity,

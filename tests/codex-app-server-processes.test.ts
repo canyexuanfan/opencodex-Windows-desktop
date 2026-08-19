@@ -152,10 +152,48 @@ describe("collectCodexAppServerCatalogState (#857)", () => {
     const staleFlight = collectCodexAppServerCatalogStateForRequest(io);
     resetCodexAppServerCatalogStateCache();
     releaseFirst?.([{ pid: 42, commandLine: APP_SERVER_CMD }]);
-    await expect(staleFlight).resolves.toMatchObject({ state: "fresh" });
+    // The awaiting request must NOT receive the pre-write `fresh`. It was true
+    // before the invalidating write and is false after it, and `fresh` is the one
+    // state that authorizes positive model guidance — so handing it back trades the
+    // original hang for a wrong answer. `unknown` is what an invalidated
+    // observation actually knows, and the guidance path already stays silent on it.
+    await expect(staleFlight).resolves.toMatchObject({ state: "unknown" });
 
     await expect(collectCodexAppServerCatalogStateForRequest(io)).resolves.toMatchObject({
       state: "not_running",
+    });
+    expect(calls).toBe(2);
+    resetCodexAppServerCatalogStateCache();
+  });
+
+  test("an invalidated in-flight refresh does not poison the next request (#1852)", async () => {
+    // Companion to the case above: degrading the obsolete result to `unknown` must
+    // not also suppress the NEXT observation, which is made after the write and is
+    // therefore the one the caller should trust.
+    resetCodexAppServerCatalogStateCache();
+    let calls = 0;
+    let releaseFirst: ((snapshots: Array<{ pid: number; commandLine: string }>) => void) | undefined;
+    const firstSnapshots = new Promise<Array<{ pid: number; commandLine: string }>>(resolve => {
+      releaseFirst = resolve;
+    });
+    const io = {
+      platform: "win32" as const,
+      listSnapshotsAsync: async () => {
+        calls += 1;
+        if (calls === 1) return firstSnapshots;
+        return [{ pid: 43, commandLine: APP_SERVER_CMD }];
+      },
+      readStartMsBatchAsync: async (pids: readonly number[]) => new Map(pids.map(pid => [pid, 2_000])),
+      catalogMtimeMs: () => 1_000,
+    };
+
+    const obsolete = collectCodexAppServerCatalogStateForRequest(io);
+    resetCodexAppServerCatalogStateCache();
+    releaseFirst?.([{ pid: 42, commandLine: APP_SERVER_CMD }]);
+    await expect(obsolete).resolves.toMatchObject({ state: "unknown" });
+
+    await expect(collectCodexAppServerCatalogStateForRequest(io)).resolves.toMatchObject({
+      state: "fresh",
     });
     expect(calls).toBe(2);
     resetCodexAppServerCatalogStateCache();
