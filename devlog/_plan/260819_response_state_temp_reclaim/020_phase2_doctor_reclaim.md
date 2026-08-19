@@ -49,22 +49,32 @@ if (result.matched === 0) {
 
 ### MODIFY `src/responses/state.ts`
 
-Export a dry-run counterpart so doctor can report without deleting. It reuses
-`recoverStaleResponseStateTemps` with an injected no-op `unlink`, so the SAME
-selection predicate decides both report and reclaim — a separate matcher would drift.
+Export a dry-run counterpart so doctor can report without deleting. It must share the
+SAME selection predicate as the reclaim — a separate matcher would drift and the two
+surfaces would disagree about which files are reclaimable.
+
+**Corrected after WP0 self-verification.** The original proposal (inject a no-op
+`unlink`) is wrong: `state.ts:586-590` increments `removed` and accrues
+`bytesRemoved` only inside the successful-unlink branch, so a no-op `unlink` still
+reports `removed` as though files were deleted. `maxCleanups` also bounds a
+report-only pass, truncating the count an operator is shown. And
+`ResponseStateTempRecoveryOptions` (`state.ts:507`) is module-private, so
+out-of-module IO injection does not typecheck at all.
+
+Add an explicit `dryRun` option to the shared function instead, with its own
+accounting branch:
 
 ```ts
-/** Report-only counterpart: same selection predicate, no removal. */
-export function inspectAbandonedResponseStateTemps(): { matched: number; bytes: number } {
-  // ... resolve both dirs as in sweepAbandonedResponseStateTemps,
-  // call recoverStaleResponseStateTemps(dir, { unlink: () => {} }) and sum.
+// inside the loop, replacing the unconditional unlink:
+if (dryRun) {
+  result.wouldRemove += 1;
+  result.bytesReclaimable += file.size;
+  continue;
 }
 ```
 
-Note the existing accounting detail: `bytesRemoved` only accrues on a successful
-`unlink` (`state.ts:590`), so with a no-op unlink the byte total must come from
-`inspect`. Confirm against the implementation during B and adjust the wrapper — this
-is the one place the reuse is not free.
+A dry run keeps every selection gate (basename, regular-file, age, boot floor, pid
+liveness) and changes only the action. Report and reclaim then cannot disagree.
 
 ### MODIFY `docs-site/`
 
@@ -96,6 +106,8 @@ response temps and reclaims only those.
 | 2 | `ocx doctor --reclaim-response-temps` | stale files removed; freed bytes printed |
 | 3 | No abandoned temps | clean single-line report, no flag suggestion |
 | 4 | Proxy not running | both paths work — no server dependency |
+| 5 | Report then reclaim on the same fixture | reported count/bytes equal what reclaim removes |
+| 6 | More stale temps than the cleanup budget | report is not truncated by `maxCleanups` |
 
 Criterion 4 is the whole point of the layer: assert the code path imports nothing that
 requires a live server.
