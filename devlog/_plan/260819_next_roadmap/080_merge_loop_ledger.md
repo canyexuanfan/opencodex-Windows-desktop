@@ -307,6 +307,77 @@ wp6 is the one with a deadline attached: those three are the PRs the split
 would otherwise force back onto their authors. #2112 and #1934 are bug fixes,
 so the cost of leaving them is paid by users, not just by the queue.
 
+## wp5 — #1876 fixed, then merged
+
+Outcome: **DONE**, merge commit `c035ee093` (closes issue #1852).
+
+This is the phase where the review lane found something worth the whole loop.
+
+### The blocker: a fix that traded a hang for a wrong answer
+
+#1876 moves Windows app-server enumeration off the request path so a slow
+PowerShell CIM walk stops blocking `/healthz`. Correct goal. But a catalog write
+can invalidate the cache while that enumeration is still running, and the code
+only suppressed the **cache write**:
+
+```ts
+if (requestCatalogStateGeneration === generation && requestCatalogStateFlight === flight) {
+  requestCatalogStateCache = { ... };   // correctly skipped after invalidation
+}
+return status;                          // but the caller still got the pre-write status
+```
+
+The awaiting v2 request therefore received `fresh` — and `fresh` is the single
+state that authorizes positive model guidance
+(`src/server/responses/collaboration.ts:279-280` returns null for
+`stale`/`unknown`). So the request would advertise the newly written disk
+catalog to an app-server whose in-memory copy that same write had just made
+stale.
+
+The lane reproduced it deterministically rather than describing it:
+
+```json
+{"observed":"fresh","observedCatalogMtime":1000,"actualPostWriteRelation":"stale because 2000 <= 3000"}
+```
+
+**A slow answer was the bug. A wrong answer is worse than the bug.**
+
+### Fixed on our branch
+
+An invalidated observation now returns `unknown` — which is what it actually
+knows, and which the guidance path already treats as "say nothing positive".
+
+The existing regression had asserted `state: "fresh"` for exactly this case, so
+**the test was pinning the defect**. It now asserts `unknown`, plus a companion
+proving the next post-write observation still reports `fresh` rather than being
+poisoned by the degrade. Both fail when the fix is reverted.
+
+### Then the oracles themselves got audited
+
+Three follow-up commits, each earned:
+
+| Commit | What it fixed |
+|---|---|
+| `4ff8456e4` | the async test injected an **already-async seam**, so it stayed green when the production default was reverted to `execFileSync` — it described the design without guarding it |
+| `d55bc920d` | only one of three async wirings was guarded; the other two could be reverted silently |
+| `ca7923a59` | the fixture was a POSIX `.sh` (unrunnable on the platform this fix is *for*), and the assertion counted `setInterval` ticks against a hardcoded midpoint — a loaded runner could fail a correct implementation |
+
+That last one is the sharpest lesson in this loop so far: a test can be a real
+red-green oracle **and still be wrong**, if what it measures is machine speed.
+Replaced with a phase signal — did any event-loop work run while the child was
+alive — which a synchronous exec cannot produce regardless of hardware.
+
+### Stale base, fourth occurrence
+
+67 commits behind, 7 red legs, clean rebase, 96 pass 0 fail, `tsc` exit 0.
+Final CI on `ca7923a59`: **completed/success, zero failures.**
+
+One operational note: three intermediate runs reported `ci failure` while every
+individual job passed. The cause each time was `platform-macos=cancelled` from
+concurrency supersession — a new head cancelling the previous run. The gate job
+treats `cancelled` as not-passed, correctly. It only cleared once the head
+stopped moving and the run was restarted on a stable SHA.
+
 ### Verified clean on this head
 
 - The key-auth test is a real oracle: it fails against `72117f169`.
