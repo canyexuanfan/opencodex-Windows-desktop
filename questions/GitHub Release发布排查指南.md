@@ -48,3 +48,19 @@
 - ❌ 2026-08-04：记录 `gh api` 单字符串后台进程无网络活动，下一步换 PowerShell 直传。
 - ✅ 2026-08-04：PowerShell 直传安装包成功，v2.10.0 Release 已正式发布，包含 exe 与 blockmap 两个资产。
 - ❌ 2026-08-04：记录 tag push 意外触发两个工作流，后续发布前必须全量审计所有 workflow 的 push/tag 触发。
+
+- ✅ 2026-08-19：v2.22.0 发布全程顺利，此前记录的坑均未复现：
+  - 分支 `codex/sync-upstream-v2.10.0` 推送（e922b69 → 5f88af1，fast-forward）；
+  - tag v2.22.0 重建指向本 fork 构建提交 5f88af1（本地旧 v2.22.0 tag 是 fetch 上游时
+    带入的 d9de895 指针，未推送过，直接删除重建，遵循 fork 惯例：版本 tag 指向
+    本仓库构建提交）；
+  - `gh release create --draft --target <完整SHA>` 一次成功；`gh release upload`
+    121MB 安装包未超时（本次未拆 blockmap，差分索引已禁用）；
+  - `gh release edit --draft=false --latest` 发布成功。
+  - 注意：`gh release view --json` 无 isLatest 字段，验证 latest 要用
+    `gh api repos/<repo>/releases/latest`。
+  - 端到端验证：GitHub releases API latest=v2.22.0，资产名
+    OpenCodex-Setup-2.22.0-x64.exe 精确匹配 desktopSetupAssetName()，
+    大小 121354017 与本地一致，下载域名为 github.com（在安装器 URL 白名单内）。
+  - 本次 tag/branch push 触发的 Service lifecycle 与 Issue quality tests
+    均 completed success（v2.10.0 时代曾被视为噪音，现已无失败）。
