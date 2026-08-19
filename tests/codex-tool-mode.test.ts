@@ -187,6 +187,24 @@ describe("Codex tool mode configuration (#2106)", () => {
     expect(model).toBeDefined();
     expect(model.codexToolMode).toBe("code_mode_only");
   });
+
+  test("buildCatalogEntries with codexForwardNativeCapabilityAlias applies codexToolMode = shell", () => {
+    const { buildCatalogEntries, NATIVE_DAYBREAK_BLUE_MODEL, upstreamNativeEntry } = require("../src/codex/catalog");
+    const { CODEX_CUSTOM_MODEL_CATALOG_KIND, findNativeTemplate } = require("../src/codex/catalog/parsing");
+    const nativeTemplate = () => findNativeTemplate(upstreamNativeEntry("gpt-5.6-sol")!);
+    const models = [{
+      id: NATIVE_DAYBREAK_BLUE_MODEL,
+      provider: "openai",
+      catalogKind: CODEX_CUSTOM_MODEL_CATALOG_KIND,
+      codexForwardNativeCapabilityAlias: true,
+      codexToolMode: "shell" as const,
+    }];
+    const entries = buildCatalogEntries(nativeTemplate(), [], models);
+    const daybreak = entries.find((entry: any) => entry.slug === `openai/${NATIVE_DAYBREAK_BLUE_MODEL}`);
+    expect(daybreak).toBeDefined();
+    expect(daybreak?.tool_mode).toBeUndefined();
+    expect(daybreak?.use_responses_lite).toBe(true);
+  });
 });
 
 

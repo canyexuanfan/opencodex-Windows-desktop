@@ -332,6 +332,8 @@ export function deriveEntry(
       // native tool/search/responses-lite contract while preserving the routed slug and wire id.
       if (!codexForwardNativeCapabilityAlias) {
         normalizeRoutedCatalogEntry(e, model?.parallelToolCalls === true, model?.codexToolMode);
+      } else if (model?.codexToolMode !== undefined) {
+        applyRoutedCodexToolMode(e, model.codexToolMode);
       }
       if (model) applyCatalogMetadata(e, model.provider, model.id, model.contextCap);
       applyCatalogModelMetadata(e, model);
