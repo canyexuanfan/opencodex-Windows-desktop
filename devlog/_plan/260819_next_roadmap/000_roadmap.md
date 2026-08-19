@@ -1,5 +1,11 @@
 # 260819 — Next roadmap (post-triage, post-cleanup)
 
+> **Status: executed 2026-08-19.** R1-R4 are closed; see `050_execution_ledger.md`
+> for what happened and `060_outcome.md` for the closeout. Two sections of this
+> document were corrected by audit lanes during execution — the corrections are
+> in `010` and `030`, and the reasons are in `050`. Read this file for the
+> sequencing decision, not for current PR state.
+
 Baseline: dev @ 3ad904e03 (local, 1 ahead of origin/dev 63bfd149d).
 Inputs: the 260819 triage-execution outcome (12 merged, 5 downgraded), the
 260818 mega-file split risk assessment, and a live read of 53 open PRs /
