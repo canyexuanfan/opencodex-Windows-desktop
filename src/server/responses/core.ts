@@ -1199,6 +1199,7 @@ async function applyFinalRouteRequestNormalization(args: {
     route.modelId,
     route.providerName,
     inboundWire,
+    config.providers[route.providerName],
   );
   const modelServiceTierSupport = serviceTierSupportFromPolicy(fastPolicy);
   const callerTier = parsed.options.serviceTier;
@@ -4288,9 +4289,9 @@ async function handleResponsesInner(
       const detachContinuationBodyGuard = cancelBodyOnAbort(response.body, upstream.signal);
       try {
         if (nextParsed.stream) {
-          yield* activeAdapter.parseStream(response, translatorBudget);
+          yield* activeAdapter.parseStream(response, translatorBudget, logCtx.activeTierMetadata);
         } else if (activeAdapter.parseResponse) {
-          yield* await activeAdapter.parseResponse(response, translatorBudget);
+          yield* await activeAdapter.parseResponse(response, translatorBudget, logCtx.activeTierMetadata);
         } else {
           yield { type: "error", message: "Provider continuation does not support response parsing" };
         }
@@ -4320,7 +4321,11 @@ async function handleResponsesInner(
   };
 
   if (parsed.stream) {
-    const initialEventStream = activeAdapter.parseStream(upstreamResponse, translatorBudget);
+    const initialEventStream = activeAdapter.parseStream(
+      upstreamResponse,
+      translatorBudget,
+      logCtx.activeTierMetadata,
+    );
     const eventStream = terminalGuardEnabled
       ? guardTerminalEventStream({
           parsed,
@@ -4388,7 +4393,11 @@ async function handleResponsesInner(
   if (activeAdapter.parseResponse) {
     let events: AdapterEvent[];
     try {
-      const initialEvents = await activeAdapter.parseResponse(upstreamResponse, translatorBudget);
+      const initialEvents = await activeAdapter.parseResponse(
+        upstreamResponse,
+        translatorBudget,
+        logCtx.activeTierMetadata,
+      );
       let guardedEvents: AdapterEvent[];
       if (terminalGuardEnabled) {
         guardedEvents = [];

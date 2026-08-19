@@ -17,6 +17,7 @@ import type { LogsTab } from "./logs-tab-keydown";
 import { logsTabKeyDown, readTabFromHash, selectLogsTab } from "./logs-tab-keydown";
 import { modelTitle } from "./logs-model-title";
 import { speedLabel } from "./logs-speed-label";
+import { formatEstimatedUsdValue } from "./logs-cost-format";
 import { cacheSplit, isCursorUsageProvider, tokensTitle } from "./logs-token-title";
 import type { LogSurface, LogSurfaceFilter } from "./logs-surface-filter";
 import { logMatchesSurface } from "./logs-surface-filter";
@@ -53,7 +54,8 @@ type CostEstimateReason =
   | "usage_estimated"
   | "cache_detail_missing"
   | "expected_price_overlay"
-  | "provider_cost_overlay";
+  | "provider_cost_overlay"
+  | "priority_lower_bound";
 
 type TokPerSecondResult =
   | { kind: "value"; value: number; estimated: boolean }
@@ -75,6 +77,7 @@ type CostResult =
     estimate: {
       cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
       estimated: boolean;
+      priorityLowerBound?: boolean;
       price?: MatchedPriceInfo;
       attempts?: Array<{ ordinal: number; price: MatchedPriceInfo }>;
     };
@@ -240,18 +243,10 @@ function formatTokPerSecond(result: TokPerSecondResult | undefined, localeTag?: 
 function formatEstimatedUsd(result: CostResult | undefined, localeTag?: string): string {
   if (!result || result.kind === "unavailable" || !Number.isFinite(result.estimate.cost.total) || result.estimate.cost.total < 0) return "\u2014";
   const totalUsd = result.estimate.cost.total;
-  return `~$${new Intl.NumberFormat(localeTag, {
+  return `${result.estimate.priorityLowerBound ? "≥" : ""}~$${new Intl.NumberFormat(localeTag, {
     minimumFractionDigits: 4,
     maximumFractionDigits: 4,
   }).format(totalUsd)}`;
-}
-
-function formatEstimatedUsdValue(value: number, localeTag?: string): string {
-  if (!Number.isFinite(value) || value < 0) return "\u2014";
-  return `~$${new Intl.NumberFormat(localeTag, {
-    minimumFractionDigits: 4,
-    maximumFractionDigits: 4,
-  }).format(value)}`;
 }
 
 /** Consecutive failed polls before a stale table is called out. Two seconds each, so ~6s. */
@@ -273,6 +268,7 @@ const ESTIMATE_REASON_KEYS = {
   cache_detail_missing: "logs.detail.estimate.cache_detail_missing",
   expected_price_overlay: "logs.detail.estimate.expected_price_overlay",
   provider_cost_overlay: "logs.detail.estimate.provider_cost_overlay",
+  priority_lower_bound: "logs.detail.estimate.priority_lower_bound",
 } as const satisfies Record<CostEstimateReason, string>;
 
 /**
@@ -345,11 +341,13 @@ function summarizeFilteredLogs(entries: LogEntry[]): {
   requests: number;
   totalTokens: number;
   estimatedCostUsd: number;
+  priorityLowerBound: boolean;
   unpricedRequests: number;
   unmeteredRequests: number;
 } {
   let totalTokens = 0;
   let estimatedCostUsd = 0;
+  let priorityLowerBound = false;
   let unpricedRequests = 0;
   let unmeteredRequests = 0;
   for (const entry of entries) {
@@ -363,11 +361,19 @@ function summarizeFilteredLogs(entries: LogEntry[]): {
     const total = cost?.kind === "value" ? cost.estimate.cost.total : undefined;
     if (total !== undefined && Number.isFinite(total) && total >= 0) {
       estimatedCostUsd += total;
+      priorityLowerBound ||= cost?.kind === "value" && cost.estimate.priorityLowerBound === true;
       continue;
     }
     unpricedRequests += 1;
   }
-  return { requests: entries.length, totalTokens, estimatedCostUsd, unpricedRequests, unmeteredRequests };
+  return {
+    requests: entries.length,
+    totalTokens,
+    estimatedCostUsd,
+    priorityLowerBound,
+    unpricedRequests,
+    unmeteredRequests,
+  };
 }
 
 export default function Logs({ apiBase }: { apiBase: string }) {
@@ -612,7 +618,11 @@ export default function Logs({ apiBase }: { apiBase: string }) {
             {t("logs.conversation.totals", {
               requests: conversationTotals.requests,
               tokens: formatTokens(conversationTotals.totalTokens, localeTag ?? locale),
-              cost: formatEstimatedUsdValue(conversationTotals.estimatedCostUsd, localeTag),
+              cost: formatEstimatedUsdValue(
+                conversationTotals.estimatedCostUsd,
+                localeTag,
+                conversationTotals.priorityLowerBound,
+              ),
             })}
             {" "}
             <span className="muted">
@@ -956,11 +966,11 @@ function LogDetailDialog({
           {cost?.kind === "value" ? (
             <>
               <div className="log-detail-grid">
-                <span className="muted">{t("logs.detail.costTotal")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.total, localeTag)}</span>
-                <span className="muted">{t("logs.tokens.input")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.input, localeTag)}</span>
-                <span className="muted">{t("logs.tokens.cacheRead")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.cacheRead, localeTag)}</span>
-                <span className="muted">{t("logs.tokens.cacheWrite")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.cacheWrite, localeTag)}</span>
-                <span className="muted">{t("logs.tokens.output")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.output, localeTag)}</span>
+                <span className="muted">{t("logs.detail.costTotal")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.total, localeTag, cost.estimate.priorityLowerBound)}</span>
+                <span className="muted">{t("logs.tokens.input")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.input, localeTag, cost.estimate.priorityLowerBound)}</span>
+                <span className="muted">{t("logs.tokens.cacheRead")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.cacheRead, localeTag, cost.estimate.priorityLowerBound)}</span>
+                <span className="muted">{t("logs.tokens.cacheWrite")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.cacheWrite, localeTag, cost.estimate.priorityLowerBound)}</span>
+                <span className="muted">{t("logs.tokens.output")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.output, localeTag, cost.estimate.priorityLowerBound)}</span>
                 {cost.estimate.price && (
                   <>
                     <span className="muted">{t("logs.detail.matchedKey")}</span>
