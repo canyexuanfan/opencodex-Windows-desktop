@@ -1882,7 +1882,11 @@ async function gatherRoutedModelsUncached(
       ...(Array.isArray(cm.reasoningEfforts) ? { reasoningEfforts: [...cm.reasoningEfforts] } : {}),
       ...(cm.defaultReasoningEffort ? { defaultReasoningEffort: cm.defaultReasoningEffort } : {}),
       ...(typeof supportsServiceTier === "boolean" ? { supportsServiceTier } : {}),
-      ...(cm.codexToolMode !== undefined ? { codexToolMode: cm.codexToolMode } : {}),
+      ...(cm.codexToolMode !== undefined
+        ? { codexToolMode: cm.codexToolMode }
+        : effectiveProvider?.codexToolMode !== undefined
+          ? { codexToolMode: effectiveProvider.codexToolMode }
+          : {}),
     };
     // #962: the dedupe below drops the provider-derived row this custom row replaces. Inherit that
     // row's provider capability metadata (reasoning ladder, default effort, parallel tool calls,

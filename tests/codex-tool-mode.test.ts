@@ -136,5 +136,57 @@ describe("Codex tool mode configuration (#2106)", () => {
     const mixedDerived = deriveComboCatalogModel("all-shell-combo", combo, mixedMembers);
     expect(mixedDerived?.codexToolMode).toBeUndefined();
   });
+
+  test("gatherRoutedModels custom model inherits provider codexToolMode when undiscovered", async () => {
+    const { gatherRoutedModels } = require("../src/codex/catalog");
+    const { withStubbedProviderFetch } = require("./helpers/catalog-provider-fetch");
+    const config = {
+      providers: {
+        customprov: {
+          adapter: "openai-responses",
+          baseUrl: "https://api.custom.com",
+          codexToolMode: "shell",
+          liveModels: false,
+        },
+      },
+      customModels: [
+        {
+          provider: "customprov",
+          modelId: "undiscovered-model",
+        },
+      ],
+    };
+    const models = await gatherRoutedModels(withStubbedProviderFetch(config as any));
+    const model = models.find((m: any) => m.id === "undiscovered-model");
+    expect(model).toBeDefined();
+    expect(model.codexToolMode).toBe("shell");
+  });
+
+  test("gatherRoutedModels custom model explicit codexToolMode overrides provider setting", async () => {
+    const { gatherRoutedModels } = require("../src/codex/catalog");
+    const { withStubbedProviderFetch } = require("./helpers/catalog-provider-fetch");
+    const config = {
+      providers: {
+        customprov: {
+          adapter: "openai-responses",
+          baseUrl: "https://api.custom.com",
+          codexToolMode: "shell",
+          liveModels: false,
+        },
+      },
+      customModels: [
+        {
+          provider: "customprov",
+          modelId: "override-model",
+          codexToolMode: "code_mode_only",
+        },
+      ],
+    };
+    const models = await gatherRoutedModels(withStubbedProviderFetch(config as any));
+    const model = models.find((m: any) => m.id === "override-model");
+    expect(model).toBeDefined();
+    expect(model.codexToolMode).toBe("code_mode_only");
+  });
 });
+
 
