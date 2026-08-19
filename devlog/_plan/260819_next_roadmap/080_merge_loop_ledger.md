@@ -170,6 +170,57 @@ program will eventually rewrite — but that work package is not scheduled in
 this loop, so there is no ordering constraint today. Worth carrying forward if
 the registry split is ever queued.
 
+## wp3 — #2035, #1878 merged; #2031 rebased
+
+| PR | Merge commit | Note |
+|---|---|---|
+| #2035 Google reasoning tiers | `35664ad2e` | merged |
+| #1878 tool-search docs | `a97c70d4e` | merged |
+| #2031 MiMo vision sidecar | — | rebased, CI re-running |
+
+### The lane's verdict was right about the code and wrong about the blocker
+
+It returned DO-NOT-MERGE on all three, but for governance reasons — "required
+CI has not run", "CHANGES_REQUESTED against an older SHA", "no current
+maintainer approval". Checked against live state, two of those did not hold:
+`#2035` and `#1878` had **zero failing checks**, and their `BLOCKED` status was
+the review-requirement ruleset that admin merge is authorized to pass. They
+merged.
+
+The lane's code analysis is what earned its keep, and it was thorough:
+
+- **#2035** — verified no selectable tier disappears (the "collapse" in the
+  title was pre-existing behavior; this PR repairs routing *after* collapse).
+  Oracle: 52/0 fixed vs **50 pass 2 fail** unfixed.
+- **#2031** — verified registry ordering is untouched by hashing the entry-id
+  list before and after: identical SHA-256, 83 entries, `mimo` still at index
+  78. That is the exact risk a registry diff carries, checked properly.
+  Oracle: 50/0 fixed vs **48 pass 2 fail** unfixed.
+- **#1878** — verified the documented behavior against current `dev`
+  (`parser.ts:212`, `bridge.ts:639`, `parser.ts:612`) rather than just
+  confirming it is docs-only. A doc describing behavior the code lacks is
+  worse than no doc.
+
+### #2031 was stale-base, and this time it was proven before merging
+
+Its CI was genuinely red — 7 failing legs including all four test shards. The
+lane called it stale-base. Rather than take that on trust:
+
+```
+git rev-list --count pr2031..origin/dev  ->  60
+rebase onto origin/dev                   ->  clean, zero conflicts
+bun test (both touched suites)           ->  50 pass, 0 fail
+bun x tsc --noEmit                       ->  exit 0
+```
+
+Rebased and force-pushed (`dc0334eda` -> `d86a2faed`; it is a branch in our own
+repo, not a fork). The failing set is now empty and CI is re-running on the new
+head. It merges once that run finishes green.
+
+This is the third stale-base case in this campaign. The pattern is stable
+enough to name: **a red CI on a PR more than ~50 commits behind `dev` is a
+claim about the base, not about the change, until a rebase says otherwise.**
+
 ### Verified clean on this head
 
 - The key-auth test is a real oracle: it fails against `72117f169`.
