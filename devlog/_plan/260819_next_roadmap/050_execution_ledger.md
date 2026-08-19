@@ -163,11 +163,24 @@ execution rejects), `#2077` hold (over-broad migration reaches
 
 Full reasoning in `040_r4_modelrecordvalue_batch.md`.
 
+Verdicts posted to the PRs:
+
+| PR | Comment |
+|---|---|
+| #2077 | `5340642374` |
+| #2085 | `5340642645` |
+| #2086 | `5340642926` |
+| #2100 | `5340637836` |
+
+A first attempt at the #2100 comment was posted through a shell argument and
+the backticks in it were evaluated by zsh, stripping every code span. It was
+deleted and reposted from a file. Worth remembering: PR bodies full of
+identifiers go through `--body-file`, never `--body`.
+
 ## Remaining
 
 - wp2 (R1 split rebase) — pending.
 - wp3 (R3 collisions + eight retargets) — pending.
-- Posting the wp4 verdicts to the four PRs — pending.
 
 ## wp2 — R1 rebase split stack
 
