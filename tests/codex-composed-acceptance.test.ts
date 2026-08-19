@@ -388,7 +388,9 @@ describe("WP13 composed toggle acceptance", () => {
       // The fixture records itself as the active service install, so the
       // production ownership preflight admits this home and P08 completes the
       // enable transition through the real CLI.
-      expect(back.exitCode).toBe(0);
+      // The CLI's own output is the assertion message: a bare "expected 0, got 1" sent two
+      // Windows CI rounds chasing a timeout that was never the cause.
+      expect(`exit=${back.exitCode}\nstderr: ${back.stderr}\nstdout: ${back.stdout}`).toContain("exit=0");
       expect((await fx.request(server.runtime, "/api/native-integrations/codex", {
         method: "PUT", body: JSON.stringify({ enabled: false }),
       })).body).toMatchObject({ desiredEnabled: false });
