@@ -508,6 +508,7 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
               timeoutMs: connectTimeoutMs,
               returnRawErrors: true,
               stream: true,
+              executor: fetchImpl,
             });
           } else {
             response = await fetchWithResetRetry(

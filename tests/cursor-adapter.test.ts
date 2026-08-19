@@ -9,6 +9,7 @@ import {
 } from "../src/adapters/cursor/thread-continuity";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig } from "../src/types";
 import type { CursorClientMessage, CursorRunRequest, CursorServerMessage } from "../src/adapters/cursor/types";
+import type { CursorTransportFactoryInput } from "../src/adapters/cursor/transport";
 import { withTestTranslatorBudget } from "./helpers/translator-budget";
 
 const createCursorAdapter = (...args: Parameters<typeof createCursorAdapterProduction>) =>
@@ -91,6 +92,29 @@ describe("Cursor adapter live transport", () => {
     ]);
   });
 
+  test("runTurn forwards the router-prepared provider fetch to the live transport", async () => {
+    const inputs: CursorTransportFactoryInput[] = [];
+    const pacedFetch = (async () => new Response()) as typeof fetch;
+    const adapter = createCursorAdapter({ ...provider, apiKey: "cursor-token" }, {
+      createTransport(input) {
+        inputs.push(input);
+        return {
+          async *run() { yield { type: "done" } satisfies CursorServerMessage; },
+          writeClient() {},
+        };
+      },
+    });
+
+    await adapter.runTurn?.(
+      { ...parsed, context: { messages: [{ role: "user", content: "hi", timestamp: 1 }] } },
+      { headers: new Headers(), providerFetch: pacedFetch },
+      () => {},
+    );
+
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]?.fetch).toBe(pacedFetch);
+  });
+
   test("runTurn preserves explicit Cursor Router optimization levels", async () => {
     const requests: CursorRunRequest[] = [];
     const adapter = createCursorAdapter(provider, {
@@ -161,6 +185,47 @@ describe("Cursor adapter live transport", () => {
     expect(scopes[0]).not.toBe(scopes[1]);
     expect(ids).toHaveLength(2);
     expect(ids[0]).not.toBe(ids[1]);
+  });
+  test("passes conversationId as Connect sessionId and isolates helper turns", async () => {
+    const captured: CursorTransportFactoryInput[] = [];
+    const adapter = createCursorAdapter({ ...provider, apiKey: "cursor-token" }, {
+      createTransport(input) {
+        captured.push(input);
+        return {
+          async *run() {
+            yield { type: "done" } satisfies CursorServerMessage;
+          },
+          writeClient() {},
+        };
+      },
+    });
+
+    const parent: OcxParsedRequest = {
+      modelId: "cursor/auto",
+      context: { messages: [{ role: "user", content: "hi", timestamp: 1 }] },
+      stream: false,
+      options: {},
+      _clientThreadId: "parent-thread-session-id",
+    };
+    await adapter.runTurn?.(parent, { headers: new Headers() }, () => {});
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.sessionId).toBeTruthy();
+    expect(captured[0]?.sessionId).toBe(parent._cursorConversationId);
+
+    const helper: OcxParsedRequest = {
+      modelId: "cursor/auto",
+      context: { messages: [{ role: "user", content: "summarize", timestamp: 1 }] },
+      stream: false,
+      options: {},
+      _clientThreadId: "parent-thread-session-id",
+      _cursorConversationId: parent._cursorConversationId,
+      _cursorIsolateConversation: true,
+    };
+    await adapter.runTurn?.(helper, { headers: new Headers() }, () => {});
+    expect(captured).toHaveLength(2);
+    expect(captured[1]?.sessionId).toBeTruthy();
+    expect(captured[1]?.sessionId).not.toBe(captured[0]?.sessionId);
+    expect(captured[1]?.sessionId).toBe(helper._cursorConversationId);
   });
 
   test("parseStream reports that the fetch path is disabled", async () => {

@@ -1441,7 +1441,7 @@ describe("combo catalog capability intersection", () => {
       maxInputTokens: 128_000,
       inputModalities: ["text"],
     });
-    // Provider contextCap below the 128k fallback clamps the synthesized window.
+    // Provider contextCap below the 128k fallback fills the unknown window.
     expect(resolveComboCatalogMember(
       { provider: "a", model: "ghost" },
       new Map(),
@@ -1453,9 +1453,8 @@ describe("combo catalog capability intersection", () => {
       contextWindow: 64_000,
       maxInputTokens: 64_000,
       contextCap: 64_000,
-      contextCapped: true,
     });
-    // Cap above the fallback leaves 128k (no artificial raise, no capped flag).
+    // Cap above the empty discovery window fills that window. This is not a clamp.
     const aboveCap = resolveComboCatalogMember(
       { provider: "a", model: "ghost" },
       new Map(),
@@ -1463,10 +1462,10 @@ describe("combo catalog capability intersection", () => {
       200_000,
     );
     expect(aboveCap).toMatchObject({
-      contextWindow: 128_000,
-      maxInputTokens: 128_000,
+      contextWindow: 200_000,
+      maxInputTokens: 200_000,
+      contextCap: 200_000,
     });
-    // Cap may be recorded for bookkeeping (contextCapped: false) but must not claim a clamp.
     expect(aboveCap?.contextCapped).toBeFalsy();
     // No provider entry and no discovery row — cannot invent a member.
     expect(resolveComboCatalogMember(
@@ -4299,12 +4298,14 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.auto_compact_token_limit).toBe(115_200);
   });
 
-  test("a provider context cap never invents routed capacity (#992)", () => {
+  test("a provider context cap fills an unknown routed window (#992)", () => {
     const entries = buildCatalogEntries({ context_window: 372_000 }, [], [
-      { provider: "relay", id: "relay-model", contextCap: 950_000 },
+      { provider: "relay", id: "relay-model", contextCap: 350_000 },
     ]);
     const routed = entries.find(e => e.slug === "relay/relay-model");
-    expect(routed?.context_window).toBe(128_000);
+    expect(routed?.context_window).toBe(350_000);
+    expect(routed?.max_context_window).toBe(350_000);
+    expect(routed?.auto_compact_token_limit).toBe(315_000);
   });
 
   test("known routed metadata still restores the exact context window (#992)", () => {
@@ -4752,6 +4753,37 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.auto_compact_token_limit).toBe(115_200);
   });
 
+  test("an id-only model with an enabled context cap uses that cap as the window", async () => {
+    globalThis.fetch = (async () => new Response(
+      JSON.stringify({ data: [{ id: "gpt-5.6-terra" }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+
+    const models = await gatherRoutedModels({
+      port: 10100,
+      defaultProvider: "sub2api",
+      providerContextCaps: { sub2api: 350_000 },
+      providers: {
+        sub2api: {
+          adapter: "openai-chat",
+          baseUrl: "https://sub2api.test/v1",
+          apiKey: "sk-test",
+        },
+      },
+    });
+    const routed = buildCatalogEntries(nativeTemplate(), [], models)
+      .find(e => e.slug === "sub2api/gpt-5.6-terra");
+
+    expect(models.find(m => m.id === "gpt-5.6-terra")).toMatchObject({
+      contextWindow: 350_000,
+      contextCap: 350_000,
+      contextCapped: false,
+    });
+    expect(routed?.context_window).toBe(350_000);
+    expect(routed?.max_context_window).toBe(350_000);
+    expect(routed?.auto_compact_token_limit).toBe(315_000);
+  });
+
   test("upstream metadata smaller than the configured window wins (#1073)", async () => {
     globalThis.fetch = (async () => new Response(
       JSON.stringify({ data: [{ id: "gpt-5.6-luna", context_length: 64_000 }] }),
@@ -4880,7 +4912,7 @@ describe("Codex catalog routed normalization", () => {
     });
   });
 
-  test("provider context-cap toggle lowers only known windows above 350k", async () => {
+  test("provider context-cap toggle lowers known windows above 350k and fills unknown ones", async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({
       data: [
         { id: "wide-model", metadata: { limits: { max_context_length: 500_000 } } },
@@ -4913,13 +4945,13 @@ describe("Codex catalog routed normalization", () => {
       contextCapped: false,
     });
     expect(models.find(m => m.id === "unknown-model")).toMatchObject({
+      contextWindow: 350_000,
       contextCap: 350_000,
       contextCapped: false,
     });
-    expect(models.find(m => m.id === "unknown-model")?.contextWindow).toBeUndefined();
   });
 
-  test("provider context-cap toggle does not invent context for static no-metadata models", async () => {
+  test("provider context-cap toggle fills static no-metadata models", async () => {
     let fetchCalls = 0;
     globalThis.fetch = (() => {
       fetchCalls += 1;
@@ -4943,10 +4975,10 @@ describe("Codex catalog routed normalization", () => {
 
     expect(fetchCalls).toBe(0);
     expect(models.find(m => m.id === "static-no-context")).toMatchObject({
+      contextWindow: 350_000,
       contextCap: 350_000,
       contextCapped: false,
     });
-    expect(models.find(m => m.id === "static-no-context")?.contextWindow).toBeUndefined();
   });
 
   test("provider context-window caps apply to stale cached metadata", async () => {

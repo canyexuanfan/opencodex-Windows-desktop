@@ -236,6 +236,26 @@ describe("routeModel decode (proxy layer)", () => {
     setCached("zenmux", [{ provider: "zenmux", id: "openai-gpt-5.5" }]);
     expect(() => routeModel(config, "zenmux/openai-gpt-5.5")).toThrow(/ambiguous/);
   });
+
+  test("commandcode API-key preset decodes its native slash ids from the registry effort table", () => {
+    // Regression: the `commandcode` (API-key) registry entry must share the official
+    // reasoning-facts table with the OAuth `command-code` entry. Without it the router's
+    // known-ids source misses `deepseek/deepseek-v4-pro` / `zai-org/GLM-5.3`, so the
+    // Codex-facing slugs (`commandcode/deepseek-deepseek-v4-pro`) pass through unchanged
+    // and upstream rejects them with `unsupported_model`.
+    const prov = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.commandcode.ai/provider/v1",
+      authMode: "key" as const,
+      models: ["deepseek/deepseek-v4-flash"],
+      liveModels: true,
+    };
+    const ids = knownModelIdsForProvider("commandcode", prov);
+    expect(ids).toContain("deepseek/deepseek-v4-pro");
+    expect(ids).toContain("zai-org/GLM-5.3");
+    expect(decodeRoutedModelId("deepseek-deepseek-v4-pro", ids)).toBe("deepseek/deepseek-v4-pro");
+    expect(decodeRoutedModelId("zai-org-GLM-5.3", ids)).toBe("zai-org/GLM-5.3");
+  });
 });
 
 describe("catalog emission (Codex-facing)", () => {

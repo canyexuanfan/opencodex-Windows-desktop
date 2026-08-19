@@ -3,7 +3,7 @@
  * for EVERY Responses provider; now a provider-level `supportsServiceTier` capability
  * gates it after the final route is settled (tri-state): canonical OpenAI providers
  * keep the fast-mode behavior (`true`), DeepSeek/Volcengine strip it (`false`), and
- * unclassified custom providers preserve caller-supplied values untouched without
+ * unclassified custom Responses providers preserve caller-supplied values untouched without
  * ever receiving an injection (PR #860 family).
  */
 import { afterEach, describe, expect, test } from "bun:test";
@@ -11,7 +11,7 @@ import { providerConfigSeed, enrichProviderFromRegistry } from "../src/providers
 import { getProviderRegistryEntry } from "../src/providers/registry";
 import type { RequestLogContext } from "../src/server/request-log";
 import { applyServiceTierGate, handleResponses } from "../src/server/responses/core";
-import { canForwardServiceTierForModel, supportsServiceTierForModel } from "../src/providers/service-tier";
+import { canForwardServiceTierForModel, serviceTierSupportForModel, supportsServiceTierForModel } from "../src/providers/service-tier";
 import { serviceTierAdapterForModel } from "../src/providers/service-tier";
 import { candidateCapabilityEvidence } from "../src/routing/capability";
 import { resolveProductionBehaviorValues } from "../src/routing/compatibility/behavior";
@@ -86,7 +86,7 @@ describe("service-tier capability is exact-model and provider-scoped", () => {
     expect(canForwardServiceTierForModel({
       ...provider,
       supportsServiceTier: true,
-    }, "chat-model", "custom-relay")).toBe(false);
+    }, "chat-model", "custom-relay")).toBe(true);
     expect(canForwardServiceTierForModel({
       ...provider,
       supportsServiceTier: true,
@@ -176,7 +176,7 @@ describe("routing evidence uses the final model adapter", () => {
     expect(candidateCapabilityEvidence({
       ...config,
       providers: { relay: relay({ chatServiceTier: false }) },
-    }, "relay", "verified").serviceTier).toBe("unsupported");
+    }, "relay", "verified").serviceTier).toBe("supported");
 
     const mixedProvider = relay({
       adapter: "openai-responses",
@@ -185,7 +185,7 @@ describe("routing evidence uses the final model adapter", () => {
     });
     const mixedConfig = { ...config, providers: { relay: mixedProvider } };
     expect(candidateCapabilityEvidence(mixedConfig, "relay", "verified").serviceTier).toBe("supported");
-    expect(candidateCapabilityEvidence(mixedConfig, "relay", "chat").serviceTier).toBe("unsupported");
+    expect(candidateCapabilityEvidence(mixedConfig, "relay", "chat").serviceTier).toBe("supported");
 
     const behavior = resolveProductionBehaviorValues(
       mixedConfig,
@@ -194,7 +194,7 @@ describe("routing evidence uses the final model adapter", () => {
       mixedProvider,
       "service-tier-test-salt",
     );
-    expect(behavior?.["responses.serviceTier"]?.value).toBe(false);
+    expect(behavior?.["responses.serviceTier"]?.value).toBe(true);
   });
 });
 
@@ -311,3 +311,21 @@ describe("the gate fires on the live handleResponses path", () => {
     expect(undeclared).not.toHaveProperty("service_tier");
   });
 });
+
+describe("unclassified chat-wire tier projection (release-audit fix)", () => {
+  test("unclassified openai-chat without chatServiceTier projects false (require.serviceTier unsupported keeps matching)", () => {
+    const provider = { adapter: "openai-chat" } as OcxProviderConfig;
+    expect(serviceTierSupportForModel(provider, "some-model")).toBe(false);
+  });
+
+  test("unclassified openai-chat WITH chatServiceTier: true keeps the historical unknown", () => {
+    const provider = { adapter: "openai-chat", chatServiceTier: true } as OcxProviderConfig;
+    expect(serviceTierSupportForModel(provider, "some-model")).toBeUndefined();
+  });
+
+  test("unclassified Responses-wire provider stays unknown", () => {
+    const provider = { adapter: "openai-responses" } as OcxProviderConfig;
+    expect(serviceTierSupportForModel(provider, "some-model")).toBeUndefined();
+  });
+});
+

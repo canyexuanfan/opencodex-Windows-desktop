@@ -12,7 +12,14 @@ import { identifyRoutedModel } from "./identity";
 import { peekReasoningForCall } from "../responses/reasoning-replay-cache";
 import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalogNudge } from "./tool-catalog-nudge";
 import { openRouterProviderPayload, resolveOpenRouterRouting } from "../providers/openrouter-routing";
-import { canSerializeServiceTierForChatModel } from "../providers/service-tier";
+import {
+  canForwardForeignServiceTierForChatModel,
+  supportsServiceTierForModel,
+} from "../providers/service-tier";
+import {
+  canonicalFastTierMarker,
+  createAdapterTierMetadata,
+} from "../providers/fastwire";
 import { openaiChatCompletionsUrl } from "./openai-chat-url";
 import { stripResponsesOnlyEncryptedMarker } from "./responses-tool-schema";
 import {
@@ -100,13 +107,20 @@ export function buildOpenAIChatPassthroughRequest(
     if (rawBody[field] !== undefined) body[field] = rawBody[field];
   }
 
+  const openRouterRouting = resolveOpenRouterRouting(provider, modelId);
+  if (openRouterRouting) body.provider = openRouterProviderPayload(openRouterRouting);
+
   if (modelInList(provider.noTemperatureModels, modelId)) delete body.temperature;
   if (modelInList(provider.noTopPModels, modelId)) delete body.top_p;
   if (modelInList(provider.noPenaltyModels, modelId)) {
     delete body.presence_penalty;
     delete body.frequency_penalty;
   }
-  if (modelInList(provider.noStructuredOutputModels, modelId)) delete body.response_format;
+  // Exact match, unlike the gates above: `noStructuredOutputModels` is documented as
+  // "only an exact requested-model match omits the field" (#1424), and the Responses
+  // ingress enforces exactly that. A prefix match here would strip response_format from
+  // `<listed>:<tag>` siblings the operator never opted out, silently returning prose.
+  if (provider.noStructuredOutputModels?.includes(modelId)) delete body.response_format;
 
   if (provider.chatServiceTier && rawBody.service_tier !== undefined) {
     body.service_tier = rawBody.service_tier;
@@ -1287,17 +1301,20 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         messages,
         stream: parsed.stream,
       };
-      // Preserve a caller-selected service tier for OpenAI-compatible chat gateways. The
-      // request pipeline deliberately does not inject fast mode for this adapter, but dropping
-      // an explicit value here makes the Responses parser's serviceTier projection ineffective.
-      //
-      // Opt-in, like `prompt_cache_key` directly below: `service_tier` is an OpenAI-specific
-      // extension and 66 registry providers share this adapter. A provider-wide Chat opt-in
-      // authorizes undeclared models; an exact model declaration can authorize or deny one
-      // model. Provider-level false remains fail-closed.
-      if (canSerializeServiceTierForChatModel(provider, parsed.modelId)
-        && parsed.options.serviceTier !== undefined) {
-        body.service_tier = parsed.options.serviceTier;
+      // A policy-produced canonical decision has already passed capability validation. Without
+      // that decision, a canonical caller value still requires an explicit true capability;
+      // unclassified Chat routes remain behind the caller-forwarding opt-in.
+      const serviceTier = parsed.options.serviceTier;
+      const tierDecision = parsed.options.tierDecision;
+      const callerCanonicalFast = canonicalFastTierMarker(serviceTier) !== undefined;
+      const callerTierForwardAllowed = canForwardForeignServiceTierForChatModel(provider, parsed.modelId);
+      const canonicalFastCapability = callerCanonicalFast
+        && supportsServiceTierForModel(provider, parsed.modelId) === true;
+      const canSerializeServiceTier = tierDecision?.kind === "set"
+        || tierDecision?.kind === "forward-caller"
+        || (tierDecision === undefined && (callerTierForwardAllowed || canonicalFastCapability));
+      if (canSerializeServiceTier && serviceTier !== undefined) {
+        body.service_tier = serviceTier;
       }
       if (modelInList(provider.reasoningSplitModels, parsed.modelId)) body.reasoning_split = true;
       const maxTokens = resolveMaxTokens(provider, parsed);
@@ -1430,6 +1447,13 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       if (parsed.stream) body.stream_options = { include_usage: true };
 
       const bodyJson = JSON.stringify(body);
+      const actualServiceTier = typeof body.service_tier === "string" ? body.service_tier : null;
+      const tierLog = createAdapterTierMetadata(
+        parsed.options.tierObservation,
+        parsed.options.tierDecision,
+        actualServiceTier === null ? null : "service-tier",
+        actualServiceTier,
+      );
       if (isDebugEnabled()) {
         let host = "upstream";
         try { host = new URL(url).host; } catch { /* keep fallback */ }
@@ -1450,6 +1474,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         headers,
         body: bodyJson,
         ...(reasoningLog ? { reasoningLog } : {}),
+        ...(tierLog ? { tierLog } : {}),
       };
     },
 

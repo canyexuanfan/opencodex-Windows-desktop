@@ -10,6 +10,7 @@ import { createMimoFreeAdapter } from "./mimo-free";
 import { createOpenAIChatAdapter } from "./openai-chat";
 import { createResponsesPassthroughAdapter } from "./openai-responses";
 import type { OcxProviderConfig } from "../types";
+import { createAdapterTierMetadata } from "../providers/fastwire";
 
 export type AdapterCacheRetention = "none" | "short" | "long";
 
@@ -142,5 +143,33 @@ export function createRegisteredAdapter(
 ): ProviderAdapter {
   const definition = getAdapterDefinition(provider.adapter);
   if (!definition) throw new Error(`Unknown adapter: ${provider.adapter}`);
-  return definition.create(provider, context);
+  const adapter = definition.create(provider, context);
+  const buildRequest = adapter.buildRequest.bind(adapter);
+  adapter.buildRequest = (parsed, incoming) => {
+    const attachTierMetadata = (request: Awaited<ReturnType<ProviderAdapter["buildRequest"]>>) => {
+      // OpenAI-family adapters report the exact emitted field themselves. Other adapters
+      // still report an exact absence at this serialization boundary, which makes a routed
+      // Fast downgrade observable without asking core to infer an outbound body shape.
+      request.tierLog ??= createAdapterTierMetadata(
+        parsed.options.tierObservation,
+        parsed.options.tierDecision,
+        null,
+        null,
+      );
+      return request;
+    };
+    const request = buildRequest(parsed, incoming);
+    return request instanceof Promise
+      ? request.then(attachTierMetadata)
+      : attachTierMetadata(request);
+  };
+  if (adapter.runTurn && !adapter.tierLogForRunTurn) {
+    adapter.tierLogForRunTurn = parsed => createAdapterTierMetadata(
+      parsed.options.tierObservation,
+      parsed.options.tierDecision,
+      null,
+      null,
+    );
+  }
+  return adapter;
 }

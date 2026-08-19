@@ -5,6 +5,7 @@ import type { OcxAssistantContentPart, OcxMessage, OcxToolResultMessage } from "
 import { namespacedToolName } from "../../types";
 import type { CursorRunRequest } from "./types";
 import { isCursorExternalWireModel } from "./discovery";
+import { normalizeCursorToolResultText } from "./tool-result-normalize";
 import { debugProviderDiagnostic } from "../../lib/debug";
 import {
   createCursorBlobRequestScope,
@@ -68,6 +69,14 @@ export const CURSOR_EXTERNAL_ROOT_BLOB_LIMIT = 192;
 /** Approximate prompt-size guard; tool schemas and protocol framing consume context separately. */
 export const CURSOR_EXTERNAL_ROOT_BYTE_LIMIT = 512 * 1024;
 
+/**
+ * Action text for external-model tool-result continuations. Native models keep
+ * resumeAction; external wire models continue as userMessageAction so the
+ * results already stored in history blobs are visible without a ResumeAction.
+ */
+export const CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT =
+  "Continue: the requested tool results are provided in the conversation history above.";
+
 /** Runtime timezone for protobuf RequestContextEnv (dynamic, never hardcoded). */
 function runtimeTimeZone(): string {
   try {
@@ -122,6 +131,10 @@ function rootBlobCandidate(
   };
 }
 
+function toolResultRootPayload(text: string): { role: "assistant"; content: [{ type: "text"; text: string }] } {
+  return { role: "assistant", content: [{ type: "text", text }] };
+}
+
 function truncateToolResultBlob(entry: RootBlobCandidate, maxBytes: number): RootBlobCandidate | null {
   if (entry.byteLength <= maxBytes) return entry;
   if (entry.role !== "toolResult" || entry.text === undefined) return null;
@@ -134,7 +147,7 @@ function truncateToolResultBlob(entry: RootBlobCandidate, maxBytes: number): Roo
     while (end > 0 && end < encoded.byteLength && (encoded[end]! & 0xc0) === 0x80) end -= 1;
     const truncated = `${decoder.decode(encoded.subarray(0, end))}${marker}`;
     const result = rootBlobCandidate(
-      { role: "user", content: [{ type: "text", text: truncated }] },
+      toolResultRootPayload(truncated),
       "toolResult",
       { messageIndex: entry.messageIndex, text: truncated },
     );
@@ -143,7 +156,7 @@ function truncateToolResultBlob(entry: RootBlobCandidate, maxBytes: number): Roo
     keepBytes = Math.max(0, end - (result.byteLength - maxBytes) - 16);
   }
   const markerOnly = rootBlobCandidate(
-    { role: "user", content: [{ type: "text", text: marker.trimStart() }] },
+    toolResultRootPayload(marker.trimStart()),
     "toolResult",
     { messageIndex: entry.messageIndex, text: marker.trimStart() },
   );
@@ -175,9 +188,8 @@ function assistantRootText(
 // Cursor builds the actual model prompt from rootPromptMessagesJson (turns[] is UI/display metadata),
 // so prior history — including assistant tool calls and tool results — must be replayed here or a
 // ResumeAction has nothing model-visible to continue from. The active user message is excluded
-// because it travels in the action. Tool results are rendered as user-role text with a marker, and
-// each entry is a SHA-256 blob ID (Cursor fetches the bytes back via getBlobArgs). Mirrors the
-// danger-pi reference buildRootPromptMessagesJson.
+// because it travels in the action. Tool results are assistant-role text with a [Tool Result]
+// or [Tool Error] marker so Cursor does not wrap them as `<user_query>` (#1992). Each entry is a SHA-256 blob ID.
 function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobRequestScopeToken): {
   ids: Uint8Array[];
   byteLength: number;
@@ -229,10 +241,12 @@ function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobR
       }
       // Assistant tool CALLS are intentionally NOT replayed as visible "[Tool Call]" text here.
     } else if (message.role === "toolResult") {
-      const prefix = message.isError ? "[Tool Error]" : "[Tool Result]";
+      // #1920: the prefix must reflect the NORMALIZED error state (an empty
+      // node_repl result is an error even when the runtime said isError=false).
+      const prefix = normalizedToolResult(message, contentToText(message.content)).isError ? "[Tool Error]" : "[Tool Result]";
       const text = `${prefix}\n${toolResultToText(message)}`;
       entries.push(rootBlobCandidate(
-        { role: "user", content: [{ type: "text", text }] },
+        toolResultRootPayload(text),
         "toolResult",
         { messageIndex: i, text },
       ));
@@ -382,6 +396,8 @@ type DecodedResultPart =
   | { kind: "image"; bytes: Uint8Array; mimeType: string }
   | { kind: "undecodable" };
 
+type NormalizedToolResult = { text: string; isError: boolean };
+
 /**
  * Decode a tool result's parts ONCE. `toolCallStep` may re-serialize a step several times while
  * shrinking it to fit blob admission, and decoding base64 on every attempt made that loop
@@ -413,13 +429,24 @@ function toolResultContentItems(
   message: OcxToolResultMessage,
   decoded?: DecodedResultPart[],
   maxImages = Number.POSITIVE_INFINITY,
+  normalizedText?: NormalizedToolResult,
 ) {
   const parts = decoded ?? decodeResultParts(message);
+  const textItem = (text: string) => [create(McpToolResultContentItemSchema, {
+    content: { case: "text" as const, value: create(McpTextContentSchema, { text }) },
+  })];
   if (!parts) {
-    const text = typeof message.content === "string" ? message.content : "";
-    return [create(McpToolResultContentItemSchema, {
-      content: { case: "text" as const, value: create(McpTextContentSchema, { text }) },
-    })];
+    const normalized = normalizedText
+      ?? normalizedToolResult(message, typeof message.content === "string" ? message.content : "");
+    return textItem(normalized.text);
+  }
+  const normalized = normalizedText ?? normalizedDecodedTextResult(message, parts);
+  if (normalized) {
+    // #1920/#1866: empty or failure-state Computer Use / node_repl results are
+    // normalized before they reach the native wire. Pure-text part arrays use
+    // the same newline-joined representation this serializer already emitted;
+    // image-bearing and undecodable results stay on the lossless part path.
+    return textItem(normalized.text);
   }
   // Images are dropped OLDEST first when the step must shrink: the most recent screenshot is the
   // one the model is reasoning about, so it is the last to go.
@@ -472,14 +499,41 @@ function toolResultContentItems(
 }
 
 function toolResultToText(message: OcxToolResultMessage): string {
+  const normalized = normalizedToolResult(message, contentToText(message.content));
   return [
     "[tool_result]",
     `call_id: ${message.toolCallId}`,
     `name: ${namespacedToolName(message.toolNamespace, message.toolName)}`,
-    `is_error: ${message.isError}`,
+    `is_error: ${normalized.isError}`,
     "output:",
-    contentToText(message.content),
+    normalized.text,
   ].join("\n");
+}
+
+/**
+ * Shared #1920 normalization entry: pure-text results only. Image-bearing or
+ * encrypted results pass through untouched (their content is not plain text).
+ */
+function normalizedToolResult(message: OcxToolResultMessage, text: string): NormalizedToolResult {
+  if (message.containsEncryptedContent) return { text, isError: message.isError };
+  return normalizeCursorToolResultText(text, {
+    toolName: message.toolName,
+    toolNamespace: message.toolNamespace,
+    isError: message.isError,
+  });
+}
+
+/**
+ * A content-part result is plain text only when every decoded part is text (the empty array is the
+ * empty text result). Join it exactly as toolResultContentItems already did, then share the string
+ * normalization contract. Any image or undecodable part keeps the existing part-preserving path.
+ */
+function normalizedDecodedTextResult(
+  message: OcxToolResultMessage,
+  parts: DecodedResultPart[],
+): NormalizedToolResult | undefined {
+  if (parts.some(part => part.kind !== "text")) return undefined;
+  return normalizedToolResult(message, parts.map(part => part.kind === "text" ? part.text : "").join("\n"));
 }
 
 function argBytes(value: unknown): Uint8Array {
@@ -535,12 +589,16 @@ function toolCallStep(
 }
 
 function toolResultPart(message: OcxToolResultMessage, decoded?: DecodedResultPart[], maxImages?: number) {
+  const parts = decoded ?? decodeResultParts(message);
+  const normalized = parts
+    ? normalizedDecodedTextResult(message, parts)
+    : normalizedToolResult(message, typeof message.content === "string" ? message.content : "");
   return create(McpToolResultSchema, {
     result: {
       case: "success",
       value: create(McpSuccessSchema, {
-        isError: message.isError,
-        content: toolResultContentItems(message, decoded, maxImages),
+        isError: normalized?.isError ?? message.isError,
+        content: toolResultContentItems(message, parts, maxImages, normalized),
       }),
     },
   });
@@ -632,11 +690,15 @@ function conversationTurns(
     if (message.role === "toolResult") {
       if (!current) continue;
       if (externalModel) {
-        const prefix = message.isError ? "[Tool Error]" : "[Tool Result]";
+        // #1920/#1866: this external-replay site bypasses toolResultToText, so it
+        // must consume the normalizer directly — cursor/grok-4.6 is the exact
+        // reported repro path for empty Computer Use results.
+        const normalized = normalizedToolResult(message, contentToText(message.content));
+        const prefix = normalized.isError ? "[Tool Error]" : "[Tool Result]";
         current.steps.push(storeCursorBlob(toBinary(ConversationStepSchema, create(ConversationStepSchema, {
           message: {
             case: "assistantMessage",
-            value: create(AssistantMessageSchema, { text: `${prefix}\n${contentToText(message.content)}` }),
+            value: create(AssistantMessageSchema, { text: `${prefix}\n${normalized.text}` }),
           },
         })), requestScope));
         continue;
@@ -728,18 +790,24 @@ function buildPreparedCursorRunRequest(
   const text = lastRole === "user" || lastRole === "developer"
     ? appendCursorGenericToolUseHint(request.tools, rawText)
     : rawText;
-  // Tool-result-only turns resume the remembered Cursor conversation with results in history.
   const lastRawIsToolResult = request.rawMessages?.at(-1)?.role === "toolResult";
-  const actionCase = !lastRawIsToolResult && text.trim().length > 0
+  // Native models resume the remembered Cursor conversation. External wire
+  // models continue as userMessageAction so history-blob tool results stay
+  // visible without a ResumeAction.
+  const externalToolContinuation = lastRawIsToolResult && isCursorExternalWireModel(request.modelId);
+  const actionCase = (externalToolContinuation || (!lastRawIsToolResult && text.trim().length > 0))
     ? "userMessageAction"
     : "resumeAction";
+  const actionText = externalToolContinuation
+    ? CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT
+    : text;
   const action = create(ConversationActionSchema, {
     action: actionCase === "userMessageAction"
       ? {
           case: "userMessageAction",
           value: create(UserMessageActionSchema, {
             userMessage: create(UserMessageSchema, {
-              text,
+              text: actionText,
               messageId: crypto.randomUUID(),
             }),
             requestContext: buildRequestContext(),
@@ -839,7 +907,7 @@ function buildPreparedCursorRunRequest(
   // tools the payload dropped — the defect that blocked PR #376.
   const modelVisibleParts = [
     ...rootPromptMessagesState.serialized,
-    ...(actionCase === "userMessageAction" ? [text] : []),
+    ...(actionCase === "userMessageAction" ? [actionText] : []),
     ...mcpToolDefs.map(modelVisibleToolText),
   ];
   return {

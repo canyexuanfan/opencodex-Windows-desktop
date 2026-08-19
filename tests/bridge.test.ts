@@ -85,22 +85,27 @@ describe("Responses bridge reasoning and usage parity", () => {
     expect(firstOutputs).toBe(1);
   });
 
-  test("streaming raw reasoning emits reasoning_text deltas and final raw content", async () => {
+  test("streaming raw reasoning is routed through the expandable summary channel", async () => {
     const frames = await collectSse(bridgeToResponsesSSE(replay([
       { type: "reasoning_raw_delta", text: "raw detail" },
       { type: "done", usage: { inputTokens: 10, outputTokens: 5, cachedInputTokens: 3, reasoningOutputTokens: 2 } },
     ]), "routed/model"));
 
-    const delta = frames.find(f => f.event === "response.reasoning_text.delta")?.data;
-    expect(delta).toMatchObject({ content_index: 0, delta: "raw detail" });
+    // Chat-completions providers (DeepSeek-style) deliver thinking as raw
+    // reasoning_content. Codex renders the expandable reasoning trace from the
+    // Responses summary channel only, so raw reasoning is routed through the
+    // summary channel (issue #45) instead of the content channel.
+    expect(frames.find(f => f.event === "response.reasoning_summary_text.delta")?.data)
+      .toMatchObject({ summary_index: 0, delta: "raw detail" });
+    expect(frames.some(f => f.event === "response.reasoning_text.delta")).toBe(false);
 
     const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
     const output = completed.output as Record<string, unknown>[];
     expect(output[0]).toMatchObject({
       type: "reasoning",
-      summary: [],
-      content: [{ type: "reasoning_text", text: "raw detail" }],
+      summary: [{ type: "summary_text", text: "raw detail" }],
     });
+    expect((output[0] as { content?: unknown }).content).toBeUndefined();
     expect(completed.usage).toMatchObject({
       input_tokens: 10,
       input_tokens_details: { cached_tokens: 3 },
@@ -495,8 +500,9 @@ describe("Responses bridge reasoning and usage parity", () => {
     const output = json.output as Record<string, unknown>[];
     expect(output.map(item => item.type)).toEqual(["reasoning", "message"]);
     expect(output[0]).toMatchObject({
-      content: [{ type: "reasoning_text", text: "raw json" }],
+      summary: [{ type: "summary_text", text: "raw json" }],
     });
+    expect((output[0] as { content?: unknown }).content).toBeUndefined();
     expect(json.usage).toMatchObject({
       input_tokens: 6,
       input_tokens_details: { cached_tokens: 1, cache_write_tokens: 2 },
@@ -725,11 +731,47 @@ describe("Responses bridge reasoning and usage parity", () => {
     expect(output.map(item => item.type)).toEqual(["message"]);
   });
 
+  test("streaming hideThinkingSummary suppresses raw reasoning", async () => {
+    const frames = await collectSse(bridgeToResponsesSSE(replay([
+      { type: "reasoning_raw_delta", text: "hidden raw thought" },
+      { type: "text_delta", text: "visible" },
+      { type: "done" },
+    ]), "model", undefined, undefined, undefined, undefined, undefined, { hideThinkingSummary: true }));
+
+    expect(frames.some(f => f.event === "response.reasoning_summary_text.delta")).toBe(false);
+    expect(frames.some(f => f.event === "response.reasoning_text.delta")).toBe(false);
+    const completed = frames.find(f => f.event === "response.completed")?.data.response as Record<string, unknown>;
+    const output = completed.output as Record<string, unknown>[];
+    // Raw reasoning stays hidden: the text round-trips only in an ocxr1 envelope,
+    // never as visible summary or content.
+    expect(output.map(item => item.type)).toEqual(["reasoning", "message"]);
+    expect(output[0]).toMatchObject({
+      type: "reasoning",
+      summary: [],
+    });
+    expect((output[0] as { encrypted_content?: string }).encrypted_content).toStartWith("ocxr1:");
+    expect((output[0] as { content?: unknown }).content).toBeUndefined();
+  });
+
+  test("non-streaming hideThinkingSummary suppresses raw reasoning", () => {
+    const json = buildResponseJSON([
+      { type: "reasoning_raw_delta", text: "hidden" },
+      { type: "text_delta", text: "visible" },
+      { type: "done" },
+    ], "model", { hideThinkingSummary: true });
+
+    const output = json.output as Record<string, unknown>[];
+    expect(output.map(item => item.type)).toEqual(["reasoning", "message"]);
+    expect(output[0]).toMatchObject({ type: "reasoning", summary: [] });
+    expect((output[0] as { encrypted_content?: string }).encrypted_content).toStartWith("ocxr1:");
+    expect((output[0] as { content?: unknown }).content).toBeUndefined();
+  });
+
   test("heartbeat events reset the stall watchdog and emit no protocol frame", async () => {
     // Regression for the Cursor parallel-tool-call stall: while the upstream silently assembles tool
     // calls, the adapter emits `heartbeat` events. They must keep the stall watchdog alive (no
     // upstream_stall_timeout). Adapter heartbeats themselves are not translated into Responses
-    // protocol items; wire keepalives use a separate `response.heartbeat` frame (see next test).
+    // protocol items; wire keepalives use a separate SSE comment line (see next test).
     //
     // resolveStallTimeoutSec ceils to a minimum of 1s, so sub-second stallTimeoutSec values cannot
     // prove the reset. Drive the beat loop through a test clock seam and run adapter-only progress
@@ -803,10 +845,12 @@ describe("Responses bridge reasoning and usage parity", () => {
     expect(frames.some(f => f.data.type === "heartbeat")).toBe(false);
   });
 
-  test("wire response.heartbeat keeps firing while only adapter heartbeats flow", async () => {
+  test("wire keepalive keeps firing while only adapter heartbeats flow", async () => {
     // Issue #521: web-search buffers semantic events and yields invisible adapter heartbeats from
     // raw-byte progress. Those must not suppress wire keepalives, or Codex Desktop idle-timeouts
-    // (~5 min) while OCX still considers the upstream alive.
+    // (~5 min) while OCX still considers the upstream alive. The default keep-alive is the typed
+    // response.heartbeat frame (codex-rs re-arms only on parsed EVENTS — 110 RCA); the grok
+    // surface swaps to comment lines via heartbeatStyle.
     const heartbeatMs = 50;
     const stallTimeoutSec = 1;
     const cycles = 4;
@@ -842,7 +886,7 @@ describe("Responses bridge reasoning and usage parity", () => {
       yield { type: "done" };
     }
 
-    const framesPromise = collectSse(bridgeToResponsesSSE(
+    const stream = bridgeToResponsesSSE(
       adapterHeartbeatsOnly(),
       "model",
       undefined,
@@ -851,7 +895,8 @@ describe("Responses bridge reasoning and usage parity", () => {
       undefined,
       heartbeatMs,
       { stallTimeoutSec, timers },
-    ));
+    );
+    const rawTextPromise = new Response(stream).text();
 
     await flush();
     for (let i = 0; i < cycles; i++) {
@@ -860,12 +905,23 @@ describe("Responses bridge reasoning and usage parity", () => {
       releaseDelay();
       await flush();
     }
+    const rawText = await rawTextPromise;
+    const frames: { event?: string; data: Record<string, unknown> }[] = [];
+    for (const frame of rawText.split("\n\n")) {
+      const trimmed = frame.trim();
+      if (!trimmed || trimmed === "data: [DONE]") continue;
+      const lines = trimmed.split("\n");
+      const event = lines.find(l => l.startsWith("event: "))?.slice(7);
+      const dataLine = lines.find(l => l.startsWith("data: "));
+      // Skip data-less frames; a keep-alive frame carries its own data line now.
+      if (!dataLine) continue;
+      frames.push({ event, data: JSON.parse(dataLine?.slice(6) ?? "{}") as Record<string, unknown> });
+    }
 
-    const frames = await framesPromise;
-    const wireHeartbeats = frames.filter(f =>
-      f.event === "response.heartbeat" && f.data.type === "response.heartbeat"
-    );
-    expect(wireHeartbeats.length).toBeGreaterThan(1);
+    // Wire keepalives are typed response.heartbeat frames — codex-rs ignores the unknown
+    // variant but its eventsource layer still yields an event, re-arming the idle timer.
+    const keepaliveCount = (rawText.match(/^event: response.heartbeat$/gm) ?? []).length;
+    expect(keepaliveCount).toBeGreaterThan(1);
     expect(frames.some(f => f.event === "response.completed")).toBe(true);
     expect(frames.some(f => (f.data.response as Record<string, unknown> | undefined)?.incomplete_details)).toBe(false);
     // Reject every adapter-shaped heartbeat payload, regardless of event name or field count.

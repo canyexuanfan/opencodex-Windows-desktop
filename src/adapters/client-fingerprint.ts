@@ -45,8 +45,6 @@ export function claudeCodeSessionId(token: string | undefined): string {
 export const ANTIGRAVITY_IDE_VERSION = "2.5.5";
 const ANTIGRAVITY_IDE_CLIENT_NAME = "aidev_client";
 const ANTIGRAVITY_IDE_PLATFORM = "windows/amd64";
-/** Secondary Google API client UA the Antigravity client library reports. */
-export const ANTIGRAVITY_GOOG_API_CLIENT_UA = "google-api-nodejs-client/10.3.0";
 
 /**
  * Real Antigravity IDE User-Agent format, decompiled from 2.5.5 Go LS (`setHeaders` @ `0x1018fbe00`):

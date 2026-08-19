@@ -13,6 +13,7 @@ import { assertProviderDestinationAllowed } from "./lib/destination-policy";
 import { redactSecretString, redactUrlForLog } from "./lib/redact";
 import { PROVIDER_REGISTRY, providerCodexAccountMode } from "./providers/registry";
 import { applyDirectReasoningEffortContracts, hasLegacyClinePassReasoningEfforts } from "./providers/derive";
+import { cloneFastWire } from "./providers/fastwire";
 import {
   providerMatchesRegistryTransportWithStaticGuards,
   providerSupportsLiveModelDiscovery,
@@ -332,6 +333,11 @@ export function routedProviderConfig(providerName: string, provider: OcxProvider
     ...(provider.requiresAdjacentResponsesToolResults === undefined
       && registryEntry.requiresAdjacentResponsesToolResults !== undefined
       ? { requiresAdjacentResponsesToolResults: registryEntry.requiresAdjacentResponsesToolResults }
+      : {}),
+    ...(provider.fastWire === undefined && registryEntry.fastWire !== undefined
+      ? {
+        fastWire: cloneFastWire(registryEntry.fastWire),
+      }
       : {}),
     ...(provider.supportsServiceTier === undefined && registryEntry.supportsServiceTier !== undefined
       ? { supportsServiceTier: registryEntry.supportsServiceTier }

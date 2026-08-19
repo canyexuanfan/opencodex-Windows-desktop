@@ -307,8 +307,8 @@ export function deriveEntry(
     if (isRouted) {
       // A routed model is NOT the native template: never inherit its context
       // window when /models omits context metadata (#992). Known metadata
-      // restores exact values below; otherwise the strict-fields fallback
-      // supplies the conservative 128k triple.
+      // restores exact values below; an enabled Context cap fills the gap;
+      // otherwise the strict-fields fallback supplies the 128k triple.
       if (!codexForwardNativeCapabilityAlias) {
         delete e.context_window;
         delete e.max_context_window;
@@ -1214,6 +1214,20 @@ interface RetainedCatalogSyncResult {
   skippedReason?: "desired_disabled";
 }
 
+/**
+ * Catalog/cache commit overrides.
+ *
+ * An explicit `ocx sync` is also the refresh path for side profiles that consume
+ * the OpenCodex catalog without injection (for example a custom `model_provider`
+ * that routes to the proxy). In that mode the Codex integration toggle only
+ * governs config/history injection; the catalog and models cache may still be
+ * refreshed, so `allowWhenDesiredDisabled` lets the commit path ignore the OFF
+ * gate that otherwise protects a fully native home.
+ */
+export interface CodexCatalogSyncOptions {
+  allowWhenDesiredDisabled?: boolean;
+}
+
 interface RetainedCatalogSyncWrite {
   readonly config: OcxConfig;
   readonly goModels: CatalogModel[];
@@ -1618,7 +1632,10 @@ function currentDisabledModelsForRestore(): Set<string> | null {
   }
 }
 
-export async function syncCatalogModels(config: OcxConfig): Promise<RetainedCatalogSyncResult> {
+export async function syncCatalogModels(
+  config: OcxConfig,
+  options?: CodexCatalogSyncOptions,
+): Promise<RetainedCatalogSyncResult> {
   const owningCodexHome = getCodexHome();
   const preflightRead = readRetainedCatalogSync(config);
   if (preflightRead === null) {
@@ -1654,8 +1671,10 @@ export async function syncCatalogModels(config: OcxConfig): Promise<RetainedCata
     // evidence revalidation below cannot see that — intent lives in our config,
     // not in the catalog files — so the policy is re-read here, under K, right
     // before the only write. A lost race becomes the discriminated skip instead
-    // of a routed catalog/cache surviving a completed disable.
-    if (!shouldSyncCodexOnStart(loadConfig())) {
+    // of a routed catalog/cache surviving a completed disable. An explicit
+    // catalog-only sync opts out of that gate: the user asked for a refresh even
+    // when injection is OFF, and the toggle only protects config/history writes.
+    if (!shouldSyncCodexOnStart(loadConfig()) && options?.allowWhenDesiredDisabled !== true) {
       return {
         added: 0,
         path: prepared.catalogPath,
@@ -1755,13 +1774,16 @@ export function restoreCodexCatalog(): { removed: number; kept: number; path: st
 export function invalidateCodexModelsCacheWithPermit(
   permit: CatalogWritePermit,
   owningCodexHome: string,
+  options?: CodexCatalogSyncOptions,
 ): boolean {
   try {
     // This permit is a REACQUISITION: refreshCodexModelCatalog's commit released
     // K before this rewrite runs, so the commit-path desired-state check cannot
     // cover it. A disable landing in that gap must not be overwritten by a
     // routed cache write — re-read intent under this permit, same as the commit.
-    if (!shouldSyncCodexOnStart(loadConfig())) return false;
+    // The catalog-only sync override applies here too so an explicit refresh
+    // keeps the cache consistent with the catalog it just wrote.
+    if (!shouldSyncCodexOnStart(loadConfig()) && options?.allowWhenDesiredDisabled !== true) return false;
     const catalogPath = readCodexCatalogPath();
     if (!existsSync(catalogPath)) return false;
     const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
@@ -1803,11 +1825,11 @@ export function invalidateCodexModelsCacheWithPermit(
   }
 }
 
-export function invalidateCodexModelsCache(): boolean {
+export function invalidateCodexModelsCache(options?: CodexCatalogSyncOptions): boolean {
   const owningCodexHome = getCodexHome();
   const outcome = withCatalogWriteSerialization(
     owningCodexHome,
-    permit => invalidateCodexModelsCacheWithPermit(permit, owningCodexHome),
+    permit => invalidateCodexModelsCacheWithPermit(permit, owningCodexHome, options),
   );
   return outcome.kind === "completed" && outcome.value;
 }
