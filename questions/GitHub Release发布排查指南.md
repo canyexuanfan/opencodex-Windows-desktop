@@ -64,3 +64,15 @@
     大小 121354017 与本地一致，下载域名为 github.com（在安装器 URL 白名单内）。
   - 本次 tag/branch push 触发的 Service lifecycle 与 Issue quality tests
     均 completed success（v2.10.0 时代曾被视为噪音，现已无失败）。
+
+- ✅ 2026-08-19：main 强推同步 v2.22.0 代码。
+  - origin/main 原为孤儿压缩线（c859510e5，2.8.1 时代），与功能分支无共同祖先，
+    需 `git push --force origin HEAD:refs/heads/main`。
+  - 触发影响评估：fork 未启用 Pages（API 404、无 gh-pages 分支），deploy-docs
+    若触发必失败；cleanup-orphaned-workflows 带 actions:write 会删运行历史。
+  - 实际结果：强推仅触发 React Doctor（success），所有带 paths 过滤的工作流
+    （ci/deploy-docs/cleanup/service-lifecycle/issue-quality）均未触发 ——
+    无共同祖先的强推使 push 事件的 paths 匹配落空。
+  - 经验：以后普通 fast-forward 推 main 时这些 paths 工作流会正常触发；
+    若届时不想部署文档站（fork 未开 Pages），需在推送后取消 deploy-docs 运行，
+    或提前在 fork 中禁用该 workflow。
