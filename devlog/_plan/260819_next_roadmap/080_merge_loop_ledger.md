@@ -482,3 +482,37 @@ is stripped on every new head (`pr-hygiene.yml:102`), so it must be applied
   raw `startsWith("gpt-5.6")`.
 - No scope creep; no ordering conflict with `stripUnsupportedForwardParams`
   (disjoint keys).
+## wp7-wp9 — the split stack landed, and one blocker survived
+
+Outcome: **DONE**, bottom-up and in order.
+
+| PR | Merge commit |
+|---|---|
+| #2019 WP1 value helpers | `da86a830a` |
+| #2023 WP1b type-only barrel | `2235f456d` |
+| #2036 WP2a config leaf | `eca18d0c8` |
+
+All three are ancestors of `origin/dev` in dependency order — parent before
+child before the independent leaf, exactly as ancestry required.
+
+### A blocker that survived its own hold
+
+wp6 held #2112 for a specific reason: `codexToolMode` existed only in the
+TypeScript interfaces, never in `providerConfigSchema`, and that schema ends in
+`.passthrough()`. It merged anyway (`dbe260131`) with the other two overlap PRs,
+which did get follow-up fixes (`135872d25` for the #1934 namespace leak,
+`e1ef7942b` for the #2080 assumed-priority cost). This one did not.
+
+Verified on the landed tree rather than assumed: `grep -c 'codexToolMode'
+src/config.ts` returned **0**, while `apiKeyTransport`, `upstreamHttpVersion`,
+and `codexAccountMode` are all validated enums in that same schema.
+
+Fixed on `dev` as `d697e2553`: `codexToolMode` is now a declared
+`z.enum(["code_mode_only", "shell"])`, with a regression that drives red when
+the enum line is deleted (152 pass / 1 fail) and green with it (153 / 0).
+
+**The lesson is about hold hygiene, not about this field.** Three PRs were held
+with three blockers; two were fixed and one was not, and the merge did not
+distinguish between them. A hold is only worth what the re-check before merge is
+worth — and `.passthrough()` is exactly the kind of defect that leaves no trace
+at the merge boundary, because nothing fails.
