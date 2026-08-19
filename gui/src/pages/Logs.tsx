@@ -17,7 +17,7 @@ import type { LogsTab } from "./logs-tab-keydown";
 import { logsTabKeyDown, readTabFromHash, selectLogsTab } from "./logs-tab-keydown";
 import { modelTitle } from "./logs-model-title";
 import { speedLabel } from "./logs-speed-label";
-import { formatEstimatedUsdValue } from "./logs-cost-format";
+import { formatEstimatedUsd, formatEstimatedUsdValue } from "./logs-cost-format";
 import { cacheSplit, isCursorUsageProvider, tokensTitle } from "./logs-token-title";
 import type { LogSurface, LogSurfaceFilter } from "./logs-surface-filter";
 import { logMatchesSurface } from "./logs-surface-filter";
@@ -238,15 +238,6 @@ function formatTokPerSecond(result: TokPerSecondResult | undefined, localeTag?: 
     maximumFractionDigits: digits,
   }).format(result.value);
   return `${result.estimated ? "~" : ""}${value}`;
-}
-
-function formatEstimatedUsd(result: CostResult | undefined, localeTag?: string): string {
-  if (!result || result.kind === "unavailable" || !Number.isFinite(result.estimate.cost.total) || result.estimate.cost.total < 0) return "\u2014";
-  const totalUsd = result.estimate.cost.total;
-  return `${result.estimate.priorityLowerBound ? "≥" : ""}~$${new Intl.NumberFormat(localeTag, {
-    minimumFractionDigits: 4,
-    maximumFractionDigits: 4,
-  }).format(totalUsd)}`;
 }
 
 /** Consecutive failed polls before a stale table is called out. Two seconds each, so ~6s. */
