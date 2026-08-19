@@ -14,6 +14,12 @@ export interface OcxReasoningReplayIdentity {
   modelId: string;
   /** Opaque process-local credential identity; never a raw token or API key. */
   credentialIdentity: string;
+  /**
+   * Salted-HMAC credential identity that survives restarts, for the durable
+   * thought-signature store (#1926). Absent when no durable identity could be
+   * derived — the durable store then refuses to key the entry (fail closed).
+   */
+  credentialDurableIdentity?: string;
 }
 
 /**
