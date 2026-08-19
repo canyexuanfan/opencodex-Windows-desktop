@@ -257,3 +257,48 @@ chosen rather than closed silently.
 K12 (#2047): **neither #2056 nor #2062 merges.** Same root cause posted on
 both, with the asymmetry named — #2062 is narrower on reachability, #2056 is
 ahead on preservation, both carry the scoring fail-open.
+
+### Final retarget state (verified at close)
+
+| PR | Base | Mergeable |
+|---|---|---|
+| #2110 | `dev` | MERGEABLE |
+| #2109 | `dev` | MERGEABLE |
+| #2099 | `dev` | MERGEABLE |
+| #2082 | `dev` | MERGEABLE |
+| #2063 | `dev` | **CONFLICTING** |
+| #2062 | `dev` | MERGEABLE |
+| #2032 | `dev` | MERGEABLE |
+| #2029 | `dev` | MERGEABLE |
+
+All eight are drafts, which is the contributor-PR default and not a problem to
+solve here. `#2063` is the one that needs its author: it conflicts and overlaps
+`#2055`, which already merged as a partial fix for the same issue, so it needs
+a rescope rather than a mechanical rebase.
+
+## Loop close
+
+Terminal outcome: **DONE.** Five work-phases, ten criteria, all carrying
+evidence.
+
+One merge lane was authorized and one was used. Everything else in this loop
+was review, rebase, or retarget — which is what the scope asked for, and worth
+stating plainly because a queue-drain loop is exactly where scope creep would
+be easiest to justify after the fact.
+
+### What the review lanes actually bought
+
+Three independent lanes ran. None of them merely agreed:
+
+- The **roadmap audit** caught the stale-base mechanism stated backwards, an
+  undercounted failure set, and a "fully green" claim that was not.
+- The **pre-merge review** returned DO-NOT-MERGE and found a directory-handle
+  leak on every truncated scan, a budget warning that could never print, and a
+  deadline test that passed against its own ablation. All three were confirmed
+  in code and fixed before the merge.
+- The **batch review** refuted the shared contract the batch was built on.
+
+The pattern across all three: the *conclusions* in the first drafts held up and
+the *explanations* did not. An explanation that survives because its conclusion
+happens to be right is still wrong, and it is the kind of wrong that gets
+copied into the next document unchallenged.
