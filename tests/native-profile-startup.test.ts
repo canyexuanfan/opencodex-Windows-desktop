@@ -699,3 +699,73 @@ describe("an unknown service-ownership fence is retryable (#2108)", () => {
     }
   });
 });
+
+/*
+ * Two defects an audit found in the first cut of the retryable fence, both from keying the
+ * reprobe by REASON while the fence refcount is per-fence.
+ */
+describe("the retryable fence respects its own refcount (#2108)", () => {
+  afterEach(() => {
+    __resetNativeMainOwnershipRetries();
+  });
+
+  test("raising a second fence does not hand out a fresh retry budget", () => {
+    let asked = 0;
+    const probe = () => { asked += 1; return "unknown" as NativeCodexOwnership; };
+    const first = blockNativeMainStartupForUnownedServiceHome("ownership-unknown", { reprobe: probe });
+    for (let i = 0; i < 20; i++) isNativeMainTrafficBlocked();
+    const afterFirst = asked;
+
+    const second = blockNativeMainStartupForUnownedServiceHome("ownership-unknown", { reprobe: probe });
+    try {
+      for (let i = 0; i < 20; i++) isNativeMainTrafficBlocked();
+
+      // A caller raising fences in a loop must not be able to spin the probe forever.
+      expect(asked).toBe(afterFirst);
+    } finally {
+      void first.release();
+      void second.release();
+    }
+  });
+
+  test("one successful probe does not lift a fence it never spoke for", () => {
+    const hookless = blockNativeMainStartupForUnownedServiceHome("ownership-unknown");
+    const hooked = blockNativeMainStartupForUnownedServiceHome("ownership-unknown", {
+      reprobe: () => "owned" as NativeCodexOwnership,
+    });
+    try {
+      isNativeMainTrafficBlocked();
+
+      // The hookless fence is still held, so traffic stays blocked until IT releases.
+      expect(isNativeMainTrafficBlocked()).toBe(true);
+    } finally {
+      void hooked.release();
+      void hookless.release();
+    }
+  });
+});
+
+/*
+ * The audit noted the "foreign never retries" property was single-covered: the guard exists
+ * in two places, and ablating either alone stayed green. This pins the OUTCOME rather than
+ * one of the two implementations, so removing either is caught.
+ */
+describe("a foreign fence is never reopened by a probe (#2108)", () => {
+  afterEach(() => {
+    __resetNativeMainOwnershipRetries();
+  });
+
+  test("a foreign fence stays closed even when the host reports owned", () => {
+    const fence = blockNativeMainStartupForUnownedServiceHome("foreign-ownership", {
+      reprobe: () => "owned" as NativeCodexOwnership,
+    });
+    try {
+      for (let i = 0; i < 10; i++) isNativeMainTrafficBlocked();
+
+      expect(isNativeMainTrafficBlocked()).toBe(true);
+      expect(nativeMainStartupGateSnapshot()).toMatchObject({ status: "blocked", reason: "foreign-ownership" });
+    } finally {
+      void fence.release();
+    }
+  });
+});

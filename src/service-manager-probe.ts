@@ -213,12 +213,32 @@ function busUnreachable(stderr: string): boolean {
  * A foreign home therefore still blocks, which is the whole reason this consults the disk
  * instead of widening the exit code.
  */
-function inspectSystemdOffline(definitionPath: string): ServiceManagerInstallation {
-  const presence = artifactPresence(definitionPath);
-  if (presence === "absent") return { kind: "absent" };
-  if (presence === "unreadable") {
-    return unknown("the session bus is unreachable and the systemd unit could not be read");
+function systemdUserUnitSearchPaths(home: string): string[] {
+  // systemd's user search path is not one directory. Checking only the canonical one and
+  // calling the rest absent is a fail-open: with the bus down a foreign unit in any other
+  // search dir is invisible, and "no answer" would be read as "no owner".
+  const xdgConfig = process.env.XDG_CONFIG_HOME?.trim();
+  const xdgData = process.env.XDG_DATA_HOME?.trim();
+  const dirs = [
+    xdgConfig ? join(xdgConfig, "systemd", "user") : join(home, ".config", "systemd", "user"),
+    join(home, ".config", "systemd", "user"),
+    xdgData ? join(xdgData, "systemd", "user") : join(home, ".local", "share", "systemd", "user"),
+    join(home, ".local", "share", "systemd", "user"),
+  ];
+  return [...new Set(dirs)].map(dir => join(dir, `${TASK}.service`));
+}
+
+function inspectSystemdOffline(home: string): ServiceManagerInstallation {
+  const candidates = systemdUserUnitSearchPaths(home);
+  const found = candidates.filter(path => artifactPresence(path) === "present");
+  if (candidates.some(path => artifactPresence(path) === "unreadable")) {
+    return unknown("the session bus is unreachable and a systemd unit could not be read");
   }
+  if (found.length === 0) return { kind: "absent" };
+  if (found.length > 1) {
+    return unknown("the session bus is unreachable and more than one systemd unit file claims this proxy");
+  }
+  const definitionPath = found[0]!;
   let body: string;
   try {
     body = readFileSync(definitionPath, "utf-8");
@@ -337,7 +357,7 @@ function inspectSystemd(deps: Required<Pick<ProbeDeps, "run" | "home">>): Servic
     // Widening on the exit code alone would fail open, because with the bus down systemctl
     // cannot see a foreign unit either. So ask the disk, which needs no bus, and fall back
     // to `unknown` for every other non-zero exit.
-    if (busUnreachable(shown.stderr)) return inspectSystemdOffline(definitionPath);
+    if (busUnreachable(shown.stderr)) return inspectSystemdOffline(deps.home);
     return unknown(`systemctl show exited ${String(shown.status)}: ${shown.stderr.trim()}`);
   }
 

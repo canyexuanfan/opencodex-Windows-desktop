@@ -1104,3 +1104,55 @@ describe("WinSW probe: a timed-out query with no assets (#2108)", () => {
     expect(result.kind).toBe("unknown");
   });
 });
+
+/*
+ * The fail-open an audit caught in the first cut of the #2114 fix.
+ *
+ * systemd's user search path is not one directory: ~/.local/share/systemd/user and
+ * $XDG_CONFIG_HOME/systemd/user are also live, and system-level units are never in the
+ * user path at all. With the bus down, a foreign unit in any of those is invisible.
+ *
+ * Returning "absent" because ONE path was empty produced ownership: owned on a host a
+ * foreign service owns — exactly the failure the disk check was supposed to prevent.
+ */
+describe("bus-down absence must mean absence everywhere systemd looks (#2114)", () => {
+  const BUS_DOWN = "Failed to connect to user scope bus via local transport: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined";
+
+  test("a foreign unit in the other user search dir still blocks", () => {
+    const dir = join(home, ".local", "share", "systemd", "user");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "opencodex-proxy.service"), [
+      "[Service]",
+      'Environment="CODEX_HOME=/other/.codex"',
+      'Environment="OPENCODEX_HOME=/other/.opencodex"',
+    ].join("\n"));
+    const { run } = recorder(() => ({ status: 1, stderr: BUS_DOWN }));
+
+    const result = inspectServiceManagerInstallation({ run, platform: "linux", home });
+
+    expect(result.kind).not.toBe("absent");
+  });
+
+  test("XDG_CONFIG_HOME is honored the way systemd honors it", () => {
+    const xdg = join(home, "xdg-config");
+    const dir = join(xdg, "systemd", "user");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "opencodex-proxy.service"), '[Service]\nEnvironment="CODEX_HOME=/other/.codex"');
+    const previous = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = xdg;
+    try {
+      const { run } = recorder(() => ({ status: 1, stderr: BUS_DOWN }));
+
+      expect(inspectServiceManagerInstallation({ run, platform: "linux", home }).kind).not.toBe("absent");
+    } finally {
+      if (previous === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = previous;
+    }
+  });
+
+  test("a genuinely empty disk is still absent", () => {
+    const { run } = recorder(() => ({ status: 1, stderr: BUS_DOWN }));
+
+    expect(inspectServiceManagerInstallation({ run, platform: "linux", home }).kind).toBe("absent");
+  });
+});

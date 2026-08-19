@@ -315,8 +315,10 @@ export function startNativeMainStartupLifecycle(
  * How many times a service-ownership fence will re-ask before it stops asking (#2108).
  *
  * A host that is permanently unaskable must not re-probe on every request forever, and a
- * host that recovers usually does so within the first few. The cap is per fence, and it is
- * reset by `release()`, so a restarted server starts fresh.
+ * host that recovers usually does so within the first few. The budget belongs to the
+ * REASON, not to an individual fence: raising a second fence deliberately does not hand
+ * out a fresh allowance, or a caller looping over fences could spin the probe forever.
+ * It is dropped when the last fence for that reason releases.
  */
 export const NATIVE_MAIN_OWNERSHIP_RETRY_LIMIT = 5;
 
@@ -326,6 +328,8 @@ const serviceOwnershipReprobes = new Map<NativeMainServiceOwnershipBlockReason, 
 interface ServiceOwnershipReprobe {
   readonly probe: () => NativeCodexOwnership;
   attempts: number;
+  /** Set once the probe has already spent this hook's fence, so it cannot spend it twice. */
+  cleared?: boolean;
 }
 
 /** Test-only: the retry budget is module state and would otherwise leak across tests. */
@@ -342,13 +346,18 @@ export function __resetNativeMainOwnershipRetries(): void {
  * it is wrong: that verdict means the probe could not answer, so waiting cannot help,
  * which is precisely why the #2108 reporter had to run `ocx restart` after every reboot.
  *
- * The re-probe happens when a native request actually arrives rather than on a timer, so
- * an idle proxy does no work, and it is capped so a permanently unaskable host cannot spin.
+ * The re-probe is demand-driven rather than timed: it runs when something asks whether
+ * native-main is fenced, which is usually a request but is also the background token
+ * guardian's warmup. It is capped so a permanently unaskable host cannot spin.
+ *
+ * The probe is synchronous `spawnSync` with a bounded timeout, and this function is on a
+ * request path, so the cap is what keeps a wedged host from paying that cost repeatedly.
  */
 function reprobeServiceOwnership(reason: NativeMainServiceOwnershipBlockReason): boolean {
   if (reason !== "ownership-unknown") return false;
   const entry = serviceOwnershipReprobes.get(reason);
   if (!entry) return false;
+  if (entry.cleared) return false;
   if (entry.attempts >= NATIVE_MAIN_OWNERSHIP_RETRY_LIMIT) return false;
   entry.attempts += 1;
   let answer: NativeCodexOwnership;
@@ -359,8 +368,15 @@ function reprobeServiceOwnership(reason: NativeMainServiceOwnershipBlockReason):
     return false;
   }
   if (answer !== "owned") return false;
-  serviceOwnershipRefs.delete(reason);
-  serviceOwnershipReprobes.delete(reason);
+  // Only the hook's OWN fence is cleared. Several servers can hold a fence for the same
+  // reason and only one of them may carry a hook, so lifting the shared refcount here
+  // would unblock fences this probe never spoke for — and their own release() would then
+  // decrement a counter that no longer exists. The remaining fences keep traffic closed
+  // until each releases itself, which is what the refcount is for.
+  entry.cleared = true;
+  const remaining = Math.max(0, (serviceOwnershipRefs.get(reason) ?? 0) - 1);
+  if (remaining === 0) serviceOwnershipRefs.delete(reason);
+  else serviceOwnershipRefs.set(reason, remaining);
   return true;
 }
 
@@ -382,7 +398,10 @@ export function blockNativeMainStartupForUnownedServiceHome(
   options?: { reprobe?: () => NativeCodexOwnership },
 ): NativeMainStartupLifecycle {
   serviceOwnershipRefs.set(reason, (serviceOwnershipRefs.get(reason) ?? 0) + 1);
-  if (options?.reprobe && reason === "ownership-unknown") {
+  // Do NOT reset an existing budget. Keying the reprobe by reason means a caller raising
+  // fences in a loop would otherwise be handed a fresh allowance each time and could spin
+  // the probe forever; the budget belongs to the reason, not to the individual fence.
+  if (options?.reprobe && reason === "ownership-unknown" && !serviceOwnershipReprobes.has(reason)) {
     serviceOwnershipReprobes.set(reason, { probe: options.reprobe, attempts: 0 });
   }
   let released = false;
