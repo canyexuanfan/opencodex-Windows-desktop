@@ -1541,7 +1541,11 @@ function taskXmlRunLevelAcceptable(principal: string): boolean {
   return value === "leastprivilege" || value === "highestavailable";
 }
 
-export function buildWindowsServiceScript(entry = cliEntry(), port = resolveServiceListenPort()): string {
+export function buildWindowsServiceScript(
+  entry = cliEntry(),
+  port = resolveServiceListenPort(),
+  proxyEnv: { name: string; value: string }[] = resolvedProxyEnv(),
+): string {
   // Provenance rides along with the entry: a second durableBunRuntime() call here could
   // resolve differently from the binary the caller actually baked.
   const { bun, bunRuntimeSource, cli } = entry;
@@ -1559,7 +1563,7 @@ export function buildWindowsServiceScript(entry = cliEntry(), port = resolveServ
     windowsBatchSet("CODEX_HOME", process.env.CODEX_HOME?.trim(), "path"),
     windowsBatchSet("CODEX_SQLITE_HOME", currentCodexSqliteHomeAbsolute("windows"), "path"),
     windowsBatchSet("OPENCODEX_HOME", process.env.OPENCODEX_HOME?.trim(), "path"),
-    ...resolvedProxyEnv().map(({ name, value }) => windowsBatchSet(name, value)),
+    ...proxyEnv.map(({ name, value }) => windowsBatchSet(name, value)),
     windowsBatchSet("OCX_API_TOKEN_FILE", serviceApiTokenFilePath(), "path"),
     windowsBatchSet("OCX_SERVICE_LOG", serviceLogPath(), "path"),
     windowsBatchSet("OCX_BUN", bun, "path"),
@@ -1881,7 +1885,7 @@ function installLaunchd(): void {
   // Capture this BEFORE writing: the write below makes the plist exist unconditionally,
   // so a post-write existsSync would call every fresh install an "installed" service.
   const wasInstalled = existsSync(p);
-  writeFileSync(p, buildPlist(), "utf8");
+  writeServiceDefinitionFile(p, buildPlist(), "utf8");
   // Best-effort: an absent job is fine here, and a failed unload is caught by the
   // load verification below with a better message than a raw unload error.
   runLaunchctl(["unload", p]);
@@ -1944,6 +1948,27 @@ function uninstallLaunchd(): void {
   if (existsSync(p)) unlinkSync(p);
 }
 
+/**
+ * Write a service definition with owner-only permissions.
+ *
+ * These files carry the outbound proxy environment (#2107), and a proxy URL routinely
+ * carries `user:password`. `writeFileSync` without a mode lands at 0644 under the default
+ * umask, so the credential would be world-readable on a shared host. Every other
+ * secret-bearing write in this file already uses 0600 — the service API token and the
+ * install state — and a service definition holding a proxy credential belongs in the same
+ * class.
+ *
+ * The explicit `chmodSync` is not redundant: `mode` only applies when the file is
+ * created, so an install over a definition left at 0644 by an earlier version would keep
+ * the loose mode. On Windows the POSIX bits are advisory, so the real ACL is applied
+ * there the same way the token file does it.
+ */
+export function writeServiceDefinitionFile(path: string, content: string, encoding: "utf8" | "utf16le"): void {
+  writeFileSync(path, content, { encoding, mode: 0o600 });
+  try { chmodSync(path, 0o600); } catch { /* best-effort; the Windows ACL below is authoritative */ }
+  if (process.platform === "win32") hardenSecretPath(path, { required: false });
+}
+
 // ── Windows (Task Scheduler) ──
 /**
  * In-place service-asset write that tolerates the transient EBUSY/EPERM/EACCES Windows
@@ -1952,7 +1977,7 @@ function uninstallLaunchd(): void {
 function writeServiceAssetWithRetry(path: string, content: string, encoding: "utf8" | "utf16le"): void {
   for (let attempt = 0; ; attempt++) {
     try {
-      writeFileSync(path, content, encoding);
+      writeServiceDefinitionFile(path, content, encoding);
       return;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
@@ -2520,7 +2545,7 @@ function installSystemd(): void {
   recordOwnedConfigPath(getConfigDir(), serviceStatePath());
   if (!existsSync(getConfigDir())) mkdirSync(getConfigDir(), { recursive: true });
   writeServiceApiTokenFile();
-  writeFileSync(unitPath(), buildUnit(), "utf8");
+  writeServiceDefinitionFile(unitPath(), buildUnit(), "utf8");
   sh("systemctl --user daemon-reload");
   sh(`systemctl --user enable ${TASK}`);
   sh(`systemctl --user restart ${TASK}`);

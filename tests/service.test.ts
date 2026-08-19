@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, posix, win32 } from "node:path";
 import * as serviceModule from "../src/service";
@@ -7,7 +7,7 @@ import { saveConfig } from "../src/config";
 import { windowsEnvIndirectBatchValue } from "../src/lib/win-paths";
 import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsSchtasksCreateArgsForXml, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, installFreshWindowsSchedulerSafely, installServiceSafely, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceInstallState, prepareServiceInstall, readWindowsSchedulerXmlState, registerFreshWindowsSchedulerTask, removeNativeWindowsServiceForScheduler, repairService, resolveServiceListenPort, runLaunchctl, serviceLogPath, serviceStartableFromTray, serviceStatusReport, serviceRetryCommand, serviceStatusSummary, systemdNeedsDaemonReload, windowsListenPort, winswListenPort, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
 import type { ServiceDiagnostic } from "../src/service";
-import { resolvedProxyEnv } from "../src/service";
+import { resolvedProxyEnv, writeServiceDefinitionFile } from "../src/service";
 import { buildWinswXml } from "../src/lib/winsw";
 import { CONFIG_OWNER_FILE, CONFIG_UNINSTALL_MANIFEST, recordOwnedConfigPath, removeOwnedConfigState } from "../src/lib/config-ownership";
 import { serviceApiTokenFilePath } from "../src/lib/service-secrets";
@@ -157,6 +157,23 @@ describe("systemd service unit", () => {
     expect(unit).not.toContain("http_proxy=");
   });
 
+  test("the Windows wrapper bakes proxy env the same way the unit and plist do (#2107)", () => {
+    // This builder was the only one of the three with no proxy assertion, because the only way
+    // to reach it was to assign process.env — the pattern that leaked HTTP_PROXY across files.
+    const script = buildWindowsServiceScript(
+      { bun: "C:\\OpenCodex\\bun.exe", bunRuntimeSource: "bundled", cli: "C:\\OpenCodex\\cli.ts" },
+      10100,
+      resolvedProxyEnv({ HTTP_PROXY: "http://127.0.0.1:7890", no_proxy: "localhost" }),
+    );
+
+    expect(script).toContain("HTTP_PROXY=http://127.0.0.1:7890");
+    // Lower-case spellings are baked under the canonical name, never both.
+    expect(script).toContain("NO_PROXY=localhost");
+    expect(script).not.toContain("no_proxy=");
+    expect(script).not.toContain("HTTPS_PROXY=");
+  });
+
+
   test("preserves custom Codex and OpenCodex homes", () => {
     const oldCodexHome = process.env.CODEX_HOME;
     const oldCodexSqliteHome = process.env.CODEX_SQLITE_HOME;
@@ -199,7 +216,9 @@ describe("systemd service unit", () => {
     expect(startSystemd).toContain("ocx service install");
     expect(startSystemd).toContain("process.exit(1)");
 
-    const writeAt = installSystemd.indexOf('writeFileSync(unitPath(), buildUnit(), "utf8")');
+    // The write goes through writeServiceDefinitionFile so the unit lands 0600: it can carry a
+    // proxy credential (#2107). What this test pins is the ORDER — write, then reload.
+    const writeAt = installSystemd.indexOf('writeServiceDefinitionFile(unitPath(), buildUnit(), "utf8")');
     const reloadAt = installSystemd.indexOf("systemctl --user daemon-reload");
     const enableAt = installSystemd.indexOf("systemctl --user enable");
     const restartAt = installSystemd.indexOf("systemctl --user restart");
@@ -2150,5 +2169,54 @@ describe("service serving confirmation", () => {
       const xml = buildWinswXml({ bun: "C:\\pkg\\bun.exe", bunRuntimeSource: "bundled", cli: "C:\\pkg\\src\\cli\\index.ts" });
       expect(winswListenPort({ readXml: () => xml })).toBe(resolveServiceListenPort());
     });
+  });
+});
+
+// #2107 baked the outbound proxy environment into the installed service definition, and a
+// proxy URL routinely carries user:password. That made these files credential-bearing, so
+// they must not be written at the umask default.
+describe("service definitions are not world-readable", () => {
+  const modeOf = (path: string): string => (statSync(path).mode & 0o777).toString(8);
+
+  test("a freshly written definition is owner-only", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-service-mode-"));
+    try {
+      const path = join(dir, "unit");
+      writeServiceDefinitionFile(path, buildUnit(resolvedProxyEnv({ HTTP_PROXY: "http://u:p@127.0.0.1:7890" })), "utf8");
+
+      expect(modeOf(path)).toBe("600");
+      // The credential is still written — this test pins who can read it, not that it is absent.
+      expect(readFileSync(path, "utf8")).toContain("u:p@127.0.0.1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an install over a loose definition from an older version tightens it", () => {
+    // `mode` applies only on creation, so a reinstall would otherwise leave 0644 standing.
+    const dir = mkdtempSync(join(tmpdir(), "ocx-service-mode-"));
+    try {
+      const path = join(dir, "plist");
+      writeFileSync(path, "stale", { encoding: "utf8", mode: 0o644 });
+      expect(modeOf(path)).toBe("644");
+
+      writeServiceDefinitionFile(path, buildPlist(resolvedProxyEnv({})), "utf8");
+
+      expect(modeOf(path)).toBe("600");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("utf16le scheduler assets take the same mode", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ocx-service-mode-"));
+    try {
+      const path = join(dir, "task.xml");
+      writeServiceDefinitionFile(path, "\uFEFF<Task />", "utf16le");
+
+      expect(modeOf(path)).toBe("600");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

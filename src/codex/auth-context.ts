@@ -161,7 +161,15 @@ function reportNativeMainFenceReason(reason: NativeMainStartupBlockReason): void
   );
 }
 
-/** Test-only: the dedup above is module state, so a second test would otherwise observe nothing. */
+/**
+ * Test-only reset for the dedup set above.
+ *
+ * The dedup is process-lifetime module state, so it is order-sensitive across test files
+ * sharing one Bun process: whichever file constructs this error first consumes the one-shot
+ * warn, and a later file asserting on it would see nothing and pass vacuously. Any test that
+ * asserts on the warn must call this first — an `afterEach` in the asserting file is not
+ * enough on its own, because the consuming file may not be the asserting one.
+ */
 export function __resetNativeMainFenceReasonLog(): void {
   reportedFenceReasons.clear();
 }
