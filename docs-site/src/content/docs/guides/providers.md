@@ -566,6 +566,13 @@ The bars show how much of a window (5-hour, weekly, monthly, or
 provider-specific) is already consumed.
 
 Providers with a live probe: OpenAI/Codex, Anthropic, xAI, Cursor, Kimi,
-Google Antigravity, OpenRouter, DeepSeek, ClinePass, Z.AI, MiniMax,
+Google Antigravity, OpenCode Go, OpenRouter, DeepSeek, ClinePass, Z.AI, MiniMax,
 Moonshot, Venice, Synthetic, DeepInfra, Neuralwatt, Command Code, and any a6api-backed
 custom provider.
+
+**OpenCode Go quota.** The canonical `opencode-go` preset reads
+`GET https://opencode.ai/zen/go/v1/usage` with the configured key as a Bearer token and
+does not follow redirects. The response's rolling, weekly, and monthly `percent` values are
+already-consumed utilization: rolling maps to the 5-hour bar, while weekly and monthly keep
+their matching bars. OpenCodex does not reconstruct dollar caps from local usage logs, and a
+provider using a non-canonical `baseUrl` is never sent the key for this probe.
