@@ -390,7 +390,7 @@ function writeServiceApiTokenFile(): string | null {
   return path;
 }
 
-export function buildPlist(): string {
+export function buildPlist(proxyEnv: { name: string; value: string }[] = resolvedProxyEnv()): string {
   const { bun, bunRuntimeSource, cli } = cliEntry();
   const log = logPath();
   const path = process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
@@ -405,7 +405,7 @@ export function buildPlist(): string {
     codexHome ? `    <key>CODEX_HOME</key><string>${plistString(codexHome)}</string>` : null,
     codexSqliteHome ? `    <key>CODEX_SQLITE_HOME</key><string>${plistString(codexSqliteHome)}</string>` : null,
     opencodexHome ? `    <key>OPENCODEX_HOME</key><string>${plistString(opencodexHome)}</string>` : null,
-    ...resolvedProxyEnv().map(({ name, value }) =>
+    ...proxyEnv.map(({ name, value }) =>
       `    <key>${name}</key><string>${plistString(value)}</string>`),
   ].filter((line): line is string => Boolean(line)).join("\n");
   const command = buildServiceShellCommand(bun, cli);
@@ -659,7 +659,7 @@ function systemdEnvironmentAssignment(name: string, value: string | undefined): 
  * own `applyProxyEnv` already treats both cases as equivalent. Only the canonical
  * upper-case name is baked, so a definition never carries two spellings of one setting.
  */
-function resolvedProxyEnv(env: NodeJS.ProcessEnv = process.env): { name: string; value: string }[] {
+export function resolvedProxyEnv(env: NodeJS.ProcessEnv = process.env): { name: string; value: string }[] {
   const resolved: { name: string; value: string }[] = [];
   for (const key of PROXY_ENV_KEYS) {
     const value = env[key]?.trim() || env[key.toLowerCase()]?.trim();
@@ -2444,7 +2444,7 @@ function unitPath(): string {
   return join(unitDir(), `${TASK}.service`);
 }
 
-export function buildUnit(): string {
+export function buildUnit(proxyEnv: { name: string; value: string }[] = resolvedProxyEnv()): string {
   const { bun, bunRuntimeSource, cli } = cliEntry();
   const log = logPath();
   const path = process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
@@ -2459,7 +2459,7 @@ export function buildUnit(): string {
     codexHome,
     codexSqliteHome,
     opencodexHome,
-    ...resolvedProxyEnv().map(({ name, value }) => systemdEnvironmentAssignment(name, value)),
+    ...proxyEnv.map(({ name, value }) => systemdEnvironmentAssignment(name, value)),
   ].filter((line): line is string => Boolean(line)).join("\n");
   return `[Unit]
 Description=OpenCodex Proxy Server

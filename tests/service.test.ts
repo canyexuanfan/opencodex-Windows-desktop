@@ -7,6 +7,7 @@ import { saveConfig } from "../src/config";
 import { windowsEnvIndirectBatchValue } from "../src/lib/win-paths";
 import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsSchtasksCreateArgsForXml, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, installFreshWindowsSchedulerSafely, installServiceSafely, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceInstallState, prepareServiceInstall, readWindowsSchedulerXmlState, registerFreshWindowsSchedulerTask, removeNativeWindowsServiceForScheduler, repairService, resolveServiceListenPort, runLaunchctl, serviceLogPath, serviceStartableFromTray, serviceStatusReport, serviceRetryCommand, serviceStatusSummary, systemdNeedsDaemonReload, windowsListenPort, winswListenPort, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
 import type { ServiceDiagnostic } from "../src/service";
+import { resolvedProxyEnv } from "../src/service";
 import { buildWinswXml } from "../src/lib/winsw";
 import { CONFIG_OWNER_FILE, CONFIG_UNINSTALL_MANIFEST, recordOwnedConfigPath, removeOwnedConfigState } from "../src/lib/config-ownership";
 import { serviceApiTokenFilePath } from "../src/lib/service-secrets";
@@ -115,47 +116,45 @@ describe("systemd service unit", () => {
     // /bin/sh -lc — which is dash on Ubuntu/WSL and reads .profile, not .bashrc. A user
     // whose proxy lives in the shell therefore gets a service that dials upstream direct,
     // the socket is reset, and the request surfaces as 502 Provider unreachable.
-    const saved = { ...process.env };
-    try {
-      process.env.HTTP_PROXY = "http://127.0.0.1:7890";
-      process.env.HTTPS_PROXY = "http://127.0.0.1:7890";
-      process.env.NO_PROXY = "localhost,127.0.0.1";
-      delete process.env.ALL_PROXY;
+    //
+    // The shell is passed in rather than assigned onto `process.env`. Mutating the real
+    // environment here leaked `HTTP_PROXY` out of this file: Bun runs a `bun test a b`
+    // invocation in ONE process, and the Lab sandbox calls `rejectProxyEnvironment()` on
+    // the live `process.env`, so every Lab file that loaded afterwards died with
+    // `harness_failure`. That was 73 failures on the unsharded macOS lane and zero when
+    // the Lab suites ran alone.
+    const proxyEnv = resolvedProxyEnv({
+      HTTP_PROXY: "http://127.0.0.1:7890",
+      HTTPS_PROXY: "http://127.0.0.1:7890",
+      NO_PROXY: "localhost,127.0.0.1",
+    });
 
-      const unit = buildUnit();
-      expect(unit).toContain('Environment="HTTP_PROXY=http://127.0.0.1:7890"');
-      expect(unit).toContain('Environment="HTTPS_PROXY=http://127.0.0.1:7890"');
-      expect(unit).toContain("NO_PROXY=");
-      // An unset key must not produce an empty assignment.
-      expect(unit).not.toContain('Environment="ALL_PROXY="');
+    const unit = buildUnit(proxyEnv);
+    expect(unit).toContain('Environment="HTTP_PROXY=http://127.0.0.1:7890"');
+    expect(unit).toContain('Environment="HTTPS_PROXY=http://127.0.0.1:7890"');
+    expect(unit).toContain("NO_PROXY=");
+    // An unset key must not produce an empty assignment.
+    expect(unit).not.toContain('Environment="ALL_PROXY="');
 
-      const plist = buildPlist();
-      expect(plist).toContain("<key>HTTP_PROXY</key><string>http://127.0.0.1:7890</string>");
-      expect(plist).not.toContain("<key>ALL_PROXY</key>");
-    } finally {
-      for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"]) {
-        if (saved[key] === undefined) delete process.env[key];
-        else process.env[key] = saved[key];
-      }
-    }
+    const plist = buildPlist(proxyEnv);
+    expect(plist).toContain("<key>HTTP_PROXY</key><string>http://127.0.0.1:7890</string>");
+    expect(plist).not.toContain("<key>ALL_PROXY</key>");
   });
 
   test("omits proxy env entirely when the installing shell has none (#2107)", () => {
-    const saved = { ...process.env };
-    try {
-      for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
-        "http_proxy", "https_proxy", "all_proxy", "no_proxy"]) delete process.env[key];
-
-      const unit = buildUnit();
-      for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]) {
-        expect(unit).not.toContain(`${key}=`);
-      }
-    } finally {
-      for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
-        "http_proxy", "https_proxy", "all_proxy", "no_proxy"]) {
-        if (saved[key] !== undefined) process.env[key] = saved[key];
-      }
+    const unit = buildUnit(resolvedProxyEnv({}));
+    for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]) {
+      expect(unit).not.toContain(`${key}=`);
     }
+  });
+
+  test("lower-case shell spellings are baked under the canonical name (#2107)", () => {
+    // curl-style tooling sets the lower-case pair; only the upper-case name is emitted so a
+    // definition never carries two spellings of one setting.
+    const unit = buildUnit(resolvedProxyEnv({ http_proxy: "http://127.0.0.1:7890" }));
+
+    expect(unit).toContain('Environment="HTTP_PROXY=http://127.0.0.1:7890"');
+    expect(unit).not.toContain("http_proxy=");
   });
 
   test("preserves custom Codex and OpenCodex homes", () => {
