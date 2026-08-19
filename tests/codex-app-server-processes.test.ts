@@ -24,7 +24,32 @@ import {
 } from "../src/codex/app-server-processes";
 
 describe("collectCodexAppServerCatalogState (#857)", () => {
-  const APP_SERVER_CMD = "/usr/local/bin/codex app-server";
+const APP_SERVER_CMD = "/usr/local/bin/codex app-server";
+
+/**
+ * A stand-in for powershell.exe that stalls, prints `line`, and exits.
+ *
+ * Platform-shaped on purpose: `execFile` launches its target directly with no shell, so a
+ * POSIX `.sh` script is not an executable on Windows — and Windows is the platform this
+ * whole fix exists for, with its own CI shard running this suite. On Windows the fake is a
+ * `.cmd` invoked through `cmd.exe`; elsewhere it is a shell script.
+ */
+function writeStallingFakePowerShell(dir: string, line: string): string {
+  if (process.platform === "win32") {
+    const cmd = join(dir, "fake-powershell.cmd");
+    writeFileSync(cmd, [
+      "@echo off",
+      // ~200ms without depending on timeout.exe, which refuses a redirected stdin.
+      "ping -n 1 -w 200 192.0.2.1 >nul 2>&1",
+      `echo ${line.replace(/\t/g, "\t")}`,
+    ].join("\r\n"));
+    return cmd;
+  }
+  const sh = join(dir, "fake-powershell.sh");
+  writeFileSync(sh, ["#!/bin/sh", "sleep 0.2", `printf '%s\\n' '${line}'`].join("\n"));
+  chmodSync(sh, 0o755);
+  return sh;
+}
 
   test("not_running when no app-server process exists", () => {
     const status = collectCodexAppServerCatalogState({
@@ -110,45 +135,64 @@ describe("collectCodexAppServerCatalogState (#857)", () => {
   test("the default Windows request path keeps the event loop alive through both PowerShell calls (#1852)", async () => {
     resetCodexAppServerCatalogStateCache();
     const dir = mkdtempSync(join(tmpdir(), "ocx-ps-fake-"));
-    const fake = join(dir, "powershell.sh");
-    // Ignores its arguments and stalls, then prints one enumeration row. Both the
-    // snapshot call and the start-time call land here; each sleeps, so a synchronous
-    // runner blocks twice.
-    writeFileSync(fake, [
-      "#!/bin/sh",
-      "sleep 0.2",
-      `printf '%s\\t%s\\t%s\\n' 42 '${APP_SERVER_CMD}' 'CONTOSO\\\\jun'`,
-    ].join("\n"));
-    chmodSync(fake, 0o755);
+    const fake = writeStallingFakePowerShell(dir, `42\t${APP_SERVER_CMD}\tCONTOSO\\jun`);
     setTrustedWindowsElevationExecutablesForTests({ powershell: fake });
 
-    let ticks = 0;
+    // Phase signal instead of a timer count. A callback tally has to pick a threshold
+    // between "sync" and "async" observations, and `setInterval` makes no catch-up
+    // guarantee — on a loaded runner a correct implementation can dip under any midpoint.
+    // This asks a binary question instead: did event-loop work make progress WHILE the
+    // child was running? A synchronous exec parks the loop, so the flag stays false no
+    // matter how slow or fast the machine is.
+    let loopRanDuringExec = false;
+    const beat = setInterval(() => { loopRanDuringExec = true; }, 5);
     let status: Awaited<ReturnType<typeof collectCodexAppServerCatalogStateForRequest>>;
-    const timer = setInterval(() => { ticks += 1; }, 10);
     try {
       status = await collectCodexAppServerCatalogStateForRequest({
         platform: "win32",
         catalogMtimeMs: () => 1_000,
+        // Only the enumeration is exercised here; the start-time half has its own test.
+        readStartMsBatchAsync: async pids => new Map(pids.map(pid => [pid, 2_000])),
       });
     } finally {
-      clearInterval(timer);
+      clearInterval(beat);
       setTrustedWindowsElevationExecutablesForTests(null);
       rmSync(dir, { recursive: true, force: true });
       resetCodexAppServerCatalogStateCache();
     }
 
-    // Assert the fake was actually parsed. Without this the test passes on
-    // "not_running" — which is what a failed exec also produces — so a broken
-    // enumeration would look identical to a fast one.
+    // Without this a failed exec ("not_running") would look identical to a fast one.
     expect(status.processes.map(proc => proc.pid)).toEqual([42]);
+    expect(loopRanDuringExec).toBe(true);
+  });
 
-    // The fake stalls ~200ms per call against a 10ms timer, and the request path makes
-    // TWO calls (enumeration, then start-time discovery). Measured on this repo:
-    // async default ~42 ticks, synchronous default ~19. The gap is real but not total —
-    // Bun's execFileSync still lets a few timers through — so the threshold sits between
-    // the two measurements rather than at zero. Isolated probe for the same runtime:
-    // execFileSync("sleep 0.3") admits 1 tick against a 10ms timer.
-    expect(ticks).toBeGreaterThan(28);
+  // The request path makes TWO PowerShell calls. The test above injects
+  // `readStartMsBatchAsync` so it isolates the first one — which means reverting the
+  // SECOND to a synchronous read slips past it. That second call is up to five seconds of
+  // blocking when an app-server exists, so it needs its own oracle.
+  test("the default Windows start-time discovery keeps the event loop alive (#1852)", async () => {
+    resetCodexAppServerCatalogStateCache();
+    const dir = mkdtempSync(join(tmpdir(), "ocx-ps-start-"));
+    const fake = writeStallingFakePowerShell(dir, `42\t${APP_SERVER_CMD}\tCONTOSO\\jun`);
+    setTrustedWindowsElevationExecutablesForTests({ powershell: fake });
+
+    let loopRanDuringExec = false;
+    const beat = setInterval(() => { loopRanDuringExec = true; }, 5);
+    try {
+      // No readStartMsBatchAsync override: the default start-time path must run for real.
+      await collectCodexAppServerCatalogStateForRequest({
+        platform: "win32",
+        listSnapshotsAsync: async () => [{ pid: 42, commandLine: APP_SERVER_CMD }],
+        catalogMtimeMs: () => 1_000,
+      });
+    } finally {
+      clearInterval(beat);
+      setTrustedWindowsElevationExecutablesForTests(null);
+      rmSync(dir, { recursive: true, force: true });
+      resetCodexAppServerCatalogStateCache();
+    }
+
+    expect(loopRanDuringExec).toBe(true);
   });
 
   test("Windows request collection shares one in-flight refresh and its short cache (#1852)", async () => {

@@ -136,9 +136,15 @@ describe("multiAgentGuidanceText", () => {
     // a stalling fake stands in for a slow CIM walk. The async request collector leaves
     // the loop free; the synchronous collector parks it.
     const fakeDir = mkdtempSync(join(tmpdir(), "ocx-collab-ps-"));
-    const fake = join(fakeDir, "powershell.sh");
-    writeFileSync(fake, ["#!/bin/sh", "sleep 0.2", "printf ''"].join("\n"));
-    chmodSync(fake, 0o755);
+    // Platform-shaped: execFile takes no shell, so a POSIX script is not executable on
+    // Windows — the platform this fix targets, whose CI shard runs this suite.
+    const fake = join(fakeDir, process.platform === "win32" ? "fake-powershell.cmd" : "fake-powershell.sh");
+    if (process.platform === "win32") {
+      writeFileSync(fake, ["@echo off", "ping -n 1 -w 200 192.0.2.1 >nul 2>&1"].join("\r\n"));
+    } else {
+      writeFileSync(fake, ["#!/bin/sh", "sleep 0.2", "printf ''"].join("\n"));
+      chmodSync(fake, 0o755);
+    }
     setTrustedWindowsElevationExecutablesForTests({ powershell: fake });
     const realPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
     Object.defineProperty(process, "platform", { value: "win32", configurable: true });
@@ -149,12 +155,17 @@ describe("multiAgentGuidanceText", () => {
     // real default path.
     delete process.env.OPENCODEX_APP_SERVER_CATALOG_STATE_OVERRIDE;
 
-    let ticks = 0;
-    const timer = setInterval(() => { ticks += 1; }, 10);
+    // Phase signal rather than a tick count: a threshold between "sync" and "async"
+    // observations has to guess how many timer callbacks a loaded runner will deliver,
+    // and setInterval promises no catch-up. This asks the binary question instead — did
+    // any event-loop work run WHILE the child was alive? A synchronous exec parks the
+    // loop, so the flag cannot flip regardless of machine speed.
+    let loopRanDuringExec = false;
+    const beat = setInterval(() => { loopRanDuringExec = true; }, 5);
     try {
       await multiAgentGuidanceText(parsed, { injectionModel: "anthropic/claude-sonnet-5" });
     } finally {
-      clearInterval(timer);
+      clearInterval(beat);
       Object.defineProperty(process, "platform", realPlatform);
       setTrustedWindowsElevationExecutablesForTests(null);
       rmSync(fakeDir, { recursive: true, force: true });
@@ -162,11 +173,7 @@ describe("multiAgentGuidanceText", () => {
       process.env.OPENCODEX_APP_SERVER_CATALOG_STATE_OVERRIDE = "fresh";
     }
 
-    // Measured on this repo against the stalling fake: the async request collector admits
-    // ~23 ticks, the synchronous collector admits 0 — it parks the loop for the whole
-    // enumeration. Any positive count proves the async wiring; the margin to 8 is
-    // generous enough that a loaded CI box cannot flake it.
-    expect(ticks).toBeGreaterThan(8);
+    expect(loopRanDuringExec).toBe(true);
   });
 
   test("v2 guidance suppresses positive model claims while the app-server catalog is stale or unknown (#857)", async () => {
