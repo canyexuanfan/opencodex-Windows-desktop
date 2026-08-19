@@ -444,6 +444,29 @@ Consequence to carry into wp7-wp9: when the split lands, #2112, #1934, and
 #2080 will need a rebase onto the new leaves. Their authors should be told that
 when the blockers are resolved, so the rebase is not a surprise.
 
+### Split-stack state entering wp7
+
+This loop's own merges moved `dev` 29 commits ahead of all three split
+branches. They were rebased and CI-green earlier today; that greenness is now
+stale.
+
+| PR | Base | Head | Behind dev | Blocking checks |
+|---|---|---|---|---|
+| #2019 | `dev` | `35990f6ea` | 29 | hygiene, enforce-target |
+| #2023 | `codex/split-wp1-types` | `874598bd3` | 29 | hygiene, enforce-target |
+| #2036 | `dev` | `6c6925a4d` | 29 | hygiene, enforce-target |
+
+So wp7 starts by re-doing what wp2 of the earlier campaign did: rebase, re-run,
+re-verify. That is not wasted work — it is the cost of a stack sitting behind an
+active queue, and it is exactly the cost the roadmap said would compound if the
+split kept waiting.
+
+`hygiene` and `enforce-target` are the same two gates as before. `hygiene` is
+`missing_regression_test`, which is correct for a pure-move PR and resolves with
+`test-exception-approved` (`.github/scripts/pr-hygiene.cjs:153`). Note the label
+is stripped on every new head (`pr-hygiene.yml:102`), so it must be applied
+**after** the final rebase push, not before.
+
 ### Verified clean on this head
 
 - The key-auth test is a real oracle: it fails against `72117f169`.
