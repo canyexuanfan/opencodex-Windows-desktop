@@ -154,14 +154,15 @@ Explicit capability `false` and Responses caller-tier forwarding retain their ex
 ### xAI Priority Processing
 
 The built-in `xai` preset advertises and injects Fast only when its effective transport uses
-`authMode: "key"`. It sends `service_tier: "priority"` to xAI's public Chat Completions or
-Responses API. `ocx login xai` uses the separate Grok CLI subscription gateway, so OAuth remains
-unclassified: its catalog rows do not advertise Fast and the proxy does not inject a tier.
+`authMode: "key"`. API-key mode uses the key transport at `https://api.x.ai/v1` and sends
+`service_tier: "priority"` to xAI's public Chat Completions or Responses API. `ocx login xai`
+instead stores OAuth credentials for the separate Grok CLI subscription-gateway flow, so OAuth
+remains unclassified: its catalog rows do not advertise Fast and the proxy does not inject a tier.
 
 xAI charges Priority Processing at 2× the standard token price for input, output, cached, and
 reasoning tokens; cache discounts are applied before the multiplier. Cost estimates use that premium
-only when xAI echoes `service_tier: "priority"` (or when an adapter explicitly records an assumed
-priority outcome). An echoed `default` is a downgrade and stays at the standard price.
+only when xAI's response confirms `service_tier: "priority"`. A missing or unparsed response tier is
+not confirmation, and an echoed `default` is a downgrade; all three stay at the standard price.
 
 For `grok-4.6`, the standard rate per 1M tokens is $2.00 input, $0.50 cached input, and $6.00
 output. A prompt of at least 200,000 tokens reprices the whole request at $4.00 / $1.00 / $12.00.

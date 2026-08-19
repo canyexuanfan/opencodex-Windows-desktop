@@ -7,7 +7,7 @@ that exercise every branch of the new pricing path:
 | --- | --- | --- |
 | `req-standard` | no Fast requested | `~$0.0300` |
 | `req-priority` | response-confirmed priority, prompt under the long-context threshold | `~$0.0600` — exactly the documented 2x premium over the row above |
-| `req-longctx-priority` | response-confirmed priority, prompt above 200k | `≥$0.8760` — the published long-context rate, marked a lower bound because xAI publishes no combined price |
+| `req-longctx-priority` | response-confirmed priority, prompt at or above 200k | `≥$0.8760` — the published long-context rate, marked a lower bound because xAI publishes no combined price |
 
 The `≥` prefix is the visible change: a cost that is a known floor rather than an
 estimate now says so instead of rendering as `~$`. The detail drawer explains why

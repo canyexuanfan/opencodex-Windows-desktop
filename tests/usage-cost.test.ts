@@ -609,6 +609,7 @@ describe("xAI Priority Processing pricing", () => {
     const xaiRules = PRIORITY_PRICING_RULES.filter(rule => rule.provider === "xai");
     expect(xaiRules.map(rule => rule.modelId)).toEqual(["grok-4.5", "grok-4.6"]);
     expect(xaiRules.every(rule => rule.multiplier === 2)).toBe(true);
+    expect(xaiRules.every(rule => rule.requiresResponseConfirmation === true)).toBe(true);
     expect(xaiRules.every(rule => rule.source === "https://docs.x.ai/developers/advanced-api-usage/priority-processing")).toBe(true);
     expect(findPriorityPricingRule("xai", "grok-4.6")?.multiplier).toBe(2);
     expect(findPriorityPricingRule("openrouter", "grok-4.6")).toBeUndefined();
@@ -645,7 +646,7 @@ describe("xAI Priority Processing pricing", () => {
     expect(confirmed.priorityMultiplier).toBe(2);
   });
 
-  test("an assumed priority outcome uses the same 2x premium", () => {
+  test("an assumed priority outcome stays at the standard price", () => {
     const assumedOutcome = outcome();
     const assumed = estimate(assumedOutcome);
     expect(assumedOutcome).toMatchObject({
@@ -653,8 +654,26 @@ describe("xAI Priority Processing pricing", () => {
       fastOutcome: "applied",
       confirmation: "assumed",
     });
-    expect(assumed.cost.total).toBeCloseTo(0.46, 9);
-    expect(assumed.priorityMultiplier).toBe(2);
+    expect(assumed.cost.total).toBeCloseTo(0.23, 9);
+    expect(assumed.priorityMultiplier).toBeUndefined();
+  });
+
+  test("missing provenance and a requested tier do not prove the xAI premium", () => {
+    for (const serviceTier of [
+      "priority",
+      { requestedServiceTier: "priority" },
+      { configuredServiceTier: "priority" },
+    ] as const) {
+      const unconfirmed = estimateRequestCost({
+        provider: "xai",
+        model: "grok-4.6",
+        usageStatus: "reported",
+        usage,
+        serviceTier,
+      })!;
+      expect(unconfirmed.cost.total).toBeCloseTo(0.23, 9);
+      expect(unconfirmed.priorityMultiplier).toBeUndefined();
+    }
   });
 
   test("an echoed default records a downgrade and bills the standard price", () => {
@@ -686,6 +705,28 @@ describe("xAI Priority Processing pricing", () => {
       output: 0.12,
     });
     expect(long.cost.total).toBeCloseTo(0.77, 9);
+  });
+
+  test("a combo is a lower bound only when every priced attempt is a lower bound", () => {
+    const confirmed = outcome("priority");
+    const lowerBoundAttempt = {
+      ordinal: 1,
+      provider: "xai",
+      model: "grok-4.6",
+      usageStatus: "reported" as const,
+      usage: { inputTokens: 200_000, outputTokens: 10_000 },
+      tierOutcome: confirmed,
+    };
+    const ordinaryAttempt = {
+      ordinal: 2,
+      provider: "xai",
+      model: "grok-4.6",
+      usageStatus: "reported" as const,
+      usage,
+    };
+
+    expect(estimateComboCost([lowerBoundAttempt, { ...lowerBoundAttempt, ordinal: 2 }])?.priorityLowerBound).toBe(true);
+    expect(estimateComboCost([lowerBoundAttempt, ordinaryAttempt])?.priorityLowerBound).toBeUndefined();
   });
 });
 

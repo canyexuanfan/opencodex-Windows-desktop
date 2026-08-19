@@ -451,7 +451,9 @@ function applyPriorityMultiplier(
 ): [Cost4, number] {
   if (tierScalar(serviceTier) !== "priority") return [cost4, 1];
   const base = baseProviderLabel(provider);
-  const multiplier = findPriorityPricingRule(base, modelId)?.multiplier ?? 1;
+  const rule = findPriorityPricingRule(base, modelId);
+  if (rule?.requiresResponseConfirmation && !isConfirmedFast(serviceTier)) return [cost4, 1];
+  const multiplier = rule?.multiplier ?? 1;
   if (multiplier === 1) return [cost4, 1];
   return [{
     input: cost4.input * multiplier,
@@ -542,7 +544,9 @@ export function estimateComboCost(
       ? { priorityMultiplier: estimates.find(est => est.priorityMultiplier)?.priorityMultiplier }
       : {}),
     ...(estimates.some(est => est.contextTier) ? { contextTier: "long" as const } : {}),
-    ...(estimates.some(est => est.priorityLowerBound) ? { priorityLowerBound: true as const } : {}),
+    ...(estimates.every(est => est.priorityLowerBound === true)
+      ? { priorityLowerBound: true as const }
+      : {}),
   };
 }
 

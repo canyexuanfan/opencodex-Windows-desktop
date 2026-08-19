@@ -15,7 +15,7 @@ import Debug from "./Debug";
 
 import type { LogsTab } from "./logs-tab-keydown";
 import { logsTabKeyDown, readTabFromHash, selectLogsTab } from "./logs-tab-keydown";
-import { formatEstimatedUsdTotal } from "./logs-cost-format";
+import { formatEstimatedUsdTotal, summarizeEstimatedCosts } from "./logs-cost-format";
 import { modelTitle } from "./logs-model-title";
 import { speedLabel } from "./logs-speed-label";
 import { cacheSplit, isCursorUsageProvider, tokensTitle } from "./logs-token-title";
@@ -239,17 +239,17 @@ function formatTokPerSecond(result: TokPerSecondResult | undefined, localeTag?: 
   return `${result.estimated ? "~" : ""}${value}`;
 }
 
-function formatEstimatedUsd(result: CostResult | undefined, localeTag?: string): string {
-  if (!result || result.kind === "unavailable") return "\u2014";
+function formatEstimatedUsd(result: CostResult | undefined, localeTag: string | undefined, t: TFn): string {
   return formatEstimatedUsdTotal(
-    result.estimate.cost.total,
-    result.estimateReasons.includes("priority_lower_bound"),
+    result?.kind === "value" ? result.estimate.cost.total : undefined,
+    result?.kind === "value" && result.estimateReasons.includes("priority_lower_bound"),
     localeTag,
+    t,
   );
 }
 
-function formatEstimatedUsdValue(value: number, localeTag?: string, lowerBound = false): string {
-  return formatEstimatedUsdTotal(value, lowerBound, localeTag);
+function formatEstimatedUsdValue(value: number, localeTag: string | undefined, t: TFn, lowerBound = false): string {
+  return formatEstimatedUsdTotal(value, lowerBound, localeTag, t);
 }
 
 /** Consecutive failed polls before a stale table is called out. Two seconds each, so ~6s. */
@@ -344,29 +344,16 @@ function summarizeFilteredLogs(entries: LogEntry[]): {
   requests: number;
   totalTokens: number;
   estimatedCostUsd: number;
+  priorityLowerBound: boolean;
   unpricedRequests: number;
   unmeteredRequests: number;
 } {
   let totalTokens = 0;
-  let estimatedCostUsd = 0;
-  let unpricedRequests = 0;
-  let unmeteredRequests = 0;
   for (const entry of entries) {
     const tokens = displayTokenTotal(entry);
     if (tokens !== undefined) totalTokens += tokens;
-    if (entry.usageStatus === "unsupported") {
-      unmeteredRequests += 1;
-      continue;
-    }
-    const cost = entry.displayMetrics?.cost;
-    const total = cost?.kind === "value" ? cost.estimate.cost.total : undefined;
-    if (total !== undefined && Number.isFinite(total) && total >= 0) {
-      estimatedCostUsd += total;
-      continue;
-    }
-    unpricedRequests += 1;
   }
-  return { requests: entries.length, totalTokens, estimatedCostUsd, unpricedRequests, unmeteredRequests };
+  return { requests: entries.length, totalTokens, ...summarizeEstimatedCosts(entries) };
 }
 
 export default function Logs({ apiBase }: { apiBase: string }) {
@@ -611,7 +598,12 @@ export default function Logs({ apiBase }: { apiBase: string }) {
             {t("logs.conversation.totals", {
               requests: conversationTotals.requests,
               tokens: formatTokens(conversationTotals.totalTokens, localeTag ?? locale),
-              cost: formatEstimatedUsdValue(conversationTotals.estimatedCostUsd, localeTag),
+              cost: formatEstimatedUsdValue(
+                conversationTotals.estimatedCostUsd,
+                localeTag,
+                t,
+                conversationTotals.priorityLowerBound,
+              ),
             })}
             {" "}
             <span className="muted">
@@ -730,7 +722,7 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                     {formatTokPerSecond(log.displayMetrics?.tokPerSecond, localeTag)}
                   </td>
                   <td className="num mono log-col-cost">
-                    {formatEstimatedUsd(log.displayMetrics?.cost, localeTag)}
+                    {formatEstimatedUsd(log.displayMetrics?.cost, localeTag, t)}
                   </td>
                  <td className="mono log-col-model" title={modelTitle(log, t)}>
                    <span className="logs-model-cell">
@@ -955,11 +947,11 @@ function LogDetailDialog({
           {cost?.kind === "value" ? (
             <>
               <div className="log-detail-grid">
-                <span className="muted">{t("logs.detail.costTotal")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.total, localeTag, cost.estimateReasons.includes("priority_lower_bound"))}</span>
-                <span className="muted">{t("logs.tokens.input")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.input, localeTag, cost.estimateReasons.includes("priority_lower_bound"))}</span>
-                <span className="muted">{t("logs.tokens.cacheRead")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.cacheRead, localeTag, cost.estimateReasons.includes("priority_lower_bound"))}</span>
-                <span className="muted">{t("logs.tokens.cacheWrite")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.cacheWrite, localeTag, cost.estimateReasons.includes("priority_lower_bound"))}</span>
-                <span className="muted">{t("logs.tokens.output")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.output, localeTag, cost.estimateReasons.includes("priority_lower_bound"))}</span>
+                <span className="muted">{t("logs.detail.costTotal")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.total, localeTag, t, cost.estimateReasons.includes("priority_lower_bound"))}</span>
+                <span className="muted">{t("logs.tokens.input")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.input, localeTag, t, cost.estimateReasons.includes("priority_lower_bound"))}</span>
+                <span className="muted">{t("logs.tokens.cacheRead")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.cacheRead, localeTag, t, cost.estimateReasons.includes("priority_lower_bound"))}</span>
+                <span className="muted">{t("logs.tokens.cacheWrite")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.cacheWrite, localeTag, t, cost.estimateReasons.includes("priority_lower_bound"))}</span>
+                <span className="muted">{t("logs.tokens.output")}</span><span className="mono">{formatEstimatedUsdValue(cost.estimate.cost.output, localeTag, t, cost.estimateReasons.includes("priority_lower_bound"))}</span>
                 {cost.estimate.price && (
                   <>
                     <span className="muted">{t("logs.detail.matchedKey")}</span>
@@ -977,7 +969,7 @@ function LogDetailDialog({
             </>
           ) : (
             <div className="log-detail-grid">
-              <span className="muted">{t("logs.detail.costTotal")}</span><span className="mono">{"\u2014"}</span>
+              <span className="muted">{t("logs.detail.costTotal")}</span><span className="mono">{formatEstimatedUsd(undefined, localeTag, t)}</span>
               <span className="muted">{t("logs.detail.unavailableReason")}</span>
               <span>{cost?.kind === "unavailable" ? t(metricReasonKey(cost.reason)) : t("logs.detail.reason.usage_missing")}</span>
             </div>
@@ -1032,7 +1024,7 @@ function LogDetailDialog({
                       </td>
                       <td className="num mono">{attempt.durationMs}ms</td>
                       <td className="num mono">{formatTokPerSecond(attempt.displayMetrics?.tokPerSecond, localeTag)}</td>
-                      <td className="num mono">{formatEstimatedUsd(attemptCost, localeTag)}</td>
+                      <td className="num mono">{formatEstimatedUsd(attemptCost, localeTag, t)}</td>
                       <td className="log-detail-break">{reason}</td>
                     </tr>
                   );

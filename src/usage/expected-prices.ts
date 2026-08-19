@@ -242,6 +242,8 @@ export interface PriorityPricingRule {
   provider: string;
   modelId: string;
   multiplier: number;
+  /** Apply the premium only after the upstream response confirms this tier. */
+  requiresResponseConfirmation?: true;
   source: string;
   verifiedAt: string;
 }
@@ -267,6 +269,7 @@ export const PRIORITY_PRICING_RULES: readonly PriorityPricingRule[] = [
     provider: "xai",
     modelId,
     multiplier: 2,
+    requiresResponseConfirmation: true,
     source: XAI_PRIORITY_PRICING,
     verifiedAt: "2026-08-18",
   })),
