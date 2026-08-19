@@ -4,6 +4,23 @@ Written 2026-08-19 after the queue-drain campaign closed. State at writing:
 56 open PRs (17 `review-ready`), 24 open `bug` issues, `dev` at `c4bf833c9`,
 npm `latest=2.26.0` / `preview=2.26.0-preview.20260819`.
 
+> **Status: stages A-C executed 2026-08-19.** 14 PRs merged including the full
+> split stack (#2019, #2023, #2036); 8 held with posted blockers. Outcome and
+> lessons: `090_merge_loop_outcome.md`. Per-phase evidence:
+> `080_merge_loop_ledger.md`.
+>
+> **What this document got wrong, again.** Its claim that a barrel extraction
+> cannot be meaningfully tested — and therefore needs the hygiene exception —
+> was disproved during execution. Forking a `Set` inside the barrel leaves
+> `tsc --noEmit` at exit 0, and no test imported the leaves directly, so barrel
+> and leaf were never compared to each other.
+> `tests/types-barrel-identity.test.ts` now covers it. Reuse the phase order
+> below; do not reuse the exception argument.
+>
+> **The preview soak gate (C3 and C5) has NOT run.** The split is on `dev` and
+> has never been exercised as a published build. That gate is still owed, and
+> the freeze-vs-shared-attribution question it raises is still a user decision.
+
 ## The question this answers
 
 Merging a mega-file split is not like merging a fix. A fix either works or
