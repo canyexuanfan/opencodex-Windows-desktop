@@ -819,6 +819,27 @@ describe("a spent reprobe leaves the refcount coherent (#2108)", () => {
       void later.release();
     }
   });
+
+  // The wedge, by a third route. If a NON-owner fence's release dropped the entry, the
+  // owner's hook would be destroyed and the fence stuck until `ocx restart` — the #2108
+  // symptom. This class of bug recurred across three audit rounds, so the guard that
+  // prevents it is pinned rather than merely present.
+  test("a non-owner release does not destroy the owner's hook", () => {
+    let asked = 0;
+    const owner = blockNativeMainStartupForUnownedServiceHome("ownership-unknown", {
+      reprobe: () => { asked += 1; return "owned" as NativeCodexOwnership; },
+    });
+    const other = blockNativeMainStartupForUnownedServiceHome("ownership-unknown");
+    try {
+      void other.release();
+
+      isNativeMainTrafficBlocked();
+
+      expect(asked).toBe(1);
+    } finally {
+      void owner.release();
+    }
+  });
 });
 
 /*
