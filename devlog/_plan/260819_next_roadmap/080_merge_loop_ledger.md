@@ -378,6 +378,72 @@ concurrency supersession — a new head cancelling the previous run. The gate jo
 treats `cancelled` as not-passed, correctly. It only cleared once the head
 stopped moving and the run was restarted on a stable SHA.
 
+## wp6 — all three held
+
+Outcome: **0 of 3 merged.** Every blocker is real, and none is ours to fix —
+all three heads are fork branches.
+
+| PR | Blocker | Comment |
+|---|---|---|
+| #2112 | new config field is never validated | [5342638715](https://github.com/lidge-jun/opencodex/pull/2112#issuecomment-5342638715) |
+| #1934 | namespace isolation leaks into flat tools | [5342639064](https://github.com/lidge-jun/opencodex/pull/1934#issuecomment-5342639064) |
+| #2080 | paid tier enabled without capability evidence | [5342639342](https://github.com/lidge-jun/opencodex/pull/2080#issuecomment-5342639342) |
+
+### #2112 — a typo that silently does the opposite
+
+The behavior is right: absence and `"code_mode_only"` both preserve the current
+default exactly, so this is not a default change in disguise. But
+`codexToolMode` lives only in the TypeScript interfaces and never reaches
+`providerConfigSchema`, which ends in `.passthrough()` (`src/config.ts:736`).
+
+Verified at runtime: `codexToolMode: "shel"` is accepted, persisted, and then
+silently resolves to `code_mode_only`. The user asked for shell mode, got code
+mode, and was told nothing.
+
+Every neighbouring enum in that schema *is* validated — `apiKeyTransport`,
+`upstreamHttpVersion`, `codexAccountMode` (`src/config.ts:708`, `:720`,
+`:728`). This one field opted out of the house style, and `.passthrough()` made
+that invisible.
+
+### #1934 — the bug it prevents, on the path it does not cover
+
+Namespaced identity is keyed by flattened wire name; freeform identity is still
+keyed globally by bare name (`src/server/responses/collaboration.ts:127-134`).
+With a flat function `exec` and a namespaced custom `mcp__custom/exec`, a call
+to the **flat** `exec` returns as `custom_tool_call`. One namespace changes an
+unrelated tool's result kind — which is the exact class of failure this PR
+exists to stop.
+
+The existing collision test only covers namespaced-vs-namespaced, where both
+calls have map entries, so the flat case slips past it.
+
+### #2080 — asserted capability on a paid surface
+
+Design is sound (no route pinning, canonical-base-URL restriction, observed
+`service_tier`, costs as lower bounds). But `registry.ts:1372-1380` simply
+*declares* Fast true for three IDs, the positive test reads that same map back
+and asserts the same literals, and the attached evidence is three **seeded**
+local requests.
+
+Being wrong costs the user money. That is the line between a nit and a blocker
+here, and it is the same unresolved finding as #2072.
+
+### What this does to the split plan
+
+wp6 existed to clear the overlap set before the split rewrites `types.ts` and
+`config.ts`. Zero of three landed, so **that debt does not get paid this
+cycle** and the split proceeds with the overlap intact.
+
+That is the right trade. The roadmap's argument for landing these first was to
+spare their authors a rebase — a courtesy, not a correctness constraint.
+Merging three defective PRs to avoid inconveniencing three authors would be a
+bad exchange, and one of the three (#2080) would have started charging users a
+priority rate on an unverified assumption.
+
+Consequence to carry into wp7-wp9: when the split lands, #2112, #1934, and
+#2080 will need a rebase onto the new leaves. Their authors should be told that
+when the blockers are resolved, so the rebase is not a surprise.
+
 ### Verified clean on this head
 
 - The key-auth test is a real oracle: it fails against `72117f169`.
