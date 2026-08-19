@@ -1733,18 +1733,66 @@ describe("Responses previous_response_id state", () => {
       writeFileSync(path, "private state");
       utimesSync(path, old, old);
     }
-    // Clock jumps past the deadline on the first in-loop read.
+    // The fake clock must stay ANCHORED to real time, or this test proves nothing: an
+    // `io.now()` of 10_000 against real epoch mtimes makes every age negative, so the files
+    // survive the 15-minute grace whether or not a deadline check exists. Anchoring instead
+    // means the only reason a file survives is the deadline itself.
+    const base = Date.now();
     let ticks = 0;
     const result = recoverStaleResponseStateTemps(home, {
       list: () => names,
       isProcessAlive: () => false,
       bootTime: () => 0,
-      now: () => (ticks++ === 0 ? 0 : 10_000),
+      // First read is startedAt; every later read is past the 25 ms budget.
+      now: () => (ticks++ === 0 ? base : base + 10_000),
       deadlineMs: 25,
     });
 
     expect(result.removed).toBe(0);
     for (const name of names) expect(existsSync(join(home, name))).toBe(true);
+
+    // Ablation guard: the SAME inputs without a deadline must remove both files. If this
+    // half ever fails, the assertions above stopped depending on the deadline.
+    ticks = 0;
+    const unbounded = recoverStaleResponseStateTemps(home, {
+      list: () => names,
+      isProcessAlive: () => false,
+      bootTime: () => 0,
+      now: () => (ticks++ === 0 ? base : base + 10_000),
+    });
+    expect(unbounded.removed).toBe(2);
+  });
+
+  test("a truncated scan closes the directory iterator", () => {
+    const old = new Date(Date.now() - 60 * 60 * 1_000);
+    const names = ["responses-state.json.ocx.9301.1.tmp", "responses-state.json.ocx.9302.2.tmp"];
+    for (const name of names) {
+      const path = join(home, name);
+      writeFileSync(path, "private state");
+      utimesSync(path, old, old);
+    }
+
+    // Production enumerates with a generator that closes its directory handle in a finally.
+    // A finally only runs if the consumer calls return() -- abandoning the iterator leaks the
+    // handle, once per truncated scan, and the periodic reclaim truncates by design.
+    let closed = false;
+    const list = function* list(): Generator<string> {
+      try {
+        for (const name of names) yield name;
+      } finally {
+        closed = true;
+      }
+    };
+
+    const result = recoverStaleResponseStateTemps(home, {
+      list,
+      isProcessAlive: () => false,
+      bootTime: () => 0,
+      maxEntries: 1,
+    });
+
+    expect(result.removed).toBe(1);
+    expect(closed).toBe(true);
   });
 
   test("v1 Cursor snapshot migrates to versioned provider state", () => {

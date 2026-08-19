@@ -591,14 +591,24 @@ export function recoverStaleResponseStateTemps(
   let iterator: Iterator<string>;
   try { iterator = names[Symbol.iterator](); } catch { return result; }
   let scanned = 0;
+  // Every early exit runs through this. The production `list` is a generator that closes its
+  // directory handle in a `finally`, and a `finally` does NOT run when the consumer simply
+  // stops calling `next()` -- only `return()` resumes the generator to completion. Breaking
+  // out of the loop directly therefore leaked one directory handle per truncated scan, and the
+  // periodic reclaim truncates on purpose (entry cap, cleanup cap, deadline), so on a slow
+  // filesystem that is a leak per tick, forever.
+  const stopScan = (): ResponseStateTempRecoveryResult => {
+    try { iterator.return?.(); } catch { /* closing is best-effort; never fail a reclaim on it */ }
+    return result;
+  };
   for (;;) {
     let next: IteratorResult<string>;
     try { next = iterator.next(); } catch { return result; }
     if (next.done) break;
     const name = next.value;
     scanned += 1;
-    if (scanned > maxEntries || result.removed + result.failed >= maxCleanups) break;
-    if (deadlineMs !== null && io.now() - startedAt > deadlineMs) break;
+    if (scanned > maxEntries || result.removed + result.failed >= maxCleanups) return stopScan();
+    if (deadlineMs !== null && io.now() - startedAt > deadlineMs) return stopScan();
     const match = RESPONSE_STATE_TEMP_NAME.exec(name);
     if (!match) continue;
     result.matched += 1;
