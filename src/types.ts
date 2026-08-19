@@ -637,6 +637,12 @@ export interface OcxCustomModel {
   reasoningEfforts?: string[];
   /** Default effort label when `reasoningEfforts` is non-empty. */
   defaultReasoningEffort?: string;
+  /**
+   * Codex tool calling mode override for this custom model.
+   * "code_mode_only" (default) sets entry.tool_mode = "code_mode_only".
+   * "shell" leaves tool_mode unset so Codex declares top-level shell tools (exec_command).
+   */
+  codexToolMode?: "code_mode_only" | "shell";
   /** 추가 시각 (ISO 8601) */
   addedAt?: string;
 }
@@ -1376,6 +1382,12 @@ export type TierDecision =
  */
 export interface OcxProviderConfig {
   adapter: string;
+  /**
+   * Codex tool calling mode for routed models.
+   * "code_mode_only" (default) sets entry.tool_mode = "code_mode_only" (unified exec helper tool).
+   * "shell" leaves tool_mode unset so Codex declares top-level shell tools (exec_command).
+   */
+  codexToolMode?: "code_mode_only" | "shell";
   /** Optional outbound request-start pacing shared by this provider and its model overrides. */
   requestPacing?: ProviderRequestPacingConfig;
   /** Cursor MCP compatibility bounds; positive integers when configured. */

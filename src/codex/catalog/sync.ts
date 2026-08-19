@@ -331,7 +331,7 @@ export function deriveEntry(
       // This exact provider/model pair is the ChatGPT/Codex forward surface. Keep the pinned
       // native tool/search/responses-lite contract while preserving the routed slug and wire id.
       if (!codexForwardNativeCapabilityAlias) {
-        normalizeRoutedCatalogEntry(e, model?.parallelToolCalls === true);
+        normalizeRoutedCatalogEntry(e, model?.parallelToolCalls === true, model?.codexToolMode);
       }
       if (model) applyCatalogMetadata(e, model.provider, model.id, model.contextCap);
       applyCatalogModelMetadata(e, model);
@@ -373,7 +373,7 @@ export function deriveEntry(
       : {}),
   };
   if (isRouted) {
-    applyRoutedCodexToolMode(entry);
+    applyRoutedCodexToolMode(entry, model?.codexToolMode);
     applyReasoningLevels(entry, model?.reasoningEfforts, model?.defaultReasoningEffort, preserveExact);
   }
   else {
