@@ -172,11 +172,13 @@ the registry split is ever queued.
 
 ## wp3 — #2035, #1878 merged; #2031 rebased
 
+Outcome: **DONE — all three merged.**
+
 | PR | Merge commit | Note |
 |---|---|---|
-| #2035 Google reasoning tiers | `35664ad2e` | merged |
-| #1878 tool-search docs | `a97c70d4e` | merged |
-| #2031 MiMo vision sidecar | — | rebased, CI re-running |
+| #2035 Google reasoning tiers | `35664ad2e` | merged directly |
+| #1878 tool-search docs | `a97c70d4e` | merged directly |
+| #2031 MiMo vision sidecar | `7a2d13a74` | rebased first, then merged on green CI |
 
 ### The lane's verdict was right about the code and wrong about the blocker
 
@@ -214,12 +216,19 @@ bun x tsc --noEmit                       ->  exit 0
 ```
 
 Rebased and force-pushed (`dc0334eda` -> `d86a2faed`; it is a branch in our own
-repo, not a fork). The failing set is now empty and CI is re-running on the new
-head. It merges once that run finishes green.
+repo, not a fork). Cross-platform CI run `32249600228` on the new head:
+**completed/success, zero failed jobs** — seven red legs became zero with no
+source change other than the rebase. Merged as `7a2d13a74`.
 
 This is the third stale-base case in this campaign. The pattern is stable
 enough to name: **a red CI on a PR more than ~50 commits behind `dev` is a
 claim about the base, not about the change, until a rebase says otherwise.**
+
+Worth stating the converse too, because it is the part that keeps this honest:
+the rebase does not *prove* the change is good, it removes the base as an
+explanation. #2031 was mergeable because the lane had already verified the code
+— registry ordering unchanged by hash, oracle red-driven — and the rebase only
+cleared the noise hiding that.
 
 ### Verified clean on this head
 
