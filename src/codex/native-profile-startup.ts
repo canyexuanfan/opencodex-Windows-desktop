@@ -15,6 +15,7 @@ import {
 import { withNativeMainExclusiveClaim } from "./native-main-claim";
 import { scrubNativeMainAuthTempResidues } from "./native-main-auth-temp";
 import { NATIVE_STAGE_SWEEP_INTERVAL_MS } from "./native-profile-stage-store";
+import type { NativeCodexOwnership } from "../integrations/native/ownership-preflight";
 
 export type NativeMainStartupGateSnapshot =
   | { status: "ready"; homeId: string | null }
@@ -310,6 +311,59 @@ export function startNativeMainStartupLifecycle(
   };
 }
 
+/**
+ * How many times a service-ownership fence will re-ask before it stops asking (#2108).
+ *
+ * A host that is permanently unaskable must not re-probe on every request forever, and a
+ * host that recovers usually does so within the first few. The cap is per fence, and it is
+ * reset by `release()`, so a restarted server starts fresh.
+ */
+export const NATIVE_MAIN_OWNERSHIP_RETRY_LIMIT = 5;
+
+/** Reprobe hooks for the fences currently held, keyed by the reason they were raised for. */
+const serviceOwnershipReprobes = new Map<NativeMainServiceOwnershipBlockReason, ServiceOwnershipReprobe>();
+
+interface ServiceOwnershipReprobe {
+  readonly probe: () => NativeCodexOwnership;
+  attempts: number;
+}
+
+/** Test-only: the retry budget is module state and would otherwise leak across tests. */
+export function __resetNativeMainOwnershipRetries(): void {
+  for (const entry of serviceOwnershipReprobes.values()) entry.attempts = 0;
+}
+
+/**
+ * Re-ask whether this host is still unownable, and drop the fence if it is not.
+ *
+ * `startServer` takes the ownership verdict once, at boot, and holds it for the process
+ * lifetime. For `foreign-ownership` that is correct — a foreign owner is a fact, and
+ * re-asking would only hand a determined caller a second chance. For `ownership-unknown`
+ * it is wrong: that verdict means the probe could not answer, so waiting cannot help,
+ * which is precisely why the #2108 reporter had to run `ocx restart` after every reboot.
+ *
+ * The re-probe happens when a native request actually arrives rather than on a timer, so
+ * an idle proxy does no work, and it is capped so a permanently unaskable host cannot spin.
+ */
+function reprobeServiceOwnership(reason: NativeMainServiceOwnershipBlockReason): boolean {
+  if (reason !== "ownership-unknown") return false;
+  const entry = serviceOwnershipReprobes.get(reason);
+  if (!entry) return false;
+  if (entry.attempts >= NATIVE_MAIN_OWNERSHIP_RETRY_LIMIT) return false;
+  entry.attempts += 1;
+  let answer: NativeCodexOwnership;
+  try {
+    answer = entry.probe();
+  } catch {
+    // An inspection that throws is not evidence the host became ownable.
+    return false;
+  }
+  if (answer !== "owned") return false;
+  serviceOwnershipRefs.delete(reason);
+  serviceOwnershipReprobes.delete(reason);
+  return true;
+}
+
 function activeServiceOwnershipBlockReason(): NativeMainServiceOwnershipBlockReason | null {
   if ((serviceOwnershipRefs.get("foreign-ownership") ?? 0) > 0) return "foreign-ownership";
   if ((serviceOwnershipRefs.get("ownership-unknown") ?? 0) > 0) return "ownership-unknown";
@@ -325,8 +379,12 @@ function serviceOwnershipSnapshot(
 /** Close native-main admission without resolving or creating any CODEX_HOME artifacts. */
 export function blockNativeMainStartupForUnownedServiceHome(
   reason: NativeMainServiceOwnershipBlockReason,
+  options?: { reprobe?: () => NativeCodexOwnership },
 ): NativeMainStartupLifecycle {
   serviceOwnershipRefs.set(reason, (serviceOwnershipRefs.get(reason) ?? 0) + 1);
+  if (options?.reprobe && reason === "ownership-unknown") {
+    serviceOwnershipReprobes.set(reason, { probe: options.reprobe, attempts: 0 });
+  }
   let released = false;
   return {
     homeId: null,
@@ -337,6 +395,7 @@ export function blockNativeMainStartupForUnownedServiceHome(
       const remaining = Math.max(0, (serviceOwnershipRefs.get(reason) ?? 0) - 1);
       if (remaining === 0) serviceOwnershipRefs.delete(reason);
       else serviceOwnershipRefs.set(reason, remaining);
+      if (remaining === 0) serviceOwnershipReprobes.delete(reason);
     },
   };
 }
@@ -353,7 +412,13 @@ export async function releaseNativeMainStartupLifecycle(server: object): Promise
 }
 
 export function isNativeMainTrafficBlocked(): boolean {
-  return activeServiceOwnershipBlockReason() !== null || snapshot.status === "blocked";
+  const reason = activeServiceOwnershipBlockReason();
+  if (reason !== null && reprobeServiceOwnership(reason)) {
+    // The host became ownable after boot (#2108): the fence lifts here rather than
+    // waiting for the restart the reporter had to perform by hand.
+    return activeServiceOwnershipBlockReason() !== null || snapshot.status === "blocked";
+  }
+  return reason !== null || snapshot.status === "blocked";
 }
 
 /**

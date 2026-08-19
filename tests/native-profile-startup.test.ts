@@ -34,7 +34,10 @@ import {
   initializeNativeMainStartupGate,
   isNativeMainTrafficBlocked,
   nativeMainStartupGateSnapshot,
+  NATIVE_MAIN_OWNERSHIP_RETRY_LIMIT,
+  __resetNativeMainOwnershipRetries,
 } from "../src/codex/native-profile-startup";
+import type { NativeCodexOwnership } from "../src/integrations/native/ownership-preflight";
 import {
   tryAcquireNativeMainProfileClaim,
   tryClaimNativeMainProfileForTurn,
@@ -622,4 +625,77 @@ describe("native-main startup journal gate", () => {
       await stopChild(child, paths);
     }
   }, 20_000);
+});
+
+/*
+ * #2108: after a Windows reboot the fence never lifts until `ocx restart`.
+ *
+ * `startServer` takes the ownership verdict ONCE and holds it for the process lifetime.
+ * That is right for `foreign-ownership` — a foreign owner is a fact, and re-asking would
+ * only give a determined caller a second chance. It is wrong for `ownership-unknown`,
+ * which means the probe could not answer: waiting cannot help, which is exactly why the
+ * reporter had to restart.
+ *
+ * The retry is deliberately NOT automatic-on-a-timer. It re-probes when a native request
+ * actually arrives, so an idle proxy does no work, and it is capped so a permanently
+ * unaskable host cannot spin.
+ */
+describe("an unknown service-ownership fence is retryable (#2108)", () => {
+  afterEach(() => {
+    __resetNativeMainOwnershipRetries();
+  });
+
+  test("a later successful probe reopens the gate without a restart", () => {
+    let answer: NativeCodexOwnership = "unknown";
+    const fence = blockNativeMainStartupForUnownedServiceHome("ownership-unknown", {
+      reprobe: () => answer,
+    });
+    try {
+      expect(isNativeMainTrafficBlocked()).toBe(true);
+
+      answer = "owned";
+
+      expect(isNativeMainTrafficBlocked()).toBe(false);
+    } finally {
+      void fence.release();
+    }
+  });
+
+  test("a foreign owner is a fact, not a question — it never retries", () => {
+    let asked = 0;
+    const fence = blockNativeMainStartupForUnownedServiceHome("foreign-ownership", {
+      reprobe: () => { asked += 1; return "owned"; },
+    });
+    try {
+      expect(isNativeMainTrafficBlocked()).toBe(true);
+      expect(isNativeMainTrafficBlocked()).toBe(true);
+      expect(asked).toBe(0);
+    } finally {
+      void fence.release();
+    }
+  });
+
+  test("a host that stays unaskable stops being asked", () => {
+    let asked = 0;
+    const fence = blockNativeMainStartupForUnownedServiceHome("ownership-unknown", {
+      reprobe: () => { asked += 1; return "unknown"; },
+    });
+    try {
+      for (let i = 0; i < 25; i++) isNativeMainTrafficBlocked();
+
+      expect(isNativeMainTrafficBlocked()).toBe(true);
+      expect(asked).toBeLessThanOrEqual(NATIVE_MAIN_OWNERSHIP_RETRY_LIMIT);
+    } finally {
+      void fence.release();
+    }
+  });
+
+  test("with no reprobe wired the fence behaves exactly as before", () => {
+    const fence = blockNativeMainStartupForUnownedServiceHome("ownership-unknown");
+    try {
+      expect(isNativeMainTrafficBlocked()).toBe(true);
+    } finally {
+      void fence.release();
+    }
+  });
 });
