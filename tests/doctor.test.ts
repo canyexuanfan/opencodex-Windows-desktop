@@ -10,6 +10,7 @@ import {
   collectRunningProxyEnv,
   collectWslDualInstall,
   fetchServiceMemory,
+  formatResponseTempLines,
   formatServiceMemoryLines,
   parseProcessEnvBlock,
   probeWham,
@@ -621,5 +622,46 @@ describe("service memory section (#314 WP4)", () => {
     // A two-manager conflict must be uninstalled first; repairService() refuses it.
     const conflict = proxyDownRestartHint({ proxyRunning: false, port: 10100, serviceViable: false, serviceInstalled: true, serviceConflict: true });
     expect(conflict).toContain("ocx service install");
+  });
+});
+
+describe("doctor abandoned response-state temps", () => {
+  const result = (over: Partial<Parameters<typeof formatResponseTempLines>[0]> = {}) => ({
+    matched: 0, removed: 0, failed: 0, bytesRemoved: 0, eligible: 0, eligibleBytes: 0, ...over,
+  });
+
+  test("reports reclaimable files without removing them, and names the opt-in flag", () => {
+    // Report is the default: doctor is a diagnostic, so it must not delete as a side effect
+    // of being asked a question.
+    const lines = formatResponseTempLines(result({ matched: 9, eligible: 3, eligibleBytes: 72 * 1024 * 1024 }), false);
+    expect(lines[0]).toContain("3 abandoned response-state temp file(s)");
+    expect(lines[0]).toContain("72MB");
+    expect(lines.join("\n")).toContain("ocx doctor --reclaim-response-temps");
+  });
+
+  test("reports eligible, never matched", () => {
+    // matched counts name-matching entries BEFORE the age/liveness/file-type gates, so
+    // reporting it would call live-pid and young temps abandoned.
+    const lines = formatResponseTempLines(result({ matched: 12, eligible: 0 }), false);
+    expect(lines).toEqual(["  ok  No abandoned response-state temp files."]);
+    expect(lines.join("\n")).not.toContain("12");
+  });
+
+  test("reclaim mode reports what was freed", () => {
+    const lines = formatResponseTempLines(result({ matched: 4, removed: 2, bytesRemoved: 48 * 1024 * 1024 }), true);
+    expect(lines[0]).toContain("Reclaimed 2");
+    expect(lines[0]).toContain("48MB");
+    expect(lines.join("\n")).not.toContain("--reclaim-response-temps");
+  });
+
+  test("locked files are surfaced honestly and described as retried", () => {
+    const lines = formatResponseTempLines(result({ matched: 3, removed: 1, failed: 2, bytesRemoved: 24 * 1024 * 1024 }), true);
+    expect(lines.join("\n")).toContain("2 file(s) could not be removed");
+    expect(lines.join("\n")).toContain("retried automatically");
+  });
+
+  test("a clean machine says so in both modes", () => {
+    expect(formatResponseTempLines(result(), false)).toEqual(["  ok  No abandoned response-state temp files."]);
+    expect(formatResponseTempLines(result(), true)).toEqual(["  ok  No abandoned response-state temp files."]);
   });
 });

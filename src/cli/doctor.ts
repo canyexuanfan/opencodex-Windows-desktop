@@ -26,6 +26,11 @@ import { scanCodexAgentRolesWithTomlModelFallback } from "../codex/subagent-mode
 import { findCodexOnPath, isWindowsInteropDir } from "../codex/shim";
 import { countPendingOpencodexHistory } from "../codex/history-provider";
 import {
+  inspectAbandonedResponseStateTemps,
+  reclaimAbandonedResponseStateTemps,
+  type ResponseStateTempRecoveryResult,
+} from "../responses/state";
+import {
   CodexUserIdentityRefusal,
   probeCodexCoordinatorNamespace,
   resolveEffectiveUserIdentity,
@@ -678,6 +683,37 @@ export async function fetchServiceMemory(
 
 const mb = (bytes: number): string => `${Math.round(bytes / (1024 * 1024))}MB`;
 
+/**
+ * Render the abandoned-temp section (testable without console capture).
+ *
+ * Report is the DEFAULT and reclaim is opt-in: `doctor` is a diagnostic an operator runs
+ * to understand a machine, so deleting files as a side effect of asking a question is the
+ * wrong default even for cache files.
+ *
+ * Counts come from `eligible`/`eligibleBytes`, never `matched`: `matched` is incremented
+ * before the file-type, age, boot-floor, and liveness gates, so reporting it would tell an
+ * operator that live-pid temps and young temps are "abandoned".
+ */
+export function formatResponseTempLines(
+  result: ResponseStateTempRecoveryResult,
+  reclaimed: boolean,
+): string[] {
+  if (reclaimed) {
+    if (result.removed === 0 && result.failed === 0) return ["  ok  No abandoned response-state temp files."];
+    const lines = [`  ok  Reclaimed ${result.removed} abandoned response-state temp file(s), ${mb(result.bytesRemoved)} freed.`];
+    if (result.failed > 0) {
+      lines.push(`  !!  ${result.failed} file(s) could not be removed (in use or locked). They are retried automatically.`);
+    }
+    return lines;
+  }
+  if (result.eligible === 0) return ["  ok  No abandoned response-state temp files."];
+  return [
+    `  !!  ${result.eligible} abandoned response-state temp file(s), ${mb(result.eligibleBytes)} reclaimable.`,
+    "      These are interrupted snapshot writes (continuation cache only) and are safe to remove.",
+    "      Reclaim them with: ocx doctor --reclaim-response-temps",
+  ];
+}
+
 /** Render the doctor "Memory / runtime" section lines (testable without console capture). */
 export function formatServiceMemoryLines(report: ServiceMemoryReport): string[] {
   const lines: string[] = [];
@@ -804,6 +840,15 @@ export async function runDoctor(args: string[] = []): Promise<void> {
       .filter(Boolean).join(", ");
     console.log(`  ${row.exists ? "ok " : "-- "} ${row.label}: ${row.path}${flags ? `  (${flags})` : ""}`);
   }
+
+  // Runs without the proxy on purpose: the worst accumulation happens when the proxy will
+  // not start, which is exactly when the in-process periodic reclaim never ticks.
+  const reclaimTemps = args.includes("--reclaim-response-temps");
+  console.log("\nResponse-state temp files");
+  for (const line of formatResponseTempLines(
+    reclaimTemps ? reclaimAbandonedResponseStateTemps() : inspectAbandonedResponseStateTemps(),
+    reclaimTemps,
+  )) console.log(line);
 
   const orcaHome = collectOrcaCodexHomeDiagnostic();
   console.log("\nCodex app home targeting");

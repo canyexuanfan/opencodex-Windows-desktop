@@ -1623,7 +1623,7 @@ describe("Responses previous_response_id state", () => {
       },
     });
 
-    expect(result).toEqual({ matched: 0, removed: 0, failed: 0, bytesRemoved: 0 });
+    expect(result).toEqual({ matched: 0, removed: 0, failed: 0, bytesRemoved: 0, eligible: 0, eligibleBytes: 0 });
   });
 
   test("periodic reclaim frees abandoned temps without any continuation access", () => {
@@ -1723,6 +1723,56 @@ describe("Responses previous_response_id state", () => {
     });
 
     expect(result).toMatchObject({ matched: 1, removed: 1, failed: 0 });
+  });
+
+  test("a dry run reports exactly what a reclaim then removes", () => {
+    // Report and reclaim must share one predicate. If they drift, doctor tells an operator
+    // to reclaim files it will then refuse to touch (or vice versa).
+    const old = new Date(Date.now() - 60 * 60 * 1_000);
+    const deadPid = process.pid === 4242 ? 4243 : 4242;
+    const stale = join(home, `responses-state.json.ocx.${deadPid}.1.tmp`);
+    const live = join(home, "responses-state.json.ocx.5252.2.tmp");
+    const young = join(home, "responses-state.json.ocx.6262.3.tmp");
+    for (const path of [stale, live, young]) writeFileSync(path, "private state");
+    for (const path of [stale, live]) utimesSync(path, old, old);
+
+    const io = { isProcessAlive: (pid: number) => pid === 5252, bootTime: () => 0 };
+    const report = recoverStaleResponseStateTemps(home, { ...io, dryRun: true });
+
+    // matched counts every name-matching entry, including the live and young ones; only
+    // eligible survives every gate. Reporting matched would overstate by 2 here.
+    expect(report).toMatchObject({ matched: 3, eligible: 1, removed: 0, failed: 0 });
+    expect(report.eligibleBytes).toBe("private state".length);
+    for (const path of [stale, live, young]) expect(existsSync(path)).toBe(true);
+
+    const reclaim = recoverStaleResponseStateTemps(home, io);
+    expect(reclaim.removed).toBe(report.eligible);
+    expect(reclaim.bytesRemoved).toBe(report.eligibleBytes);
+    expect(existsSync(stale)).toBe(false);
+    for (const path of [live, young]) expect(existsSync(path)).toBe(true);
+  });
+
+  test("a dry run is not truncated by the cleanup budget", () => {
+    // maxCleanups counts removals. A report removes nothing, so bounding it by that budget
+    // would under-report precisely the large backlog an operator needs to see.
+    const old = new Date(Date.now() - 60 * 60 * 1_000);
+    const names = [7301, 7302, 7303].map(pid => `responses-state.json.ocx.${pid}.1.tmp`);
+    for (const name of names) {
+      const path = join(home, name);
+      writeFileSync(path, "private state");
+      utimesSync(path, old, old);
+    }
+
+    const report = recoverStaleResponseStateTemps(home, {
+      list: () => names,
+      isProcessAlive: () => false,
+      bootTime: () => 0,
+      maxCleanups: 1,
+      dryRun: true,
+    });
+
+    expect(report.eligible).toBe(3);
+    for (const name of names) expect(existsSync(join(home, name))).toBe(true);
   });
 
   test("the periodic scan stops at its wall-clock deadline", () => {
