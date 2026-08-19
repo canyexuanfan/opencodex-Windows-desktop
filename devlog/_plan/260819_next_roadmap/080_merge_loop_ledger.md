@@ -14,6 +14,23 @@ Loop: HOTL, session `01a01949`, goalplan
 - **No contributor branch is ever rewritten.** Defects on a fork head are
   requested, not pushed.
 
+### Head-drift check (added after wp1)
+
+Record the head SHA a verdict was issued against, and re-check it before the
+merge. wp1 proved why: #2102's head moved from the reviewed commit to
+`914ee9372`, the author had changed the very code the verdict was about, and
+merging on the stale verdict would have shipped a regression the earlier review
+could not have seen.
+
+Heads at wp2 planning time:
+
+| PR | Head now | Verdict issued against |
+|---|---|---|
+| #2085 | `eceaf0b6e` | earlier session (head has since moved) |
+| #2086 | `f40891410` | earlier session (head has since moved) |
+
+Both moved. Both get a fresh lane before merging, same as #2102 did.
+
 ## wp1 — #2102 re-reviewed and deferred
 
 Outcome: **partially blocked on the author — merge deferred, not abandoned.**
