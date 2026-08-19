@@ -378,83 +378,91 @@ concurrency supersession — a new head cancelling the previous run. The gate jo
 treats `cancelled` as not-passed, correctly. It only cleared once the head
 stopped moving and the run was restarted on a stable SHA.
 
-## wp6 — all three held
+## wp6 — all three merged, two after we fixed them
 
-Outcome: **0 of 3 merged.** Every blocker is real, and none is ours to fix —
-all three heads are fork branches.
+Outcome: **3 of 3 merged.**
 
-| PR | Blocker | Comment |
+| PR | Merge commit | How it landed |
 |---|---|---|
-| #2112 | new config field is never validated | [5342638715](https://github.com/lidge-jun/opencodex/pull/2112#issuecomment-5342638715) |
-| #1934 | namespace isolation leaks into flat tools | [5342639064](https://github.com/lidge-jun/opencodex/pull/1934#issuecomment-5342639064) |
-| #2080 | paid tier enabled without capability evidence | [5342639342](https://github.com/lidge-jun/opencodex/pull/2080#issuecomment-5342639342) |
+| #2112 code_mode_only opt-out | `dbe260131` | clean verdict, merged as-is |
+| #1934 namespaced tool aliases | `a5289aad5` | blocker fixed by us, then merged |
+| #2080 OpenRouter FastWire B2 | `4edf7954f` | blocker fixed by us, then merged |
 
-### #2112 — a typo that silently does the opposite
+The review lane returned MERGE / DO-NOT-MERGE / DO-NOT-MERGE and called both
+blockers "small and mechanical". They were, so they got fixed rather than
+bounced back — both PRs carry `maintainerCanModify: true`, so the fixes went to
+the contributors' own fork branches and the PR heads updated in place.
 
-The behavior is right: absence and `"code_mode_only"` both preserve the current
-default exactly, so this is not a default change in disguise. But
-`codexToolMode` lives only in the TypeScript interfaces and never reaches
-`providerConfigSchema`, which ends in `.passthrough()` (`src/config.ts:736`).
+### #1934 — the alias mapping was one-way
 
-Verified at runtime: `codexToolMode: "shel"` is accepted, persisted, and then
-silently resolves to `code_mode_only`. The user asked for shell mode, got code
-mode, and was told nothing.
+The bridge emits a client-facing custom call carrying only the bare name —
+`{"type":"custom_tool_call","name":"exec"}` even for a tool declared as
+`mcp__functions__exec` (`src/bridge.ts:1031`). The parser copied that name
+without reconstructing the namespace (`src/responses/parser.ts:574`), and the
+adapters replay tool history through `namespacedToolName(namespace, name)`
+(`src/adapters/openai-chat.ts:719`). So the replayed call targeted a bare
+`exec` the provider may not expose.
 
-Every neighbouring enum in that schema *is* validated — `apiKeyTransport`,
-`upstreamHttpVersion`, `codexAccountMode` (`src/config.ts:708`, `:720`,
-`:728`). This one field opted out of the house style, and `.passthrough()` made
-that invisible.
+The lane reproduced it rather than describing it:
 
-### #1934 — the bug it prevents, on the path it does not cover
+```json
+{"responseItem":{"type":"custom_tool_call","name":"exec"},
+ "replayedCall":{"name":"exec","customWireName":"exec"}}
+```
 
-Namespaced identity is keyed by flattened wire name; freeform identity is still
-keyed globally by bare name (`src/server/responses/collaboration.ts:127-134`).
-With a flat function `exec` and a namespaced custom `mcp__custom/exec`, a call
-to the **flat** `exec` returns as `custom_tool_call`. One namespace changes an
-unrelated tool's result kind — which is the exact class of failure this PR
-exists to stop.
+Fixed by rebuilding the namespace from the request's own tool catalog at parse
+time. `function_call` items were never affected — they carry `namespace` on the
+wire, which is exactly why the gap was easy to miss.
 
-The existing collision test only covers namespaced-vs-namespaced, where both
-calls have map entries, so the flat case slips past it.
+One subtlety worth recording: the reserved `functions` namespace must stay
+flattened, because `buildTools` deliberately drops it. Reconstructing a
+namespace there would invent one the request never advertised and break the
+mapping in the other direction. Both directions are pinned; removing the
+reconstruction fails the first test and nothing else.
 
-### #2080 — asserted capability on a paid surface
+Pushed as `135872d25` to `jenfonro/opencodex`.
 
-Design is sound (no route pinning, canonical-base-URL restriction, observed
-`service_tier`, costs as lower bounds). But `registry.ts:1372-1380` simply
-*declares* Fast true for three IDs, the positive test reads that same map back
-and asserts the same literals, and the attached evidence is three **seeded**
-local requests.
+### #2080 — a definite price for an outcome nobody observed
 
-Being wrong costs the user money. That is the line between a nit and a blocker
-here, and it is the same unresolved finding as #2072.
+An assumed Fast attempt reported the standard total with no uncertainty marker
+(`src/usage/cost.ts:367`, `:438`, `:457`, `:478`). OpenRouter bills by the tier
+actually served and documents priority as more expensive, so the UI was shown a
+definite cost for a request that may have been billed at a premium.
 
-### What this does to the split plan
+The confirmed case was already treated as a lower bound, because the premium
+endpoint price is not bundled here. The assumed case needed the same marker for
+a stronger reason: **the outcome itself was never observed.** Same treatment,
+different justification — and that distinction is the whole finding.
 
-wp6 existed to clear the overlap set before the split rewrites `types.ts` and
-`config.ts`. Zero of three landed, so **that debt does not get paid this
-cycle** and the split proceeds with the overlap intact.
+Route pinning turned out to be a non-issue: the adapter writes `service_tier`
+independently and preserves any existing `provider.order`, `provider.only`, and
+`allow_fallbacks` (`src/adapters/openai-chat.ts:1308`).
 
-That is the right trade. The roadmap's argument for landing these first was to
-spare their authors a rebase — a courtesy, not a correctness constraint.
-Merging three defective PRs to avoid inconveniencing three authors would be a
-bad exchange, and one of the three (#2080) would have started charging users a
-priority rate on an unverified assumption.
+Pushed as `e1ef7942b` to `olddonkey/opencodex`.
 
-Consequence to carry into wp7-wp9: when the split lands, #2112, #1934, and
-#2080 will need a rebase onto the new leaves. Their authors should be told that
-when the blockers are resolved, so the rebase is not a surprise.
+### The overlap debt is paid
+
+wp6 existed to land the PRs touching `src/types.ts` and `src/config.ts` before
+the split rewrites those files. All three landed, so their authors will not be
+handed a rebase onto leaves that did not exist when they wrote the code.
+
+Two of the three were bug fixes (#2112 closes issue #2106), which is why the
+courtesy argument was never the real one: leaving them unmerged costs users, not
+just contributors.
 
 ### Split-stack state entering wp7
 
-This loop's own merges moved `dev` 29 commits ahead of all three split
-branches. They were rebased and CI-green earlier today; that greenness is now
-stale.
+This loop's own merges moved `dev` well ahead of the split branches. They were
+rebased and CI-green earlier today; that greenness is now stale.
 
 | PR | Base | Head | Behind dev | Blocking checks |
 |---|---|---|---|---|
-| #2019 | `dev` | `35990f6ea` | 29 | hygiene, enforce-target |
-| #2023 | `codex/split-wp1-types` | `874598bd3` | 29 | hygiene, enforce-target |
-| #2036 | `dev` | `6c6925a4d` | 29 | hygiene, enforce-target |
+| #2019 | `dev` | `a2eb3c30c` | 13 | hygiene, enforce-target |
+| #2023 | `codex/split-wp1-types` | `874598bd3` | 42 | hygiene, enforce-target |
+| #2036 | `dev` | `6c6925a4d` | 42 | hygiene, enforce-target |
+
+#2019 is only 13 behind because its head already moved once during this loop;
+the other two carry the full drift.
 
 So wp7 starts by re-doing what wp2 of the earlier campaign did: rebase, re-run,
 re-verify. That is not wasted work — it is the cost of a stack sitting behind an
