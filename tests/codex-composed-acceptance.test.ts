@@ -642,7 +642,7 @@ describe("WP13 composed toggle acceptance", () => {
     expect(existsSync(join(fx.homeB, "native-write-locks"))).toBe(false);
     writeFileSync(release, "release");
     expect(await holder.exited).toBe(0);
-  }, 30_000);
+  }, CASE_TIMEOUT_MS);
 
   /** RED: delete the durable Grok intent or bypass `shouldSyncGrokOnStart`; startup recreates the fence. */
   test("Grok E2E: route-disabled Grok stays absent across a real startup", async () => {
@@ -717,7 +717,7 @@ describe("WP13 composed toggle acceptance", () => {
     // A 15 s watchdog left almost no margin and fired on a loaded macOS runner
     // (dev CI run 31105071651). Give the wait its budget plus real headroom;
     // the case's own 45 s test timeout still bounds it.
-    const blocked = await fx.runCli(["restore", "--json"], fx.homeA, fx.userprofileA, 30_000);
+    const blocked = await fx.runCli(["restore", "--json"], fx.homeA, fx.userprofileA, watchdogMs(30_000));
     expect(blocked.exitCode).toBe(1);
     const envelope = JSON.parse(blocked.stdout) as { success: boolean; artifacts: { history: { state: string; reason?: string } } };
     expect(envelope).toMatchObject({ success: false, artifacts: { history: { state: "failed", reason: "busy" } } });
