@@ -229,6 +229,44 @@ deliberately. That delta was exactly three declarations:
 Taking "ours" on that conflict would have silently dropped all three. Verified
 after: `tsc --noEmit` clean, 150 tests pass, `types.ts` at 103 lines.
 
+### CI proof on the new heads
+
+| PR | New head | Cross-platform CI |
+|---|---|---|
+| #2019 | `35990f6ea` | run `32241365996` **success** |
+| #2023 | `874598bd3` | run `32241478125` **success** |
+| #2036 | `6c6925a4d` | run `32241513290` **success** |
+
+On `#2019` the six legs that were red before the rebase — `test 1/4` through
+`test 4/4`, `gates`, and `macos` — all pass on the new head with no source
+change other than the rebase. 010 called stale base the hypothesis this rebase
+would test rather than an established fact; it held.
+
+The mechanism is confirmed at the line level: on `35990f6ea` the assertion at
+`tests/codex-app-server-processes.test.ts:393` and the call at
+`src/cli/dispatch.ts:246` now both carry the three-argument
+`invalidateCodexModelsCacheWithPermit(permit, owningCodexHome, { allowWhenDesiredDisabled: true })`
+form. They disagreed only because CI merged an old head against a newer base.
+
+### Independent check for silent loss
+
+"Exactly three fields" was a claim about a recut, not a guarantee, so a
+separate lane (`01a01988`) compared every exported name and every interface
+field between `origin/dev` and the new head:
+
+```
+EXPORT_COUNTS dev=85 leaf_declarations=85 barrel_reexports=85
+DEV_MISSING_FROM_LEAVES (none)   DEV_MISSING_FROM_BARREL (none)
+ALL_INTERFACE_COUNTS dev=53 head=53
+ALL_MISSING_FIELDS 0   ALL_EXTRA_FIELDS 0
+```
+
+It confirmed the delta was exactly the three claimed fields, and that
+`#2019`/`#2036` are patch-identical to their pre-rebase series by
+`git range-diff`. Worth keeping for the rest of the split program: a
+name-level audit alone would miss a dropped field inside a preserved
+interface, which is the failure mode a barrel extraction actually risks.
+
 ### The hygiene gate still fails, correctly
 
 All three still fail `hygiene: missing_regression_test` and `enforce-target`.
