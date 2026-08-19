@@ -154,7 +154,16 @@ export function transactionalNpmUpdate({
   const rename = deps.rename ?? renameSync;
   const scopeDir = dirname(packageDir);
   const stageRoot = join(scopeDir, stampedName(".ocx-staging"));
-  const stagedPackage = join(stageRoot, "node_modules", ...pkgName.split("/"));
+  // GLOBAL-style staging (-g --prefix): npm nests the package's dependencies INSIDE the
+  // package dir, exactly like the live global tree this stage will replace. A local-style
+  // install would hoist bun/zod to stageRoot/node_modules — siblings that the swap would
+  // leave behind, shipping a dependency-less live tree (release-audit blocker).
+  // Layout: <stageRoot>/lib/node_modules/<pkg> on POSIX, <stageRoot>/node_modules/<pkg>
+  // on Windows.
+  const stagedCandidates = [
+    join(stageRoot, "lib", "node_modules", ...pkgName.split("/")),
+    join(stageRoot, "node_modules", ...pkgName.split("/")),
+  ];
 
   // D1: stage to the side. --prefix keeps npm entirely inside stageRoot; the live tree
   // and the npm bin shims are untouched until the swap. A failure HERE (mkdir EACCES,
@@ -167,10 +176,15 @@ export function transactionalNpmUpdate({
   }
   const spec = pkgName + "@" + (targetVersion || tag);
   log("Staging " + spec + " into " + stageRoot);
-  const install = runNpm(["install", "--prefix", stageRoot, "--no-audit", "--no-fund", spec]);
+  const install = runNpm(["install", "-g", "--prefix", stageRoot, "--no-audit", "--no-fund", spec]);
   if (install.status !== 0) {
     try { rmSync(stageRoot, { recursive: true, force: true }); } catch { /* best effort */ }
     return { ok: false, phase: "stage", error: "npm staging install failed (" + (install.status ?? "?") + ")" };
+  }
+  const stagedPackage = stagedCandidates.find(dir => existsSync(join(dir, "package.json")));
+  if (!stagedPackage) {
+    try { rmSync(stageRoot, { recursive: true, force: true }); } catch { /* best effort */ }
+    return { ok: false, phase: "verify", error: "staged package directory not found under " + stageRoot };
   }
 
   // D2: verify INSIDE the stage. Live is still untouched on any failure here.

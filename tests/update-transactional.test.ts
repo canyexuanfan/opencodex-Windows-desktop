@@ -36,13 +36,14 @@ function liveVersion(packageDir: string): string | undefined {
   }
 }
 
-/** npm stub that materializes a staged tree under the --prefix root. */
+/** npm stub that materializes a GLOBAL-style staged tree (deps nested inside the package). */
 function stagingNpm(version: string, opts: { fail?: boolean; truncate?: boolean } = {}) {
   return (args: string[]) => {
     if (opts.fail) return { status: 1 };
     const prefixIndex = args.indexOf("--prefix");
     const stageRoot = args[prefixIndex + 1]!;
-    const staged = join(stageRoot, "node_modules", ...PKG.split("/"));
+    // Mirror npm -g layout on POSIX: <prefix>/lib/node_modules/<pkg>.
+    const staged = join(stageRoot, "lib", "node_modules", ...PKG.split("/"));
     writeTree(staged, version);
     if (opts.truncate) rmSync(join(staged, "bin", "ocx.mjs"));
     return { status: 0 };
