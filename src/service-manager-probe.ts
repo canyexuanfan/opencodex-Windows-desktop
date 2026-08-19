@@ -798,6 +798,16 @@ function walkWinswChain(
   const registration = probeWinswRegistration(deps);
 
   if (xml === "absent" && exe === "absent" && registration === "absent") return { kind: "absent" };
+  // A query we could not ask is a question about a service that cannot exist: WinSW is an
+  // optional backend, and with neither its XML nor its exe on disk there is nothing for a
+  // registration to belong to. Fencing here on an `sc.exe` timeout is one of the two
+  // triggers behind #2108, where a scheduler-only install answers 503 until `ocx restart`.
+  //
+  // The disk outranks the unaskable query only when BOTH assets are gone. Either one
+  // present means a real install may be there and the old `unknown` still holds.
+  if (registration === "unknown" && xml === "absent" && exe === "absent") {
+    return { kind: "absent" };
+  }
   if (registration === "unknown") {
     return unknown("the native WinSW service registration could not be verified");
   }

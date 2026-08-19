@@ -1061,3 +1061,46 @@ describe("systemd probe: the bus is unreachable (#2114)", () => {
     expect(inspectServiceManagerInstallation({ run, platform: "linux", home }).kind).toBe("unknown");
   });
 });
+
+/*
+ * #2108: a reboot leaves native-main fenced until `ocx restart`.
+ *
+ * One trigger is a timed-out `sc.exe query`. WinSW is an optional backend, and a
+ * scheduler-only install has neither of its assets on disk — but a query that timed out
+ * returns "unknown", which outranks the disk and fences the whole process.
+ *
+ * With BOTH assets absent there is nothing for a WinSW registration to belong to, so a
+ * failed query is a question about a service that cannot exist.
+ */
+describe("WinSW probe: a timed-out query with no assets (#2108)", () => {
+  test("no xml and no exe means absent, even when the query could not be asked", () => {
+    // Only the WinSW query is unaskable. The scheduler answers absent for itself, so the
+    // whole verdict turns on whether the WinSW half fences over assets that are not on disk.
+    const { runRaw } = recorder((file, args) => args[0] === "/query"
+      ? { status: 1, stderr: "ERROR: The system cannot find the file specified." }
+      : { timedOut: true });
+
+    const result = inspectServiceManagerInstallation({
+      platform: "win32", home, runRaw,
+      winswStatus: () => "unknown",
+    });
+
+    expect(result.kind).toBe("absent");
+  });
+
+  test("an unaskable query with WinSW assets present is still unknown", () => {
+    const dir = join(home, ".opencodex", "winsw");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "opencodex-proxy.xml"), "<service><id>opencodex-proxy</id></service>");
+    writeFileSync(join(dir, "opencodex-proxy.exe"), "MZ");
+
+    const { runRaw } = recorder(() => ({ timedOut: true }));
+
+    const result = inspectServiceManagerInstallation({
+      platform: "win32", home, runRaw,
+      winswStatus: () => "unknown",
+    });
+
+    expect(result.kind).toBe("unknown");
+  });
+});
