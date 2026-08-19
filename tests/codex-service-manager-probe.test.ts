@@ -1155,4 +1155,19 @@ describe("bus-down absence must mean absence everywhere systemd looks (#2114)", 
 
     expect(inspectServiceManagerInstallation({ run, platform: "linux", home }).kind).toBe("absent");
   });
+
+  // The multi-unit branch is a fail-closed decision that nothing pinned: ablating it left the
+  // suite green. Two units on disk with the bus down is genuinely ambiguous — neither can be
+  // confirmed as the live definition — so it must refuse rather than pick one.
+  test("two units in different search dirs refuse rather than choose", () => {
+    const a = join(home, ".config", "systemd", "user");
+    const b = join(home, ".local", "share", "systemd", "user");
+    mkdirSync(a, { recursive: true });
+    mkdirSync(b, { recursive: true });
+    writeFileSync(join(a, "opencodex-proxy.service"), `[Service]\nEnvironment="CODEX_HOME=${join(home, ".codex")}"`);
+    writeFileSync(join(b, "opencodex-proxy.service"), '[Service]\nEnvironment="CODEX_HOME=/other/.codex"');
+    const { run } = recorder(() => ({ status: 1, stderr: BUS_DOWN }));
+
+    expect(inspectServiceManagerInstallation({ run, platform: "linux", home }).kind).toBe("unknown");
+  });
 });

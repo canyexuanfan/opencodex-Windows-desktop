@@ -769,3 +769,58 @@ describe("a foreign fence is never reopened by a probe (#2108)", () => {
     }
   });
 });
+
+/*
+ * The double-decrement a second audit round found: the probe paid for the hooked fence, and
+ * then that fence's own release() paid for it again. One fence, two decrements, so a fence
+ * another holder still owns was lifted. Plus the wedge: once a hook was spent, no LATER
+ * fence could install one, which is the #2108 symptom returning by another route.
+ */
+describe("a spent reprobe leaves the refcount coherent (#2108)", () => {
+  afterEach(() => {
+    __resetNativeMainOwnershipRetries();
+  });
+
+  test("the hooked fence's release does not pay twice for the same fence", () => {
+    const hookless = blockNativeMainStartupForUnownedServiceHome("ownership-unknown");
+    const hooked = blockNativeMainStartupForUnownedServiceHome("ownership-unknown", {
+      reprobe: () => "owned" as NativeCodexOwnership,
+    });
+    try {
+      isNativeMainTrafficBlocked();
+      void hooked.release();
+
+      // The hookless fence is still held by its owner and must keep traffic closed.
+      expect(isNativeMainTrafficBlocked()).toBe(true);
+    } finally {
+      void hookless.release();
+    }
+    expect(isNativeMainTrafficBlocked()).toBe(false);
+  });
+
+  test("a fence raised after a spent probe still gets to re-ask", () => {
+    const first = blockNativeMainStartupForUnownedServiceHome("ownership-unknown", {
+      reprobe: () => "owned" as NativeCodexOwnership,
+    });
+    isNativeMainTrafficBlocked();
+    void first.release();
+
+    let asked = 0;
+    const later = blockNativeMainStartupForUnownedServiceHome("ownership-unknown", {
+      reprobe: () => { asked += 1; return "owned" as NativeCodexOwnership; },
+    });
+    try {
+      isNativeMainTrafficBlocked();
+
+      // A server started after an earlier probe must not be stuck needing `ocx restart`.
+      expect(asked).toBeGreaterThan(0);
+      expect(isNativeMainTrafficBlocked()).toBe(false);
+    } finally {
+      void later.release();
+    }
+  });
+});
+
+/*
+ * The multi-unit conflict branch was a fail-closed decision with nothing pinning it.
+ */

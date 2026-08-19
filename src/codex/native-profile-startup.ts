@@ -328,8 +328,10 @@ const serviceOwnershipReprobes = new Map<NativeMainServiceOwnershipBlockReason, 
 interface ServiceOwnershipReprobe {
   readonly probe: () => NativeCodexOwnership;
   attempts: number;
-  /** Set once the probe has already spent this hook's fence, so it cannot spend it twice. */
-  cleared?: boolean;
+  /** The fence that installed this hook; only its own release may drop the entry. */
+  readonly owner: NativeMainStartupLifecycle;
+  /** Releases the fence that installed this hook, exactly once. */
+  readonly spend: () => void;
 }
 
 /** Test-only: the retry budget is module state and would otherwise leak across tests. */
@@ -357,7 +359,6 @@ function reprobeServiceOwnership(reason: NativeMainServiceOwnershipBlockReason):
   if (reason !== "ownership-unknown") return false;
   const entry = serviceOwnershipReprobes.get(reason);
   if (!entry) return false;
-  if (entry.cleared) return false;
   if (entry.attempts >= NATIVE_MAIN_OWNERSHIP_RETRY_LIMIT) return false;
   entry.attempts += 1;
   let answer: NativeCodexOwnership;
@@ -368,15 +369,14 @@ function reprobeServiceOwnership(reason: NativeMainServiceOwnershipBlockReason):
     return false;
   }
   if (answer !== "owned") return false;
-  // Only the hook's OWN fence is cleared. Several servers can hold a fence for the same
-  // reason and only one of them may carry a hook, so lifting the shared refcount here
-  // would unblock fences this probe never spoke for — and their own release() would then
-  // decrement a counter that no longer exists. The remaining fences keep traffic closed
-  // until each releases itself, which is what the refcount is for.
-  entry.cleared = true;
-  const remaining = Math.max(0, (serviceOwnershipRefs.get(reason) ?? 0) - 1);
-  if (remaining === 0) serviceOwnershipRefs.delete(reason);
-  else serviceOwnershipRefs.set(reason, remaining);
+  // Release through the fence that installed this hook, and only that one.
+  //
+  // Several servers can hold a fence for the same reason while only one carries a hook, so
+  // clearing the shared refcount here would unblock fences this probe never spoke for.
+  // Decrementing here directly is just as wrong the other way: that fence's own release()
+  // would then pay a second time for one fence, leaving the count short. Delegating to the
+  // fence's idempotent release keeps exactly one payment per fence.
+  entry.spend();
   return true;
 }
 
@@ -398,14 +398,8 @@ export function blockNativeMainStartupForUnownedServiceHome(
   options?: { reprobe?: () => NativeCodexOwnership },
 ): NativeMainStartupLifecycle {
   serviceOwnershipRefs.set(reason, (serviceOwnershipRefs.get(reason) ?? 0) + 1);
-  // Do NOT reset an existing budget. Keying the reprobe by reason means a caller raising
-  // fences in a loop would otherwise be handed a fresh allowance each time and could spin
-  // the probe forever; the budget belongs to the reason, not to the individual fence.
-  if (options?.reprobe && reason === "ownership-unknown" && !serviceOwnershipReprobes.has(reason)) {
-    serviceOwnershipReprobes.set(reason, { probe: options.reprobe, attempts: 0 });
-  }
   let released = false;
-  return {
+  const lifecycle: NativeMainStartupLifecycle = {
     homeId: null,
     settled: Promise.resolve(serviceOwnershipSnapshot(reason)),
     async release() {
@@ -414,9 +408,25 @@ export function blockNativeMainStartupForUnownedServiceHome(
       const remaining = Math.max(0, (serviceOwnershipRefs.get(reason) ?? 0) - 1);
       if (remaining === 0) serviceOwnershipRefs.delete(reason);
       else serviceOwnershipRefs.set(reason, remaining);
-      if (remaining === 0) serviceOwnershipReprobes.delete(reason);
+      if (serviceOwnershipReprobes.get(reason)?.owner === lifecycle) {
+        serviceOwnershipReprobes.delete(reason);
+      }
     },
   };
+  // Do NOT reset an existing budget: keying the reprobe by reason means a caller raising
+  // fences in a loop would otherwise be handed a fresh allowance each time and could spin
+  // the probe forever. But once the holder is gone its entry is removed above, so a LATER
+  // fence installs its own hook — a server started after an earlier probe must not be left
+  // needing `ocx restart`, which is the very symptom this exists to remove.
+  if (options?.reprobe && reason === "ownership-unknown" && !serviceOwnershipReprobes.has(reason)) {
+    serviceOwnershipReprobes.set(reason, {
+      probe: options.reprobe,
+      attempts: 0,
+      owner: lifecycle,
+      spend: () => { void lifecycle.release(); },
+    });
+  }
+  return lifecycle;
 }
 
 export function bindNativeMainStartupLifecycle(server: object, lifecycle: NativeMainStartupLifecycle): void {
