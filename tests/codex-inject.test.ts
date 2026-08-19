@@ -38,10 +38,13 @@ describe("Codex config injection", () => {
     expect(block).toContain("supports_websockets = true");
   });
 
-  test("can inject Codex provider API auth header from environment for non-loopback proxy mode", () => {
+  test("non-loopback proxy mode injects the modern env_key admission line (#2073)", () => {
     const block = buildProviderTableBlock(10100, false, true);
 
-    expect(block).toContain('env_http_headers = { "x-opencodex-api-key" = "OPENCODEX_API_AUTH_TOKEN" }');
+    expect(block).toContain('env_key = "OPENCODEX_API_AUTH_TOKEN"');
+    // The legacy header table must not come back: codex 0.146+ documents env_key as
+    // the bearer form, and #1686's server-side substitution is keyed to it.
+    expect(block).not.toContain("env_http_headers");
   });
 
   test("injected base_url matches the actual bind: literal 127.0.0.1 for loopback/wildcard (Windows resolves localhost to ::1 first)", () => {
@@ -191,7 +194,8 @@ describe("Codex config injection", () => {
 
     expect(profile).toContain('model_catalog_json = "/tmp/opencodex-catalog.json"');
     expect(profile).toContain("supports_websockets = true");
-    expect(profile).toContain('env_http_headers = { "x-opencodex-api-key" = "OPENCODEX_API_AUTH_TOKEN" }');
+    expect(profile).toContain('env_key = "OPENCODEX_API_AUTH_TOKEN"');
+    expect(profile).not.toContain("env_http_headers");
   });
 
   test("honors an explicit unavailable catalog decision", () => {
