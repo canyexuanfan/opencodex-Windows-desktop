@@ -18,8 +18,8 @@ test("priority long-context lower bounds render with a greater-than-or-equal mar
 });
 
 test("USD placement and separators follow a non-English locale", () => {
-  expect(formatEstimatedUsdTotal(0.77, false, "de-DE", translator("de"))).toBe("~0,7700\u00a0$");
-  expect(formatEstimatedUsdTotal(undefined, false, "de-DE", translator("de"))).toBe("—");
+  expect(formatEstimatedUsdTotal(0.77, false, "de-DE", translator("de"))).toBe("ca. 0,7700\u00a0$");
+  expect(formatEstimatedUsdTotal(undefined, false, "de-DE", translator("de"))).toBe("nicht verfügbar");
 });
 
 describe("conversation cost lower-bound aggregation", () => {
