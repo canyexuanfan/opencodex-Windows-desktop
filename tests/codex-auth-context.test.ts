@@ -1355,6 +1355,12 @@ describe("cooldown error surface", () => {
 // instead of remapping to Anthropic 529), and headers never survive to /api/logs, so stdout is
 // the only surface that reaches every path this fence fires on.
 describe("native-main fence names its gate reason", () => {
+  // Reset on BOTH sides: an afterEach only protects tests that run after this file, and the
+  // dedup is module state shared with every other file in the same process.
+  beforeEach(() => {
+    __resetNativeMainFenceReasonLog();
+  });
+
   afterEach(() => {
     __resetNativeMainFenceReasonLog();
   });
@@ -1394,7 +1400,7 @@ describe("native-main fence names its gate reason", () => {
     }
   });
 
-  // auth-context.ts:326 throws the same error for the turn-drain fence (lifecycle.ts:180), which
+  // The claimMainProfile() site throws the same error for the turn-drain fence, which
   // is NOT the startup gate: the snapshot there reads `ready`. Inventing a reason for it would
   // send the next reboot report chasing a startup gate that never closed.
   test("the turn-drain fence stays silent instead of borrowing a startup reason", () => {
