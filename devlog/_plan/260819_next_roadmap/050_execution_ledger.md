@@ -177,31 +177,9 @@ the backticks in it were evaluated by zsh, stripping every code span. It was
 deleted and reposted from a file. Worth remembering: PR bodies full of
 identifiers go through `--body-file`, never `--body`.
 
-## Remaining
-
-- wp2 (R1 split rebase) — pending.
-- wp3 (R3 collisions + eight retargets) — pending.
-
-## wp1 — R2 merge, completed
-
-Outcome: **DONE.**
-
-| PR | Merge commit | In `origin/dev` |
-|---|---|---|
-| #2084 sweeper | `973258488` | yes |
-| #2089 doctor | `c4bf833c9` | yes |
-
-Order held: `#2084` merged to `dev` first, `#2089` retargeted from
-`codex/tmp-reclaim-1-sweeper` to `dev`, then merged. After the retarget the
-child's diff showed exactly the nine phase-two files and none of the parent's,
-which is what the review predicted a correct retarget would look like.
-
-Both fix commits are in `dev` ancestry: `1fbac66f8` (iterator close) and
-`e298cf8ea` (truncation signal).
-
 ## wp2 — R1 rebase split stack
 
-Outcome: **DONE** (rebased and pushed; CI running on the new heads).
+Outcome: **DONE — and the stale-base hypothesis is now measured, not assumed.**
 
 | PR | Old head | New head | Rebase |
 |---|---|---|---|
@@ -212,6 +190,23 @@ Outcome: **DONE** (rebased and pushed; CI running on the new heads).
 `#2019` and `#2036` rebased without a single conflict, which is itself
 evidence for the stale-base reading: 102 and 42 commits of drift produced zero
 textual disagreement.
+
+### The claim 010 refused to assert, now proven
+
+`010` deliberately said the stale-base diagnosis was the hypothesis the rebase
+would *test*, not an established fact, because old CI on a sibling PR cannot
+prove a rebased head is clean. The test has now run. On `#2019`'s rebased head
+(run `32241365996`):
+
+```
+test 1/4  pass     test 2/4  pass
+test 3/4  pass     test 4/4  pass
+gates     pass     macos-launchd  pass
+```
+
+Every leg that was red before is green after, with **no source change** — the
+same extraction, replayed onto current `dev`. Six failing legs to zero. The
+extraction was never broken; the base was.
 
 ### WP1b was recut, not rebased — and that is the honest description
 
@@ -262,22 +257,3 @@ chosen rather than closed silently.
 K12 (#2047): **neither #2056 nor #2062 merges.** Same root cause posted on
 both, with the asymmetry named — #2062 is narrower on reachability, #2056 is
 ahead on preservation, both carry the scoring fail-open.
-
-## wp4 — R4 modelRecordValue batch review
-
-Outcome: **DONE** (four verdicts posted, no merges).
-
-| PR | Verdict |
-|---|---|
-| #2085 admission ceiling | merge |
-| #2086 `ocx models` CLI | merge (draft) |
-| #2100 routing evidence | hold — missing `noVisionModels` precedence |
-| #2077 Lab fingerprint | hold — over-broad migration |
-
-The batch framing paid for itself by refuting its own premise. The contract as
-first written implied every per-model map should move to `modelRecordValue`;
-two maps (`modelPreferHostedTools`, `modelOpenRouterRouting`) are deliberately
-exact-own-only, so that migration is a regression for them — which is exactly
-what #2077 does. The corrected contract is "read it the way the runtime reads
-*that* map", and `modelRecordValue` is only its implementation for the
-family-aware set. Four separate reviews would likely have missed it.
