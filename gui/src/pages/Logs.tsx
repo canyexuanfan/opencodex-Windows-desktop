@@ -746,7 +746,11 @@ export default function Logs({ apiBase }: { apiBase: string }) {
                   <span className="logs-model-cell">
                    <span>{modelLabel(log.resolvedModel ?? log.model)}</span>
                       {log.shadowCallRewrittenFrom && (
-                        <span className="badge badge-muted">
+                        <span
+                          className="badge badge-muted"
+                          style={{ whiteSpace: "nowrap" }}
+                          title={t("logs.badge.interceptedHelperTitle")}
+                        >
                           {t("logs.badge.interceptedHelper", { model: log.shadowCallRewrittenFrom })}
                         </span>
                       )}
