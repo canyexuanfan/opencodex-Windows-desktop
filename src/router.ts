@@ -8,10 +8,15 @@ import {
   type ComboPick,
 } from "./combos";
 import type { NormalizedComboConfig } from "./combos/types";
-import { hasOwnProvider, resolveEnvValue } from "./config";
+import { hasOwnProvider } from "./config/provider-name";
+import { resolveEnvValue } from "./config";
 import { assertProviderDestinationAllowed } from "./lib/destination-policy";
 import { redactSecretString, redactUrlForLog } from "./lib/redact";
-import { PROVIDER_REGISTRY, providerCodexAccountMode } from "./providers/registry";
+import {
+  PROVIDER_REGISTRY,
+  providerCodexAccountMode,
+  registryModelServiceTierCapabilityApplies,
+} from "./providers/registry";
 import { applyDirectReasoningEffortContracts, hasLegacyClinePassReasoningEfforts } from "./providers/derive";
 import { cloneFastWire } from "./providers/fastwire";
 import {
@@ -296,7 +301,9 @@ export function routedProviderConfig(providerName: string, provider: OcxProvider
     : mergeRecordFill(registryEntry.modelMaxInputTokens, provider.modelMaxInputTokens);
   const modelMaxOutputTokens = mergeRecordFill(registryEntry.modelMaxOutputTokens, provider.modelMaxOutputTokens);
   const modelSupportsServiceTier = mergeRecordFill(
-    registryEntry.modelSupportsServiceTier,
+    registryModelServiceTierCapabilityApplies(registryEntry, provider)
+      ? registryEntry.modelSupportsServiceTier
+      : undefined,
     provider.modelSupportsServiceTier,
   );
   const noVisionModels = mergeStringArray(registryEntry.noVisionModels, provider.noVisionModels);
