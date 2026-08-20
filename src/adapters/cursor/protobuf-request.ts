@@ -4,7 +4,7 @@ import { ValueSchema } from "@bufbuild/protobuf/wkt";
 import type { OcxAssistantContentPart, OcxMessage, OcxToolResultMessage } from "../../types";
 import { namespacedToolName } from "../../types";
 import type { CursorRunRequest } from "./types";
-import { cursorNeedsExternalToolContinuation } from "./discovery";
+import { cursorNeedsExternalToolContinuation, isCursorExternalWireModel } from "./discovery";
 import { normalizeCursorToolResultText } from "./tool-result-normalize";
 import { debugProviderDiagnostic } from "../../lib/debug";
 import {
@@ -209,7 +209,7 @@ function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobR
     };
   }
 
-  const externalModel = cursorNeedsExternalToolContinuation(request.modelId);
+  const externalModel = isCursorExternalWireModel(request.modelId);
   const lastRawIsToolResult = messages.at(-1)?.role === "toolResult";
   const activeUserIndex = lastRawIsToolResult ? -1 : lastActionIndex(messages);
 
@@ -641,7 +641,7 @@ function conversationTurns(
   const messages = request.rawMessages;
   if (!messages?.length) return [];
   const end = lastActionIndex(messages);
-  const externalModel = cursorNeedsExternalToolContinuation(request.modelId);
+  const externalModel = isCursorExternalWireModel(request.modelId);
   const historyEnd = messages.at(-1)?.role === "toolResult" ? messages.length : Math.max(0, end);
   const start = externalModel ? Math.max(0, historyMessageStart) : 0;
   const turns: Uint8Array[] = [];
@@ -835,7 +835,7 @@ function buildPreparedCursorRunRequest(
     action: actionCase,
     conversationId: request.conversationId,
     turnType: lastRawIsToolResult ? "tool-continuation" : "initial",
-    externalModel: cursorNeedsExternalToolContinuation(request.modelId),
+    externalModel: isCursorExternalWireModel(request.modelId),
     rawMessages: request.rawMessages?.length ?? 0,
     rootBlobs: rootPromptMessageIds.length,
     rootBytes: rootPromptMessagesState.byteLength,

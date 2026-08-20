@@ -525,7 +525,7 @@ describe("Cursor blob handshake", () => {
 
   test("native Cursor replay preserves tool calls with results in turn steps", () => {
     const bytes = encodeCursorRunRequest({
-      modelId: "composer-2.5-fast",
+      modelId: "composer-2.5",
       conversationId: "c1",
       system: ["You are helpful."],
       messages: [{ role: "tool", content: "[tool_result]\ncall_id: call_1\nname: read_file\nis_error: false\noutput:\ncontents" }],
@@ -561,7 +561,44 @@ describe("Cursor blob handshake", () => {
         if (content?.case === "text") expect(content.value.text).toBe("contents");
       }
     }
-    expect(run?.action?.action.case).toBe("resumeAction");
+    expect(run?.action?.action.case).toBe("userMessageAction");
+    const value = run?.action?.action.case === "userMessageAction" ? run.action.action.value : undefined;
+    expect(value?.userMessage?.text).toBe(CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT);
+  });
+
+  test("composer-2.5 ordinary turns keep native replay semantics", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "composer-2.5",
+      conversationId: "c-native-turn",
+      system: ["You are helpful."],
+      messages: [{ role: "user", content: "follow up" }],
+      rawMessages: [
+        { role: "user", content: "read a file", timestamp: 1 },
+        {
+          role: "assistant",
+          model: "cursor/composer-2.5",
+          timestamp: 2,
+          content: [
+            { type: "thinking", thinking: "hidden reasoning" },
+            { type: "text", text: "I'll read it" },
+          ],
+        },
+        { role: "user", content: "follow up", timestamp: 3 },
+      ],
+    });
+    const msg = fromBinary(AgentClientMessageSchema, bytes);
+    const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+    const turn = fromBinary(ConversationTurnStructureSchema, blobData(run?.conversationState?.turns[0] ?? new Uint8Array()));
+    expect(turn.turn.case).toBe("agentConversationTurn");
+    const steps = turn.turn.case === "agentConversationTurn" ? turn.turn.value.steps : [];
+    expect(steps).toHaveLength(2);
+    const firstStep = fromBinary(ConversationStepSchema, blobData(steps[0]!));
+    const secondStep = fromBinary(ConversationStepSchema, blobData(steps[1]!));
+    expect(firstStep.message.case).toBe("thinkingMessage");
+    expect(secondStep.message.case).toBe("assistantMessage");
+    expect(run?.action?.action.case).toBe("userMessageAction");
+    const roots = decodeRootMessages(bytes) as Array<{ role?: string; content?: unknown }>;
+    expect(JSON.stringify(roots)).toContain("hidden reasoning");
   });
 
   test("external Cursor replay uses text history instead of native tool/thinking structures", () => {
