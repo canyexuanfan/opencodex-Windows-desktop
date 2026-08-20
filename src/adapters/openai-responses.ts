@@ -11,6 +11,7 @@ import { OCX_REASONING_PREFIX } from "../responses/reasoning-envelope";
 import { modelRecordValue } from "../reasoning-effort";
 import type { TranslatorBudget } from "../lib/translator-budget";
 import { rewriteRoutedCustomToolsForUpstream } from "../responses/custom-tool-compat";
+import { rewriteRoutedToolSearchForUpstream } from "../responses/tool-search-compat";
 import { openaiResponsesUrl } from "./openai-responses-url";
 import {
   createAdapterTierMetadata,
@@ -183,6 +184,28 @@ function stripUnsupportedReasoningParams(body: unknown): unknown {
   const { context: _ctx, summary: _sum, generate_summary: _gs, ...rest } = reasoning;
   if (_ctx === undefined && _sum === undefined && _gs === undefined) return body;
   return { ...body, reasoning: Object.keys(rest).length > 0 ? rest : undefined };
+}
+
+/**
+ * GPT-5.6 replaced the legacy 24-hour retention field with `prompt_cache_options.ttl`, and the
+ * ChatGPT backend 400s the whole request when the retired field is present (issue #2092).
+ *
+ * The retired field is NOT translated to the replacement: 5.6 carries a different TTL contract,
+ * and implicit caching still applies when the caller sent no replacement options. Inventing a
+ * value here would silently change a caching decision the caller never made.
+ *
+ * Deliberately narrow on both axes, because a wider strip is a behavior change rather than a fix:
+ * only the gpt-5.6 family (an older model may still honor the field), and only on the canonical
+ * ChatGPT backend, which is the deployment that rejects it. Matching is exact-or-dashed-prefix so
+ * a future `gpt-5.60` is not swept up by a bare `startsWith`.
+ */
+function stripDeprecatedPromptCacheRetention(body: unknown, modelId: unknown): unknown {
+  if (!isPlainObject(body)) return body;
+  if (typeof modelId !== "string") return body;
+  if (modelId !== "gpt-5.6" && !modelId.startsWith("gpt-5.6-")) return body;
+  if (!Object.hasOwn(body, "prompt_cache_retention")) return body;
+  const { prompt_cache_retention: _retention, ...rest } = body;
+  return rest;
 }
 
 /**
@@ -1468,6 +1491,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
 
       const forward = provider.authMode === "forward";
       let convertedRoutedCustomToolNames: Set<string> | undefined;
+      let convertedRoutedToolSearchNames: Set<string> | undefined;
       const unexpandedMiss = !!parsed.previousResponseId && parsed._previousResponseInputExpanded !== true;
       let outBody = stripPreviousResponseId(
         parsed._rawBody,
@@ -1491,6 +1515,11 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       }
       if (forward) {
         outBody = stripUnsupportedForwardParams(outBody);
+        // Only the canonical ChatGPT backend rejects the retired field; a self-hosted or
+        // third-party forward gateway may still accept it, so this must not be widened.
+        if (isCanonicalOpenAiForwardProvider(provider)) {
+          outBody = stripDeprecatedPromptCacheRetention(outBody, parsed.modelId);
+        }
       } else {
         outBody = preferConfiguredHostedTools(
           outBody,
@@ -1522,6 +1551,13 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         outBody = rewritten.body;
         convertedRoutedCustomToolNames = rewritten.names;
       }
+      if (!isCanonicalOpenAiForwardProvider(provider)) {
+        // Run after custom-tool lowering so the search compatibility layer can choose a
+        // collision-free public function name against the final routed function catalog.
+        const rewritten = rewriteRoutedToolSearchForUpstream(outBody);
+        outBody = rewritten.body;
+        convertedRoutedToolSearchNames = rewritten.names;
+      }
       const sanitizedBody = normalizeToolSchemas(stripSparkCompatibility(stripUnsupportedReasoningParams(stripItemIdsWhenUnstored(stripInvalidItemIds(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(outBody), { preserveRawReasoningContent: provider.preserveResponsesReasoningContent === true })))))));
       const finalBody = stripDisabledReasoningSummaries(
         normalizeConfiguredReasoningSummaryDelivery(sanitizedBody, provider, parsed.modelId),
@@ -1549,6 +1585,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         body,
         releaseBodyObservation,
         ...(convertedRoutedCustomToolNames ? { convertedRoutedCustomToolNames } : {}),
+        ...(convertedRoutedToolSearchNames ? { convertedRoutedToolSearchNames } : {}),
         ...(tierLog ? { tierLog } : {}),
       };
     },

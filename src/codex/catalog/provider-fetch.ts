@@ -414,6 +414,7 @@ function captureProviderGather(
     name,
     provider,
     registryTransportMatch,
+    configured,
   );
   const observedAuth = authResolver.kind === "observed"
     && provider.authMode !== "forward"
@@ -685,6 +686,7 @@ export function applyProviderConfigHints(name: string, prov: OcxProviderConfig, 
     ...(prov.parallelToolCalls === true || (prov.adapter === "openai-chat" && prov.parallelToolCalls !== false)
       ? { parallelToolCalls: true }
       : {}),
+    ...(prov.codexToolMode !== undefined ? { codexToolMode: prov.codexToolMode } : {}),
   };
   const capped = applyProviderContextCap(hinted.contextWindow, providerCap);
   if (providerCap !== undefined && capped !== hinted.contextWindow) {
@@ -1896,6 +1898,11 @@ async function gatherRoutedModelsUncached(
       ...(supportsServiceTier === true && fastPolicy?.fastTierDescription !== undefined
         ? { fastTierDescription: fastPolicy.fastTierDescription }
         : {}),
+      ...(cm.codexToolMode !== undefined
+        ? { codexToolMode: cm.codexToolMode }
+        : effectiveProvider?.codexToolMode !== undefined
+          ? { codexToolMode: effectiveProvider.codexToolMode }
+          : {}),
     };
     // #962: the dedupe below drops the provider-derived row this custom row replaces. Inherit that
     // row's provider capability metadata (reasoning ladder, default effort, parallel tool calls,
@@ -1920,6 +1927,7 @@ async function gatherRoutedModelsUncached(
       ...(base.parallelToolCalls === undefined && replaced.parallelToolCalls !== undefined ? { parallelToolCalls: replaced.parallelToolCalls } : {}),
       ...(base.supportsVerbosity === undefined && replaced.supportsVerbosity !== undefined ? { supportsVerbosity: replaced.supportsVerbosity } : {}),
       ...(base.supportsReasoningSummaries === undefined && replaced.supportsReasoningSummaries !== undefined ? { supportsReasoningSummaries: replaced.supportsReasoningSummaries } : {}),
+      ...(base.codexToolMode === undefined && replaced.codexToolMode !== undefined ? { codexToolMode: replaced.codexToolMode } : {}),
       ...(base.capabilities === undefined && replaced.capabilities !== undefined ? { capabilities: replaced.capabilities } : {}),
     } : base;
     // Vision-sidecar coverage ONLY: if the custom model is in the enriched provider's

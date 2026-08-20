@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { DICTS, interpolate, type Locale, type TFn } from "../src/i18n/shared";
+import { DICTS } from "../src/i18n/catalogs";
+import { interpolate, type Locale, type TFn } from "../src/i18n/shared";
 import {
-  formatEstimatedUsdTotal,
+  formatEstimatedUsd,
+  formatEstimatedUsdValue,
   summarizeEstimatedCosts,
 } from "../src/pages/logs-cost-format";
 
@@ -10,16 +12,16 @@ function translator(locale: Locale): TFn {
 }
 
 test("ordinary dashboard costs retain the estimate marker", () => {
-  expect(formatEstimatedUsdTotal(0.77, false, "en-US", translator("en"))).toBe("~$0.7700");
+  expect(formatEstimatedUsdValue(0.77, translator("en"), "en-US", false)).toBe("~$0.7700");
 });
 
 test("priority long-context lower bounds render with a greater-than-or-equal marker", () => {
-  expect(formatEstimatedUsdTotal(0.77, true, "en-US", translator("en"))).toBe("≥$0.7700");
+  expect(formatEstimatedUsdValue(0.77, translator("en"), "en-US", true)).toBe("≥$0.7700");
 });
 
 test("USD placement and separators follow a non-English locale", () => {
-  expect(formatEstimatedUsdTotal(0.77, false, "de-DE", translator("de"))).toBe("ca. 0,7700\u00a0$");
-  expect(formatEstimatedUsdTotal(undefined, false, "de-DE", translator("de"))).toBe("nicht verfügbar");
+  expect(formatEstimatedUsdValue(0.77, translator("de"), "de-DE", false)).toBe("ca. 0,7700\u00a0$");
+  expect(formatEstimatedUsd({ kind: "unavailable" }, translator("de"), "de-DE")).toBe("nicht verfügbar");
 });
 
 describe("conversation cost lower-bound aggregation", () => {
@@ -28,8 +30,7 @@ describe("conversation cost lower-bound aggregation", () => {
     displayMetrics: {
       cost: {
         kind: "value" as const,
-        estimate: { cost: { total } },
-        estimateReasons: lowerBound ? ["priority_lower_bound"] : [],
+        estimate: { cost: { total }, priorityLowerBound: lowerBound },
       },
     },
   });

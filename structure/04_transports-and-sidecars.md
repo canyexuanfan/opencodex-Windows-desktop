@@ -31,6 +31,14 @@ Responses-compatible streaming output.
 - 다른 대안 대신 이 방식을 선택한 이유: Model guidance is not an enforcement boundary, while automatic translation would invent executable caller intent and arguments after generation.
 - 장점, 단점 및 영향: Streaming and non-streaming routed responses now fail closed with an actionable provider-contract error; providers that emit aliases they never advertised must correct their adapter mapping instead of relying on client abort behavior.
 
+[Decision Log]
+- 목적과 의도: Keep Codex client-side deferred tool discovery usable through third-party Responses-compatible gateways that implement public function tools but reject the private `tool_search` declaration.
+- 기존 구현 및 제약 조건: The chat translation path already exposed search as a function and bridged its call back to `tool_search_call`; passthrough only promoted definitions returned by an earlier search, so it could not initiate discovery on a strict third-party Responses endpoint.
+- 검토한 주요 대안: Require every gateway to implement Codex-private tool types; route affected models through `openai-chat`; lower the declaration only; lower the noncanonical request and restore both JSON and SSE response lifecycles.
+- 선택한 방식: On noncanonical Responses passthrough only, lower an actually declared `tool_search` to a collision-free public function name, translate its replayed call/output history to public function pairs, record only caller-authorized request-local conversions, and restore matching JSON/SSE calls to client `tool_search_call` items. Canonical OpenAI forward remains byte-shape native.
+- 다른 대안 대신 이 방식을 선택한 이유: Provider-specific workarounds fragment the contract, while unconditional restoration could turn an untrusted ordinary function call into a privileged client discovery action.
+- 장점, 단점 및 영향: Strict third-party Responses gateways can start and continue deferred discovery without changing native ChatGPT behavior; ordinary same-named functions remain distinct, and the proxy performs a capped SSE lifecycle rewrite only when the request actually required compatibility translation.
+
 The option-aware `openai` provider uses `openai-responses` with `authMode: "forward"`. Pool mode
 resolves main plus added accounts through affinity/quota/cooldown ownership; Direct forwards only
 the allowed Codex/OpenAI auth/session headers from the current request and short-circuits pool
@@ -51,7 +59,9 @@ requires a compatible FastWire mapping on the final adapter and an eligible poli
 `fastMode: false` drops it. On classified Chat routes, `chatServiceTier` separately authorizes
 foreign caller values; an exact-model `true` does not grant that forwarding permission. On
 unclassified Chat routes it gates every caller tier because no canonical Fast capability has been
-validated. Exact `false`
+validated. An object-form registry wire default may also set `forwardCallerServiceTier: false` to
+close a known subscription gateway while leaving generic unclassified Responses passthrough
+unchanged. Exact `false`
 narrows provider defaults, and provider-level `supportsServiceTier: false` cannot be reopened.
 Capability is namespaced by the selected provider and model; model-name similarity and adapter type
 alone never opt a gateway in.
@@ -66,7 +76,18 @@ Registry `modelWireDefaults` select an evidence-backed upstream protocol for an 
 changing the provider-wide adapter. Explicit, allowed `modelAdapters` configuration always wins,
 including an entry that opts the model back into the provider-wide wire. Defaults are applied only
 while the configured provider still matches the registry transport, so reusing a preset name for a
-different custom destination does not inherit its upstream assumptions.
+different custom destination does not inherit its upstream assumptions. Object-form defaults may
+also narrow the decision by inbound protocol and authentication mode; an auth-scoped default must
+not leak from a subscription transport into an API-key or forwarded-credential route.
+
+xAI keeps `openai-chat` as its provider-wide compatibility wire. The official Grok CLI catalog
+declares the Grok 4.5 and 4.6 subscription models as Responses backends, so only OAuth-backed native
+Responses traffic for those exact models selects `openai-responses`. API-key requests, translated
+Chat/Anthropic callers, other Grok models, and explicit model adapter overrides retain their
+existing wire. This lets Codex receive native xAI SSE deltas as they arrive without widening the
+credential or compatibility boundary. These OAuth subscription defaults drop caller-owned
+`service_tier`; they neither advertise nor inject Fast. The API-key transport remains governed by
+its separate capability declaration.
 
 OpenCode Go documents `gpt-5.6-luna` on `/zen/go/v1/responses` while sibling models use its Chat or
 Anthropic endpoints. The built-in preset therefore selects `openai-responses` only for Luna and
@@ -601,9 +622,10 @@ Grounded in the open-sourced official client (xai-org/grok-build); unit + eviden
   `auth.json` load-merge-persist (`src/oauth/store.ts`); generation-guarded persist
   (`expectedGeneration` → superseded adoption), conditional `needsReauth`, bounded jittered
   retry for transient token-endpoint failures.
-- **Reactive 401 replay:** the serving recovery loop force-refreshes once (singleflight,
-  generation-checked) and replays OAuth-backed xAI requests exactly once with a re-resolved
-  transport; API-key/BYOK paths excluded (`src/server/responses.ts`).
+- **Reactive 401 replay:** both the adapter recovery loop and native Responses passthrough branch
+  force-refresh once (singleflight, generation-checked) and replay OAuth-backed xAI requests
+  exactly once with a re-resolved transport; API-key/BYOK paths are excluded
+  (`src/server/responses/core.ts`).
 - **Header parity:** per-attempt `x-grok-req-id` (fresh UUID inside the transport fetch
   wrapper), stable session/conv affinity headers, always-set User-Agent, and a single
   compatibility profile const for the Grok client version (`src/providers/xai-transport.ts`);

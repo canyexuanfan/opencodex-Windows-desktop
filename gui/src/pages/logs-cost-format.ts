@@ -1,49 +1,54 @@
 import type { TFn } from "../i18n/shared";
-import { cachedNumberFormat } from "../intl-formatters";
 
-export function formatEstimatedUsdTotal(
-  totalUsd: number | undefined,
-  lowerBound: boolean,
-  localeTag: string | undefined,
+type EstimatedCostResult = {
+  kind: "value";
+  estimate: { cost: { total: number }; priorityLowerBound?: boolean };
+} | { kind: "unavailable" };
+
+export function formatEstimatedUsdValue(
+  value: number,
   t: TFn,
+  localeTag?: string,
+  priorityLowerBound = false,
 ): string {
-  if (totalUsd === undefined || !Number.isFinite(totalUsd) || totalUsd < 0) {
-    return t("logs.cost.unavailable");
-  }
-  const amount = cachedNumberFormat(localeTag, {
+  if (!Number.isFinite(value) || value < 0) return t("logs.cost.unavailable");
+  const amount = new Intl.NumberFormat(localeTag, {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: 4,
     maximumFractionDigits: 4,
-  }).format(totalUsd);
-  return t(lowerBound ? "logs.cost.lowerBound" : "logs.cost.approximate", { amount });
+  }).format(value);
+  return t(priorityLowerBound ? "logs.cost.lowerBound" : "logs.cost.approximate", { amount });
 }
 
-export interface LogCostSummaryEntry {
+export function formatEstimatedUsd(
+  result: EstimatedCostResult | undefined,
+  t: TFn,
+  localeTag?: string,
+): string {
+  if (!result || result.kind === "unavailable") return t("logs.cost.unavailable");
+  return formatEstimatedUsdValue(
+    result.estimate.cost.total,
+    t,
+    localeTag,
+    result.estimate.priorityLowerBound,
+  );
+}
+
+interface CostSummaryEntry {
   usageStatus?: string;
-  displayMetrics?: {
-    cost?:
-      | {
-        kind: "value";
-        estimate: { cost: { total: number } };
-        estimateReasons: readonly string[];
-      }
-      | { kind: "unavailable" };
-  };
+  displayMetrics?: { cost: EstimatedCostResult };
 }
 
-export interface EstimatedCostSummary {
+export function summarizeEstimatedCosts(entries: readonly CostSummaryEntry[]): {
   estimatedCostUsd: number;
   priorityLowerBound: boolean;
   unpricedRequests: number;
   unmeteredRequests: number;
-}
-
-/** Sum valid displayed costs without upgrading a mixed estimate into a known lower bound. */
-export function summarizeEstimatedCosts(entries: readonly LogCostSummaryEntry[]): EstimatedCostSummary {
+} {
   let estimatedCostUsd = 0;
-  let pricedEstimates = 0;
   let everyPricedEstimateIsLowerBound = true;
+  let pricedEstimates = 0;
   let unpricedRequests = 0;
   let unmeteredRequests = 0;
   for (const entry of entries) {
@@ -57,7 +62,7 @@ export function summarizeEstimatedCosts(entries: readonly LogCostSummaryEntry[])
       if (Number.isFinite(total) && total >= 0) {
         estimatedCostUsd += total;
         pricedEstimates += 1;
-        everyPricedEstimateIsLowerBound &&= cost.estimateReasons.includes("priority_lower_bound");
+        everyPricedEstimateIsLowerBound &&= cost.estimate.priorityLowerBound === true;
         continue;
       }
     }

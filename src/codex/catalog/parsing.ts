@@ -128,6 +128,12 @@ export interface CatalogModel {
   /** Optional provider-specific copy for the advertised Fast tier. */
   fastTierDescription?: string;
   supportsReasoningSummaries?: boolean;
+  /**
+   * Codex tool calling mode for this routed model.
+   * "code_mode_only" (default) sets entry.tool_mode = "code_mode_only".
+   * "shell" leaves tool_mode unset so Codex declares top-level shell tools (exec_command).
+   */
+  codexToolMode?: "code_mode_only" | "shell";
   /** Normalized upstream capability names retained for management/API consumers (#485 follow-up). */
   capabilities?: string[];
   /** OpenCodex-only catalog ownership marker; Codex ignores the serialized extension field. */
@@ -425,7 +431,14 @@ export function catalogEntryIsNativeChatGpt(entry: RawEntry): boolean {
 
 export const ROUTED_CODEX_TOOL_MODE = "code_mode_only";
 
-export function applyRoutedCodexToolMode(entry: RawEntry): RawEntry {
+export function applyRoutedCodexToolMode(
+  entry: RawEntry,
+  toolMode?: "code_mode_only" | "shell" | string,
+): RawEntry {
+  if (toolMode === "shell") {
+    delete entry.tool_mode;
+    return entry;
+  }
   entry.tool_mode = ROUTED_CODEX_TOOL_MODE;
   return entry;
 }
@@ -492,10 +505,14 @@ export function applyMultiAgentMode(
   return entries;
 }
 
-export function normalizeRoutedCatalogEntry(entry: RawEntry, parallelToolCalls = false): RawEntry {
+export function normalizeRoutedCatalogEntry(
+  entry: RawEntry,
+  parallelToolCalls = false,
+  toolMode?: "code_mode_only" | "shell" | string,
+): RawEntry {
   delete entry.model_messages;
   delete entry.tool_mode;
-  applyRoutedCodexToolMode(entry);
+  applyRoutedCodexToolMode(entry, toolMode);
   delete entry.multi_agent_version;
   delete entry.use_responses_lite;
   delete entry.supports_websockets;

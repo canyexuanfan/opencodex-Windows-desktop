@@ -44,6 +44,13 @@ are emitted only as selector-qualified rows whose account provenance matches. Th
 the bare native or API-key model list. This keeps account-scoped upstream ids such as
 `gpt-daybreak-blue-latest` callable without treating them as a static release allowlist.
 
+Account-gated native ids are a stricter subset. Their authenticated ChatGPT `/models` roster is
+cached per credential generation with a bounded timeout. A bare gated row is emitted only when at
+least one confirmed eligible account reports it; a selector-qualified row is emitted only when the
+mapped account reports it. A failed or malformed discovery is not positive evidence and therefore
+hides the gated row until a later refresh. The same snapshot gates Pool selection, so the catalog
+and runtime cannot disagree by advertising through one account and dispatching through another.
+
 The app-server's model list comes from this shared catalog, not from patching the App. Codex Desktop
 may still apply its remote native-only allowlist after `model/list`; an explicitly configured combo
 `nativeAlias` is the bounded compatibility path. It replaces one supported bare native row with a
@@ -58,6 +65,16 @@ Provider live-model lists are cached with a configured TTL (`src/codex/model-cac
 deleting, or editing a provider's shape clears that per-provider cache; a disabled-only change
 deliberately does not, because a disabled provider is already excluded from the catalog gather
 instead. Codex's own `models_cache.json` is a different cache, invalidated by catalog refresh.
+
+### Windows request-path catalog-state discovery
+
+[Decision Log]
+- 목적과 의도: Prevent Windows PowerShell/CIM process discovery from blocking Bun's event loop while v2 sub-agent guidance is assembled.
+- 기존 구현 및 제약 조건: The stale-catalog check is advisory on the request path, but CLI/service lifecycle operations use the same process evidence before warning or terminating narrowly matched app-servers.
+- 검토한 주요 대안: Remove stale-catalog guidance, move every platform collector into workers, or isolate only the Windows request path behind asynchronous child processes.
+- 선택한 방식: Keep the synchronous fail-closed collector for explicit lifecycle operations; v2 requests use asynchronous trusted-System32 PowerShell, one identity-scoped in-flight refresh, and the existing short cache. Cache invalidation advances a generation so a pre-write CIM result cannot repopulate post-write state.
+- 다른 대안 대신 이 방식을 선택한 이유: This preserves process ownership and matching invariants while preventing a slow CIM query from starving `/healthz` and unrelated proxy traffic.
+- 장점, 단점 및 영향: Concurrent v2 turns do not multiply CIM walks and the event loop remains responsive. A cold request can still await the bounded advisory check, and collection failure suppresses OpenCodex-authored model guidance as `unknown`.
 
 ## Startup readiness
 
@@ -254,6 +271,21 @@ the request, and they never raise it.
 - 장점, 단점 및 영향: 공식 endpoint에서 안전한 picker/wire 계약을 제공하고,
   `preserveCustomDestination`으로 같은 이름의 다른 host/key를 보호한다. 대신 새 preset 표면을
   문서와 registry parity에서 함께 유지해야 한다.
+
+[Decision Log]
+- 목적과 의도: Xiaomi token-plan에서 image input을 거부하는 `mimo-v2.5-pro`만 vision
+  sidecar로 우회하고, 실제 image input을 받는 `mimo-v2.5`는 native vision 경로에 남긴다.
+- 기존 구현 및 제약 조건: upstream `/v1/models`는 input modality를 제공하지 않으며,
+  `noVisionModels`는 text-only 모델을 sidecar로 보내면서 Codex catalog에는 image input을
+  광고하는 provider-scoped 계약이다.
+- 검토한 주요 대안: MiMo 전체를 text-only로 분류하기, live discovery에서 modality를
+  추측하기, `mimo-v2.5-pro` 하나만 registry에 고정 분류하기.
+- 선택한 방식: canonical `mimo` preset의 `noVisionModels`에 `mimo-v2.5-pro`만 추가한다.
+- 다른 대안 대신 이 방식을 선택한 이유: live endpoint 검증으로 확인된 최소 범위만
+  적용하며, 정상 동작하는 `mimo-v2.5`의 native image 경로를 훼손하지 않는다.
+- 장점, 단점 및 영향: Pro image 요청의 404를 sidecar 설명 경로로 바꾸고 base 모델은
+  그대로 유지한다. `preserveCustomDestination` guard 때문에 같은 provider id를 다른 host에
+  연결한 사용자 설정에는 이 capability 분류가 전파되지 않는다.
 
 [Decision Log]
 - 목적과 의도: bare `defaultModel` selectors that route into third-party providers must keep their

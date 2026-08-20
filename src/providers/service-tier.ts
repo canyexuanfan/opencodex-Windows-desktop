@@ -4,6 +4,7 @@ import { isCanonicalOpenAiForwardProvider } from "./openai-tiers";
 import {
   getProviderRegistryEntry,
   providerMatchesRegistryTransport,
+  registryModelServiceTierCapabilityApplies,
   type InboundWire,
   type ModelWireDefault,
 } from "./registry";
@@ -44,7 +45,16 @@ function cloneRegistryWireDefaults(
   for (const [modelId, declaration] of Object.entries(defaults)) {
     clone[modelId.trim().toLowerCase()] = typeof declaration === "string"
       ? declaration
-      : Object.freeze({ wire: declaration.wire, inbound: Object.freeze([...declaration.inbound]) });
+      : Object.freeze({
+          wire: declaration.wire,
+          inbound: Object.freeze([...declaration.inbound]),
+          ...(declaration.authModes
+            ? { authModes: Object.freeze([...declaration.authModes]) }
+            : {}),
+          ...(declaration.forwardCallerServiceTier !== undefined
+            ? { forwardCallerServiceTier: declaration.forwardCallerServiceTier }
+            : {}),
+        });
   }
   return Object.freeze(clone);
 }
@@ -57,6 +67,7 @@ function buildFastPolicyAuthority(
   providerName: string,
   provider: ServiceTierCapabilityProvider,
   registryTransportMatch: boolean,
+  capabilityProvider: ServiceTierCapabilityProvider = provider,
 ): FastPolicyAuthority {
   const registry = registryTransportMatch ? getProviderRegistryEntry(providerName) : undefined;
   const authTransport = resolveProviderAuthTransport(
@@ -68,8 +79,16 @@ function buildFastPolicyAuthority(
     && (authTransport === "authorization_bearer" || authTransport === "x_api_key")
     ? registry.keyAuthServiceTier
     : undefined;
+  const registryModelCapabilities = registry
+    && registryModelServiceTierCapabilityApplies(registry, capabilityProvider)
+    ? registry.modelSupportsServiceTier
+    : undefined;
+  const providerCapability = capabilityProvider.supportsServiceTier
+    ?? keyAuthDefaults?.supportsServiceTier
+    ?? registry?.supportsServiceTier;
   const authority: FastPolicyAuthority = Object.freeze({
     providerAdapter: provider.adapter,
+    providerAuthMode: provider.authMode ?? registry?.authKind ?? "key",
     fastWireDeclaration: cloneFastWire(
       provider.fastWire !== undefined ? provider.fastWire : registry?.fastWire,
       { freeze: true },
@@ -80,14 +99,11 @@ function buildFastPolicyAuthority(
     modelWireOverrideAllowed: !isCanonicalOpenAiForwardProvider(provider as OcxProviderConfig),
     authTransport,
     capability: Object.freeze({
-      ...(provider.supportsServiceTier !== undefined
-        ? { provider: provider.supportsServiceTier }
-        : keyAuthDefaults?.supportsServiceTier !== undefined
-          ? { provider: keyAuthDefaults.supportsServiceTier }
-          : {}),
+      ...(providerCapability !== undefined ? { provider: providerCapability } : {}),
       models: Object.freeze({
+        ...(registryModelCapabilities ?? {}),
         ...(keyAuthDefaults?.modelSupportsServiceTier ?? {}),
-        ...(provider.modelSupportsServiceTier ?? {}),
+        ...(capabilityProvider.modelSupportsServiceTier ?? {}),
       }),
       ...(provider.chatServiceTier !== undefined
         ? { chatServiceTier: provider.chatServiceTier }
@@ -106,8 +122,14 @@ export function captureFastPolicyAuthority(
   providerName: string,
   provider: ServiceTierCapabilityProvider,
   registryTransportMatch: boolean,
+  capabilityProvider: ServiceTierCapabilityProvider = provider,
 ): FastPolicyAuthority {
-  const authority = buildFastPolicyAuthority(providerName, provider, registryTransportMatch);
+  const authority = buildFastPolicyAuthority(
+    providerName,
+    provider,
+    registryTransportMatch,
+    capabilityProvider,
+  );
   if (Object.isFrozen(provider)) capturedFastPolicyAuthorities.set(provider, authority);
   return authority;
 }
@@ -125,12 +147,13 @@ export function captureServiceTierAdapterAuthority(
 function authorityForProvider(
   provider: ServiceTierCapabilityProvider,
   providerName?: string,
+  capabilityProvider?: ServiceTierCapabilityProvider,
 ): FastPolicyAuthority {
   // Preserve the legacy no-name short circuit: serviceTierSupportForModel() used the
   // provider adapter directly when no provider identity was available, so no configured
   // override, hard pin, or registry default may participate on this path in A1.
   if (providerName === undefined) {
-    const authority = buildFastPolicyAuthority("", provider, false);
+    const authority = buildFastPolicyAuthority("", provider, false, capabilityProvider ?? provider);
     return Object.freeze({
       ...authority,
       modelAdapters: Object.freeze({}),
@@ -138,12 +161,17 @@ function authorityForProvider(
       registryWireDefaults: Object.freeze({}),
     });
   }
-  const captured = Object.isFrozen(provider)
+  const captured = capabilityProvider === undefined && Object.isFrozen(provider)
     ? capturedFastPolicyAuthorities.get(provider)
     : undefined;
   if (captured) return captured;
   const registryTransportMatch = providerMatchesRegistryTransport(providerName, provider);
-  const authority = buildFastPolicyAuthority(providerName, provider, registryTransportMatch);
+  const authority = buildFastPolicyAuthority(
+    providerName,
+    provider,
+    registryTransportMatch,
+    capabilityProvider ?? provider,
+  );
   // Frozen provider snapshots cannot drift, so repeated catalog/runtime projections may safely
   // reuse the registry lookup and detached declaration maps. Mutable configs still rebuild.
   if (Object.isFrozen(provider)) capturedFastPolicyAuthorities.set(provider, authority);
@@ -156,8 +184,13 @@ export function fastPolicyForModel(
   modelId: string,
   providerName?: string,
   inbound: InboundWire = "responses",
+  capabilityProvider?: ServiceTierCapabilityProvider,
 ): ResolvedFastPolicy {
-  return resolveFastPolicy(authorityForProvider(provider, providerName), modelId, inbound);
+  return resolveFastPolicy(
+    authorityForProvider(provider, providerName, capabilityProvider),
+    modelId,
+    inbound,
+  );
 }
 
 /**
@@ -233,13 +266,11 @@ export function serviceTierSupportFromPolicy(
 ): boolean | undefined {
   if (policy.eligibility === "eligible") return true;
   if (policy.eligibility === "unclassified") {
-    // B1 regression guard: an unclassified chat-wire route whose final adapter will not
-    // forward any tier cannot serialize service_tier, so projecting "unknown" would let
-    // require.serviceTier: "unsupported" routing stop matching groq/ollama-class providers
-    // that main projected as false. Chat + no forwarding stays a definitive false; a
-    // chat route with chatServiceTier: true (forwarding allowed) keeps the historical
-    // unknown, as does every unclassified Responses-wire route.
-    if (policy.adapter === "openai-chat" && !policy.forwardCallerTier) return false;
+    // An unclassified route that cannot forward a caller tier has definitive negative
+    // evidence even when its adapter can normally serialize service_tier. This covers both
+    // Chat routes without chatServiceTier and a registry default that explicitly closes a
+    // subscription gateway. Generic unclassified Responses routes still project unknown.
+    if (!policy.forwardCallerTier) return false;
     return undefined;
   }
   return false;

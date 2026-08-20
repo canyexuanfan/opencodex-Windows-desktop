@@ -17,6 +17,7 @@ import {
   cursorModelReasoningEfforts,
 } from "../adapters/cursor/discovery";
 import { COMMAND_CODE_MODEL_REASONING_EFFORTS } from "./command-code-efforts";
+import { isCanonicalOpenRouterTarget } from "./openrouter-routing";
 
 export type ProviderAuthKind = "forward" | "oauth" | "key" | "local";
 export type MetadataModelIdNormalize = "case-insensitive";
@@ -30,9 +31,15 @@ export type InboundWire = "responses" | "chat" | "anthropic";
 
 /**
  * A per-model wire default: a bare string applies to every inbound, while the object
- * form applies only to the listed inbound protocols.
+ * form may scope the default to listed inbound protocols and authentication modes.
  */
-export type ModelWireDefault = string | { wire: string; inbound: readonly InboundWire[] };
+export type ModelWireDefault = string | {
+  wire: string;
+  inbound: readonly InboundWire[];
+  authModes?: readonly ProviderAuthKind[];
+  /** Whether this registry-selected route may relay a caller-owned service_tier. */
+  forwardCallerServiceTier?: boolean;
+};
 
 export interface ResponsesTerminalRepairPolicy {
   /** Quiet time after a structurally complete output graph before synthesizing completion. */
@@ -229,6 +236,11 @@ export interface ProviderRegistryEntry {
   };
   /** Provider-specific copy for the Codex catalog's Fast tier. */
   fastTierDescription?: string;
+  /**
+   * Registry-only destination guard for `modelSupportsServiceTier`. This scopes vendor evidence
+   * without changing provider ownership, routing, authentication, or config validation.
+   */
+  modelServiceTierCapabilityBaseUrlGuard?: (baseUrl: string) => boolean;
   /** Registry default for plaintext reasoning replay; see `OcxProviderConfig.preserveResponsesReasoningContent`. Registry-only like `supportsServiceTier`. */
   preserveResponsesReasoningContent?: boolean;
   /** Registry defaults for per-model Codex reasoning propagation; explicit user keys win during enrichment. */
@@ -1031,6 +1043,24 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // grok-4.5; the reasoning ladder does not — 4.6 adds the documented xhigh rung.
     models: ["grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-build-0.1", "grok-composer-2.5-fast"],
     defaultModel: "grok-4.5",
+    // The current Grok CLI catalog declares both subscription models as native Responses
+    // backends. Keep API-key and translated Chat/Anthropic callers on their existing wire;
+    // Codex Responses traffic can relay xAI's SSE as it arrives instead of waiting for the
+    // Chat Completions compatibility stream to flush at the end of a reasoning turn.
+    modelWireDefaults: {
+      "grok-4.6": {
+        wire: "openai-responses",
+        inbound: ["responses"],
+        authModes: ["oauth"],
+        forwardCallerServiceTier: false,
+      },
+      "grok-4.5": {
+        wire: "openai-responses",
+        inbound: ["responses"],
+        authModes: ["oauth"],
+        forwardCallerServiceTier: false,
+      },
+    },
     // Vision lineup per docs.x.ai model-capabilities/images/understanding: the grok-4.x chat
     // models accept image input (JPEG/PNG, URL or base64). Without this the catalog leaves
     // inputModalities undefined, and deriveComboCatalogModel defaults an undefined member to
@@ -1097,6 +1127,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     adapter: "anthropic",
     baseUrl: "https://api.anthropic.com",
     authKind: "oauth",
+    allowBaseUrlOverride: true,
     featured: true,
     oauthId: "anthropic",
     jawcodeBundle: "anthropic",
@@ -1369,7 +1400,33 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     autoToolChoiceOnlyModels: ["kimi-k2.7-code"],
     preserveReasoningContentModels: NEURALWATT_REASONING_HISTORY_MODELS,
   },
-  { id: "openrouter", label: "OpenRouter", adapter: "openai-chat", baseUrl: "https://openrouter.ai/api/v1", authKind: "key", featured: true, dashboardUrl: "https://openrouter.ai/keys", jawcodeBundle: "openrouter", models: ["anthropic/claude-sonnet-5", ...OPENROUTER_GPT56_MODELS], modelContextWindows: { "anthropic/claude-sonnet-5": 1_000_000, ...OPENROUTER_GPT56_CONTEXT_WINDOWS } },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    adapter: "openai-chat",
+    baseUrl: "https://openrouter.ai/api/v1",
+    authKind: "key",
+    featured: true,
+    dashboardUrl: "https://openrouter.ai/keys",
+    jawcodeBundle: "openrouter",
+    models: ["anthropic/claude-sonnet-5", ...OPENROUTER_GPT56_MODELS],
+    modelContextWindows: {
+      "anthropic/claude-sonnet-5": 1_000_000,
+      ...OPENROUTER_GPT56_CONTEXT_WINDOWS,
+    },
+    // OpenRouter documents priority support for OpenAI endpoints, but not Anthropic. Keep the
+    // provider unclassified and opt in only the exact OpenAI-backed slugs we ship. These facts
+    // belong only to the canonical destination; a same-named custom gateway is unknown to us.
+    modelServiceTierCapabilityBaseUrlGuard: isCanonicalOpenRouterTarget,
+    modelSupportsServiceTier: {
+      "openai/gpt-5.6-sol": true,
+      "openai/gpt-5.6-terra": true,
+      "openai/gpt-5.6-luna": true,
+    },
+    // Deliberately no OpenRouter route pin: it bills the endpoint actually used and reports the
+    // actual service_tier. B0 confirmation therefore owns downgrade safety. Forcing `only` plus
+    // `allow_fallbacks:false` would turn a graceful priority-capacity fallback into a hard failure.
+  },
   {
     // Primary sources checked 2026-08-02:
     // - docs.cline.bot/getting-started/clinepass publishes this exact catalog and explicitly
@@ -1484,7 +1541,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   // 2026-07-10: defaultModel is frozen pending Vertex-specific Tier-2 evidence; Gemini API
   // evidence from ai.google.dev does not establish Vertex publisher availability.
   { id: "google-vertex", label: "Google Vertex AI", adapter: "google", baseUrl: "https://aiplatform.googleapis.com", authKind: "key", dashboardUrl: "https://console.cloud.google.com/vertex-ai", defaultModel: "gemini-3-pro", googleMode: "vertex", jawcodeBundle: "google", extraMetadataAliases: ["gemini-vertex"] },
-  { id: "google-antigravity", label: "Google Antigravity", adapter: "google", baseUrl: "https://daily-cloudcode-pa.googleapis.com", authKind: "oauth", dashboardUrl: "https://antigravity.google", models: ANTIGRAVITY_MODELS, liveModels: true, defaultModel: "gemini-3.7-flash", modelContextWindows: ANTIGRAVITY_MODEL_CONTEXT_WINDOWS, modelInputModalities: ANTIGRAVITY_MODEL_INPUT_MODALITIES, modelReasoningEfforts: ANTIGRAVITY_MODEL_EFFORTS, googleMode: "cloud-code-assist", jawcodeBundle: "google", extraMetadataAliases: ["antigravity", "gemini-antigravity"] },
+  { id: "google-antigravity", label: "Google Antigravity", adapter: "google", baseUrl: "https://daily-cloudcode-pa.googleapis.com", authKind: "oauth", allowBaseUrlOverride: true, dashboardUrl: "https://antigravity.google", models: ANTIGRAVITY_MODELS, liveModels: true, defaultModel: "gemini-3.7-flash", modelContextWindows: ANTIGRAVITY_MODEL_CONTEXT_WINDOWS, modelInputModalities: ANTIGRAVITY_MODEL_INPUT_MODALITIES, modelReasoningEfforts: ANTIGRAVITY_MODEL_EFFORTS, googleMode: "cloud-code-assist", jawcodeBundle: "google", extraMetadataAliases: ["antigravity", "gemini-antigravity"] },
   { id: "azure-openai", label: "Azure OpenAI", adapter: "azure-openai", baseUrl: "https://{resource}.openai.azure.com/openai", authKind: "key", featured: true, dashboardUrl: "https://portal.azure.com" },
   { id: "ollama", label: "Ollama (local)", adapter: "openai-chat", baseUrl: "http://localhost:11434/v1", authKind: "local", allowPrivateNetworkByDefault: true, allowBaseUrlOverride: true, featured: true, note: "Local — key usually blank" },
   { id: "vllm", label: "vLLM (local)", adapter: "openai-chat", baseUrl: "http://localhost:8000/v1", authKind: "local", allowPrivateNetworkByDefault: true, allowBaseUrlOverride: true, featured: true, note: "Local — key usually blank" },
@@ -2423,6 +2480,16 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     note: "No key needed — public desktop tier. OpenCode currently advertises about 200 Big Pickle/free-model requests per 5 hours. The same Zen gateway can also short-window rate-limit free models at roughly 15-20 requests/minute, and may return generic 429s without Retry-After (opencodex synthesizes backoff only when that header is omitted). Free models are discovered live from Zen. Data use: per OpenCode's Zen docs (https://opencode.ai/docs/zen/), prompts sent to free models may be retained and used for training/improvement — do not send confidential material through this provider.",
     dashboardUrl: "https://opencode.ai",
     staticHeaders: {
+      // Zen answers a bare runtime User-Agent (Bun/x.y.z) more aggressively than a client
+      // that identifies itself, which is what the 429 in #2067 traced to. The value is
+      // deliberately unversioned: a pinned "opencode-cli/<version>" is a claim about an
+      // install we do not have and goes stale on the vendor's schedule, not ours.
+      // Corroboration, not authority: OmniRoute — an independent open-source broker against
+      // the same Zen upstream — defaults to exactly this pair (userAgent "opencode", client
+      // "desktop") in open-sse/executors/opencode.ts, and got there by RETREATING from its
+      // own earlier "opencode-cli/1.0.0" pin. An operator can still override either value
+      // through the provider headers API; user headers win case-insensitively at route time.
+      "User-Agent": "opencode",
       "x-opencode-client": "desktop",
     },
     modelReasoningEfforts: Object.fromEntries(OPENCODE_FREE_DEEPSEEK_MODELS.map(id => [id, deepseekThinkingEffortsFor(id)])),
@@ -2490,6 +2557,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // The gateway validates the ladder strictly and rejects anything above `high`.
     reasoningEfforts: ["low", "medium", "high"],
     reasoningEffortMap: { xhigh: "high", max: "high", ultra: "high" },
+    // Live token-plan verification (#1927): the Pro route rejects image input while
+    // mimo-v2.5 accepts it natively. Keep this provider-scoped so a hand-rolled
+    // provider with the same id but another destination does not inherit the claim.
+    noVisionModels: ["mimo-v2.5-pro"],
     // A user may already have hand-rolled a provider under this id against a different host;
     // without this, routedProviderConfig() would canonicalize their base URL onto ours and send
     // their key somewhere they did not choose.
@@ -2575,6 +2646,45 @@ export function getProviderRegistryEntry(id: string): ProviderRegistryEntry | un
   return PROVIDER_REGISTRY.find(entry => entry.id === id);
 }
 
+/**
+ * Merge a registry row's `staticHeaders` beneath a provider's own headers.
+ *
+ * The field is documented as "merged into every upstream request for this provider", but that
+ * was only ever true for a freshly seeded config: `providerConfigSeed` copies the block once
+ * (`derive.ts`), `enrichProviderFromCatalog` fills it only when the whole block is absent, and
+ * nothing merged it at request time. So an install that predates a header — or that saved any
+ * header of its own — never received the new one, which is exactly what #2067 would have
+ * shipped for every existing opencode-free user.
+ *
+ * The comparison is case-insensitive on purpose. HTTP header names are case-insensitive, but a
+ * plain object spread is not: merging a registry `User-Agent` over a user's `user-agent`
+ * produces two entries that `Headers` serializes as one comma-joined value
+ * ("opencode, custom-agent"), which is a corrupted request rather than an override. The user's
+ * spelling and value both win; the registry only fills names the user has not spoken for.
+ */
+export function mergeRegistryStaticHeaders(
+  staticHeaders: Record<string, string> | undefined,
+  userHeaders: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (!staticHeaders) return userHeaders;
+  if (!userHeaders) return { ...staticHeaders };
+  const claimed = new Set(Object.keys(userHeaders).map(name => name.toLowerCase()));
+  const merged: Record<string, string> = { ...userHeaders };
+  for (const [name, value] of Object.entries(staticHeaders)) {
+    if (!claimed.has(name.toLowerCase())) merged[name] = value;
+  }
+  return merged;
+}
+
+/** Whether this registry row's per-model service-tier evidence applies to one configured target. */
+export function registryModelServiceTierCapabilityApplies(
+  entry: Pick<ProviderRegistryEntry, "modelServiceTierCapabilityBaseUrlGuard">,
+  provider: Pick<OcxProviderConfig, "baseUrl">,
+): boolean {
+  const guard = entry.modelServiceTierCapabilityBaseUrlGuard;
+  return guard === undefined || guard(provider.baseUrl);
+}
+
 function normalizedProviderEndpoint(value: string): string {
   const trimmed = value.trim();
   try {
@@ -2654,8 +2764,12 @@ export function providerModelWireDefault(
   if (!entry?.modelWireDefaults || !providerMatchesRegistryTransport(id, provider)) return undefined;
   const declared = entry.modelWireDefaults[modelId.trim().toLowerCase()];
   if (declared === undefined) return undefined;
-  // A bare string applies to every inbound; the object form only to the listed ones.
-  if (typeof declared !== "string" && !declared.inbound.includes(inbound)) return undefined;
+  // A bare string applies to every inbound/auth mode; the object form may narrow either.
+  if (typeof declared !== "string") {
+    if (!declared.inbound.includes(inbound)) return undefined;
+    const authMode = provider.authMode ?? entry.authKind;
+    if (declared.authModes && !declared.authModes.includes(authMode)) return undefined;
+  }
   const wire = typeof declared === "string" ? declared : declared.wire;
   return wire !== undefined && allowedWires.has(wire) ? wire : undefined;
 }

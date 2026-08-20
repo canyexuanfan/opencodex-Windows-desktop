@@ -86,8 +86,8 @@ export interface AttemptCostEstimate {
   priorityMultiplier?: number;
   /** Set when the published long-context rate was applied (#908). */
   contextTier?: ContextTierName;
-  /** Confirmed priority + long context has no published combined rate; this cost is a floor. */
-  priorityLowerBound?: true;
+  /** The numeric estimate is a known floor because the exact Priority price is unavailable. */
+  priorityLowerBound?: boolean;
 }
 
 export interface CostEstimate {
@@ -100,8 +100,8 @@ export interface CostEstimate {
   priorityMultiplier?: number;
   /** Set when any priced attempt used the published long-context rate (#908). */
   contextTier?: ContextTierName;
-  /** Set when any priced attempt is only a known lower bound. */
-  priorityLowerBound?: true;
+  /** The aggregate is a known floor because every priced attempt is a lower bound. */
+  priorityLowerBound?: boolean;
 }
 
 function finiteNonNegative(value: number): boolean {
@@ -362,7 +362,9 @@ export type ServiceTierInput = string | ServiceTierContext;
  * and long-context exclusivity depends on that distinction.
  */
 export function serviceTierContext(entry: ServiceTierContext): ServiceTierContext {
-  if (entry.tierOutcome) return serviceTierContextFromOutcome(entry.tierOutcome);
+  if (entry.tierOutcome) {
+    return { ...serviceTierContextFromOutcome(entry.tierOutcome), tierOutcome: entry.tierOutcome };
+  }
   return {
     responseServiceTier: entry.responseServiceTier,
     requestedServiceTier: entry.requestedServiceTier,
@@ -464,6 +466,28 @@ function applyPriorityMultiplier(
 }
 
 /**
+ * OpenRouter confirms the actual endpoint tier and documents priority as higher cost, but this
+ * branch does not bundle its provider-specific priority endpoint prices. A confirmed canonical
+ * priority result can therefore use the standard price only as a provable lower bound. Do not
+ * extend this to flex (cheaper) or to other providers without the same pricing contract.
+ *
+ * An ASSUMED priority attempt needs the same marker for a different reason. There the provider
+ * never echoed a tier at all, so the standard price is not merely a lower bound on a known
+ * premium — it is a floor under an outcome we did not observe. Returning it unmarked reports a
+ * definite standard cost for a request that may well have been billed as priority, which is the
+ * one thing a cost estimate must never do.
+ */
+function isOpenRouterPriorityLowerBound(
+  provider: string,
+  outcome: AttemptTierOutcome | undefined,
+): boolean {
+  return baseProviderLabel(provider) === "openrouter"
+    && outcome?.canonical === "priority"
+    && outcome.fastOutcome === "applied"
+    && (outcome.confirmation === "confirmed" || outcome.confirmation === "assumed");
+}
+
+/**
  * Per-attempt cost estimate: tokens normalized, price resolved (user overlay →
  * catalogs), priority/long-context tiers applied. Null when usage or price is
  * missing so combos can fail closed.
@@ -482,7 +506,7 @@ export function estimateAttemptCost(
   const attemptServiceTier = attempt.tierOutcome
     ? serviceTierContextFromOutcome(attempt.tierOutcome)
     : serviceTier;
-  const [tieredCost4, contextTier, priorityLowerBound] = applyContextTier(
+  const [tieredCost4, contextTier, contextPriorityLowerBound] = applyContextTier(
     price.cost4, attempt.provider, attempt.model, attempt.usage.inputTokens, attemptServiceTier,
   );
   // A published long-context row owns the numeric estimate. OpenAI declares that band
@@ -491,6 +515,8 @@ export function estimateAttemptCost(
   const [effectiveCost4, multiplier] = contextTier
     ? [tieredCost4, 1] as const
     : applyPriorityMultiplier(tieredCost4, attempt.provider, attempt.model, attemptServiceTier);
+  const priorityLowerBound = contextPriorityLowerBound
+    || isOpenRouterPriorityLowerBound(attempt.provider, attempt.tierOutcome);
   return {
     ordinal: attempt.ordinal,
     provider: attempt.provider,
@@ -501,7 +527,7 @@ export function estimateAttemptCost(
     estimated: isEstimated(attempt.usage, attempt.usageStatus, price.status),
     ...(multiplier !== 1 ? { priorityMultiplier: multiplier } : {}),
     ...(contextTier ? { contextTier } : {}),
-    ...(priorityLowerBound ? { priorityLowerBound: true as const } : {}),
+    ...(priorityLowerBound ? { priorityLowerBound: true } : {}),
   };
 }
 
@@ -567,12 +593,16 @@ export function estimateRequestCost(
   if (!tokens) return null;
   const price = resolveMatchedPrice(input.provider, input.model, overlays, userOverlays);
   if (!price) return null;
-  const [tieredCost4, contextTier, priorityLowerBound] = applyContextTier(
+  const [tieredCost4, contextTier, contextPriorityLowerBound] = applyContextTier(
     price.cost4, input.provider, input.model, input.usage.inputTokens, input.serviceTier,
   );
   const [effectiveCost4, multiplier] = contextTier
     ? [tieredCost4, 1] as const
     : applyPriorityMultiplier(tieredCost4, input.provider, input.model, input.serviceTier);
+  const priorityLowerBound = contextPriorityLowerBound || isOpenRouterPriorityLowerBound(
+    input.provider,
+    typeof input.serviceTier === "object" ? input.serviceTier.tierOutcome : undefined,
+  );
   return {
     tokens,
     price,
@@ -580,7 +610,7 @@ export function estimateRequestCost(
     estimated: isEstimated(input.usage, input.usageStatus, price.status),
     ...(multiplier !== 1 ? { priorityMultiplier: multiplier } : {}),
     ...(contextTier ? { contextTier } : {}),
-    ...(priorityLowerBound ? { priorityLowerBound: true as const } : {}),
+    ...(priorityLowerBound ? { priorityLowerBound: true } : {}),
   };
 }
 
