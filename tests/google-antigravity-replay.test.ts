@@ -205,6 +205,18 @@ describe("antigravity reasoning-replay cache", () => {
     expect((contents[0].parts[0] as { thoughtSignature?: string }).thoughtSignature).toBe("sig-orderindep00000");
   });
 
+  test("matches freeform/custom_tool_call {input: string} against observed parsed JSON args", () => {
+    // Upstream saw functionCall with parsed args { cmd: "ls -la" }
+    observeAntigravityReplay(MODEL, SESSION, [fcPart("default_api:exec", { cmd: "ls -la" }, "sig-freeform-exec-1111")]);
+    // Client replays custom_tool_call with serialized input { input: '{"cmd":"ls -la"}' }
+    const contents = [{
+      role: "model",
+      parts: [{ functionCall: { name: "default_api:exec", args: { input: JSON.stringify({ cmd: "ls -la" }) } } }],
+    }];
+    applyAntigravityReplay(MODEL, SESSION, contents);
+    expect((contents[0].parts[0] as { thoughtSignature?: string }).thoughtSignature).toBe("sig-freeform-exec-1111");
+  });
+
   test("claude models do not use the replay cache", () => {
     expect(antigravityUsesReplayCache("claude-opus-4.6")).toBe(false);
     expect(antigravityUsesReplayCache("gemini-3-pro")).toBe(true);
