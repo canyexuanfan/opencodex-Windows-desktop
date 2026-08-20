@@ -13,7 +13,7 @@ import {
   handleCodexAuthAPI, updateAccountQuota, getAccountQuota,
   checkAccountIdCollision, getMainChatgptAccountId,
   markAccountNeedsReauth, isAccountNeedsReauth, clearAccountNeedsReauth, clearAccountQuota,
-  clearMainAccountInfoCache, maskEmail,
+  clearMainAccountInfoCache, maskEmail, fetchMainAccountInfo,
   clearCodexQuotaPrimeState, primeCodexPoolQuotas, seedCodexAuthAdmissionForTests,
   type CodexAuthAccountDto,
   listCodexAuthAccounts,
@@ -855,6 +855,40 @@ describe("codex-auth API", () => {
     const data = await resp!.json() as { accounts: Array<{ id: string; needsReauth?: boolean }> };
 
     expect(data.accounts.find(account => account.id === MAIN_CODEX_ACCOUNT_ID)?.needsReauth).toBe(false);
+    expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(false);
+  });
+
+  test("a background main account refresh does not retract a reauth quarantine (#327)", async () => {
+    // #327's own repro: the token is valid, but its workspace can no longer be
+    // selected, so Responses traffic answers 403 and quarantines the account.
+    // /wham/usage is a different backend path and keeps answering 200 for that same
+    // token, so the periodic refresh must not read its own 200 as proof the account
+    // can serve traffic again — doing so returned the account to rotation, the next
+    // request failed identically and re-marked it, and needsReauth never settled.
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "live-main", account_id: "acct-main" },
+    }));
+    markAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+    clearMainAccountInfoCache();
+    let usageCalls = 0;
+    globalThis.fetch = (async () => {
+      usageCalls += 1;
+      return Response.json({
+        email: "main@example.test",
+        plan_type: "pro",
+        rate_limit: { primary_window: { used_percent: 10, reset_at: 1783000000 } },
+      });
+    }) as typeof fetch;
+
+    expect((await fetchMainAccountInfo(false)).email).toBe("main@example.test");
+    // The probe really ran and really succeeded — the quarantine survives it anyway.
+    expect(usageCalls).toBe(1);
+    expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(true);
+
+    // An explicit refresh is an operator asking to re-evaluate, so it stays
+    // authoritative and still clears the flag (the test above pins that direction).
+    clearMainAccountInfoCache();
+    expect((await fetchMainAccountInfo(true)).email).toBe("main@example.test");
     expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(false);
   });
 

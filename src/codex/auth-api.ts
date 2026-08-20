@@ -745,7 +745,16 @@ async function fetchMainAccountInfoWhileOwned(
       ts: Date.now(),
     };
     setMainAccountInfoCache(result);
-    clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+    // Only an explicit refresh may retract a reauth quarantine. A 200 from
+    // /wham/usage proves the token authenticates to the usage endpoint; it does not
+    // prove the account can serve Responses traffic, which is a different backend path
+    // and still answers 403 for a workspace the token may no longer select (#327).
+    // Letting the background poll clear the flag put such an account straight back into
+    // rotation: the next request failed the same way and re-marked it, so needsReauth
+    // never settled and the dashboard kept showing nothing — the symptom #327 reported.
+    // An explicit refresh is an operator asking to re-evaluate, normally right after
+    // signing in again, so it stays authoritative.
+    if (forceRefresh) clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
     // Mirror main quota + plan into the shared stores so the rotation engine can
     // score and auto-switch the main account exactly like a pool account (Option A).
     setMainAccountPlan(result.plan);
