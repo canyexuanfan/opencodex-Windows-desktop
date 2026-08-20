@@ -169,7 +169,7 @@ Manage and apply the Grok Build model fence.
 
 ## Client config export
 
-### `ocx export --client <opencode|pi|omp|hermes|openclaw|kimi|gajae|dsh>`
+### `ocx export --client <opencode|pi|omp|hermes|openclaw|kimi|gajae|dsh|mcode|zcode|prime>`
 
 Print a client config wired to the running proxy. The command serializes the
 `opencodex` provider block — base URL, model list, and the client's credential
@@ -180,7 +180,7 @@ models Codex can currently see.
 
 | Flag | Action |
 | --- | --- |
-| `--client <opencode\|pi\|omp\|hermes\|openclaw\|kimi\|gajae\|dsh>` | Required. Selects the client config dialect. |
+| `--client <opencode\|pi\|omp\|hermes\|openclaw\|kimi\|gajae\|dsh\|mcode\|zcode\|prime>` | Required. Selects the client config dialect. |
 | `--json` | Print the generated document as JSON on stdout for scripts. This is JSON even when the selected client's native format is YAML, TOML, or JSON5. |
 | `--out <path>` | Write the client's native config format to `<path>`. Refuses to replace an existing file. |
 | `--force` | Allow `--out` to replace an existing file. |
