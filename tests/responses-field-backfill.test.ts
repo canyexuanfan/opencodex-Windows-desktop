@@ -402,4 +402,22 @@ describe("responses-field-backfill", () => {
     });
     expect(new Set(ids).size).toBe(2);
   });
+
+  // `compaction` is the /v1/responses/compact wire format, not a Responses output item: it
+  // carries no id in that contract, and clients compare the body exactly. Synthesizing an id
+  // here changed a response that had nothing to do with strict Responses decoding — a defect
+  // that only appeared once this backfill and the compact endpoint were on the same tree.
+  test("a compaction item is returned byte-for-byte", () => {
+    const response = {
+      id: "resp_1",
+      object: "response",
+      status: "completed",
+      output: [{ type: "compaction", encrypted_content: "gAAAAAB-test-opaque" }],
+    };
+    const result = JSON.parse(backfillResponsesFieldsJson(JSON.stringify(response))) as {
+      output: Record<string, unknown>[];
+    };
+    expect(result.output[0]).toEqual({ type: "compaction", encrypted_content: "gAAAAAB-test-opaque" });
+    expect(result.output[0]).not.toHaveProperty("id");
+  });
 });
