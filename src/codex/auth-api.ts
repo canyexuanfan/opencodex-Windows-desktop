@@ -644,12 +644,13 @@ async function retryMainAccountInfoIfIdentityChanged(
   requestAccountId: string | null,
   retriesRemaining: number,
   nativeMainLease: AdmissionLease,
+  explicitRefresh: boolean,
 ): Promise<MainAccountInfoFetchResult | null> {
   const currentAccountId = getMainChatgptAccountId();
   if (currentAccountId === null || currentAccountId === requestAccountId) return null;
   reconcileMainCodexAccountRuntimeState();
   return retriesRemaining > 0
-    ? fetchMainAccountInfoWhileOwned(true, retriesRemaining - 1, nativeMainLease)
+    ? fetchMainAccountInfoWhileOwned(true, retriesRemaining - 1, nativeMainLease, explicitRefresh)
     : { info: EMPTY_MAIN_ACCOUNT_INFO, credentialChecked: true, hasCredential: true };
 }
 
@@ -696,6 +697,13 @@ async function fetchMainAccountInfoWhileOwned(
   forceRefresh: boolean,
   retriesRemaining: number,
   nativeMainLease: AdmissionLease,
+  /**
+   * Whether the *caller* asked for this refresh. `forceRefresh` also means "bypass the
+   * cache", and `retryMainAccountInfoIfIdentityChanged` re-enters with it set purely to
+   * re-read after the identity changed. Keeping the two apart stops that retry from
+   * promoting a background poll into operator intent below.
+   */
+  explicitRefresh: boolean = forceRefresh,
 ): Promise<MainAccountInfoFetchResult> {
   const writerGeneration = captureConfigGeneration();
   reconcileMainCodexAccountRuntimeState();
@@ -724,7 +732,7 @@ async function fetchMainAccountInfoWhileOwned(
     });
     if (!resp.ok) {
       const terminalAuthFailure = await isTerminalMainAuthResponse(resp, isMainAccountTokenVerifiablyLive());
-      const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining, nativeMainLease);
+      const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining, nativeMainLease, explicitRefresh);
       if (retried) return retried;
       if (terminalAuthFailure) {
         clearMainAccountInfoCache();
@@ -733,7 +741,7 @@ async function fetchMainAccountInfoWhileOwned(
       return { info: EMPTY_MAIN_ACCOUNT_INFO, credentialChecked: true, hasCredential: true };
     }
     const data = (await resp.json()) as WhamUsageResponse;
-    const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining, nativeMainLease);
+    const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining, nativeMainLease, explicitRefresh);
     if (retried) return retried;
     const plan = nonEmptyPlan(data.plan_type) ?? nonEmptyPlan(cached?.plan) ?? nonEmptyPlan(getMainAccountPlan());
     const quota = parseUsageQuota({ ...data, ...(plan ? { plan_type: plan } : {}) });
@@ -754,7 +762,7 @@ async function fetchMainAccountInfoWhileOwned(
     // never settled and the dashboard kept showing nothing — the symptom #327 reported.
     // An explicit refresh is an operator asking to re-evaluate, normally right after
     // signing in again, so it stays authoritative.
-    if (forceRefresh) clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+    if (explicitRefresh) clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
     // Mirror main quota + plan into the shared stores so the rotation engine can
     // score and auto-switch the main account exactly like a pool account (Option A).
     setMainAccountPlan(result.plan);
@@ -769,7 +777,7 @@ async function fetchMainAccountInfoWhileOwned(
       ...(freshResetCredits !== undefined ? { freshResetCredits } : {}),
     };
   } catch {
-    const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining, nativeMainLease);
+    const retried = await retryMainAccountInfoIfIdentityChanged(requestAccountId, retriesRemaining, nativeMainLease, explicitRefresh);
     return retried ?? { info: EMPTY_MAIN_ACCOUNT_INFO, credentialChecked: true, hasCredential: true };
   }
 }

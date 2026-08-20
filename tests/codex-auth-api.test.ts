@@ -892,6 +892,43 @@ describe("codex-auth API", () => {
     expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(false);
   });
 
+  test("an identity-change retry does not upgrade a background refresh into an explicit one (#327)", async () => {
+    // `retryMainAccountInfoIfIdentityChanged` re-enters with forceRefresh=true so it can
+    // re-read past a now-stale cache. That argument must not double as operator intent:
+    // a background poll that crosses an identity change would otherwise come back with
+    // the authority to retract a quarantine it was never allowed to touch.
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "live-main", account_id: "acct-before" },
+    }));
+    clearMainAccountInfoCache();
+    let usageCalls = 0;
+    globalThis.fetch = (async () => {
+      usageCalls += 1;
+      if (usageCalls === 1) {
+        // Identity changes on disk mid-probe. The retry's purge legitimately drops the
+        // *previous* identity's runtime state — that is not what this test is about.
+        writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+          tokens: { access_token: "live-main", account_id: "acct-after" },
+        }));
+      } else {
+        // Real traffic quarantines the *new* identity while the retry probe is in
+        // flight, exactly as recordCodexUpstreamOutcome does on a 401/403.
+        markAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+      }
+      return Response.json({
+        email: "main@example.test",
+        plan_type: "pro",
+        rate_limit: { primary_window: { used_percent: 10, reset_at: 1783000000 } },
+      });
+    }) as typeof fetch;
+
+    await fetchMainAccountInfo(false);
+
+    // The retry really fired — otherwise this proves nothing about the retry path.
+    expect(usageCalls).toBeGreaterThan(1);
+    expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(true);
+  });
+
   test("BUG-R327: main account exposes and updates needsReauth from WHAM auth responses", async () => {
     writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
       tokens: {
