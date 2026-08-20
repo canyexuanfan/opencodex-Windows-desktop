@@ -217,6 +217,31 @@ describe("antigravity reasoning-replay cache", () => {
     expect((contents[0].parts[0] as { thoughtSignature?: string }).thoughtSignature).toBe("sig-freeform-exec-1111");
   });
 
+  test("matches alternate key even when wrapped representation exceeds canonical key limit (ck undefined)", () => {
+    observeAntigravityReplay(MODEL, SESSION, [fcPart("default_api:exec", { cmd: "x" }, "sig-whitespace-overflow")]);
+    // 65 KiB of leading whitespace makes the wrapped object exceed 64 KiB, so functionCallKey(fc.name, fc.args) is null/undefined.
+    // However, the parsed inner object is small and produces a valid alternate key.
+    const bigWhitespaceJson = " ".repeat(66 * 1024) + JSON.stringify({ cmd: "x" });
+    const contents = [{
+      role: "model",
+      parts: [{ functionCall: { name: "default_api:exec", args: { input: bigWhitespaceJson } } }],
+    }];
+    applyAntigravityReplay(MODEL, SESSION, contents);
+    expect((contents[0].parts[0] as { thoughtSignature?: string }).thoughtSignature).toBe("sig-whitespace-overflow");
+  });
+
+  test("rejects oversized input before JSON.parse without matching or allocating", () => {
+    observeAntigravityReplay(MODEL, SESSION, [fcPart("default_api:exec", { data: "huge" }, "sig-should-not-match")]);
+    // 100 KiB of valid JSON payload exceeds REPLAY_MAX_CANONICAL_ARGS_BYTES and must be skipped before parsing.
+    const oversizedPayload = JSON.stringify({ data: "a".repeat(100 * 1024) });
+    const contents = [{
+      role: "model",
+      parts: [{ functionCall: { name: "default_api:exec", args: { input: oversizedPayload } } }],
+    }];
+    applyAntigravityReplay(MODEL, SESSION, contents);
+    expect((contents[0].parts[0] as { thoughtSignature?: string }).thoughtSignature).toBeUndefined();
+  });
+
   test("claude models do not use the replay cache", () => {
     expect(antigravityUsesReplayCache("claude-opus-4.6")).toBe(false);
     expect(antigravityUsesReplayCache("gemini-3-pro")).toBe(true);

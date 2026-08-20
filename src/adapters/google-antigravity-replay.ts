@@ -709,7 +709,10 @@ export function applyAntigravityReplay(model: string, sessionId: string, content
         // The client replays custom_tool_call with arguments: { input: "..." }.
         // Upstream was invoked with args: { input: "..." } or raw string or parsed JSON.
         const argsObj = fc.args as Record<string, unknown>;
-        if (typeof argsObj.input === "string") {
+        if (
+          typeof argsObj.input === "string"
+          && utf8.encode(argsObj.input.trim()).byteLength <= REPLAY_MAX_CANONICAL_ARGS_BYTES
+        ) {
           try {
             const parsedInput = JSON.parse(argsObj.input);
             if (parsedInput && typeof parsedInput === "object") {
@@ -724,12 +727,10 @@ export function applyAntigravityReplay(model: string, sessionId: string, content
           }
         }
       }
-      if (call && ck) {
+      if (call && matchedKey) {
         part.thoughtSignature = call.signature;
-        if (matchedKey) {
-          entry.byCall.delete(matchedKey);
-          entry.byCall.set(matchedKey, { ...call, touchedAtMs: now });
-        }
+        entry.byCall.delete(matchedKey);
+        entry.byCall.set(matchedKey, { ...call, touchedAtMs: now });
         touched = true;
       }
     }
