@@ -346,6 +346,34 @@ describe("OpenAI Responses passthrough sanitization", () => {
       .not.toHaveProperty("defer_loading");
     expect(namespace?.tools?.find(tool => tool.name === "deferred_read"))
       .not.toHaveProperty("defer_loading");
+    expect(body.tools.find(tool => tool.name === "tool_search")).toMatchObject({
+      type: "function",
+      name: "tool_search",
+      description: "Search deferred tools",
+    });
+  });
+
+  test("noncanonical forward passthrough also lowers tool_search without caller credential relay", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://provider.example/v1",
+      authMode: "forward",
+      headers: { authorization: "Bearer provider-static" },
+    });
+    const request = adapter.buildRequest({
+      modelId: deferredToolBody.model,
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: deferredToolBody,
+    }, { headers: new Headers({ authorization: "Bearer caller-secret" }) });
+    const body = JSON.parse(request.body) as { tools: Array<Record<string, unknown>> };
+
+    expect(body.tools.find(tool => tool.name === "tool_search")).toMatchObject({
+      type: "function",
+      name: "tool_search",
+    });
+    expect(request.headers.authorization).toBe("Bearer provider-static");
   });
 
   test("canonical forward passthrough leaves tool-search loading to the native backend", () => {
@@ -397,6 +425,8 @@ describe("OpenAI Responses passthrough sanitization", () => {
       "declared_deferred_read",
       "deferred_read",
     ]);
+    expect(additionalTools?.find(tool => tool.name === "tool_search"))
+      .toMatchObject({ type: "function", name: "tool_search" });
   });
 
   test("normalizes top-level function schemas in the serialized raw body (#745)", () => {
@@ -819,6 +849,92 @@ describe("OpenAI Responses passthrough sanitization", () => {
     }, { headers: new Headers({ authorization: "Bearer token" }) });
     const body = JSON.parse(request.body) as { prompt_cache_retention?: string };
 
+    expect(body.prompt_cache_retention).toBe("24h");
+  });
+
+  /**
+   * Issue #2092: the ChatGPT backend 400s a gpt-5.6 request that still carries the retired
+   * `prompt_cache_retention`. The strip is deliberately narrow, and these cases pin the
+   * narrowness itself — a wider strip passes the first block and fails the second.
+   */
+  test.each(["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"])(
+    "drops the retired prompt_cache_retention for %s without inventing replacement options",
+    modelId => {
+      const adapter = createResponsesPassthroughAdapter(provider);
+      const request = adapter.buildRequest({
+        modelId,
+        context: { messages: [] },
+        stream: true,
+        options: {},
+        _rawBody: { model: modelId, input: "hi", prompt_cache_retention: "24h" },
+      }, { headers: new Headers({ authorization: "Bearer token" }) });
+      const body = JSON.parse(request.body) as {
+        prompt_cache_retention?: string;
+        prompt_cache_options?: unknown;
+      };
+
+      expect(body.prompt_cache_retention).toBeUndefined();
+      // Translating "24h" into the replacement field would invent a caching decision the
+      // caller never made, so absence must stay absence.
+      expect(body.prompt_cache_options).toBeUndefined();
+    },
+  );
+
+  test("keeps caller-sent prompt_cache_options while dropping the retired retention", () => {
+    const adapter = createResponsesPassthroughAdapter(provider);
+    const request = adapter.buildRequest({
+      modelId: "gpt-5.6-sol",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "gpt-5.6-sol",
+        input: "hi",
+        prompt_cache_retention: "24h",
+        prompt_cache_options: { ttl: "30m" },
+      },
+    }, { headers: new Headers({ authorization: "Bearer token" }) });
+    const body = JSON.parse(request.body) as {
+      prompt_cache_retention?: string;
+      prompt_cache_options?: { ttl?: string };
+    };
+
+    expect(body.prompt_cache_retention).toBeUndefined();
+    expect(body.prompt_cache_options).toEqual({ ttl: "30m" });
+  });
+
+  test("a near-miss model id is not swept up by the gpt-5.6 family match", () => {
+    const adapter = createResponsesPassthroughAdapter(provider);
+    const request = adapter.buildRequest({
+      modelId: "gpt-5.60",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { model: "gpt-5.60", input: "hi", prompt_cache_retention: "24h" },
+    }, { headers: new Headers({ authorization: "Bearer token" }) });
+    const body = JSON.parse(request.body) as { prompt_cache_retention?: string };
+
+    // A bare startsWith("gpt-5.6") would strip here and silently change an unrelated model.
+    expect(body.prompt_cache_retention).toBe("24h");
+  });
+
+  test("a noncanonical forward gateway keeps the field even for gpt-5.6", () => {
+    const adapter = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://gateway.example/v1",
+      authMode: "forward" as const,
+    });
+    const request = adapter.buildRequest({
+      modelId: "gpt-5.6-sol",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { model: "gpt-5.6-sol", input: "hi", prompt_cache_retention: "24h" },
+    }, { headers: new Headers({ authorization: "Bearer token" }) });
+    const body = JSON.parse(request.body) as { prompt_cache_retention?: string };
+
+    // Only the canonical ChatGPT backend is known to reject it. Stripping everywhere would be
+    // a behavior change for deployments that still honor the field.
     expect(body.prompt_cache_retention).toBe("24h");
   });
 

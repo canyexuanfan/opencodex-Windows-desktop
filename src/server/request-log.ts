@@ -65,6 +65,8 @@ export interface RequestLogContext {
   /** Stable non-PII Codex Pool account identity for durable usage attribution. */
   accountLogLabel?: string;
   requestedModel?: string;
+  /** Original bare helper model when the opt-in shadow-call route rewrote this request. */
+  shadowCallRewrittenFrom?: string;
   /** Internal structural combo identity; omitted from RequestLogEntry/JSONL. */
   comboId?: string;
   requestedEffort?: string;
@@ -142,6 +144,8 @@ export interface RequestLogEntry {
   /** Best-effort chat/session correlation for Logs grouping (#330). */
   conversationId?: string;
   requestedModel?: string;
+  /** Original bare helper model when the opt-in shadow-call route rewrote this request. */
+  shadowCallRewrittenFrom?: string;
   requestedEffort?: string;
   effectiveEffort?: string;
   reasoningWireField?: string;
@@ -255,6 +259,9 @@ export function requestLogEntryFromPersistedUsage(entry: PersistedUsageEntry): R
       ? { accountLogLabel: entry.accountLogLabel }
       : {}),
     ...(entry.requestedModel ? { requestedModel: entry.requestedModel } : {}),
+    ...(entry.shadowCallRewrittenFrom
+      ? { shadowCallRewrittenFrom: entry.shadowCallRewrittenFrom }
+      : {}),
     ...(entry.requestedEffort ? { requestedEffort: entry.requestedEffort } : {}),
     ...(entry.effectiveEffort ? { effectiveEffort: entry.effectiveEffort } : {}),
     ...(entry.reasoningWireField ? { reasoningWireField: entry.reasoningWireField } : {}),
@@ -327,6 +334,20 @@ export function hydrateRequestLogsFromDisk(
 }
 
 export function addRequestLog(entry: RequestLogEntry) {
+  // Sanitize ONCE, at the ingress, and use that one value for both destinations.
+  //
+  // `addFinalRequestLog` is not the only way in: `addRequestLog` is exported and callable
+  // directly, and it retained the caller's entry verbatim in the in-memory ring while only the
+  // field-by-field disk projection below saw a sanitized value. That split let `/api/logs`
+  // serve a raw upstream-supplied marker — a newline in it can forge a record boundary in a
+  // line-oriented viewer — while `usage.jsonl` looked clean, which is the worst shape for a
+  // sanitization bug because the safe surface is the one you check.
+  const shadowCallRewrittenFrom = sanitizeLogMetadataString(entry.shadowCallRewrittenFrom);
+  const retained: RequestLogEntry = shadowCallRewrittenFrom === entry.shadowCallRewrittenFrom
+    ? entry
+    : { ...entry, ...(shadowCallRewrittenFrom ? { shadowCallRewrittenFrom } : {}) };
+  if (!shadowCallRewrittenFrom && retained !== entry) delete retained.shadowCallRewrittenFrom;
+  entry = retained;
   retainRequestLogEntry(entry);
   try {
     // Failure diagnostics survive the 200-entry ring buffer by riding the persisted
@@ -358,6 +379,9 @@ export function addRequestLog(entry: RequestLogEntry) {
       ...(entry.conversationId ? { conversationId: entry.conversationId } : {}),
       ...(entry.resolvedModel ? { resolvedModel: entry.resolvedModel } : {}),
       ...(entry.requestedModel ? { requestedModel: entry.requestedModel } : {}),
+      ...(entry.shadowCallRewrittenFrom
+        ? { shadowCallRewrittenFrom: entry.shadowCallRewrittenFrom }
+        : {}),
       ...(entry.requestedEffort ? { requestedEffort: entry.requestedEffort } : {}),
       ...(entry.effectiveEffort ? { effectiveEffort: entry.effectiveEffort } : {}),
       ...(entry.reasoningWireField ? { reasoningWireField: entry.reasoningWireField } : {}),
@@ -905,6 +929,12 @@ export function addFinalRequestLog(
   const loggedUsage = aggregate?.usage ?? existing.usage;
   const usageStatus = aggregate?.status ?? existing.status;
   const totalTokens = aggregate?.totalTokens ?? existing.totalTokens;
+  // Sanitize at the logging layer, not only at the one call site that populates this today.
+  // The value originates in an upstream-supplied model id, so an unsanitized newline would
+  // let a single field forge a record boundary in any line-oriented log viewer. Doing it here
+  // means a future caller cannot reintroduce the hole by forgetting to sanitize first, and
+  // the in-memory /api/logs row matches what usage.jsonl already stores.
+  const shadowCallRewrittenFrom = sanitizeLogMetadataString(logCtx.shadowCallRewrittenFrom);
   addLog({
     requestId,
     timestamp: start,
@@ -919,6 +949,7 @@ export function addFinalRequestLog(
       : {}),
     ...(logCtx.conversationId ? { conversationId: logCtx.conversationId } : {}),
     ...(logCtx.requestedModel ? { requestedModel: logCtx.requestedModel } : {}),
+    ...(shadowCallRewrittenFrom ? { shadowCallRewrittenFrom } : {}),
     ...(logCtx.requestedEffort ? { requestedEffort: logCtx.requestedEffort } : {}),
     ...(logCtx.effectiveEffort ? { effectiveEffort: logCtx.effectiveEffort } : {}),
     ...(logCtx.reasoningWireField ? { reasoningWireField: logCtx.reasoningWireField } : {}),
