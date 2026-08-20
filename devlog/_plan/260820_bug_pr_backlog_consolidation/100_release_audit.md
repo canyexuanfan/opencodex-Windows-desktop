@@ -36,9 +36,14 @@ The sanitizer on that path is not sufficient, for two independent reasons — bo
 the shipped code, not reasoned about:
 
 ```
-"gpt-5.6-luna\nBearer sk-abc123def456ghi789jkl"      -> "gpt-5.6-lunaBearer [REDACTED]"
-"gpt-5.6-luna\nAIzaSyA1B2C3D4E5F6G7H8I9J0K1L2M3N4O5P6" -> unchanged, key intact
+"<prefix>\n<Bearer + an sk-shaped value>"    -> control stripped, value redacted
+"<prefix>\n<a Google AIza-shaped key>"       -> control stripped, value INTACT
 ```
+
+(Written as shapes rather than literals on purpose: `scripts/privacy-scan.ts` matches those
+patterns wherever they appear, so pasting a real-looking transcript breaks the `gates` job for
+every branch cut from `dev`. That is precisely what #2175 had to undo, and this record
+reintroduced it — the scanner does not care that a credential is fake.)
 
 1. Control characters are stripped **before** redaction, so the newline that separated marker
    from credential is gone by the time the `Bearer` rule looks for a word boundary.
@@ -191,4 +196,3 @@ this closeout resolves them; they need a product decision, not a patch.
 
 Release execution remains unauthorized: no `scripts/release.ts`, no publish, no tag, no change
 to `main` or `preview`.
-
