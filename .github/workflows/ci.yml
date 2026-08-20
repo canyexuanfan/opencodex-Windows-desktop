@@ -516,7 +516,7 @@ jobs:
             if [ "$suite_status" -eq 0 ]; then
               exit 0
             fi
-            if ! grep -Eqi 'oh no: Bun has crashed|Segmentation fault at address|Illegal instruction|Bus error|Aborted \(core dumped\)' "$suite_log"; then
+            if ! grep -Eqi 'oh no: Bun has crashed|Internal assertion failure|Segmentation fault at address|Illegal instruction|Bus error|Aborted \(core dumped\)' "$suite_log"; then
               echo "::error::macOS suite failed on attempt ${attempt} (exit ${suite_status}); assertion failures are not retried."
               exit "$suite_status"
             fi
@@ -628,7 +628,7 @@ jobs:
             if [ "$suite_status" -eq 0 ]; then
               exit 0
             fi
-            if ! grep -Eqi 'oh no: Bun has crashed|Segmentation fault at address|Illegal instruction|Bus error|panic\(thread' "$suite_log"; then
+            if ! grep -Eqi 'oh no: Bun has crashed|Internal assertion failure|Segmentation fault at address|Illegal instruction|Bus error|Aborted \(core dumped\)' "$suite_log"; then
               echo "::error::Windows shard ${{ matrix.shard }}/4 failed on attempt ${attempt} (exit ${suite_status}); assertion failures are not retried."
               exit "$suite_status"
             fi
