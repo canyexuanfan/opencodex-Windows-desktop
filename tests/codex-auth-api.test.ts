@@ -13,7 +13,7 @@ import {
   handleCodexAuthAPI, updateAccountQuota, getAccountQuota,
   checkAccountIdCollision, getMainChatgptAccountId,
   markAccountNeedsReauth, isAccountNeedsReauth, clearAccountNeedsReauth, clearAccountQuota,
-  clearMainAccountInfoCache, maskEmail,
+  clearMainAccountInfoCache, maskEmail, fetchMainAccountInfo,
   clearCodexQuotaPrimeState, primeCodexPoolQuotas, seedCodexAuthAdmissionForTests,
   type CodexAuthAccountDto,
   listCodexAuthAccounts,
@@ -858,6 +858,77 @@ describe("codex-auth API", () => {
     expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(false);
   });
 
+  test("a background main account refresh does not retract a reauth quarantine (#327)", async () => {
+    // #327's own repro: the token is valid, but its workspace can no longer be
+    // selected, so Responses traffic answers 403 and quarantines the account.
+    // /wham/usage is a different backend path and keeps answering 200 for that same
+    // token, so the periodic refresh must not read its own 200 as proof the account
+    // can serve traffic again — doing so returned the account to rotation, the next
+    // request failed identically and re-marked it, and needsReauth never settled.
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "live-main", account_id: "acct-main" },
+    }));
+    markAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+    clearMainAccountInfoCache();
+    let usageCalls = 0;
+    globalThis.fetch = (async () => {
+      usageCalls += 1;
+      return Response.json({
+        email: "main@example.test",
+        plan_type: "pro",
+        rate_limit: { primary_window: { used_percent: 10, reset_at: 1783000000 } },
+      });
+    }) as typeof fetch;
+
+    expect((await fetchMainAccountInfo(false)).email).toBe("main@example.test");
+    // The probe really ran and really succeeded — the quarantine survives it anyway.
+    expect(usageCalls).toBe(1);
+    expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(true);
+
+    // An explicit refresh is an operator asking to re-evaluate, so it stays
+    // authoritative and still clears the flag (the test above pins that direction).
+    clearMainAccountInfoCache();
+    expect((await fetchMainAccountInfo(true)).email).toBe("main@example.test");
+    expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(false);
+  });
+
+  test("an identity-change retry does not upgrade a background refresh into an explicit one (#327)", async () => {
+    // `retryMainAccountInfoIfIdentityChanged` re-enters with forceRefresh=true so it can
+    // re-read past a now-stale cache. That argument must not double as operator intent:
+    // a background poll that crosses an identity change would otherwise come back with
+    // the authority to retract a quarantine it was never allowed to touch.
+    writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+      tokens: { access_token: "live-main", account_id: "acct-before" },
+    }));
+    clearMainAccountInfoCache();
+    let usageCalls = 0;
+    globalThis.fetch = (async () => {
+      usageCalls += 1;
+      if (usageCalls === 1) {
+        // Identity changes on disk mid-probe. The retry's purge legitimately drops the
+        // *previous* identity's runtime state — that is not what this test is about.
+        writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
+          tokens: { access_token: "live-main", account_id: "acct-after" },
+        }));
+      } else {
+        // Real traffic quarantines the *new* identity while the retry probe is in
+        // flight, exactly as recordCodexUpstreamOutcome does on a 401/403.
+        markAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+      }
+      return Response.json({
+        email: "main@example.test",
+        plan_type: "pro",
+        rate_limit: { primary_window: { used_percent: 10, reset_at: 1783000000 } },
+      });
+    }) as typeof fetch;
+
+    await fetchMainAccountInfo(false);
+
+    // The retry really fired — otherwise this proves nothing about the retry path.
+    expect(usageCalls).toBeGreaterThan(1);
+    expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(true);
+  });
+
   test("BUG-R327: main account exposes and updates needsReauth from WHAM auth responses", async () => {
     writeFileSync(join(TEST_CODEX_HOME, "auth.json"), JSON.stringify({
       tokens: {
@@ -1183,6 +1254,56 @@ describe("codex-auth API", () => {
     expect(getAccountQuota("preserve-valid")).toEqual(before);
   });
 
+  test("quota cache rebuilds preserve the short-window tuple", () => {
+    setAccountQuotaFromParsed("short-cache", {
+      weeklyPercent: 1,
+      weeklyResetAt: 2_000_586_800,
+      monthlyPercent: 3,
+      monthlyResetAt: 2_002_592_000,
+      shortPercent: 0,
+      shortResetAt: 2_000_000_000,
+      shortWindowSeconds: 18_000,
+    });
+    expect(getAccountQuota("short-cache")).toMatchObject({
+      weeklyPercent: 1,
+      shortPercent: 0,
+      shortResetAt: 2_000_000_000,
+      shortWindowSeconds: 18_000,
+    });
+
+    setAccountQuotaFromParsed("short-cache", {
+      shortPercent: 4,
+      shortResetAt: 2_000_000_100,
+      shortWindowSeconds: 18_000,
+    });
+    expect(getAccountQuota("short-cache")).toMatchObject({
+      weeklyPercent: 1,
+      monthlyPercent: 3,
+      shortPercent: 4,
+      shortResetAt: 2_000_000_100,
+      shortWindowSeconds: 18_000,
+    });
+
+    updateAccountQuota("short-cache", 2, 2_000_586_900);
+    expect(getAccountQuota("short-cache")).toMatchObject({
+      weeklyPercent: 2,
+      monthlyPercent: 3,
+      shortPercent: 4,
+      shortResetAt: 2_000_000_100,
+      shortWindowSeconds: 18_000,
+    });
+
+    setAccountQuotaFromParsed("short-cache", { resetCredits: 3 });
+    expect(getAccountQuota("short-cache")).toMatchObject({
+      weeklyPercent: 2,
+      monthlyPercent: 3,
+      shortPercent: 4,
+      shortResetAt: 2_000_000_100,
+      shortWindowSeconds: 18_000,
+      resetCredits: 3,
+    });
+  });
+
   test("GET /api/codex-auth/quota returns stored quotas", async () => {
     updateAccountQuota("q-test", 30);
     const req = new Request("http://localhost/api/codex-auth/quota", { method: "GET" });
@@ -1225,6 +1346,47 @@ describe("codex-auth API", () => {
       expect(pool?.quota).toMatchObject({ weeklyPercent: 64, weeklyResetAt: 1782628379 });
       expect(pool?.needsReauth).toBe(false);
       expect(calls).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("GET /api/codex-auth/accounts preserves a parsed K12 short window through cache and DTO", async () => {
+    const config = makeConfig();
+    seedPoolAccount(config, {
+      id: "pool-k12-short",
+      email: "pool-k12-short@example.com",
+      plan: "k12",
+      accessToken: "tok",
+      refreshToken: "ref",
+      chatgptAccountId: "acc-pool-k12-short",
+    });
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => Response.json({
+      plan_type: "k12",
+      rate_limit: {
+        primary_window: { used_percent: 0, reset_at: 2_000_000_000, limit_window_seconds: 18_000 },
+        secondary_window: { used_percent: 1, reset_at: 2_000_586_800, limit_window_seconds: 604_800 },
+      },
+    })) as typeof fetch;
+
+    try {
+      const req = new Request("http://localhost/api/codex-auth/accounts?refresh=1", { method: "GET" });
+      const resp = await handleCodexAuthAPI(req, new URL(req.url), config);
+      expect(resp!.status).toBe(200);
+      const data = await resp!.json() as {
+        accounts: Array<{ id: string; quota?: Record<string, unknown> }>;
+      };
+      const quota = data.accounts.find(account => account.id === "pool-k12-short")?.quota;
+      expect(quota).toMatchObject({
+        weeklyPercent: 1,
+        weeklyResetAt: 2_000_586_800,
+        shortPercent: 0,
+        shortResetAt: 2_000_000_000,
+        shortWindowSeconds: 18_000,
+      });
+      expect(getAccountQuota("pool-k12-short")).toMatchObject(quota!);
     } finally {
       globalThis.fetch = originalFetch;
     }
