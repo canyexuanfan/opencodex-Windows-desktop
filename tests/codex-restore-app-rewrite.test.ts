@@ -96,6 +96,38 @@ const REINJECT_AND_READ_JOURNAL = [
   "  console.log(JSON.stringify({ url: journal.injectedOpenaiBaseUrl, catalog: journal.injectedCatalogPath }));",
   "})();",
 ].join(String.fromCharCode(10));
+
+/** Preserve a user edit made after the first injection across reinjection and restore. */
+const REINJECT_AFTER_USER_EDIT_RESTORE = [
+  'const fs = require("fs");',
+  'const path = require("path");',
+  'const { injectCodexConfig, restoreNativeCodex } = require("./src/codex/inject");',
+  "(async () => {",
+  "  const config = {",
+  "    port: 10100,",
+  "    providers: {},",
+  '    defaultProvider: "openai",',
+  '    injectionModel: "gpt-5.6-sol",',
+  '    injectionEffort: "high",',
+  "  };",
+  "  await injectCodexConfig(10100, config, { catalogPath: null });",
+  '  const configPath = path.join(process.env.CODEX_HOME, "config.toml");',
+  '  fs.appendFileSync(configPath, String.fromCharCode(10) + \'approval_policy = "never"\' + String.fromCharCode(10), "utf8");',
+  "  await injectCodexConfig(10200, { ...config, port: 10200 }, { catalogPath: null });",
+  '  const beforeRestore = fs.readFileSync(configPath, "utf8");',
+  "  const result = restoreNativeCodex({ skipHistory: true });",
+  '  const afterRestore = fs.readFileSync(configPath, "utf8");',
+  '  const profileExistsAfterRestore = fs.existsSync(path.join(process.env.CODEX_HOME, "opencodex.config.toml"));',
+  "  console.log(JSON.stringify({",
+  "    success: result.success,",
+  "    action: result.artifacts.config.action,",
+  "    beforeRestore,",
+  "    afterRestore,",
+  "    profileExistsAfterRestore,",
+  "  }));",
+  "})();",
+].join(String.fromCharCode(10));
+
 function runScript(codexHome: string, script: string): { stdout: string; stderr: string; status: number } {
   const result = spawnSync(process.execPath, ["--eval", script], {
     cwd: repoRoot,
@@ -157,6 +189,30 @@ describe("#1798 restore after the Codex app rewrites the config", () => {
     const recorded = JSON.parse(r.stdout) as { url: string; catalog: string };
     expect(recorded.url).toBe("http://127.0.0.1:10200/v1");
     expect(recorded.catalog).toBe(join(testDir, "second-catalog.json"));
+  }, 20_000);
+
+  test("a user setting added after first injection survives reinjection and restore", () => {
+    writeFileSync(join(testDir, "config.toml"), 'model = "gpt-5.5"\n', "utf8");
+
+    const r = runScript(testDir, REINJECT_AFTER_USER_EDIT_RESTORE);
+    if (r.status !== 0) throw new Error(r.stderr || r.stdout);
+
+    const result = JSON.parse(r.stdout) as {
+      success: boolean;
+      action: string;
+      beforeRestore: string;
+      afterRestore: string;
+      profileExistsAfterRestore: boolean;
+    };
+    expect(result.success).toBe(true);
+    expect(result.action).toBe("owned-fields-stripped");
+    expect(result.beforeRestore).toContain('approval_policy = "never"');
+    expect(result.beforeRestore).toContain("127.0.0.1:10200");
+    expect(result.afterRestore).toContain('approval_policy = "never"');
+    expect(result.afterRestore).toContain('model = "gpt-5.5"');
+    expect(result.afterRestore).not.toContain("openai_base_url");
+    expect(result.afterRestore).not.toContain("127.0.0.1:10200");
+    expect(result.profileExistsAfterRestore).toBe(false);
   }, 20_000);
 
   test("the routed catalog we wrote is restored even when the rewrite dropped model_catalog_json", () => {

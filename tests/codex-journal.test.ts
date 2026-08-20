@@ -1,4 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach, setDefaultTimeout } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -567,7 +568,7 @@ describe("codex-journal", () => {
     expect(typeof second.injectedConfigHash).toBe("string"); // marked by the second
   });
 
-  test("reinjection refreshes injected hashes and ownership without replacing the native snapshot", () => {
+  test("reinjection keeps the first config hash while refreshing owned route and catalog", () => {
     const r = runScript(testDir, `
       const fs = require("fs");
       const path = require("path");
@@ -588,7 +589,9 @@ describe("codex-journal", () => {
     `);
     expect(r.status).toBe(0);
     const hashes = JSON.parse(r.stdout) as { firstHash: string; secondHash: string };
-    expect(hashes.secondHash).not.toBe(hashes.firstHash);
+    expect(typeof hashes.firstHash).toBe("string");
+    expect(hashes.firstHash).toBe(createHash("sha256").update("# first injection\n").digest("hex"));
+    expect(hashes.secondHash).toBe(hashes.firstHash);
 
     const journal = JSON.parse(readFileSync(join(testDir, "opencodex-journal.json"), "utf8"));
     expect(Buffer.from(journal.originalConfig, "base64").toString("utf8")).toContain("# original config");
