@@ -527,17 +527,22 @@ export function bridgeToResponsesSSE(
       // url_citation annotations on that message (the desktop app's Sources chip), then cleared so
       // they bind to exactly one message. Deduped by URL across multiple searches in the turn.
       let pendingWebSources: { url: string; title?: string }[] = [];
+      let pendingWebSourceBytes = 0;
+      const releasePendingWebSources = () => {
+        if (pendingWebSources.length === 0) return;
+        pendingWebSources = [];
+        budget?.releaseRetained(pendingWebSourceBytes, { kind: "tool_search_sources" });
+        pendingWebSourceBytes = 0;
+      };
       const takeWebAnnotations = (): { type: string; url: string; title?: string; start_index: number; end_index: number }[] => {
         if (pendingWebSources.length === 0) return [];
         const anns = pendingWebSources.map(s => ({
           type: "url_citation", url: s.url, ...(s.title ? { title: s.title } : {}), start_index: 0, end_index: 0,
         }));
-        const sourceBytes = pendingWebSources.reduce((sum, source) => sum + bytesOf(JSON.stringify(source)), 0);
         const annotationBytes = bytesOf(JSON.stringify(anns));
         const reservation = budget?.reserveTransient(annotationBytes, { kind: "retained_collectors" });
-        pendingWebSources = [];
         reservation?.commitRetained();
-        budget?.releaseRetained(sourceBytes, { kind: "tool_search_sources" });
+        releasePendingWebSources();
         return anns;
       };
 
@@ -793,6 +798,7 @@ export function bridgeToResponsesSSE(
         handlingTranslatorOverflow = true;
         abortCurrentToolCallForTranslatorOverflow();
         currentWebSearch = null;
+        releasePendingWebSources();
         const failure = adapterFailureFromEvent({
           type: "error",
           status: 502,
@@ -1164,7 +1170,7 @@ export function bridgeToResponsesSSE(
               if (safeSources.length > 0) {
                 for (const source of safeSources) {
                   if (appendSafeWebSearchSource(pendingWebSources, source)) {
-                    chargeValue(source, "tool_search_sources");
+                    pendingWebSourceBytes += chargeValue(source, "tool_search_sources");
                   }
                 }
               }
@@ -1177,6 +1183,7 @@ export function bridgeToResponsesSSE(
               flushHiddenRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
               if (currentWebSearch) closeCurrentWebSearch("completed", []);
+              releasePendingWebSources();
               // Redacted-only turns (or hidden thinking without a trailing signature event) still
               // need their envelope-only reasoning item so the blocks replay next turn.
               flushHiddenReasoningEnvelope();
@@ -1240,6 +1247,7 @@ export function bridgeToResponsesSSE(
               flushHiddenRawReasoning();
               if (currentToolCall) failCurrentToolCall();
               if (currentWebSearch) closeCurrentWebSearch("failed", []);
+              releasePendingWebSources();
               flushHiddenReasoningEnvelope();
               options?.onUsage?.(event.usage);
               await awaitThoughtSignatureDurability();
@@ -1269,6 +1277,7 @@ export function bridgeToResponsesSSE(
               flushHiddenRawReasoning();
               if (currentToolCall) failCurrentToolCall();
               if (currentWebSearch) closeCurrentWebSearch("failed", []);
+              releasePendingWebSources();
               const failure = adapterFailureFromEvent(event);
               if (event.usage) options?.onUsage?.(event.usage);
               await awaitThoughtSignatureDurability();
@@ -1303,6 +1312,7 @@ export function bridgeToResponsesSSE(
           flushHiddenRawReasoning();
           if (currentToolCall) failCurrentToolCall();
           if (currentWebSearch) closeCurrentWebSearch("failed", []);
+          releasePendingWebSources();
           emit("response.failed", {
             response: {
               ...responseSnapshot("failed", finishedItems),
@@ -1332,6 +1342,7 @@ export function bridgeToResponsesSSE(
         flushHiddenRawReasoning();
         if (currentToolCall) failCurrentToolCall();
         if (currentWebSearch) closeCurrentWebSearch("failed", []);
+        releasePendingWebSources();
         options?.onUsage?.(undefined);
         await awaitThoughtSignatureDurability();
         emit("response.incomplete", {
@@ -1374,6 +1385,7 @@ export function bridgeToResponsesSSE(
             flushHiddenRawReasoning();
             if (currentToolCall) failCurrentToolCall();
             if (currentWebSearch) closeCurrentWebSearch("failed", []);
+            releasePendingWebSources();
             // #1926 gap 2 residual: this beat callback is synchronous, so the durability
             // barrier is not awaited on the stall-timeout kill path. The in-memory store is
             // already updated; only a crash between here and the queued write loses it,
@@ -1426,6 +1438,7 @@ export function bridgeToResponsesSSE(
         clearOwnedWatchdog();
         if (beat !== undefined) clearBeatInterval(beat);
         cancelUpstreamOnce();
+        releasePendingWebSources();
         disposeOwnedBudget();
       },
     });

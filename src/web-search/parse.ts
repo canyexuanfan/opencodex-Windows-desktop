@@ -55,7 +55,11 @@ function collectAnnotation(ann: AnnotationLike | undefined, sources: WebSearchSo
  * (`### Sources:`, `**Sources**`), a title line whose URL sits on the FOLLOWING line, and trailing
  * URL punctuation (`;`, `,`, `)`, `]`, `.`). Prose that follows the source list is preserved.
  */
-const URL_RE = /https?:\/\/[^\s<>()\[\]]+/;
+const URL_RE = /https?:\/\/[^\s<>()\[\]]+/i;
+// Recognize URI-like candidates separately from the HTTP(S)-only acceptance boundary. A rejected
+// citation (for example `javascript:`) still belongs to the trailing Sources block and must not be
+// left behind as ordinary assistant text.
+const URI_LIKE_RE = /[a-z][a-z0-9+.-]*:[^\s<>()\[\]]+/i;
 // A "Sources:" / "Source:" header, allowing markdown prefixes (#, *, -, >) and bold/italic wrappers.
 const SOURCES_WORD_RE = /^sources?/i;
 
@@ -137,10 +141,11 @@ function extractTrailingSources(text: string): { text: string; sources: WebSearc
     const raw = lines[i].trim();
     if (raw === "") {
       // Blank line between header and first entry is fine; a blank AFTER entries ends the list.
-      if (sources.length > 0 || pendingTitle !== null) break;
+      if (consumedSourceLine || pendingTitle !== null) break;
       continue;
     }
-    const m = raw.match(URL_RE);
+    const httpMatch = raw.match(URL_RE);
+    const m = httpMatch ?? raw.match(URI_LIKE_RE);
     if (!m) {
       // A list-ish line with no URL may be a title whose URL is on the next line. Only treat it as a
       // pending title when it looks like a list item; otherwise it's prose → stop.
@@ -149,6 +154,10 @@ function extractTrailingSources(text: string): { text: string; sources: WebSearc
       }
       break;
     }
+    // A non-HTTP URI embedded in prose is not sufficient to classify the line as a citation.
+    // Accept it as a consumed source line only when it is a list item or the whole line starts with
+    // the URI candidate, matching the existing bare-URL grammar.
+    if (!httpMatch && !/^[-*>\d.)]/.test(raw) && m.index !== 0) break;
     const url = cleanUrl(m[0]);
     if (!url) { break; }
     consumedSourceLine = true;

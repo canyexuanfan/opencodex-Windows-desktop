@@ -1125,6 +1125,35 @@ describe("Responses bridge web_search_call native item", () => {
       budget.dispose();
     }
   });
+
+  test("streaming source-only completion releases unconsumed citation ownership", async () => {
+    const events: AdapterEvent[] = [
+      { type: "web_search_call_begin", id: "ws_source_only" },
+      { type: "web_search_call_end", id: "ws_source_only", queries: ["docs"], sources: [
+        { url: "https://safe.test/docs", title: "Safe docs" },
+      ] },
+      { type: "done" },
+    ];
+    const budget = createTranslatorBudget();
+    try {
+      const frames = await collectSse(bridgeToResponsesSSE(
+        replay(events),
+        "routed/model",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { translatorBudget: budget },
+      ));
+      const terminal = frames.find(frame => frame.event === "response.completed")!;
+      const output = (terminal.data.response as Record<string, unknown>).output as Record<string, unknown>[];
+      expect(output.map(item => item.type)).toEqual(["web_search_call"]);
+      expect(budget.snapshot().currentBytes).toBe(Buffer.byteLength(JSON.stringify(output[0])));
+    } finally {
+      budget.dispose();
+    }
+  });
 });
 
 describe("Responses bridge stopReason threading (issue #246)", () => {
