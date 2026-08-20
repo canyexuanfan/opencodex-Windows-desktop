@@ -299,10 +299,11 @@ export function cursorImageAttachmentPath(uuid: string, mimeType: string): strin
 export async function prepareCursorImageForWire(
   image: ResolvedCursorImage,
   signal?: AbortSignal,
+  testHooks?: { softMaxBytes?: number },
 ): Promise<PrepareCursorImageOutcome> {
   throwIfImagePhaseAborted(signal);
   const mime = image.mimeType.toLowerCase();
-  const softMax = softMaxBytesForDetail(image.detail);
+  const softMax = testHooks?.softMaxBytes ?? softMaxBytesForDetail(image.detail);
   const qualities = jpegQualitiesForDetail(image.detail);
   const lowestQuality = qualities[qualities.length - 1]!;
 
@@ -313,12 +314,13 @@ export async function prepareCursorImageForWire(
   const format = sniffCursorImageFormat(image.data);
   // Peek headers before Bun.Image so huge compressed bombs fail closed cheaply.
   const sniffed = sniffCursorImageDimensions(image.data);
-  if (sniffed) {
-    const edge = Math.max(sniffed.width, sniffed.height);
-    const pixels = sniffed.width * sniffed.height;
-    if (edge > MAX_CURSOR_IMAGE_DECODE_EDGE || pixels > MAX_CURSOR_IMAGE_PIXELS) {
-      return { status: "omitted", reason: CURSOR_VISION_IMAGE_OMITTED };
-    }
+  if (!sniffed) {
+    return { status: "omitted", reason: CURSOR_VISION_IMAGE_OMITTED };
+  }
+  const sniffedEdge = Math.max(sniffed.width, sniffed.height);
+  const sniffedPixels = sniffed.width * sniffed.height;
+  if (sniffedEdge > MAX_CURSOR_IMAGE_DECODE_EDGE || sniffedPixels > MAX_CURSOR_IMAGE_PIXELS) {
+    return { status: "omitted", reason: CURSOR_VISION_IMAGE_OMITTED };
   }
 
   const declaredJpeg = mime === "image/jpeg" || mime === "image/jpg";
@@ -402,11 +404,14 @@ export async function prepareCursorImageForWire(
       if (Math.max(targetW, targetH) <= CURSOR_VISION_SOFT_MIN_EDGE) break;
     }
 
-    if (best) {
+    if (best && best.byteLength <= softMax) {
       return {
         status: "ready",
         image: { ...image, data: best, mimeType: "image/jpeg" },
       };
+    }
+    if (best) {
+      return { status: "omitted", reason: CURSOR_VISION_IMAGE_OMITTED };
     }
     // Undeclared/mismatched magic with no encode result — omit rather than lie about MIME.
     if (declaredJpeg && format !== "jpeg") {

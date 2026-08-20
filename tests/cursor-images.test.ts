@@ -579,6 +579,81 @@ describe("Cursor image resolver", () => {
     expect(outcome).toEqual({ status: "omitted", reason: CURSOR_VISION_IMAGE_OMITTED });
   });
 
+  test("truncated PNG IHDR omits before Bun decode (no trusted dimensions)", async () => {
+    const truncated = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+      0x00, 0x00, 0x00, 0x02,
+    ]);
+    expect(sniffCursorImageFormat(truncated)).toBe("png");
+    expect(sniffCursorImageDimensions(truncated)).toBeUndefined();
+    const outcome = await prepareCursorImageForWire({
+      data: truncated,
+      mimeType: "image/png",
+      uuid: "truncated-png",
+    });
+    expect(outcome).toEqual({ status: "omitted", reason: CURSOR_VISION_IMAGE_OMITTED });
+  });
+
+  test("truncated GIF header omits before Bun decode (no trusted dimensions)", async () => {
+    const truncated = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x02, 0x00]);
+    expect(sniffCursorImageFormat(truncated)).toBe("gif");
+    expect(sniffCursorImageDimensions(truncated)).toBeUndefined();
+    const outcome = await prepareCursorImageForWire({
+      data: truncated,
+      mimeType: "image/gif",
+      uuid: "truncated-gif",
+    });
+    expect(outcome).toEqual({ status: "omitted", reason: CURSOR_VISION_IMAGE_OMITTED });
+  });
+
+  test("unsupported WebP chunk omits before Bun decode (no trusted dimensions)", async () => {
+    const webp = new Uint8Array(16);
+    webp.set([0x52, 0x49, 0x46, 0x46], 0); // RIFF
+    webp.set([0x57, 0x45, 0x42, 0x50], 8); // WEBP
+    webp.set([0x41, 0x4e, 0x49, 0x4d], 12); // ANIM — not a dimension-bearing chunk
+    expect(sniffCursorImageFormat(webp)).toBe("webp");
+    expect(sniffCursorImageDimensions(webp)).toBeUndefined();
+    const outcome = await prepareCursorImageForWire({
+      data: webp,
+      mimeType: "image/webp",
+      uuid: "unsupported-webp",
+    });
+    expect(outcome).toEqual({ status: "omitted", reason: CURSOR_VISION_IMAGE_OMITTED });
+  });
+
+  test("prepareCursorImageForWire never returns ready JPEG above the detail soft cap", async () => {
+    const pngPath = new URL("./helpers/cursor-grumpy-fixture.png", import.meta.url);
+    const png = new Uint8Array(await Bun.file(pngPath).arrayBuffer());
+    const oversized = await oversizedDecodablePng();
+    for (const [label, input, detail, softMax] of [
+      ["auto grumpy", png, "auto", CURSOR_VISION_SOFT_MAX_BYTES],
+      ["high grumpy", png, "high", CURSOR_VISION_SOFT_MAX_BYTES_HIGH],
+      ["auto oversized", oversized, "auto", CURSOR_VISION_SOFT_MAX_BYTES],
+    ] as const) {
+      const outcome = await prepareCursorImageForWire({
+        data: input,
+        mimeType: "image/png",
+        uuid: label,
+        detail,
+      });
+      expect(outcome.status, label).toBe("ready");
+      if (outcome.status !== "ready") throw new Error(`expected ready for ${label}`);
+      expect(outcome.image.data.byteLength, label).toBeLessThanOrEqual(softMax);
+    }
+  });
+
+  test("omits when shrink ladder best JPEG still exceeds soft cap", async () => {
+    const pngPath = new URL("./helpers/cursor-grumpy-fixture.png", import.meta.url);
+    const png = new Uint8Array(await Bun.file(pngPath).arrayBuffer());
+    const outcome = await prepareCursorImageForWire({
+      data: png,
+      mimeType: "image/png",
+      uuid: "soft-cap-miss",
+    }, undefined, { softMaxBytes: 5_000 });
+    expect(outcome).toEqual({ status: "omitted", reason: CURSOR_VISION_IMAGE_OMITTED });
+  });
+
   test("prepareCursorRawMessages leaves historical images untouched on a later user turn", async () => {
     const oldUrl = `data:image/png;base64,${Buffer.from([...PNG_BYTES, 1]).toString("base64")}`;
     const prepared = await prepareCursorRawMessages([
