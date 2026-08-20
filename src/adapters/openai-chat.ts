@@ -1314,11 +1314,14 @@ function canSerializeOpenAIChatServiceTier(
   if (tierDecision !== undefined) {
     return tierDecision.kind === "set" || tierDecision.kind === "forward-caller";
   }
+  // No decision from the router means this call did not go through the tier state machine, so
+  // ask that machine rather than re-deriving a looser answer beside it. The previous fallback
+  // returned true whenever foreign forwarding was allowed at all, which let a caller tier
+  // reach the wire in cases `decideTier` would have dropped — the two paths disagreeing is
+  // precisely the bug, so there is now only one authority.
   const callerTier = typeof serviceTier === "string" ? serviceTier : undefined;
-  const callerCanonicalFast = canonicalFastTierMarker(callerTier) !== undefined;
-  const capability = supportsServiceTierForModel(provider, modelId);
-  const callerTierForwardAllowed = canForwardForeignServiceTierForChatModel(provider, modelId);
-  return callerTierForwardAllowed || (callerCanonicalFast && capability === true);
+  const decision = decideTier(fastPolicyForModel(provider, modelId, undefined, "chat"), undefined, callerTier);
+  return decision.kind === "set" || decision.kind === "forward-caller";
 }
 
 export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAdapter {
