@@ -1,4 +1,5 @@
 import { namespacedToolName } from "../types";
+import { repairFreeformToolInput, unwrapFreeformToolInput } from "./apply-patch-envelope";
 import { collectResponsesToolGroups } from "./tool-groups";
 
 const ROUTED_CUSTOM_TOOL_PASSTHROUGH = new Set(["apply_patch"]);
@@ -15,15 +16,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function customToolInput(argumentsText: unknown): string {
-  if (typeof argumentsText !== "string") return "";
-  try {
-    const parsed = JSON.parse(argumentsText) as unknown;
-    if (isPlainObject(parsed) && typeof parsed.input === "string") return parsed.input;
-  } catch { /* malformed arguments stay visible to the client */ }
-  return argumentsText;
-}
-
 function customToolWireName(namespace: string | undefined, name: string): string {
   return namespace === BUILTIN_FUNCTIONS_NAMESPACE ? name : namespacedToolName(namespace, name);
 }
@@ -38,12 +30,13 @@ export function routedCustomToolWireName(value: unknown): string | undefined {
 }
 
 /**
- * Names of converted custom declarations after namespace lowering. Restoration uses these exact
- * wire identities so same-named function and custom children in different namespaces stay distinct.
+ * Names of custom declarations after namespace lowering. The selection flag separates converted
+ * names from native passthrough names while keeping same-named function and custom children distinct.
  */
 function collectRoutedCustomToolWireNames(
   body: unknown,
   supportsResponsesCustomTools?: boolean,
+  passthrough = false,
 ): Set<string> {
   const names = new Set<string>();
   const groups = collectResponsesToolGroups(body);
@@ -64,7 +57,7 @@ function collectRoutedCustomToolWireNames(
       if (
         tool.type === "custom"
         && typeof tool.name === "string"
-        && !routedCustomToolPassesThrough(tool.name, supportsResponsesCustomTools)
+        && routedCustomToolPassesThrough(tool.name, supportsResponsesCustomTools) === passthrough
       ) {
         names.add(tool.name);
         continue;
@@ -77,7 +70,7 @@ function collectRoutedCustomToolWireNames(
           isPlainObject(child)
           && child.type === "custom"
           && typeof child.name === "string"
-          && !routedCustomToolPassesThrough(child.name, supportsResponsesCustomTools)
+          && routedCustomToolPassesThrough(child.name, supportsResponsesCustomTools) === passthrough
           && !(tool.name === BUILTIN_FUNCTIONS_NAMESPACE && bareWireNames.has(child.name))
         ) names.add(customToolWireName(tool.name, child.name));
       }
@@ -85,7 +78,6 @@ function collectRoutedCustomToolWireNames(
   }
   return names;
 }
-
 export function customToolItemId(id: unknown): unknown {
   if (typeof id !== "string") return id;
   return id.startsWith("fc_") ? `ctc_${id.slice(3)}` : id;
@@ -203,23 +195,26 @@ export function rewriteRoutedCustomToolsForUpstream(
 ): {
   body: unknown;
   names: Set<string>;
+  repairNames: Set<string>;
 } {
   const conversionNames = collectRoutedCustomToolNames(body, supportsResponsesCustomTools);
   const names = collectRoutedCustomToolWireNames(body, supportsResponsesCustomTools);
-  if (conversionNames.size === 0) return { body, names };
+  const repairNames = collectRoutedCustomToolWireNames(body, supportsResponsesCustomTools, true);
+  if (conversionNames.size === 0) return { body, names, repairNames };
   const callIds = new Set<string>();
   collectConvertedCallIds(body, conversionNames, callIds);
-  return { body: rewriteForUpstream(body, conversionNames, callIds), names };
+  return { body: rewriteForUpstream(body, conversionNames, callIds), names, repairNames };
 }
 
 export function restoreRoutedCustomCalls(
   value: unknown,
   names: ReadonlySet<string>,
+  repairNames: ReadonlySet<string> = new Set(),
 ): { value: unknown; changed: boolean } {
   if (Array.isArray(value)) {
     let changed = false;
     const restored = value.map(entry => {
-      const result = restoreRoutedCustomCalls(entry, names);
+      const result = restoreRoutedCustomCalls(entry, names, repairNames);
       changed ||= result.changed;
       return result.value;
     });
@@ -230,18 +225,36 @@ export function restoreRoutedCustomCalls(
   let changed = false;
   const restored: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
-    const result = restoreRoutedCustomCalls(entry, names);
+    const result = restoreRoutedCustomCalls(entry, names, repairNames);
     restored[key] = result.value;
     changed ||= result.changed;
   }
 
   const wireName = routedCustomToolWireName(value);
-  if (value.type === "function_call" && wireName !== undefined && names.has(wireName)) {
+  if (
+    value.type === "function_call"
+    && typeof value.name === "string"
+    && wireName !== undefined
+    && names.has(wireName)
+  ) {
     restored.type = "custom_tool_call";
     restored.id = customToolItemId(value.id);
-    restored.input = customToolInput(value.arguments);
+    restored.input = repairFreeformToolInput(value.arguments, value.name);
     delete restored.arguments;
     changed = true;
+  }
+  if (
+    value.type === "custom_tool_call"
+    && typeof value.name === "string"
+    && wireName !== undefined
+    && repairNames.has(wireName)
+    && typeof value.input === "string"
+  ) {
+    const input = repairFreeformToolInput(value.input, value.name);
+    if (input !== value.input) {
+      restored.input = input;
+      changed = true;
+    }
   }
   return changed ? { value: restored, changed: true } : { value, changed: false };
 }
@@ -249,18 +262,19 @@ export function restoreRoutedCustomCalls(
 export function restoreRoutedCustomCallsInJson(
   text: string,
   names: ReadonlySet<string>,
+  repairNames: ReadonlySet<string> = new Set(),
 ): string {
-  if (names.size === 0) return text;
+  if (names.size === 0 && repairNames.size === 0) return text;
   let payload: unknown;
   try {
     payload = JSON.parse(text);
   } catch {
     return text;
   }
-  const restored = restoreRoutedCustomCalls(payload, names);
+  const restored = restoreRoutedCustomCalls(payload, names, repairNames);
   return restored.changed ? JSON.stringify(restored.value) : text;
 }
 
-export function unwrapRoutedCustomToolArguments(argumentsText: unknown): string {
-  return customToolInput(argumentsText);
+export function unwrapRoutedCustomToolArguments(argumentsText: unknown, toolName = ""): string {
+  return toolName ? repairFreeformToolInput(argumentsText, toolName) : unwrapFreeformToolInput(argumentsText);
 }

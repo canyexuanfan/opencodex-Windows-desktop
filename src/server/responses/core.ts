@@ -2848,6 +2848,7 @@ async function handleResponsesInner(
       ? new Map<string, { namespace: string; name: string }>()
       : imageGenToolCallAliases(toolBridgeMaps.toolNsMap, parsed._rawBody, translatorBudget);
     const routedCustomToolNames = new Set<string>();
+    const routedCustomToolRepairNames = new Set<string>();
     const routedToolSearchNames = new Set<string>();
     // Local continuation cache for the ChatGPT passthrough. Codex WS turns chain with
     // previous_response_id, ocx converts them to internal HTTP requests, and the ChatGPT Codex
@@ -2890,6 +2891,9 @@ async function handleResponsesInner(
           toolBridgeMaps.freeformToolNames.has(name)
           || toolBridgeMaps.toolNsMap.get(name)?.freeform === true
         ) routedCustomToolNames.add(name);
+      }
+      for (const name of request.routedCustomToolRepairNames ?? []) {
+        routedCustomToolRepairNames.add(name);
       }
     }
     for (const name of request.convertedRoutedToolSearchNames ?? []) {
@@ -3582,8 +3586,12 @@ async function handleResponsesInner(
         payloadRewrites.length > 0
           ? payloadRewriteAsBlockRewrite(composeSsePayloadRewrites(...payloadRewrites))
           : undefined,
-        routedCustomToolNames.size > 0
-          ? createRoutedCustomToolRestoreBlockRewrite(routedCustomToolNames, translatorBudget)
+        routedCustomToolNames.size > 0 || routedCustomToolRepairNames.size > 0
+          ? createRoutedCustomToolRestoreBlockRewrite(
+            routedCustomToolNames,
+            translatorBudget,
+            routedCustomToolRepairNames,
+          )
           : undefined,
         routedToolSearchNames.size > 0
           ? createRoutedToolSearchRestoreBlockRewrite(routedToolSearchNames, translatorBudget)
@@ -3788,6 +3796,7 @@ async function handleResponsesInner(
         const restored = restoreRoutedCustomCallsInJson(
           restoredNamespace,
           routedCustomToolNames,
+          routedCustomToolRepairNames,
         );
         const restoredToolSearch = restoreRoutedToolSearchCallsInJson(
           restored,

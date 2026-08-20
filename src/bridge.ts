@@ -8,6 +8,7 @@ import type {
 } from "./types";
 import { coerceIntegerToolArguments } from "./lib/tool-argument-integers";
 import { adapterFailureFromMessage, classifyError, CYBER_POLICY_ERROR_CODE, isCyberPolicyCode, type OcxErrorPayload } from "./lib/errors";
+import { repairFreeformToolInput } from "./responses/apply-patch-envelope";
 import { encodeCompactionSummary } from "./responses/compaction";
 import { isTruncatedStopReason, truncationReasonFor } from "./responses/truncated-stop-reason";
 import { encodeReasoningEnvelope, type ReasoningEnvelope } from "./responses/reasoning-envelope";
@@ -230,12 +231,10 @@ export function bridgeToResponsesSSE(
   const replayCacheScope = options?.replayCacheScope;
   const setBeatInterval = options?.timers?.setInterval ?? ((handler: () => void, ms: number) => setInterval(handler, ms));
   const clearBeatInterval = options?.timers?.clearInterval ?? ((id: unknown) => clearInterval(id as ReturnType<typeof setInterval>));
-  // Freeform/custom tools (apply_patch) carry their body in `input`; the model is given a
-  // function with `{input:string}`, so unwrap it here when relaying back as a custom_tool_call.
-  const freeformInput = (args: string): string => {
-    try { const o = JSON.parse(args); if (o && typeof o.input === "string") return o.input; } catch { /* raw */ }
-    return args;
-  };
+  // Freeform/custom tools (apply_patch, code-mode exec) carry their body in `input`; the
+  // model is given a function with `{input:string}`, so unwrap it here when relaying back
+  // as a custom_tool_call. Decorated apply_patch envelopes are repaired at this boundary.
+  const freeformInput = (args: string, toolName: string): string => repairFreeformToolInput(args, toolName);
   // Best-effort unwrap of a PARTIAL freeform arg buffer for live input streaming
   // (`response.custom_tool_call_input.delta` — codex-rs uses it for UI preview only;
   // the completed custom_tool_call item stays authoritative). Compact `{"input":"...`
@@ -636,7 +635,7 @@ export function bridgeToResponsesSSE(
         if (currentToolCall.freeform) {
           emit("response.custom_tool_call_input.done", {
             item_id: currentToolCall.itemId, output_index: currentToolCall.outputIndex,
-            input: freeformInput(currentToolCall.args),
+            input: freeformInput(currentToolCall.args, currentToolCall.name),
           });
         }
         // Freeform tools serialize as custom_tool_call without extra_content; remember the
@@ -652,7 +651,7 @@ export function bridgeToResponsesSSE(
           ? {
               type: "custom_tool_call", id: currentToolCall.itemId,
               call_id: currentToolCall.callId, name: currentToolCall.name,
-              input: freeformInput(currentToolCall.args), status: "completed",
+              input: freeformInput(currentToolCall.args, currentToolCall.name), status: "completed",
             }
           : {
               type: "function_call", id: currentToolCall.itemId,
@@ -691,7 +690,7 @@ export function bridgeToResponsesSSE(
           ? {
               type: "custom_tool_call", id: currentToolCall.itemId,
               call_id: currentToolCall.callId, name: currentToolCall.name,
-              input: freeformInput(currentToolCall.args), status: "incomplete",
+              input: freeformInput(currentToolCall.args, currentToolCall.name), status: "incomplete",
             }
           : {
               type: "function_call", id: currentToolCall.itemId,
@@ -1567,10 +1566,7 @@ function buildResponseJSONWithBudget(
   // Web-search citations awaiting the next assistant message (attached as url_citation annotations).
   let pendingWebSources: { url: string; title?: string }[] = [];
 
-  const freeformInput = (args: string): string => {
-    try { const o = JSON.parse(args); if (o && typeof o.input === "string") return o.input; } catch { /* raw */ }
-    return args;
-  };
+  const freeformInput = (args: string, toolName: string): string => repairFreeformToolInput(args, toolName);
   const parseArgsObj = (args: string): Record<string, unknown> => {
     try { const o = JSON.parse(args); return o && typeof o === "object" ? o : {}; } catch { return {}; }
   };
@@ -1670,7 +1666,7 @@ function buildResponseJSONWithBudget(
       pushOutput({
         type: "custom_tool_call", id: `ctc_${uuid()}`,
         call_id: currentToolCallId, name: realName,
-        input: freeformInput(currentToolCallArgs), status,
+        input: freeformInput(currentToolCallArgs, realName), status,
       });
     } else {
       pushOutput({

@@ -32,6 +32,7 @@ describe("routed custom-tool compatibility", () => {
     expect(rewritten.body).toBe(raw);
     expect(JSON.stringify(rewritten.body)).toBe(before);
     expect(rewritten.names).toEqual(new Set());
+    expect(rewritten.repairNames).toEqual(new Set(["apply_patch"]));
   });
 
   test("lowers apply_patch declarations and replay items on an explicit capability denial", () => {
@@ -47,6 +48,7 @@ describe("routed custom-tool compatibility", () => {
     const body = rewritten.body as typeof raw;
 
     expect(rewritten.names).toEqual(new Set(["apply_patch"]));
+    expect(rewritten.repairNames).toEqual(new Set());
     expect(body.tools[0]).toMatchObject({
       type: "function",
       name: "apply_patch",
@@ -73,6 +75,7 @@ describe("routed custom-tool compatibility", () => {
 
     expect(body.tools[0]).toMatchObject({ type: "function", name: "review_patch" });
     expect(rewritten.names).toEqual(new Set(["review_patch"]));
+    expect(rewritten.repairNames).toEqual(new Set());
   });
 
   test("converted exec preserves the JavaScript input contract", () => {

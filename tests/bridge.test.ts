@@ -676,6 +676,27 @@ describe("Responses bridge reasoning and usage parity", () => {
     expect(frames.some(f => f.event === "response.function_call_arguments.done")).toBe(false);
   });
 
+  test("repairs a complete decorated top-level apply_patch payload", () => {
+    const body = `*** Begin Patch ***
+*** Update File: README.md
+@@
+-old
++new
+*** End Patch ***`;
+    const json = buildResponseJSON([
+      { type: "tool_call_start", id: "c1", name: "apply_patch" },
+      { type: "tool_call_delta", arguments: JSON.stringify({ input: body }) },
+      { type: "tool_call_end" },
+      { type: "done" },
+    ], "model", { freeformToolNames: new Set(["apply_patch"]) });
+
+    const output = json.output as Record<string, unknown>[];
+    expect(output[0]).toMatchObject({ type: "custom_tool_call", name: "apply_patch" });
+    expect(output[0].input).toContain("*** Begin Patch\n");
+    expect(output[0].input).toContain("*** End Patch");
+    expect(output[0].input).not.toContain("*** Begin Patch ***");
+  });
+
   test("non-streaming error produces failed status", () => {
     const json = buildResponseJSON([
       {
