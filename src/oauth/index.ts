@@ -322,6 +322,13 @@ export class OAuthReauthIdentityUnverifiedError extends Error {
   }
 }
 
+class OAuthLoginSupersededError extends Error {
+  constructor() {
+    super("OAuth login was superseded before credential persistence");
+    this.name = "OAuthLoginSupersededError";
+  }
+}
+
 /** Project arbitrary OAuth failures onto the small, stable public error vocabulary. */
 export function publicOAuthAuthenticationErrorMessage(error: unknown): string {
   if (error instanceof OAuthMutationBusyError) {
@@ -1105,6 +1112,7 @@ interface RunLoginDeps {
   settleKiroLoginTransaction?: typeof settleKiroLoginTransaction;
   removeAccount?: typeof removeAccount;
   setActiveAccount?: typeof setActiveAccount;
+  assertCurrentOwner?: () => void;
 }
 
 /** Roll back only accounts created by this forced login, preserving concurrent refreshes of others. */
@@ -1154,6 +1162,7 @@ export async function runLogin(
   const cred: OAuthCredentials = rawCred.source ? rawCred : { ...rawCred, source: "oauth" };
   const settleKiroTransaction = deps.settleKiroLoginTransaction ?? settleKiroLoginTransaction;
   try {
+    deps.assertCurrentOwner?.();
     // Validate the provider row before credential persistence. A namespace claimed during the
     // credential write is handled again below before the latest row is re-upserted.
     if (provider !== "chatgpt") {
@@ -1174,10 +1183,13 @@ export async function runLogin(
       if (!identityMatches) {
         throw new OAuthReauthIdentityMismatchError();
       }
-      await (deps.saveAccountCredential ?? saveAccountCredential)(provider, opts.reauthAccountId, cred);
+      await (deps.saveAccountCredential ?? saveAccountCredential)(provider, opts.reauthAccountId, cred, {
+        assertBeforePersist: deps.assertCurrentOwner,
+      });
     } else {
       await (deps.saveCredential ?? saveCredential)(provider, cred, {
         preserveIdentityless: opts?.forceLogin === true,
+        assertBeforePersist: deps.assertCurrentOwner,
       });
     }
     if (provider !== "chatgpt") {
@@ -1244,6 +1256,7 @@ export async function runLogin(
  */
 const loginState = new Map<string, { error?: string; done: boolean }>();
 const loginAbort = new Map<string, AbortController>();
+const kiroLoginSettling = new Set<string>();
 
 /** Pending paste for a login in progress: either a waiter or a stashed early submission. */
 interface ManualCodeSlot {
@@ -1412,13 +1425,14 @@ export async function startLoginFlow(
   const def = OAUTH_PROVIDERS[provider];
   if (!def) throw new UnsupportedOAuthProviderError(provider);
   const existing = loginState.get(provider);
-  if (existing && !existing.done) {
+  if ((existing && !existing.done) || (provider === "kiro" && kiroLoginSettling.has(provider))) {
     throw new Error(`A login for ${provider} is already in progress`);
   }
   clearManualCodeSlot(provider);
   loginState.set(provider, { done: false });
   const abort = new AbortController();
   loginAbort.set(provider, abort);
+  if (provider === "kiro") kiroLoginSettling.add(provider);
   return new Promise((resolve, reject) => {
     let urlResolved = false;
     const ctrl: OAuthController = {
@@ -1469,7 +1483,10 @@ export async function startLoginFlow(
     };
     // Background: runLogin persists the credential + provider entry to disk. The lifecycle hook
     // lets a long-lived server config adopt that settled state before clients observe done=true.
-    void runLogin(provider, ctrl, opts).then(
+    const assertCurrentOwner = (): void => {
+      if (loginAbort.get(provider) !== abort) throw new OAuthLoginSupersededError();
+    };
+    void runLogin(provider, ctrl, opts, { assertCurrentOwner }).then(
       () => settle(),
       (e: unknown) => settle(e),
     ).catch((e: unknown) => {
@@ -1480,6 +1497,8 @@ export async function startLoginFlow(
       const msg = publicOAuthAuthenticationErrorMessage(e);
       loginState.set(provider, { done: true, error: msg });
       if (!urlResolved) reject(e);
+    }).finally(() => {
+      if (provider === "kiro") kiroLoginSettling.delete(provider);
     });
   });
 }
