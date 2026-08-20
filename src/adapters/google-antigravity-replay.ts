@@ -711,7 +711,10 @@ export function applyAntigravityReplay(model: string, sessionId: string, content
         const argsObj = fc.args as Record<string, unknown>;
         if (typeof argsObj.input === "string") {
           const trimmedInput = argsObj.input.trim();
-          if (utf8.encode(trimmedInput).byteLength <= REPLAY_MAX_CANONICAL_ARGS_BYTES) {
+          if (
+            trimmedInput.length <= REPLAY_MAX_CANONICAL_ARGS_BYTES
+            && utf8.encode(trimmedInput).byteLength <= REPLAY_MAX_CANONICAL_ARGS_BYTES
+          ) {
             try {
               const parsedInput = JSON.parse(trimmedInput);
             if (parsedInput && typeof parsedInput === "object") {

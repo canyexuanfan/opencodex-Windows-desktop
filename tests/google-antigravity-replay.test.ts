@@ -246,14 +246,22 @@ describe("antigravity reasoning-replay cache", () => {
 
   test("rejects oversized input before JSON.parse without matching or allocating", () => {
     observeAntigravityReplay(MODEL, SESSION, [fcPart("default_api:exec", { data: "huge" }, "sig-should-not-match")]);
-    // 100 KiB of valid JSON payload exceeds REPLAY_MAX_CANONICAL_ARGS_BYTES and must never reach JSON.parse.
+    // 100 KiB of valid JSON payload exceeds REPLAY_MAX_CANONICAL_ARGS_BYTES and must be rejected before TextEncoder.encode / JSON.parse.
     let parseCalled = false;
+    let encodeCalledOnPayload = false;
     const originalParse = JSON.parse;
+    const originalEncode = TextEncoder.prototype.encode;
     JSON.parse = (text, reviver) => {
       if (typeof text === "string" && text.includes('"data":')) {
         parseCalled = true;
       }
       return originalParse(text, reviver);
+    };
+    TextEncoder.prototype.encode = function (input) {
+      if (typeof input === "string" && input.includes('"data":')) {
+        encodeCalledOnPayload = true;
+      }
+      return originalEncode.call(this, input);
     };
     const oversizedPayload = JSON.stringify({ data: "a".repeat(100 * 1024) });
     const contents = [{
@@ -264,8 +272,10 @@ describe("antigravity reasoning-replay cache", () => {
       applyAntigravityReplay(MODEL, SESSION, contents);
       expect((contents[0].parts[0] as { thoughtSignature?: string }).thoughtSignature).toBeUndefined();
       expect(parseCalled).toBe(false);
+      expect(encodeCalledOnPayload).toBe(false);
     } finally {
       JSON.parse = originalParse;
+      TextEncoder.prototype.encode = originalEncode;
     }
   });
 
