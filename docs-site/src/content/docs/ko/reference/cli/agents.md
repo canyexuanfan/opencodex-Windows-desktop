@@ -131,7 +131,7 @@ Grok Build model fence를 관리하고 적용합니다.
 
 ## 클라이언트 설정 내보내기
 
-### `ocx export --client <opencode|pi|omp|hermes|openclaw|kimi|gajae|dsh>`
+### `ocx export --client <opencode|pi|omp|hermes|openclaw|kimi|gajae|dsh|mcode|zcode|prime>`
 
 실행 중인 프록시에 연결할 client config를 출력합니다. 이 명령은 base URL, model list, 그리고 client에 따라 credential reference 또는 `opencodex-loopback` placeholder를 포함한 `opencodex` provider block을 선택한 client의 네이티브 형식으로 직렬화합니다.
 

@@ -191,7 +191,7 @@ Grok Build model çitini yönetin ve uygulayın.
 
 ## İstemci yapılandırma dışa aktarma
 
-### `ocx export --client <opencode|pi|omp|hermes|openclaw|kimi|gajae|dsh>`
+### `ocx export --client <opencode|pi|omp|hermes|openclaw|kimi|gajae|dsh|mcode|zcode|prime>`
 
 Çalışan proxy'ye bağlı bir istemci yapılandırmasını yazdırın. Komut, `opencodex`
 sağlayıcı bloğunu — temel URL, model listesi ve istemcinin kimlik bilgisi

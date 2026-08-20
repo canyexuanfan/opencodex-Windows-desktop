@@ -164,7 +164,7 @@ Gérez et appliquez la clôture du modèle Grok Build.
 
 ## Exportation de la configuration client
 
-### `ocx export --client <opencode|pi|omp|hermes|openclaw|kimi|gajae|dsh>`
+### `ocx export --client <opencode|pi|omp|hermes|openclaw|kimi|gajae|dsh|mcode|zcode|prime>`
 
 Imprimez une configuration client connectée au proxy en cours d'exécution. La commande sérialise le
 bloc fournisseur `opencodex` — URL de base, liste de modèles et référence d’identifiant du client
