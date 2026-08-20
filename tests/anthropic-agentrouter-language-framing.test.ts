@@ -123,4 +123,39 @@ describe("AgentRouter language framing", () => {
     const body = await bodyFor("https://agentrouter.org/v1", [{ role: "assistant", content: "só isso" }]);
     expect(texts(body.messages[0])).toEqual([PREAMBLE, "(continue)"]);
   });
+
+  // The three branches below are the safety boundary for a provider-specific prompt mutation:
+  // this code writes into the outbound user turn, so "does it ever duplicate, drop, or reorder
+  // what the caller sent" has to be pinned per content shape, not just for the plain string.
+  test("an already-framed first turn stays single and in order", async () => {
+    const body = await bodyFor("https://agentrouter.org/v1", [
+      { role: "user", content: [{ type: "text", text: PREAMBLE }, { type: "text", text: PORTUGUESE }] },
+    ]);
+    expect(texts(body.messages[0])).toEqual([PREAMBLE, PORTUGUESE]);
+  });
+
+  test("image-only user content keeps its image block, after the preamble", async () => {
+    // A real 1x1 PNG: the normalizer replaces undecodable data with a text placeholder, which
+    // would make this assert the wrong thing.
+    const onePixelPng = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    const body = await bodyFor("https://agentrouter.org/v1", [
+      { role: "user", content: [{ type: "image", imageUrl: onePixelPng }] },
+    ]);
+    const blocks = body.messages[0]?.content;
+    if (typeof blocks === "string") throw new Error("expected content blocks");
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toMatchObject({ type: "text", text: PREAMBLE });
+    // The image must survive as an image — not dropped, and not reordered ahead of the preamble.
+    expect(blocks[1]).toMatchObject({ type: "image" });
+  });
+
+  test("assistant-only block content keeps its tail, then the synthesized user turn", async () => {
+    const body = await bodyFor("https://agentrouter.org/v1", [
+      { role: "assistant", content: [{ type: "text", text: "primeira" }, { type: "text", text: "segunda" }] },
+    ]);
+    const assistant = body.messages.filter(m => m.role === "assistant");
+    expect(texts(assistant.at(-1))).toEqual(["primeira", "segunda"]);
+    const user = body.messages.filter(m => m.role === "user");
+    expect(texts(user.at(-1))).toEqual([PREAMBLE, "(continue)"]);
+  });
 });
