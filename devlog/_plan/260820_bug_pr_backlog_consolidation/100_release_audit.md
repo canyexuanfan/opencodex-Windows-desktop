@@ -161,3 +161,34 @@ this range. Recorded so it is not rediscovered as new, but it is not this releas
 Full suite at the tip carrying both: **13717 pass / 15 skip / 0 fail** across 866 files;
 typecheck exit 0; privacy scan passed. All on `ssh lidge`.
 
+
+## Closeout — the fixes are on dev
+
+All four landed in dependency order. The order was forced, not chosen: `privacy:scan` runs in
+the `gates` job, so while `dev` itself was failing it, every branch cut from `dev` inherited
+the failure. #2173 was red for exactly that reason and went green once #2175 landed.
+
+| PR | dev merge commit | What it fixes |
+|---|---|---|
+| #2175 | `5bcc91d0e` | the broken `privacy:scan` gate on `dev` itself |
+| #2170 | `9eb6647d5` | caller-controlled marker reaching `usage.jsonl` and `/api/logs` |
+| #2173 | `b2878f8e8` | `tool_search_call` / `custom_tool_call` id namespace |
+| #2174 | `12c14d5c3` | this audit record |
+
+Verified at the `dev` tip on `ssh lidge`:
+
+- `bun run test` — **13719 pass / 15 skip / 0 fail** across 866 files.
+- `bun x tsc --noEmit` — exit 0.
+- `bun run privacy:scan` — passed. It **failed** on `dev` before #2175, which is the whole
+  reason that PR exists.
+- GitHub CI run `32334852749` — completed **success** at `b2878f8e8`, the commit carrying both
+  code fixes. `12c14d5c3` above it is docs-only.
+- Fixes present in `dev` source, not just in a merge commit: `shadowSourceModelPrefix` ×1,
+  `tool_search_call` ×3.
+
+The three findings under "Deliberately left" are unchanged and still open questions. Nothing in
+this closeout resolves them; they need a product decision, not a patch.
+
+Release execution remains unauthorized: no `scripts/release.ts`, no publish, no tag, no change
+to `main` or `preview`.
+
