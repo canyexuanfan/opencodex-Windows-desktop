@@ -14,7 +14,7 @@ import type {
   OcxToolResultMessage,
   OcxUsage,
 } from "../types";
-import { isAllowedToolChoice, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
+import { isAllowedToolChoice, namespacedToolName, resolveToolChoiceWireName, toolChoiceToolPredicate } from "../types";
 import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION, applyClaudeToolPrefix, stripClaudeToolPrefix } from "../oauth/anthropic";
 import { parseDataUrl } from "./image";
 import { enforceAnthropicImageLimits } from "./anthropic-image-guard";
@@ -796,11 +796,8 @@ function messagesToAnthropicFormat(
 
 function toolsToAnthropicFormat(parsed: OcxParsedRequest, toolNames: { toWire: (name: string) => string }): unknown[] | undefined {
   if (!parsed.context.tools || parsed.context.tools.length === 0) return undefined;
-  const allowed = isAllowedToolChoice(parsed.options.toolChoice)
-    ? new Set(parsed.options.toolChoice.allowedTools)
-    : undefined;
-  const tools = allowed
-    ? parsed.context.tools.filter(t => toolAllowedByChoice(t, allowed, parsed.context.tools))
+  const tools = isAllowedToolChoice(parsed.options.toolChoice)
+    ? parsed.context.tools.filter(toolChoiceToolPredicate(parsed.options.toolChoice, parsed.context.tools))
     : parsed.context.tools;
   if (tools.length === 0) return undefined;
   const converted = tools.map(t => ({
