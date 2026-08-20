@@ -553,7 +553,10 @@ describe("codex-journal", () => {
 
     const r = runScript(testDir, `
       const { markJournalInjectedState } = require("./src/codex/journal");
-      markJournalInjectedState("# injected\\n", null);
+      markJournalInjectedState("# injected\\n", null, {
+        injectedOpenaiBaseUrl: null,
+        injectedCatalogPath: null,
+      });
       console.log(String(process.pid));
     `);
     expect(r.status).toBe(0);
@@ -562,6 +565,36 @@ describe("codex-journal", () => {
     const second = JSON.parse(readFileSync(journalPath, "utf8"));
     expect(second.pid).toBe(first.pid);              // still the first process's record
     expect(typeof second.injectedConfigHash).toBe("string"); // marked by the second
+  });
+
+  test("reinjection refreshes injected hashes and ownership without replacing the native snapshot", () => {
+    const r = runScript(testDir, `
+      const fs = require("fs");
+      const path = require("path");
+      const { writeJournal, markJournalInjectedState } = require("./src/codex/journal");
+      const journalPath = path.join(process.env.CODEX_HOME, "opencodex-journal.json");
+      writeJournal();
+      markJournalInjectedState("# first injection\\n", null, {
+        injectedOpenaiBaseUrl: "http://127.0.0.1:10100/v1",
+        injectedCatalogPath: "first-catalog.json",
+      });
+      const first = JSON.parse(fs.readFileSync(journalPath, "utf8"));
+      markJournalInjectedState("# second injection\\n", "# second profile\\n", {
+        injectedOpenaiBaseUrl: "http://127.0.0.1:10200/v1",
+        injectedCatalogPath: "second-catalog.json",
+      });
+      const second = JSON.parse(fs.readFileSync(journalPath, "utf8"));
+      console.log(JSON.stringify({ firstHash: first.injectedConfigHash, secondHash: second.injectedConfigHash }));
+    `);
+    expect(r.status).toBe(0);
+    const hashes = JSON.parse(r.stdout) as { firstHash: string; secondHash: string };
+    expect(hashes.secondHash).not.toBe(hashes.firstHash);
+
+    const journal = JSON.parse(readFileSync(join(testDir, "opencodex-journal.json"), "utf8"));
+    expect(Buffer.from(journal.originalConfig, "base64").toString("utf8")).toContain("# original config");
+    expect(journal.injectedOpenaiBaseUrl).toBe("http://127.0.0.1:10200/v1");
+    expect(journal.injectedCatalogPath).toBe("second-catalog.json");
+    expect(typeof journal.injectedProfileHash).toBe("string");
   });
 
   test("writeJournal() with no options still snapshots a native config", () => {

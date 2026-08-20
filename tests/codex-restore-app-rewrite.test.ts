@@ -39,7 +39,7 @@ const INJECT_REWRITE_RESTORE = [
   "  const rewritten = injected",
   "    .split(String.fromCharCode(10))",
   '    .filter(line => !line.trim().startsWith("#"))',
-  "    .join(String.fromCharCode(10));",
+  "    .join(String.fromCharCode(10)) + String.fromCharCode(10) + '# app rewrite';",
   '  fs.writeFileSync(configPath, rewritten, "utf8");',
   "  const result = restoreNativeCodex();",
   "  console.log(JSON.stringify({ success: result.success, message: result.message }));",
@@ -72,6 +72,28 @@ const CATALOG_REWRITE_RESTORE = [
   '  fs.writeFileSync(configPath, rewritten, "utf8");',
   "  const result = restoreNativeCodex();",
   "  console.log(JSON.stringify({ success: result.success, catalog: result.artifacts.catalog.path }));",
+  "})();",
+].join(String.fromCharCode(10));
+
+/** Reinject with a new route and catalog, then expose the durable ownership record. */
+const REINJECT_AND_READ_JOURNAL = [
+  'const fs = require("fs");',
+  'const path = require("path");',
+  'const { injectCodexConfig } = require("./src/codex/inject");',
+  "(async () => {",
+  '  const firstCatalog = path.join(process.env.CODEX_HOME, "first-catalog.json");',
+  '  const secondCatalog = path.join(process.env.CODEX_HOME, "second-catalog.json");',
+  "  const config = {",
+  "    port: 10100,",
+  "    providers: {},",
+  '    defaultProvider: "openai",',
+  '    injectionModel: "gpt-5.6-sol",',
+  '    injectionEffort: "high",',
+  "  };",
+  "  await injectCodexConfig(10100, config, { catalogPath: firstCatalog });",
+  "  await injectCodexConfig(10200, { ...config, port: 10200 }, { catalogPath: secondCatalog });",
+  '  const journal = JSON.parse(fs.readFileSync(path.join(process.env.CODEX_HOME, "opencodex-journal.json"), "utf8"));',
+  "  console.log(JSON.stringify({ url: journal.injectedOpenaiBaseUrl, catalog: journal.injectedCatalogPath }));",
   "})();",
 ].join(String.fromCharCode(10));
 function runScript(codexHome: string, script: string): { stdout: string; stderr: string; status: number } {
@@ -109,8 +131,9 @@ describe("#1798 restore after the Codex app rewrites the config", () => {
   }, 15_000);
 
   test("a user's own openai_base_url written before injection is preserved", () => {
+    // Force a byte mismatch so exact journal restore cannot hide a fallback ownership bug.
     // The mirror-image risk of the fix: stripping ANY unmarked openai_base_url would
-    // delete a URL we never wrote. The journaled baseline is the arbiter, not the key name.
+    // delete a URL we never wrote. The journaled ownership evidence is the arbiter.
     writeFileSync(
       join(testDir, "config.toml"),
       'openai_base_url = "https://my-own-gateway.example/v1"\nmodel = "gpt-5.5"\n',
@@ -124,6 +147,17 @@ describe("#1798 restore after the Codex app rewrites the config", () => {
     expect(restored).toContain("https://my-own-gateway.example/v1");
     expect(restored).not.toContain("127.0.0.1:10100");
   }, 15_000);
+
+  test("reinjection refreshes the owned route and catalog recorded for restore", () => {
+    writeFileSync(join(testDir, "config.toml"), 'model = "gpt-5.5"\n', "utf8");
+
+    const r = runScript(testDir, REINJECT_AND_READ_JOURNAL);
+    if (r.status !== 0) throw new Error(r.stderr || r.stdout);
+
+    const recorded = JSON.parse(r.stdout) as { url: string; catalog: string };
+    expect(recorded.url).toBe("http://127.0.0.1:10200/v1");
+    expect(recorded.catalog).toBe(join(testDir, "second-catalog.json"));
+  }, 20_000);
 
   test("the routed catalog we wrote is restored even when the rewrite dropped model_catalog_json", () => {
     // The catalog half of #1798. Restore used to re-resolve its target from the CURRENT

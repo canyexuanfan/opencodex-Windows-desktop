@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { atomicWriteFile } from "../config";
-import { hasInjectedCodexRouting, rootTomlString } from "./injected-marker";
+import { hasInjectedCodexRouting } from "./injected-marker";
 import { CODEX_HOME, CODEX_CONFIG_PATH, CODEX_PROFILE_PATH } from "./paths";
 
 /**
@@ -108,16 +108,26 @@ export function writeJournal(options: WriteJournalOptions = {}): void {
   atomicWriteFile(JOURNAL_PATH, JSON.stringify(journal));
 }
 
-export function markJournalInjectedState(config: string, profile: string | null): void {
+export interface InjectedJournalOwnership {
+  injectedOpenaiBaseUrl: string | null;
+  injectedCatalogPath: string | null;
+}
+
+export function markJournalInjectedState(
+  config: string,
+  profile: string | null,
+  ownership: InjectedJournalOwnership,
+): void {
   const journal = readJournal();
   if (!journal) return;
-  if (journal.injectedConfigHash) return;
+  // Keep the first native snapshot, but refresh the state written by every successful
+  // reinjection. Otherwise restore compares against stale bytes and stale ownership values.
   journal.injectedConfigHash = sha256(config) ?? undefined;
   journal.injectedProfileHash = sha256(profile);
-  // Read from the bytes we are about to install, not from the file: another writer may
-  // already have rewritten it, and then the recorded value would describe their config.
-  journal.injectedOpenaiBaseUrl = rootTomlString(config, "openai_base_url");
-  journal.injectedCatalogPath = rootTomlString(config, "model_catalog_json");
+  // Only the caller knows which values it actually owns. Deriving these from the final TOML
+  // would mistake a preserved user override for injected routing.
+  journal.injectedOpenaiBaseUrl = ownership.injectedOpenaiBaseUrl;
+  journal.injectedCatalogPath = ownership.injectedCatalogPath;
   atomicWriteFile(JOURNAL_PATH, JSON.stringify(journal));
 }
 
