@@ -509,6 +509,8 @@ export const zhTW: Record<TKey, string> = {
   "logs.filter.surface.claude": "Claude",
   "logs.filter.surface.codex": "Codex",
   "logs.filter.surface.grok": "Grok",
+  "logs.filter.interceptedHelpersOnly": "僅已攔截的輔助請求",
+  "logs.badge.interceptedHelper": "已攔截輔助請求 · {model}",
   "logs.filter.conversation.label": "對話",
   "logs.filter.conversation.placeholder": "貼上對話 ID",
   "logs.filter.conversation.clear": "清除",

@@ -652,6 +652,8 @@ export const fr: Record<TKey, string> = {
   "logs.filter.surface.claude": "Claude",
   "logs.filter.surface.codex": "Codex",
   "logs.filter.surface.grok": "Grok",
+  "logs.filter.interceptedHelpersOnly": "Assistants interceptés uniquement",
+  "logs.badge.interceptedHelper": "Assistant intercepté · {model}",
   "logs.filter.conversation.label": "Conversation",
   "logs.filter.conversation.placeholder": "Coller l’ID de conversation",
   "logs.filter.conversation.clear": "Effacer",

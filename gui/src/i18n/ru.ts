@@ -655,6 +655,8 @@ export const ru: Record<TKey, string> = {
   "logs.filter.surface.claude": "Claude",
   "logs.filter.surface.codex": "Codex",
   "logs.filter.surface.grok": "Grok",
+  "logs.filter.interceptedHelpersOnly": "Только перехваченные помощники",
+  "logs.badge.interceptedHelper": "Перехваченный помощник · {model}",
   "logs.filter.conversation.label": "Диалог",
   "logs.filter.conversation.placeholder": "Вставьте ID диалога",
   "logs.filter.conversation.clear": "Сбросить",

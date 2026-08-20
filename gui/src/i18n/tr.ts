@@ -662,6 +662,8 @@ export const tr: Record<TKey, string> = {
   "logs.filter.surface.claude": "Claude",
   "logs.filter.surface.codex": "Codex",
   "logs.filter.surface.grok": "Grok",
+  "logs.filter.interceptedHelpersOnly": "Yalnizca yakalanan yardimcilar",
+  "logs.badge.interceptedHelper": "Yakalanan yardimci · {model}",
   "logs.filter.conversation.label": "Sohbet",
   "logs.filter.conversation.placeholder": "Sohbet ID'sini yapıştırın",
   "logs.filter.conversation.clear": "Temizle",

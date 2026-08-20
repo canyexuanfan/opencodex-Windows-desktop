@@ -638,6 +638,8 @@ export const de: Record<TKey, string> = {
   "logs.filter.surface.claude": "Claude",
   "logs.filter.surface.codex": "Codex",
   "logs.filter.surface.grok": "Grok",
+  "logs.filter.interceptedHelpersOnly": "Nur abgefangene Helfer",
+  "logs.badge.interceptedHelper": "Abgefangener Helfer · {model}",
   "logs.filter.conversation.label": "Konversation",
   "logs.filter.conversation.placeholder": "Konversations-ID einfügen",
   "logs.filter.conversation.clear": "Löschen",
