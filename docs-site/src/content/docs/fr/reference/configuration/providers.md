@@ -289,7 +289,7 @@ sélection à chaque requête. Elles restent disponibles lorsque la découverte 
 La vision native Cursor utilise `SelectedImage` (plafond JPEG souple + `blobIdWithData`) pour les modèles
 qui voient les images nativement — Claude, Gemini, GPT, Kimi et Grok notamment — à partir des images
 `data:` du tour actif uniquement. Les images des tours précédents rejouent comme marqueurs texte
-`[image attached]` ; les images distantes ou indécodables deviennent des marqueurs d'omission.
+`[image attached]` ; les images distantes ou indécodables deviennent des marqueurs d’omission.
 Auto, la famille Composer et GLM (`glm-5.2`, `glm-5.3`) restent
 sur la liste curatée `noVisionModels` et passent par le sidecar de description d'images.
 
