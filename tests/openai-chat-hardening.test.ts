@@ -40,7 +40,10 @@ function provider(overrides: Partial<OcxProviderConfig> = {}): OcxProviderConfig
 
 async function collect(stream: AsyncGenerator<AdapterEvent>): Promise<AdapterEvent[]> {
   const events: AdapterEvent[] = [];
-  for await (const event of stream) events.push(event);
+  // Heartbeats are invisible downstream: the bridge consumes them to re-arm its stall
+  // watchdog and emits nothing. Dropping them here keeps these assertions about the wire
+  // the client actually sees.
+  for await (const event of stream) if (event.type !== "heartbeat") events.push(event);
   return events;
 }
 
@@ -476,6 +479,102 @@ describe("openai-chat stream response hardening", () => {
     expect(lines).toContain('"callIndex":1');
     expect(lines).not.toContain('"tool_call_function_name_invalid"');
   });
+
+  // Some OpenAI-compatible streamers repeat an already-sent field as a non-string placeholder
+  // instead of null. Before #2155 that killed the whole turn with a 502 even though the value
+  // being repeated was already held in canonical form, so the tool never ran.
+  test("a non-string repeat is padding once that field has string provenance (#2155)", async () => {
+    const adapter = createOpenAIChatAdapter(provider());
+    const response = new Response([
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [
+        { index: 0, id: "call_a", function: { name: "shell", arguments: "" } },
+      ] } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [
+        { index: 0, id: { padding: true }, function: { name: { padding: true }, arguments: { padding: true } } },
+      ] } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [
+        { index: 0, function: { arguments: "{}" } },
+      ] } }] })}\n\n`,
+      'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+      "data: [DONE]\n\n",
+    ].join(""));
+
+    const events = await collect(adapter.parseStream(response));
+    expect(events.some(event => event.type === "error")).toBe(false);
+    expect(events).toContainEqual({ type: "tool_call_start", id: "call_a", name: "shell" });
+    expect(events).toContainEqual({ type: "tool_call_delta", arguments: "{}" });
+  });
+
+  // Tolerance is per field. A canonical NAME is not evidence that `arguments` was ever sent
+  // as a string, and accepting a malformed object here would silently discard an argument
+  // payload the model meant to send.
+  test("a canonical name does not authorize a malformed arguments value (#2155)", async () => {
+    const adapter = createOpenAIChatAdapter(provider());
+    const response = new Response([
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [
+        { index: 0, id: "call_a", function: { name: "shell" } },
+      ] } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [
+        { index: 0, function: { arguments: { bad: true } } },
+      ] } }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ].join(""));
+
+    expect(await collect(adapter.parseStream(response))).toEqual([{
+      type: "error",
+      status: 502,
+      errorType: "upstream_error",
+      message: "upstream response contained invalid tool calls (tool_call_function_arguments_invalid; callIndex=0; valueType=object)",
+    }]);
+  });
+
+  test("a malformed id stays terminal until that call has a canonical id (#2155)", async () => {
+    const adapter = createOpenAIChatAdapter(provider());
+    const response = new Response([
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [
+        { index: 0, function: { name: "shell", arguments: "{}" } },
+      ] } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [
+        { index: 0, id: { bad: true } },
+      ] } }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ].join(""));
+
+    expect(await collect(adapter.parseStream(response))).toEqual([{
+      type: "error",
+      status: 502,
+      errorType: "upstream_error",
+      message: "upstream response contained invalid tool calls (tool_call_id_invalid; callIndex=0; valueType=object)",
+    }]);
+  });
+
+  // The reason the diagnostic is passed from the rejection site rather than rescanned: a
+  // stateless rescan stops at the first structurally odd value, which here is the ACCEPTED
+  // padding on call 0, and would blame the wrong call for the real defect on call 1.
+  test("parallel calls blame the unresolved call, not the accepted padding (#2155)", async () => {
+    process.env.OCX_DEBUG = "1";
+    const adapter = createOpenAIChatAdapter(provider());
+    const response = new Response([
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [
+        { index: 0, id: "call_a", function: { name: "alpha", arguments: "" } },
+        { index: 1, id: "call_b", function: { name: "beta" } },
+      ] } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [
+        { index: 0, function: { arguments: { padding: true } } },
+        { index: 1, function: { arguments: { bad: true } } },
+      ] } }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ].join(""));
+
+    expect(await collect(adapter.parseStream(response))).toEqual([{
+      type: "error",
+      status: 502,
+      errorType: "upstream_error",
+      message: "upstream response contained invalid tool calls (tool_call_function_arguments_invalid; callIndex=1; valueType=object)",
+    }]);
+    const lines = getDebugLogEntries().map(entry => entry.line).join("\n");
+    expect(lines).toContain('"callIndex":1');
+  });
 });
 
 describe("openai-chat credential hardening", () => {
@@ -824,4 +923,33 @@ describe("openai-chat response_format emission", () => {
         .toEqual({ type: "json_object" });
     });
   });
+
+// Tool-call deltas are BUFFERED until a terminal signal, so this adapter can consume upstream
+// frames for a long time while yielding nothing downstream. The Responses bridge arms its
+// stall watchdog on ADAPTER activity, not socket activity, so a model streaming a large
+// argument payload was indistinguishable from a hung upstream.
+//
+// Found while investigating #2156 but deliberately NOT claimed as its fix: a stall abort
+// emits `response.incomplete` with `upstream_stall_timeout`, while that report shows the
+// adapter's own EOF error with tool calls still pending. This pins the mechanism only.
+test("tool-call deltas emit heartbeats so a long buffering phase is not read as a stall", async () => {
+  const adapter = createOpenAIChatAdapter(provider());
+  const frames = ['data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_a", function: { name: "shell", arguments: "" } }] } }] }) + '\n\n'];
+  // Many argument chunks and nothing else: exactly the shape that looked like silence.
+  for (let i = 0; i < 12; i += 1) {
+    frames.push('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"x"' } }] } }] }) + '\n\n');
+  }
+  frames.push('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n', "data: [DONE]\n\n");
+
+  const raw: AdapterEvent[] = [];
+  for await (const event of adapter.parseStream(new Response(frames.join("")))) raw.push(event);
+
+  // One per consumed tool-call delta: the watchdog sees activity for the whole phase.
+  expect(raw.filter(e => e.type === "heartbeat").length).toBeGreaterThanOrEqual(12);
+  // And the client-visible wire is unchanged -- a heartbeat is consumed by the bridge.
+  const visible = raw.filter(e => e.type !== "heartbeat");
+  expect(visible.some(e => e.type === "error")).toBe(false);
+  expect(visible).toContainEqual({ type: "tool_call_start", id: "call_a", name: "shell" });
+  expect(visible.at(-1)).toMatchObject({ type: "done" });
+});
 });

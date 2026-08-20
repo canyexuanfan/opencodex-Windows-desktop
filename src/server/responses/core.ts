@@ -110,6 +110,12 @@ import {
   type CodexAuthContext,
 } from "../../codex/auth-context";
 import {
+  entitledCodexAccountIdsForModel,
+  invalidateCodexModelEntitlementsForAccount,
+  resolveCodexModelEntitlements,
+} from "../../codex/model-entitlements";
+import { ACCOUNT_GATED_NATIVE_OPENAI_MODELS } from "../../codex/catalog/native-models";
+import {
   computeQuotaCooldown,
   formatCodexProviderForLog,
   previewCodexAccountForRequest,
@@ -267,6 +273,8 @@ import {
 } from "../sse-payload-rewrite";
 import { restoreRoutedCustomCallsInJson } from "../../responses/custom-tool-compat";
 import { createRoutedCustomToolRestoreBlockRewrite } from "../responses-custom-tool-repair";
+import { restoreRoutedToolSearchCallsInJson } from "../../responses/tool-search-compat";
+import { createRoutedToolSearchRestoreBlockRewrite } from "../responses-tool-search-repair";
 import {
   collectDeclaredWireToolNames,
   createUndeclaredToolCallGuardBlockRewrite,
@@ -307,7 +315,7 @@ export function sidecarOutcomeRecorder(
 
 
 
-import { isShadowSourceModel, shouldInterceptShadowCall } from "../../lib/shadow-call";
+import { isShadowSourceModel, shadowSourceModelPrefix, shouldInterceptShadowCall } from "../../lib/shadow-call";
 
 export { DEFAULT_SHADOW_SOURCE_MODELS, isShadowSourceModel, shadowSourceModels } from "../../lib/shadow-call";
 
@@ -530,6 +538,39 @@ type CodexPoolAccountRetryResult =
     authCtx: Extract<CodexAuthContext, { kind: "pool" | "main-pool" }>;
   };
 
+const CODEX_ACCOUNT_GATED_CANONICAL_WIRE_MODELS: ReadonlyMap<string, string> = new Map([
+  // The authenticated catalog currently advertises Daybreak Blue, while successful responses
+  // identify the serving model as gpt-5.6-sol. Sending the selector itself is shard-dependent:
+  // live traffic can receive the exact unsupported-model 400 repeatedly from the same entitled
+  // account. Keep Daybreak as the admission/catalog identity, but use the stable serving id on
+  // the credential-bearing wire after entitlement selection has completed.
+  ["gpt-daybreak-blue-latest", "gpt-5.6-sol"],
+]);
+
+export function codexAccountGatedCanonicalWireModel(modelId: string): string | undefined {
+  const exact = CODEX_ACCOUNT_GATED_CANONICAL_WIRE_MODELS.get(modelId);
+  if (exact) return exact;
+  for (const [selector, wireModel] of CODEX_ACCOUNT_GATED_CANONICAL_WIRE_MODELS) {
+    if (slugsEquivalent(modelId, selector)) return wireModel;
+  }
+  return undefined;
+}
+
+function applyCodexAccountGatedWireNormalization(parsed: OcxParsedRequest, route: RouteResult): void {
+  if (!isCanonicalOpenAiForwardProvider(route.provider)) return;
+  const wireModel = codexAccountGatedCanonicalWireModel(route.modelId);
+  if (!wireModel) return;
+
+  parsed.modelId = wireModel;
+  if (!parsed._rawBody || typeof parsed._rawBody !== "object") return;
+  const raw = parsed._rawBody as Record<string, unknown>;
+  raw.model = wireModel;
+  // Daybreak's authenticated catalog does not advertise retention support, and the upstream
+  // rejects this optional Codex hint before model execution. Removing it preserves request
+  // semantics while avoiding an otherwise terminal pre-stream 400.
+  delete raw.prompt_cache_retention;
+}
+
 /**
  * Workspace-denial evidence for a 403, read from the upstream body.
  *
@@ -580,22 +621,32 @@ async function retryCodexPoolOnAlternateAccount(
     req, config, route, parsed, logCtx, options, firstAuthCtx, firstResponse,
     outcomeStatus, upstream, connectMs, passthroughEstimate, stream,
   } = args;
-  // Defense in depth: exact account selectors must never reach alternate-account resolution,
-  // even if a future caller forgets to guard this helper.
-  if (firstAuthCtx.fixedAccount) return { kind: "no-alternate" };
   const inboundWire = options.inboundWire ?? "responses";
   let retryAuthCtx: CodexAuthContext | undefined;
+  if (outcomeStatus === 400 && ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(route.modelId)) {
+    invalidateCodexModelEntitlementsForAccount(firstAuthCtx.accountId);
+    const refreshed = await resolveCodexModelEntitlements(config);
+    if (entitledCodexAccountIdsForModel(refreshed, route.modelId)?.has(firstAuthCtx.accountId)) {
+      // The authenticated roster still grants this exact model. Retry on the same account:
+      // upstream shards can briefly disagree during a gated-model rollout, but a pre-stream 400
+      // proves no output was committed and keeps this replay bounded.
+      retryAuthCtx = firstAuthCtx;
+    }
+  }
+  // Exact account selectors may retry the same confirmed account above, but must never resolve
+  // an alternate. Quota failures and a refreshed entitlement miss remain terminal.
+  if (!retryAuthCtx && firstAuthCtx.fixedAccount) return { kind: "no-alternate" };
   try {
-    retryAuthCtx = await resolveCodexAuthContext(
-      req.headers,
-      config,
-      "pool",
-      {
-        excludeAccountId: firstAuthCtx.accountId,
-        modelId: route.modelId,
-        beginCodexAccountSelection: codexAccountSelectionForTurn(options.turnAdmissionLease),
-      },
-    );
+    retryAuthCtx ??= await resolveCodexAuthContext(
+        req.headers,
+        config,
+        "pool",
+        {
+          excludeAccountId: firstAuthCtx.accountId,
+          modelId: route.modelId,
+          beginCodexAccountSelection: codexAccountSelectionForTurn(options.turnAdmissionLease),
+        },
+      );
   } catch (error) {
     if (
       !(error instanceof CodexPoolAuthenticationError)
@@ -677,27 +728,50 @@ async function retryCodexPoolOnAlternateAccount(
     logCtx.accountLogLabel,
   );
 
-  noteAttemptSend(logCtx.activeAttempt, passthroughEstimate);
+  const retrySameConfirmedAccount = outcomeStatus === 400
+    && ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(route.modelId)
+    && retryAuthCtx.accountId === firstAuthCtx.accountId;
+  // Live Daybreak traffic has produced long runs of unsupported-model 400s from different
+  // upstream shards even while the authenticated roster continues to grant the model. Permit
+  // seven additional same-account sends (eight total including the original), re-checking the
+  // exact allow-listed body and fresh entitlement before every later send. Alternate-account and
+  // quota recovery retain their historical one-send bound.
+  const maxRetrySends = retrySameConfirmedAccount ? 7 : 1;
+  let retrySendCount = 0;
   let upstreamResponse: Response;
   try {
-    upstreamResponse = await fetchWithHeaderTimeout(
-      request.url,
-      {
-        method: request.method,
-        headers: request.headers,
-        body: request.body,
-      },
-      upstream.signal,
-      connectMs,
-      stream,
-      providerFetch(route.provider, options.codexWsRuntimeIdentity, {
-        providerName: route.providerName,
-        modelId: route.modelId,
-      }),
-      // Credential-bearing forward send: never follow a redirect into a
-      // dead-host rejection after the credential was seen (#914).
-      route.provider.authMode === "forward",
-    );
+    while (true) {
+      noteAttemptSend(logCtx.activeAttempt, passthroughEstimate);
+      upstreamResponse = await fetchWithHeaderTimeout(
+        request.url,
+        {
+          method: request.method,
+          headers: request.headers,
+          body: request.body,
+        },
+        upstream.signal,
+        connectMs,
+        stream,
+        providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+          providerName: route.providerName,
+          modelId: route.modelId,
+        }),
+        // Credential-bearing forward send: never follow a redirect into a
+        // dead-host rejection after the credential was seen (#914).
+        route.provider.authMode === "forward",
+      );
+      retrySendCount += 1;
+      if (!retrySameConfirmedAccount || retrySendCount >= maxRetrySends) break;
+      if (!await shouldRetryCodexPoolAccountModel400(
+        upstreamResponse,
+        route.modelId,
+        options.abortSignal,
+      )) break;
+      invalidateCodexModelEntitlementsForAccount(retryAuthCtx.accountId);
+      const refreshed = await resolveCodexModelEntitlements(config);
+      if (!entitledCodexAccountIdsForModel(refreshed, route.modelId)?.has(retryAuthCtx.accountId)) break;
+      await upstreamResponse.body?.cancel().catch(() => undefined);
+    }
   } catch (error) {
     // Attribute the transport failure to the alternate account (already selected).
     return { kind: "transport", error, authCtx: retryAuthCtx };
@@ -1085,7 +1159,25 @@ async function resolveResponsesCodexAuth(
     // Refusing it here is what made the codex-cli `env_key` contract unusable against Direct.
     // Admitting it is only safe because the stored main credential is substituted below, so
     // the admission secret still never leaves this process.
-    const substituteMainCredential = options.admission?.source === "bearer";
+    //
+    // #2132: substitution answers "does THIS ROUTE need our stored ChatGPT credential", not
+    // "how did the caller authenticate". Only a native Codex route reaches the ChatGPT backend
+    // and can consume that credential; a key-authenticated routed provider carries its own and
+    // never touches it. Keying on the caller alone made an install that deliberately never
+    // logged into ChatGPT fail every routed request with "No usable Codex main credential".
+    //
+    // But ask that question the way the ADAPTER asks it. `codexAccountMode` is derived from the
+    // provider NAME (`providerCodexAccountMode`), while the passthrough adapter decides whether
+    // to forward caller credentials from the TRANSPORT — adapter, auth mode, and base URL
+    // (`isCanonicalOpenAiForwardProvider`). A row the operator named anything other than
+    // `openai`, pointed at the canonical ChatGPT backend with `authMode: "forward"`, satisfies
+    // the adapter's test and fails this one, so substitution was skipped and the adapter then
+    // forwarded our own admission secret upstream. Two predicates answering one question is the
+    // bug; the transport is the authority, because the transport is what actually carries the
+    // header. A key-authenticated routed provider is still not canonical-forward, so #2132's
+    // no-ChatGPT-login install keeps working.
+    const substituteMainCredential = options.admission?.source === "bearer"
+      && (route.codexAccountMode !== undefined || isCanonicalOpenAiForwardProvider(route.provider));
     if (route.codexAccountMode === "direct" && !substituteMainCredential) {
       validateForwardAdmissionCredential(req.headers, config);
     }
@@ -1094,6 +1186,7 @@ async function resolveResponsesCodexAuth(
       authCtx = await resolveCodexAuthContext(req.headers, config, route.codexAccountMode, {
         accountId: route.codexAccountId,
         modelId: route.modelId,
+        substituteMainCredentialForDirect: substituteMainCredential,
         beginCodexAccountSelection: codexAccountSelectionForTurn(options.turnAdmissionLease),
       });
       options.onCodexAuthContextResolved?.(authCtx);
@@ -1838,7 +1931,14 @@ async function handleResponsesInner(
     if (parsed._rawBody && typeof parsed._rawBody === "object") {
       (parsed._rawBody as Record<string, unknown>).reasoning = { effort: "low" };
     }
-    (logCtx as unknown as Record<string, unknown>).shadowCallRewrittenFrom = _sciOriginal;
+    // Record the operator-configured prefix that matched, NOT the caller's raw model string.
+    // Matching is by prefix, so a caller can append arbitrary text and still intercept; that
+    // raw value would then land in usage.jsonl and /api/logs behind a pattern-based redactor
+    // that does not recognize every credential family. The prefix is a value the operator
+    // configured, so no caller-controlled string is persisted.
+    logCtx.shadowCallRewrittenFrom = sanitizeLogMetadataString(
+      shadowSourceModelPrefix(_sciOriginal, _sci.sourceModels),
+    );
     // Helpers must not resume/append into the parent thread's Cursor conversation.
     parsed._cursorIsolateConversation = true;
   }
@@ -2125,6 +2225,7 @@ async function handleResponsesInner(
   }
 
   route.provider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
+  applyCodexAccountGatedWireNormalization(parsed, route);
   logCtx.provider = route.codexAccountNamespace
     ? `${route.providerName}-${route.codexAccountNamespace}`
     : formatCodexProviderForLog(route.providerName, codexLogAccountId(authCtx), config);
@@ -2399,6 +2500,7 @@ async function handleResponsesInner(
       ? new Map<string, { namespace: string; name: string }>()
       : imageGenToolCallAliases(toolBridgeMaps.toolNsMap, parsed._rawBody, translatorBudget);
     const routedCustomToolNames = new Set<string>();
+    const routedToolSearchNames = new Set<string>();
     // Local continuation cache for the ChatGPT passthrough. Codex WS turns chain with
     // previous_response_id, ocx converts them to internal HTTP requests, and the ChatGPT Codex
     // REST backend rejects the parameter — the adapter strips it in forward mode, so the ONLY
@@ -2431,6 +2533,12 @@ async function handleResponsesInner(
       for (const name of request.convertedRoutedCustomToolNames ?? []) {
         if (toolBridgeMaps.freeformToolNames.has(name)) routedCustomToolNames.add(name);
       }
+    }
+    for (const name of request.convertedRoutedToolSearchNames ?? []) {
+      // The adapter already keeps this set empty when tool_choice forbids the private search.
+      // Its wire name may be collision-aliased, so comparing it to the caller-facing name here
+      // would incorrectly disable restoration for the exact ambiguous-name case the alias fixes.
+      routedToolSearchNames.add(name);
     }
     // #1700: the bridged paths refuse a call to a tool the request never declared
     // (`declaredToolNames`, src/bridge.ts). The passthrough had no equivalent, so a routed
@@ -2622,6 +2730,98 @@ async function handleResponsesInner(
       request.releaseBodyObservation?.();
     }
 
+    // Native Responses providers return before the generic adapter recovery loop below. Keep
+    // their OAuth contract identical: one pre-stream 401 forces a credential refresh and one
+    // rebuilt replay. xAI's current subscription models use this branch now that their official
+    // Grok CLI catalog declares the Responses backend.
+    if (upstreamResponse.status === 401 && isOAuth401ReplayProvider && sentOAuthSnapshot) {
+      try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
+      let refreshed: OAuthAccessSnapshot;
+      try {
+        refreshed = await forceRefreshOAuthAccessSnapshot(sentOAuthSnapshot);
+      } catch (err) {
+        upstream.abort();
+        releaseCodexAuthContextProbeLease(authCtx);
+        return formatErrorResponse(401, "authentication_error", publicOAuthAuthenticationErrorMessage(err));
+      }
+      sentOAuthSnapshot = refreshed;
+      replayOAuthCredentialSnapshot = {
+        accountId: refreshed.accountId,
+        generation: refreshed.generation,
+      };
+      if (route.providerName === "kiro") {
+        parsed._kiroAuthContext = { ...(refreshed.kiro ?? {}) };
+      }
+      const refreshedProvider = resolveProviderTransport(
+        route.providerName,
+        { ...route.provider, apiKey: refreshed.accessToken },
+        parsed.options.promptCacheKey,
+        route.providerName === "github-copilot" ? getOAuthCredentialApiBaseUrl(route.providerName) : undefined,
+      );
+      route.provider = refreshedProvider;
+      const refreshedAdapter = resolveAdapter(
+        resolveWireProtocolOverride(route.providerName, route.modelId, refreshedProvider, inboundWire),
+        config.cacheRetention,
+      );
+      if (!("passthrough" in refreshedAdapter) || !refreshedAdapter.passthrough) {
+        upstream.abort();
+        return formatErrorResponse(502, "upstream_error", "OAuth refresh changed the provider wire unexpectedly");
+      }
+      bindRouteReasoningReplayScope({
+        parsed,
+        providerName: route.providerName,
+        provider: refreshedProvider,
+        adapterName: refreshedAdapter.name,
+        oauthCredentialSnapshot: replayOAuthCredentialSnapshot,
+      });
+      logCtx.providerAdapter = refreshedAdapter.name;
+      sealRequestAttemptIdentity(
+        logCtx.activeAttempt,
+        logCtx.provider,
+        refreshedAdapter.name,
+        logCtx.accountLogLabel,
+      );
+      try {
+        request = await refreshedAdapter.buildRequest(parsed, {
+          headers: selectedForwardHeaders,
+          translatorBudget,
+        });
+        recordAdapterReasoning(logCtx, request);
+        recordAdapterTier(logCtx, request);
+      } catch (err) {
+        upstream.abort();
+        if (options.abortSignal?.aborted) return clientCancelledResponse();
+        const msg = err instanceof Error ? err.message : String(err);
+        return formatErrorResponse(400, "invalid_request_error", redactSecretString(msg));
+      }
+      try {
+        upstreamResponse = await fetchWithTransientRetry(
+          recovery => {
+            noteAttemptSend(logCtx.activeAttempt, passthroughEstimate, recovery ?? "oauth-401");
+            return fetchWithHeaderTimeout(request.url, applyUpstreamRecoveryInit({
+              method: request.method,
+              headers: request.headers,
+              body: request.body,
+            }, recovery), upstream.signal, connectMs, parsed.stream,
+              providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+                providerName: route.providerName,
+                modelId: route.modelId,
+              }),
+              route.provider.authMode === "forward")
+              .then(res => {
+                settleObservedHostResponse();
+                return res;
+              });
+          },
+          { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
+        );
+      } catch (err) {
+        return transportFailureResponse(err);
+      } finally {
+        request.releaseBodyObservation?.();
+      }
+    }
+
     // Same-target 429 wait-and-retry (opt-in `retryOn429`) for key-auth providers on the
     // passthrough wire. This branch returns before the recovery loop below, so Responses-shaped
     // key-auth gateways (e.g. the built-in DeepSeek preset) would otherwise surface 429
@@ -2684,7 +2884,7 @@ async function handleResponsesInner(
       }
     }
 
-    if (usesCodexForwardPoolAuth(authCtx, route.provider) && !authCtx.fixedAccount) {
+    if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
       let poolRetryOutcome: number | undefined;
       if (await shouldRetryCodexPoolAccountModel400(
         upstreamResponse,
@@ -2692,7 +2892,7 @@ async function handleResponsesInner(
         options.abortSignal,
       )) {
         poolRetryOutcome = 400;
-      } else if (shouldRetryCodexPoolAccountQuota(upstreamResponse)) {
+      } else if (!authCtx.fixedAccount && shouldRetryCodexPoolAccountQuota(upstreamResponse)) {
         // Pre-stream only: once SSE has begun, mid-stream quota stays terminal.
         poolRetryOutcome = upstreamResponse.status;
       }
@@ -2894,6 +3094,9 @@ async function handleResponsesInner(
         routedCustomToolNames.size > 0
           ? createRoutedCustomToolRestoreBlockRewrite(routedCustomToolNames, translatorBudget)
           : undefined,
+        routedToolSearchNames.size > 0
+          ? createRoutedToolSearchRestoreBlockRewrite(routedToolSearchNames, translatorBudget)
+          : undefined,
         githubCopilotRepairEnabled
           ? createGithubCopilotResponsesBlockRewrite(translatorBudget)
           : undefined,
@@ -3091,9 +3294,13 @@ async function handleResponsesInner(
           restoreImageGenCallsInJson(text, imageGenCallAliases),
           routedCustomToolNames,
         );
+        const restoredToolSearch = restoreRoutedToolSearchCallsInJson(
+          restored,
+          routedToolSearchNames,
+        );
         const repaired = hasResponsesSnapshotRepair(route.provider.responsesSnapshotRepair)
-          ? repairResponsesSnapshotJson(restored, outboundRequestBody)
-          : restored;
+          ? repairResponsesSnapshotJson(restoredToolSearch, outboundRequestBody)
+          : restoredToolSearch;
         const modelRewritten = parsed._responseModelId !== undefined && parsed._responseModelId !== parsed.modelId
           ? rewriteResponsesModelJson(backfillResponsesFieldsJson(repaired), parsed._responseModelId)
           : backfillResponsesFieldsJson(repaired);

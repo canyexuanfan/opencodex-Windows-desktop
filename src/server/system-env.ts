@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { accessSync, constants, readFileSync, writeFileSync, unlinkSync, mkdirSync, statSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { getConfigDir } from "../config";
 import { resolveAutoContext, type AutoContextMode } from "../claude/context-windows";
 import { PROXY_MARKER, defaultAuthDetectDeps, detectClaudeAuth, ownAdmissionTokens } from "../claude/auth-detect";
@@ -118,13 +118,82 @@ export function uninstallShellHook(): { removed: boolean; reason?: string } {
   try {
     const content = readFileSync(zshrcPath, "utf8");
     if (!content.includes(SHELL_HOOK_MARKER)) return { removed: false, reason: "not installed" };
-    // Remove the hook block (marker line + source line + surrounding newlines)
-    const cleaned = content.replace(/\n?# opencodex claude-env hook\n\[.*claude-env\.sh.*\n?/g, "\n");
+    // Match CR?LF, not LF alone. A .zshrc with CRLF line endings — ordinary on a home
+    // directory an editor or another OS has touched — did not match, so the file was
+    // rewritten unchanged and the caller was told the hook was removed. Reporting success
+    // while the hook still sources on every new shell is the worse of the two failures.
+    const cleaned = content.replace(/\r?\n?# opencodex claude-env hook\r?\n\[.*claude-env\.sh.*(?:\r?\n)?/g, "\n");
+    // Verify instead of assuming: if the marker survives, the block is shaped in a way this
+    // pattern does not own, and the honest answer is failure rather than a silent no-op.
+    if (cleaned.includes(SHELL_HOOK_MARKER)) {
+      return { removed: false, reason: "hook block present but not in the expected shape; remove it manually" };
+    }
     writeFileSync(zshrcPath, cleaned, { encoding: "utf8", mode: 0o644 });
     return { removed: true };
-  } catch {
+  } catch (error) {
+    if (error && typeof error === "object" && (error as { code?: unknown }).code === "ENOENT") {
+      return { removed: false, reason: "not installed" };
+    }
     return { removed: false, reason: "read/write failed" };
   }
+}
+
+/** Whether a real `claude` executable is discoverable from this process's PATH. */
+export function claudeCodeCliInstalled(pathValue = process.env.PATH): boolean {
+  if (!pathValue) return false;
+  for (const directory of pathValue.split(delimiter)) {
+    // An empty PATH segment means the current directory. Do not let the proxy treat a
+    // workspace-local file as a durable user installation.
+    if (!directory) continue;
+    const candidate = join(directory, "claude");
+    try {
+      if (!statSync(candidate).isFile()) continue;
+      accessSync(candidate, constants.X_OK);
+      return true;
+    } catch {
+      // Keep scanning PATH after missing, non-file, and non-executable entries.
+    }
+  }
+  return false;
+}
+
+/**
+ * Keep the shell hook aligned with the integration that can actually consume it.
+ * Claude Desktop uses its own profile and does not source `.zshrc`; this hook exists
+ * only for plain Claude Code CLI launches.
+ *
+ * Reconciliation is PATH-sensitive by construction: "Claude Code is installed" is answered
+ * from the PATH of whichever process calls this. A launchd/service context with a stripped
+ * PATH can therefore fail to see a `claude` the user's interactive shell finds, and this will
+ * remove the hook. That is the intended failure direction — removing an OpenCodex-owned block
+ * is reversible on the next foreground `ocx start`, whereas leaving a hook pointing at an
+ * uninstalled CLI is the stale state this reconciliation exists to clear. Only the block
+ * carrying our own marker is ever touched; user lines are preserved.
+ */
+export function reconcileShellHook(systemEnvInjected: boolean): {
+  changed: boolean;
+  state: "installed" | "absent" | "failed";
+  reason?: string;
+} {
+  if (process.platform !== "darwin") return { changed: false, state: "absent", reason: "not macOS" };
+  if (systemEnvInjected && claudeCodeCliInstalled()) {
+    const result = installShellHook();
+    if (result.installed) return { changed: true, state: "installed" };
+    if (result.reason === "already installed") {
+      return { changed: false, state: "installed", reason: result.reason };
+    }
+    return { changed: false, state: "failed", reason: result.reason ?? "install failed" };
+  }
+
+  const result = uninstallShellHook();
+  if (!result.removed && result.reason !== "not installed") {
+    return { changed: false, state: "failed", reason: result.reason ?? "remove failed" };
+  }
+  return {
+    changed: result.removed,
+    state: "absent",
+    reason: systemEnvInjected ? "Claude Code not installed" : "system environment inactive",
+  };
 }
 
 const SYSTEM_ENV_NAMES = [
