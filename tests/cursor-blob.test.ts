@@ -602,8 +602,31 @@ describe("Cursor blob handshake", () => {
 
   test("keeps ResumeAction for native-model tool-result continuations", () => {
     const bytes = encodeCursorRunRequest({
-      modelId: "composer-2.5",
+      modelId: "composer-2.5-fast",
       conversationId: "c1",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "[tool_result]\ncall_id: call_1\nname: read_file\nis_error: false\noutput:\ncontents" }],
+      rawMessages: [
+        { role: "user", content: "read a file", timestamp: 1 },
+        {
+          role: "assistant",
+          model: "cursor/composer-2.5-fast",
+          timestamp: 2,
+          content: [{ type: "toolCall", id: "call_1", name: "read_file", arguments: { path: "a.txt" } }],
+        },
+        { role: "toolResult", toolCallId: "call_1", toolName: "read_file", content: "contents", isError: false, timestamp: 3 },
+      ],
+    });
+    const msg = fromBinary(AgentClientMessageSchema, bytes);
+    const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+
+    expect(run?.action?.action.case).toBe("resumeAction");
+  });
+
+  test("drives composer-2.5 tool-result continuations as userMessageAction", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "composer-2.5",
+      conversationId: "c-composer-cont",
       system: ["You are helpful."],
       messages: [{ role: "tool", content: "[tool_result]\ncall_id: call_1\nname: read_file\nis_error: false\noutput:\ncontents" }],
       rawMessages: [
@@ -620,12 +643,16 @@ describe("Cursor blob handshake", () => {
     const msg = fromBinary(AgentClientMessageSchema, bytes);
     const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
 
-    expect(run?.action?.action.case).toBe("resumeAction");
+    expect(run?.action?.action.case).toBe("userMessageAction");
+    const value = run?.action?.action.case === "userMessageAction" ? run.action.action.value : undefined;
+    expect(value?.userMessage?.text).toBe(CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT);
+    const roots = decodeRootMessages(bytes) as Array<{ role?: string }>;
+    expect(JSON.stringify(roots)).toContain("contents");
   });
 
   test("drives external-model tool-result continuations as userMessageAction", () => {
-    // External wire models encode tool-result hops as userMessageAction; native
-    // models keep resumeAction. Tool results stay in the history blobs.
+    // External wire models encode tool-result hops as userMessageAction. Native
+    // composer-2.5 uses the same path; other native composer ids keep resumeAction.
     const bytes = encodeCursorRunRequest({
       modelId: "claude-fable-5",
       conversationId: "c-ext-cont",
