@@ -709,12 +709,11 @@ export function applyAntigravityReplay(model: string, sessionId: string, content
         // The client replays custom_tool_call with arguments: { input: "..." }.
         // Upstream was invoked with args: { input: "..." } or raw string or parsed JSON.
         const argsObj = fc.args as Record<string, unknown>;
-        if (
-          typeof argsObj.input === "string"
-          && utf8.encode(argsObj.input.trim()).byteLength <= REPLAY_MAX_CANONICAL_ARGS_BYTES
-        ) {
-          try {
-            const parsedInput = JSON.parse(argsObj.input);
+        if (typeof argsObj.input === "string") {
+          const trimmedInput = argsObj.input.trim();
+          if (utf8.encode(trimmedInput).byteLength <= REPLAY_MAX_CANONICAL_ARGS_BYTES) {
+            try {
+              const parsedInput = JSON.parse(trimmedInput);
             if (parsedInput && typeof parsedInput === "object") {
               const altKey = functionCallKey(fc.name, parsedInput);
               if (altKey && entry.byCall.has(altKey)) {
@@ -722,8 +721,9 @@ export function applyAntigravityReplay(model: string, sessionId: string, content
                 matchedKey = altKey;
               }
             }
-          } catch {
-            // not JSON, keep default
+            } catch {
+              // not JSON, keep default
+            }
           }
         }
       }

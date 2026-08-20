@@ -219,27 +219,54 @@ describe("antigravity reasoning-replay cache", () => {
 
   test("matches alternate key even when wrapped representation exceeds canonical key limit (ck undefined)", () => {
     observeAntigravityReplay(MODEL, SESSION, [fcPart("default_api:exec", { cmd: "x" }, "sig-whitespace-overflow")]);
-    // 65 KiB of leading whitespace makes the wrapped object exceed 64 KiB, so functionCallKey(fc.name, fc.args) is null/undefined.
-    // However, the parsed inner object is small and produces a valid alternate key.
-    const bigWhitespaceJson = " ".repeat(66 * 1024) + JSON.stringify({ cmd: "x" });
+    // 2 MiB of leading/trailing whitespace makes the raw string large, but trimmed payload is small (under 64 KiB).
+    // It must parse the trimmed slice directly rather than passing the 2 MiB string to JSON.parse.
+    const smallJson = JSON.stringify({ cmd: "x" });
+    const bigWhitespaceJson = " ".repeat(2 * 1024 * 1024) + smallJson + " ".repeat(1024);
+    let parsedString = "";
+    const originalParse = JSON.parse;
+    JSON.parse = (text, reviver) => {
+      if (typeof text === "string" && text.includes('"cmd":"x"')) {
+        parsedString = text;
+      }
+      return originalParse(text, reviver);
+    };
     const contents = [{
       role: "model",
       parts: [{ functionCall: { name: "default_api:exec", args: { input: bigWhitespaceJson } } }],
     }];
-    applyAntigravityReplay(MODEL, SESSION, contents);
-    expect((contents[0].parts[0] as { thoughtSignature?: string }).thoughtSignature).toBe("sig-whitespace-overflow");
+    try {
+      applyAntigravityReplay(MODEL, SESSION, contents);
+      expect((contents[0].parts[0] as { thoughtSignature?: string }).thoughtSignature).toBe("sig-whitespace-overflow");
+      expect(parsedString).toBe(smallJson);
+    } finally {
+      JSON.parse = originalParse;
+    }
   });
 
   test("rejects oversized input before JSON.parse without matching or allocating", () => {
     observeAntigravityReplay(MODEL, SESSION, [fcPart("default_api:exec", { data: "huge" }, "sig-should-not-match")]);
-    // 100 KiB of valid JSON payload exceeds REPLAY_MAX_CANONICAL_ARGS_BYTES and must be skipped before parsing.
+    // 100 KiB of valid JSON payload exceeds REPLAY_MAX_CANONICAL_ARGS_BYTES and must never reach JSON.parse.
+    let parseCalled = false;
+    const originalParse = JSON.parse;
+    JSON.parse = (text, reviver) => {
+      if (typeof text === "string" && text.includes('"data":')) {
+        parseCalled = true;
+      }
+      return originalParse(text, reviver);
+    };
     const oversizedPayload = JSON.stringify({ data: "a".repeat(100 * 1024) });
     const contents = [{
       role: "model",
       parts: [{ functionCall: { name: "default_api:exec", args: { input: oversizedPayload } } }],
     }];
-    applyAntigravityReplay(MODEL, SESSION, contents);
-    expect((contents[0].parts[0] as { thoughtSignature?: string }).thoughtSignature).toBeUndefined();
+    try {
+      applyAntigravityReplay(MODEL, SESSION, contents);
+      expect((contents[0].parts[0] as { thoughtSignature?: string }).thoughtSignature).toBeUndefined();
+      expect(parseCalled).toBe(false);
+    } finally {
+      JSON.parse = originalParse;
+    }
   });
 
   test("claude models do not use the replay cache", () => {
