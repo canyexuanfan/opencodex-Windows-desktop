@@ -525,7 +525,7 @@ describe("Cursor blob handshake", () => {
 
   test("native Cursor replay preserves tool calls with results in turn steps", () => {
     const bytes = encodeCursorRunRequest({
-      modelId: "composer-2.5",
+      modelId: "composer-2.5-fast",
       conversationId: "c1",
       system: ["You are helpful."],
       messages: [{ role: "tool", content: "[tool_result]\ncall_id: call_1\nname: read_file\nis_error: false\noutput:\ncontents" }],
