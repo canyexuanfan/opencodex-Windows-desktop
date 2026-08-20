@@ -1391,7 +1391,7 @@ export const ja: Record<TKey, string> = {
   "integrations.semantics.dsh": "OpenCodex が管理するのは $DSH_HOME/settings.yaml 内の llm-pi-ai.providers.opencodex だけです。DSH はこのプロバイダーをホットリロードし、既定のモデルと deepseek-official は変更しません。現在はループバック専用で、実際の認証情報は書き込みません。",
   "integrations.semantics.mcode": "custom_provider.opencodex のみを管理します。既定モデルと MiniMax ログインは変更しません。",
   "integrations.semantics.zcode": "~/.zcode/v2/config.json の provider.opencodex のみを管理します。Z.ai ログインと他のプロバイダーは変更しません。変更後は ZCode を再起動してください。",
-  "integrations.semantics.prime": "~/.prime/agent/models.json の providers.opencodex のみを管理します。他のプロバイダーとモデルオーバーライドは変更しません。新しいセッションから適用されます。",
+  "integrations.semantics.prime": "Prime Agent の models.json 内の providers.opencodex のみを管理します。場所は ~/.prime/agent ですが、PRIME_AGENT_CODING_AGENT_DIR が設定されている場合はそちらが優先されます。他のプロバイダーとモデルオーバーライドは変更しません。新しいセッションから適用されます。",
   "codexAuth.mainAccount": "メインアカウント",
   "codexAuth.logLabel": "ログラベル",
   "codexAuth.codexApp": "Codex App",

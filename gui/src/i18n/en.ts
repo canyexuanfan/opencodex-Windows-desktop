@@ -1458,7 +1458,7 @@ export const en = {
   "integrations.semantics.dsh": "OpenCodex manages only llm-pi-ai.providers.opencodex in $DSH_HOME/settings.yaml. DSH hot reloads this provider; your default model and deepseek-official stay unchanged. Currently loopback-only; no real credential is written.",
   "integrations.semantics.mcode": "Manages only custom_provider.opencodex. Your default model and MiniMax login stay unchanged.",
   "integrations.semantics.zcode": "Manages only provider.opencodex in ~/.zcode/v2/config.json. Your Z.ai login and other providers stay unchanged. Restart ZCode after changes.",
-  "integrations.semantics.prime": "Manages only providers.opencodex in ~/.prime/agent/models.json. Your other providers and model overrides stay unchanged. Applies to new sessions.",
+  "integrations.semantics.prime": "Manages only providers.opencodex in Prime Agent's models.json — ~/.prime/agent unless PRIME_AGENT_CODING_AGENT_DIR redirects it. Your other providers and model overrides stay unchanged. Applies to new sessions.",
   "codexAuth.mainAccount": "Main Account",
   "codexAuth.logLabel": "Log label",
   "codexAuth.codexApp": "Codex App",

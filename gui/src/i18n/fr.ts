@@ -1431,7 +1431,7 @@ export const fr: Record<TKey, string> = {
   "integrations.semantics.dsh": "OpenCodex gère uniquement llm-pi-ai.providers.opencodex dans $DSH_HOME/settings.yaml. DSH recharge ce fournisseur à chaud ; votre modèle par défaut et deepseek-official restent inchangés. Seule l’adresse de bouclage est actuellement prise en charge ; aucun identifiant réel n’est écrit.",
   "integrations.semantics.mcode": "Gère uniquement custom_provider.opencodex. Votre modèle par défaut et votre connexion MiniMax restent inchangés.",
   "integrations.semantics.zcode": "Gère uniquement provider.opencodex dans ~/.zcode/v2/config.json. Votre connexion Z.ai et les autres fournisseurs restent inchangés. Redémarrez ZCode après toute modification.",
-  "integrations.semantics.prime": "Gère uniquement providers.opencodex dans ~/.prime/agent/models.json. Vos autres fournisseurs et surcharges de modèles restent inchangés. S'applique aux nouvelles sessions.",
+  "integrations.semantics.prime": "Gère uniquement providers.opencodex dans le models.json de Prime Agent — ~/.prime/agent, sauf si PRIME_AGENT_CODING_AGENT_DIR le redirige. Vos autres fournisseurs et surcharges de modèles restent inchangés. S'applique aux nouvelles sessions.",
   "codexAuth.mainAccount": "Compte principal",
   "codexAuth.logLabel": "Libellé du journal",
   "codexAuth.codexApp": "Application Codex",

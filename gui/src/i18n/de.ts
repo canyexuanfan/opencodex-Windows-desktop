@@ -969,7 +969,7 @@ export const de: Record<TKey, string> = {
   "integrations.semantics.dsh": "OpenCodex verwaltet nur llm-pi-ai.providers.opencodex in $DSH_HOME/settings.yaml. DSH lädt diesen Anbieter im laufenden Betrieb neu; Ihr Standardmodell und deepseek-official bleiben unverändert. Derzeit nur über Loopback; es werden keine echten Zugangsdaten geschrieben.",
   "integrations.semantics.mcode": "Verwaltet nur custom_provider.opencodex. Standardmodell und MiniMax-Anmeldung bleiben unverändert.",
   "integrations.semantics.zcode": "Verwaltet nur provider.opencodex in ~/.zcode/v2/config.json. Z.ai-Anmeldung und andere Provider bleiben unverändert. ZCode nach Änderungen neu starten.",
-  "integrations.semantics.prime": "Verwaltet nur providers.opencodex in ~/.prime/agent/models.json. Andere Provider und Modell-Overrides bleiben unverändert. Gilt für neue Sitzungen.",
+  "integrations.semantics.prime": "Verwaltet nur providers.opencodex in der models.json von Prime Agent — ~/.prime/agent, sofern PRIME_AGENT_CODING_AGENT_DIR sie nicht umleitet. Andere Provider und Modell-Overrides bleiben unverändert. Gilt für neue Sitzungen.",
   "codexAuth.mainAccount": "Hauptkonto",
   "codexAuth.logLabel": "Log-Kennung",
   "codexAuth.codexApp": "Codex App",

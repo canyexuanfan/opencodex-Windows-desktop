@@ -1442,7 +1442,7 @@ export const ru: Record<TKey, string> = {
   "integrations.semantics.dsh": "OpenCodex управляет только llm-pi-ai.providers.opencodex в $DSH_HOME/settings.yaml. DSH применяет этот провайдер горячей перезагрузкой; модель по умолчанию и deepseek-official остаются без изменений. Сейчас поддерживается только loopback; реальные учётные данные не записываются.",
   "integrations.semantics.mcode": "Управляет только custom_provider.opencodex. Модель по умолчанию и вход MiniMax не меняются.",
   "integrations.semantics.zcode": "Управляет только provider.opencodex в ~/.zcode/v2/config.json. Вход Z.ai и другие провайдеры не меняются. Перезапустите ZCode после изменений.",
-  "integrations.semantics.prime": "Управляет только providers.opencodex в ~/.prime/agent/models.json. Другие провайдеры и переопределения моделей не меняются. Применяется к новым сессиям.",
+  "integrations.semantics.prime": "Управляет только providers.opencodex в models.json Prime Agent — ~/.prime/agent, если PRIME_AGENT_CODING_AGENT_DIR не переопределяет путь. Другие провайдеры и переопределения моделей не меняются. Применяется к новым сессиям.",
   "codexAuth.mainAccount": "Основной аккаунт",
   "codexAuth.logLabel": "Метка журнала",
   "codexAuth.codexApp": "Codex App",

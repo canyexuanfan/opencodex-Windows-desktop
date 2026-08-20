@@ -1967,7 +1967,7 @@ export const zhTW: Record<TKey, string> = {
   "integrations.semantics.dsh": "OpenCodex 只管理 $DSH_HOME/settings.yaml 中的 llm-pi-ai.providers.opencodex。DSH 會熱重載該 provider；你的預設模型與 deepseek-official 維持不變。目前僅支援 loopback，且不會寫入真實憑證。",
   "integrations.semantics.mcode": "僅管理 custom_provider.opencodex，不會變更預設模型或 MiniMax 登入狀態。",
   "integrations.semantics.zcode": "僅管理 ~/.zcode/v2/config.json 中的 provider.opencodex，不會變更 Z.ai 登入狀態或其他供應商。變更後請重新啟動 ZCode。",
-  "integrations.semantics.prime": "僅管理 ~/.prime/agent/models.json 中的 providers.opencodex，不會變更其他供應商或模型覆寫設定。對新工作階段生效。",
+  "integrations.semantics.prime": "僅管理 Prime Agent 的 models.json 中的 providers.opencodex；預設位於 ~/.prime/agent，若設定 PRIME_AGENT_CODING_AGENT_DIR 則以其為準。不會變更其他供應商或模型覆寫設定。對新工作階段生效。",
   "codexAuth.pinned": "已固定",
   "codexAuth.pinnedHint": "你手動選取了此帳號，因此較高的選擇順序不會越過它。此固定會持續到該帳號用盡、你改選其他帳號，或你變更任一選擇順序為止。",
   "codexAuth.requestUserInput": "在 Default 模式中要求輸入",

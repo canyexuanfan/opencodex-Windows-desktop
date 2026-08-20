@@ -1448,7 +1448,7 @@ export const tr: Record<TKey, string> = {
   "integrations.semantics.dsh": "OpenCodex yalnızca $DSH_HOME/settings.yaml içindeki llm-pi-ai.providers.opencodex bölümünü yönetir. DSH bu sağlayıcıyı çalışırken yeniden yükler; varsayılan modeliniz ve deepseek-official değişmez. Şimdilik yalnızca geri döngü desteklenir; gerçek kimlik bilgisi yazılmaz.",
   "integrations.semantics.mcode": "Yalnızca custom_provider.opencodex bölümünü yönetir. Varsayılan model ve MiniMax oturumu değişmez.",
   "integrations.semantics.zcode": "Yalnızca ~/.zcode/v2/config.json içindeki provider.opencodex bölümünü yönetir. Z.ai oturumu ve diğer sağlayıcılar değişmez. Değişikliklerden sonra ZCode'u yeniden başlatın.",
-  "integrations.semantics.prime": "Yalnızca ~/.prime/agent/models.json içindeki providers.opencodex bölümünü yönetir. Diğer sağlayıcılar ve model geçersiz kılmaları değişmez. Yeni oturumlarda geçerli olur.",
+  "integrations.semantics.prime": "Yalnızca Prime Agent'ın models.json dosyasındaki providers.opencodex bölümünü yönetir — PRIME_AGENT_CODING_AGENT_DIR ayarlı değilse ~/.prime/agent. Diğer sağlayıcılar ve model geçersiz kılmaları değişmez. Yeni oturumlarda geçerli olur.",
   "integrations.semantics.omp": "Kataloğu yüklemek için OMP'yi yeniden başlatın.",
   "codexAuth.mainAccount": "Ana Hesap",
   "codexAuth.logLabel": "Günlük etiketi",
