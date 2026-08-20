@@ -4,7 +4,7 @@ import { ValueSchema } from "@bufbuild/protobuf/wkt";
 import type { OcxAssistantContentPart, OcxMessage, OcxToolResultMessage } from "../../types";
 import { namespacedToolName } from "../../types";
 import type { CursorRunRequest } from "./types";
-import { isCursorExternalWireModel } from "./discovery";
+import { cursorNeedsExternalToolContinuation } from "./discovery";
 import { normalizeCursorToolResultText } from "./tool-result-normalize";
 import { debugProviderDiagnostic } from "../../lib/debug";
 import {
@@ -209,7 +209,7 @@ function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobR
     };
   }
 
-  const externalModel = isCursorExternalWireModel(request.modelId);
+  const externalModel = cursorNeedsExternalToolContinuation(request.modelId);
   const lastRawIsToolResult = messages.at(-1)?.role === "toolResult";
   const activeUserIndex = lastRawIsToolResult ? -1 : lastActionIndex(messages);
 
@@ -641,7 +641,7 @@ function conversationTurns(
   const messages = request.rawMessages;
   if (!messages?.length) return [];
   const end = lastActionIndex(messages);
-  const externalModel = isCursorExternalWireModel(request.modelId);
+  const externalModel = cursorNeedsExternalToolContinuation(request.modelId);
   const historyEnd = messages.at(-1)?.role === "toolResult" ? messages.length : Math.max(0, end);
   const start = externalModel ? Math.max(0, historyMessageStart) : 0;
   const turns: Uint8Array[] = [];
@@ -793,8 +793,11 @@ function buildPreparedCursorRunRequest(
   const lastRawIsToolResult = request.rawMessages?.at(-1)?.role === "toolResult";
   // Native models resume the remembered Cursor conversation. External wire
   // models continue as userMessageAction so history-blob tool results stay
-  // visible without a ResumeAction.
-  const externalToolContinuation = lastRawIsToolResult && isCursorExternalWireModel(request.modelId);
+  // visible without a ResumeAction. Some native composer ids are also routed
+  // through the external continuation path (cursorNeedsExternalToolContinuation)
+  // because a bare resumeAction makes them continue exploring with native tools
+  // instead of answering (observed on composer-2.5; see discovery.ts).
+  const externalToolContinuation = lastRawIsToolResult && cursorNeedsExternalToolContinuation(request.modelId);
   const actionCase = (externalToolContinuation || (!lastRawIsToolResult && text.trim().length > 0))
     ? "userMessageAction"
     : "resumeAction";
@@ -832,7 +835,7 @@ function buildPreparedCursorRunRequest(
     action: actionCase,
     conversationId: request.conversationId,
     turnType: lastRawIsToolResult ? "tool-continuation" : "initial",
-    externalModel: isCursorExternalWireModel(request.modelId),
+    externalModel: cursorNeedsExternalToolContinuation(request.modelId),
     rawMessages: request.rawMessages?.length ?? 0,
     rootBlobs: rootPromptMessageIds.length,
     rootBytes: rootPromptMessagesState.byteLength,
