@@ -42,7 +42,7 @@ async function collect(stream: AsyncGenerator<AdapterEvent>): Promise<AdapterEve
   const events: AdapterEvent[] = [];
   // Heartbeats are invisible downstream: the bridge consumes them to re-arm its stall
   // watchdog and emits nothing. Dropping them here keeps these assertions about the wire
-  // the client actually sees (#2156).
+  // the client actually sees.
   for await (const event of stream) if (event.type !== "heartbeat") events.push(event);
   return events;
 }
@@ -924,10 +924,14 @@ describe("openai-chat response_format emission", () => {
     });
   });
 
-// #2156: tool-call deltas are BUFFERED until a terminal signal, so this adapter can consume
-// upstream frames for a long time while yielding nothing downstream. The Responses bridge
-// arms its stall watchdog on ADAPTER activity, not socket activity, so a model streaming a
-// large argument payload was indistinguishable from a hung upstream.
+// Tool-call deltas are BUFFERED until a terminal signal, so this adapter can consume upstream
+// frames for a long time while yielding nothing downstream. The Responses bridge arms its
+// stall watchdog on ADAPTER activity, not socket activity, so a model streaming a large
+// argument payload was indistinguishable from a hung upstream.
+//
+// Found while investigating #2156 but deliberately NOT claimed as its fix: a stall abort
+// emits `response.incomplete` with `upstream_stall_timeout`, while that report shows the
+// adapter's own EOF error with tool calls still pending. This pins the mechanism only.
 test("tool-call deltas emit heartbeats so a long buffering phase is not read as a stall", async () => {
   const adapter = createOpenAIChatAdapter(provider());
   const frames = ['data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_a", function: { name: "shell", arguments: "" } }] } }] }) + '\n\n'];
