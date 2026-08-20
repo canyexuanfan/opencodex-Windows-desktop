@@ -19,6 +19,7 @@ import {
 } from "./responses/thought-signature-replay";
 import { resolveStallTimeoutSec } from "./stall-timeout";
 import { usageDisplayTotalTokens } from "./usage/totals";
+import { appendSafeWebSearchSource, safeWebSearchSources } from "./web-search/sources";
 import {
   isTranslatorBudgetExceededError,
   releaseTranslatedEvent,
@@ -1157,15 +1158,13 @@ export function bridgeToResponsesSSE(
                 });
                 currentWebSearch = { itemId: wsItemId2, eventId: event.id, outputIndex };
               }
-              closeCurrentWebSearch(event.status ?? "completed", event.queries, event.sources);
+              const safeSources = safeWebSearchSources(event.sources);
+              closeCurrentWebSearch(event.status ?? "completed", event.queries, safeSources);
               // Queue this search's sources for the next assistant message (dedup by URL).
-              if (event.sources) {
-                const seen = new Set(pendingWebSources.map(s => s.url));
-                for (const s of event.sources) {
-                  if (!seen.has(s.url)) {
-                    seen.add(s.url);
-                    chargeValue(s, "tool_search_sources");
-                    pendingWebSources.push(s);
+              if (safeSources.length > 0) {
+                for (const source of safeSources) {
+                  if (appendSafeWebSearchSource(pendingWebSources, source)) {
+                    chargeValue(source, "tool_search_sources");
                   }
                 }
               }
@@ -1566,6 +1565,7 @@ function buildResponseJSONWithBudget(
   const flushText = (inferredPhase?: OcxMessagePhase) => {
     if (!currentText) return;
     const phase = currentTextPhase ?? inferredPhase;
+    const sourceBytes = pendingWebSources.reduce((sum, source) => sum + bytesOf(JSON.stringify(source)), 0);
     const annotations = pendingWebSources.map(s => ({
       type: "url_citation", url: s.url, ...(s.title ? { title: s.title } : {}), start_index: 0, end_index: 0,
     }));
@@ -1576,6 +1576,7 @@ function buildResponseJSONWithBudget(
       ...(phase ? { phase } : {}),
     } as OutputItem;
     pushOutput(item, currentTextBytes);
+    budget?.releaseRetained(sourceBytes, { kind: "tool_search_sources" });
     currentText = "";
     currentTextBytes = 0;
     currentTextPhase = undefined;
@@ -1820,27 +1821,26 @@ function buildResponseJSONWithBudget(
         // Batch/non-streaming output has no in_progress phase to animate — the search cell is a
         // single finalized item, emitted on `end`. Begin is a no-op here.
         break;
-      case "web_search_call_end":
+      case "web_search_call_end": {
         if (currentText) flushText("commentary");
         if (currentSummaryReasoning) flushSummaryReasoning();
         if (currentRawReasoning) flushRawReasoning();
         flushToolCall();
+        const safeSources = safeWebSearchSources(e.sources);
         pushOutput({
           type: "web_search_call", id: `ws_${uuid()}`, status: e.status ?? "completed",
           action: webSearchAction(e.queries),
-          ...(e.sources && e.sources.length > 0 ? { sources: e.sources } : {}),
+          ...(safeSources.length > 0 ? { sources: safeSources } : {}),
         });
-        if (e.sources) {
-          const seen = new Set(pendingWebSources.map(s => s.url));
-          for (const s of e.sources) {
-            if (!seen.has(s.url)) {
-              seen.add(s.url);
-              budget?.chargeRetained(bytesOf(JSON.stringify(s)), { kind: "tool_search_sources" });
-              pendingWebSources.push(s);
+        if (safeSources.length > 0) {
+          for (const source of safeSources) {
+            if (appendSafeWebSearchSource(pendingWebSources, source)) {
+              budget?.chargeRetained(bytesOf(JSON.stringify(source)), { kind: "tool_search_sources" });
             }
           }
         }
         break;
+      }
       case "error":
         errorEvent = e;
         sawTerminal = true;
@@ -1872,6 +1872,11 @@ function buildResponseJSONWithBudget(
     if (budget) releaseTranslatedEvent(e, budget);
   }
   flushText(cleanDone && !errorEvent && !incompleteEvent ? "final_answer" : undefined);
+  if (pendingWebSources.length > 0) {
+    const sourceBytes = pendingWebSources.reduce((sum, source) => sum + bytesOf(JSON.stringify(source)), 0);
+    pendingWebSources = [];
+    budget?.releaseRetained(sourceBytes, { kind: "tool_search_sources" });
+  }
   flushSummaryReasoning();
   flushRawReasoning();
   // Open tool call on a failed/incomplete turn must not land as status:"completed" — and neither
