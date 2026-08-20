@@ -756,10 +756,7 @@ function repairOrphanedInputItems(body: unknown, dropReasoning: boolean, synthes
         continue;
       }
       const batchOutputs: unknown[] = [];
-      const emittedKeys = new Set<string>();
       for (const batchKey of batchKeys) {
-        if (emittedKeys.has(batchKey)) continue;
-        emittedKeys.add(batchKey);
         const bucket = outputIndexesByKey.get(batchKey);
         if (!bucket) continue;
         while (bucket.offset < bucket.indexes.length && bucket.indexes[bucket.offset]! < cursor) {
@@ -771,6 +768,7 @@ function repairOrphanedInputItems(body: unknown, dropReasoning: boolean, synthes
           if (claimedOutputIndexes.has(outputIndex)) continue;
           claimedOutputIndexes.add(outputIndex);
           batchOutputs.push(items[outputIndex]);
+          break;
         }
       }
       ordered.push(...batch, ...batchOutputs);

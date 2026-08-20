@@ -155,6 +155,13 @@ describe("stateless Responses wire repairs orphaned tool calls", () => {
     expect(input.filter(item => item.type === "function_call")).toHaveLength(callCount);
     expect(input.filter(item => item.type === "function_call_output")).toHaveLength(callCount);
     expect(input.filter(item => item.type === "message")).toHaveLength(callCount);
+    for (let index = 0; index < callCount; index += 1) {
+      expect(input.slice(index * 3, index * 3 + 3)).toMatchObject([
+        { type: "function_call", call_id: "call_repeat" },
+        { type: "function_call_output", call_id: "call_repeat" },
+        { type: "message", content: [{ type: "input_text", text: `separator ${index}` }] },
+      ]);
+    }
   });
 
   test("leaves intact call/output pairs untouched", async () => {
