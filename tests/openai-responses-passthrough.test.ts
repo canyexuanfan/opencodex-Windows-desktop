@@ -976,7 +976,7 @@ describe("OpenAI Responses passthrough sanitization", () => {
     expect(body.tools[0]).toMatchObject({ type: "image_generation" });
   });
 
- test("drops ChatGPT's external_web_access hint but keeps routed web search", () => {
+ test("normalizes xAI top-level and additional web search without stale tool choice", () => {
    const adapter = createResponsesPassthroughAdapter({
      adapter: "openai-responses",
      baseUrl: "https://api.x.ai/v1",
@@ -998,21 +998,18 @@ describe("OpenAI Responses passthrough sanitization", () => {
           tools: [{ type: "web_search", external_web_access: true, search_context_size: "medium" }],
         }],
         tools: [{ type: "web_search", external_web_access: false, filters: { allowed_domains: ["example.com"] } }],
+        tool_choice: { type: "web_search" },
       },
     }, { headers: new Headers() });
     const body = JSON.parse(request.body) as {
-      tools: Record<string, unknown>[];
+      tools?: Record<string, unknown>[];
       input: Array<{ type: string; tools: Record<string, unknown>[] }>;
+      tool_choice: Record<string, unknown>;
     };
 
-    expect(body.tools).toEqual([{
-      type: "web_search",
-      filters: { allowed_domains: ["example.com"] },
-    }]);
-    expect(body.input[0]?.tools).toEqual([{
-      type: "web_search",
-      search_context_size: "medium",
-    }]);
+    expect(body.tools).toBeUndefined();
+    expect(body.input[0]?.tools).toEqual([{ type: "web_search" }]);
+    expect(body.tool_choice).toEqual({ type: "web_search" });
   });
 
   test("preserves external_web_access on the canonical OpenAI forward route", () => {
@@ -1070,7 +1067,7 @@ describe("OpenAI Responses passthrough sanitization", () => {
       input: Array<{ tools: Record<string, unknown>[] }>;
     };
 
-    expect(body.tools[0]).toEqual({ type: "web_search_preview" });
+    expect(body.tools[0]).toEqual({ type: "web_search" });
     expect(body.tools[1]).toMatchObject({ type: "function", name: "workspace__read" });
     expect(body.tools[1]).not.toHaveProperty("defer_loading");
     expect(body.input[0].tools[0]).not.toHaveProperty("defer_loading");
