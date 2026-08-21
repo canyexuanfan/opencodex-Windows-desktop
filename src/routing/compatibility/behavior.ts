@@ -228,6 +228,7 @@ export function resolveProductionBehaviorValues(
     "cache.forwarding": behaviorRow("provider_config", effective.promptCacheKey === true),
     "cache.retention": behaviorRow("global_config", config.cacheRetention ?? "short"),
     "anthropic.eofPolicy": behaviorRow("provider_config", effective.anthropicEofTolerance === true ? "tolerant" : "strict"),
+    "openai-chat.eofPolicy": behaviorRow("provider_config", effective.openaiChatEofTolerance === true ? "tolerant" : "strict"),
     "google.mode": behaviorRow("provider_config", effective.googleMode ?? null),
     "google.projectFingerprint": behaviorRow(
       "provider_config",

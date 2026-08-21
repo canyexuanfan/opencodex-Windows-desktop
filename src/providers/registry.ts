@@ -222,6 +222,8 @@ export interface ProviderRegistryEntry {
    * (and the canonical openai seed comparison keeps its exact key set).
    */
   supportsServiceTier?: boolean;
+  /** Registry default for OpenAI extended hosted web_search field support. */
+  supportsOpenAiWebSearchToolFields?: boolean;
   /** Registry default for exact model service-tier capability; explicit config keys win. */
   modelSupportsServiceTier?: Record<string, boolean>;
   /**
@@ -266,6 +268,8 @@ export interface ProviderRegistryEntry {
    * `supportsServiceTier`, which governs the Responses wire.
    */
   chatServiceTier?: boolean;
+  /** OpenAI Chat EOF policy for gateways that omit terminal frames after complete tool calls. */
+  openaiChatEofTolerance?: boolean;
   autoToolChoiceOnlyModels?: string[];
   preserveReasoningContentModels?: string[];
   requiresReasoningPlaceholderModels?: string[];
@@ -291,7 +295,7 @@ export type ProviderConfigSeed = Pick<
   | "modelMaxInputTokens" | "defaultMaxOutputTokens" | "modelMaxOutputTokens"
   | "reasoningEfforts" | "modelReasoningEfforts" | "modelDefaultReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap" | "reasoningWireFormat"
   | "noVisionModels" | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
-  | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "requiresReasoningPlaceholderModels" | "reasoningSplitModels" | "thinkingToggleModels" | "thinkingBudgetModels" | "escapeBuiltinToolNames"
+  | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "requiresReasoningPlaceholderModels" | "reasoningSplitModels" | "thinkingToggleModels" | "thinkingBudgetModels" | "escapeBuiltinToolNames" | "openaiChatEofTolerance"
   | "googleMode" | "project" | "location" | "headers"
 >;
 
@@ -1006,6 +1010,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     featured: true,
     oauthId: "xai",
     jawcodeBundle: "xai",
+    supportsOpenAiWebSearchToolFields: false,
     note: "Log in with your Grok account",
     // Parallel tool calls: officially supported and default-on per docs.x.ai function-calling
     // (verified 260709, devlog/_plan/260709_parallel_tool_calls). Streamed calls arrive whole
@@ -1023,19 +1028,18 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // grok-4.5; the reasoning ladder does not — 4.6 adds the documented xhigh rung.
     models: ["grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-build-0.1", "grok-composer-2.5-fast"],
     defaultModel: "grok-4.5",
-    // The current Grok CLI catalog declares both subscription models as native Responses
-    // backends. Keep API-key and translated Chat/Anthropic callers on their existing wire;
-    // Codex Responses traffic can relay xAI's SSE as it arrives instead of waiting for the
-    // Chat Completions compatibility stream to flush at the end of a reasoning turn.
+    // Keep Codex Responses callers on the compatibility Chat wire until xAI can replay
+    // opaque reasoning continuation and compaction state across later turns. The scoped
+    // declaration also keeps caller-owned service tiers off the OAuth subscription route.
     modelWireDefaults: {
       "grok-4.6": {
-        wire: "openai-responses",
+        wire: "openai-chat",
         inbound: ["responses"],
         authModes: ["oauth"],
         forwardCallerServiceTier: false,
       },
       "grok-4.5": {
-        wire: "openai-responses",
+        wire: "openai-chat",
         inbound: ["responses"],
         authModes: ["oauth"],
         forwardCallerServiceTier: false,
@@ -1276,6 +1280,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     id: "opencode-go", label: "opencode go", adapter: "openai-chat", baseUrl: "https://opencode.ai/zen/go/v1",
     authKind: "key", featured: true, dashboardUrl: "https://opencode.ai/auth", defaultModel: "kimi-k2.7-code",
     jawcodeBundle: "opencode-go", note: "GLM, DeepSeek, Kimi, Qwen, MiMo…",
+    // Zen Go can close a Chat stream after a fully assembled function call without sending
+    // finish_reason or [DONE] (#2260). The adapter still rejects incomplete argument JSON.
+    openaiChatEofTolerance: true,
     /* [Decision Log]
     - 목적과 의도: Route GPT 5.6 Luna to the Responses endpoint that OpenCode Go documents for that exact model.
     - 기존 구현 및 제약 조건: The provider is mixed-wire but its provider-wide `openai-chat` adapter sent Luna to `/chat/completions`; explicit user `modelAdapters` entries must remain authoritative.

@@ -263,8 +263,8 @@ When both `tierModels.haiku` and `smallFastModel` are absent, OpenCodex leaves b
 
 ## Roster agents (injectAgents)
 
-`ocx claude` (and the system-env daemon) syncs your featured subagent roster (Subagents tab,
-up to 5 models) plus `ocx-self` into `~/.claude/agents/ocx-*.md`.
+Proxy startup/ensure, `ocx claude`, and relevant dashboard saves sync your featured subagent roster
+(Subagents tab, up to 5 models) plus `ocx-self` into `~/.claude/agents/ocx-*.md`.
 
 - **`ocx-self`** pins your `/model` picker default (falling back to `claudeCode.model`); omitted
   when neither exists. It does NOT use model inheritance.
@@ -276,7 +276,8 @@ up to 5 models) plus `ocx-self` into `~/.claude/agents/ocx-*.md`.
   overwritten or pruned; your own agents are never touched.
 - Files are atomically synced per file (write + rename).
 - `enabled: false` or `injectAgents: false` prunes all verified-owned definitions.
-- GUI PUT and roster changes resync immediately; launcher/system-env sync at launch.
+- GUI PUT and roster changes resync immediately; every foreground or background proxy start/ensure
+  reconciles the owned files before a later Claude Code launch reads them.
 
 Dispatch: `subagent_type: "ocx-gpt-5-6-sol"`. 1M-capable targets carry `[1m]` automatically.
 
@@ -332,8 +333,9 @@ Both sidecars can use either backend:
 | `openai` | A small GPT model through the ChatGPT `forward` provider | A ChatGPT login and an enabled `authMode: "forward"` provider |
 | `anthropic` | Claude through stored Anthropic OAuth; web search uses `web_search_20250305` and vision sends the image to Claude for description | An enabled `adapter: "anthropic"`, `authMode: "oauth"` provider whose active stored account is not marked `needsReauth` |
 
-An explicit `backend` always wins. When it is omitted, opencodex selects `anthropic` if a usable
-stored Anthropic OAuth account exists; otherwise it selects `openai`. Explicitly selecting
+An explicit `backend` always wins. When it is omitted, the **web-search** sidecar always selects
+`openai` (`anthropic` runs only when explicitly configured), while the **vision** sidecar selects
+`anthropic` if a usable stored Anthropic OAuth account exists, otherwise `openai`. Explicitly selecting
 `anthropic` without a usable credential **fails closed**: opencodex does not silently borrow
 ChatGPT credentials or switch backends. The OpenAI backend likewise stays off without both login
 auth and a forward provider.

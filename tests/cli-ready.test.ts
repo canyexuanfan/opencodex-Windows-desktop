@@ -636,12 +636,10 @@ describe("runReady --wait deadline correctness", () => {
 // A bounded source-level assertion reading ONLY src/cli/index.ts. It verifies
 // that the SAME identifier `readinessGate` is (1) created in handleStart via
 // createReadinessGate(), (2) passed to startServer in the retry path, and
-// (3) threaded into the startup sync via syncCodexOnStartIfEnabled(..., gate),
-// in that order. The gate-drive itself lives in syncCodexOnStartIfEnabled (the
-// modern dev startup path, which respects the Codex integration toggle and the
-// #1046 write-tracking contract); this catches a regression where the gate is
-// wired to only one of the two call sites. It complements the executable
-// runStartupReadinessSync outcome tests in tests/proxy-liveness.test.ts.
+// (3) passed to reconcileClientStartupBeforeReady before that helper gives a
+// deferred gate to syncCodexOnStartIfEnabled. The successful transition is held
+// until the Claude roster fence settles; this source guard complements the
+// executable delayed-roster test in tests/claude-agent-startup-sync.test.ts.
 describe("handleStart readinessGate wiring (source-level)", () => {
   const cliSource = readFileSync(join(import.meta.dir, "../src/cli/index.ts"), "utf8");
 
@@ -652,17 +650,24 @@ describe("handleStart readinessGate wiring (source-level)", () => {
     const startMatch = cliSource.match(/startServer\s*\(\s*port\s*,\s*\{\s*[^}]*readinessGate[^}]*\}\s*\)/);
     expect(startMatch, "startServer must be called with readinessGate among its deps in the retry path").not.toBeNull();
 
-    const syncMatch = cliSource.match(
-      /syncCodexOnStartIfEnabled\s*\(\s*port\s*,\s*config\s*,\s*undefined\s*,\s*readinessGate\s*\)/,
+    const reconcileMatch = cliSource.match(
+      /reconcileClientStartupBeforeReady\s*\(\s*readinessGate\s*,/,
     );
-    expect(syncMatch, "syncCodexOnStartIfEnabled must receive readinessGate so the startup sync drives /readyz").not.toBeNull();
+    expect(reconcileMatch, "startup reconciliation must receive the server readinessGate").not.toBeNull();
 
-    // Source order must be: create → startServer → startup sync.
+    const syncMatch = cliSource.match(
+      /gate\s*=>\s*syncCodexOnStartIfEnabled\s*\(\s*port\s*,\s*config\s*,\s*undefined\s*,\s*gate\s*\)/,
+    );
+    expect(syncMatch, "Codex startup sync must receive the deferred reconciliation gate").not.toBeNull();
+
+    // Source order must be: create → startServer → reconciliation → Codex sync.
     const createIdx = createMatch!.index!;
     const startIdx = startMatch!.index!;
+    const reconcileIdx = reconcileMatch!.index!;
     const syncIdx = syncMatch!.index!;
     expect(createIdx).toBeLessThan(startIdx);
-    expect(startIdx).toBeLessThan(syncIdx);
+    expect(startIdx).toBeLessThan(reconcileIdx);
+    expect(reconcileIdx).toBeLessThan(syncIdx);
   });
 
   test("the readinessGate identifier is the SAME symbol at all three call sites", () => {
@@ -670,7 +675,7 @@ describe("handleStart readinessGate wiring (source-level)", () => {
     // call site references that identifier (no shadowing, no second local).
     const declarations = cliSource.match(/\breadinessGate\s*=/g);
     expect(declarations, "readinessGate must be assigned exactly once").toHaveLength(1);
-    // Three references total: one declaration + startServer + startup sync.
+    // Three references total: one declaration + startServer + reconciliation helper.
     const references = cliSource.match(/\breadinessGate\b/g);
     expect(references?.length ?? 0).toBeGreaterThanOrEqual(3);
   });

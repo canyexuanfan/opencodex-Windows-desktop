@@ -116,6 +116,19 @@ of the HTTP retry loop.
   opaque `thoughtSignature` values so tool-result continuations retain Gemini reasoning continuity.
   The signature cache is snapshotted to the config directory, so continuations also survive proxy
   restarts.
+- **Malformed response shapes fail closed.** A claimed candidate, its `content`, or its
+  `content.parts` that is not the documented container terminates the turn with a
+  `google response contained invalid …` error naming the structural reason and the offending
+  value's type — never its contents. Absence is handled separately from corruption: an absent,
+  `null` or empty `content` or `parts` still completes the turn normally, a streaming chunk whose
+  `candidates` is absent, `null` or empty is skipped so the turn completes on a later terminal
+  frame, and a buffered response that carries no candidate at all returns
+  `google response contained no candidates`. A root `data: null` keepalive frame is still skipped as
+  padding.
+- Tool-call batches are closed by one immediately adjacent user turn containing one ordered
+  `functionResponse` per representable call. Interrupted histories receive an explicit missing-result marker;
+  duplicate or standalone results are preserved as marked text (and image siblings) rather than
+  emitted as invalid unpaired `functionResponse` parts.
 - **Inline image output:** when the model is one of the explicit image-capable chat IDs
   (`gemini-3.1-flash-image`, `gemini-2.0-flash-preview-image-generation`, or
   `gemini-3-pro-image-preview`), the adapter sends `responseModalities: ["TEXT", "IMAGE"]`.
@@ -205,6 +218,14 @@ compatibility pair: `agent.v1.AgentService/RunSSE` for server output and
 - Replays conversation state through content-addressed blobs, maps server tool calls back to Codex,
   discovers live Cursor models through the protobuf `GetUsableModels` RPC, and retries only before a
   run request is committed to the wire.
+- After a successful no-tool turn, the adapter keeps Cursor's returned ConversationStateStructure
+  in a process-local store and reuses that checkpoint on the next validated linear continuation
+  instead of rebuilding the full root history. Tool-result turns reuse the last completed-turn
+  checkpoint plus only the uncovered suffix when the covered message boundary is known.
+  Compaction, helper/shadow isolation, account/model mismatch, missing refs, decode failures,
+  forced-fresh recovery, and invalid_argument retries fall back to the existing full replay. A
+  process restart drops the in-memory store and full-replays. Cursor Connect still does not expose
+  authoritative cache_read_tokens, so OpenCodex usage is not a cache-hit counter.
 - Honors `upstreamHttpVersion` for both live model discovery and inference. `auto`, `http2`, and `h2`
   preserve the existing HTTP/2 transport; only `http1.1` and `h1` select compatibility mode.
 - Exposes Cursor Router as `cursor/auto` plus explicit `cursor/auto-cost`,

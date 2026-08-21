@@ -45,6 +45,8 @@ import { configuredAdminToken } from "../src/lib/admin-secrets";
 import { SYSTEM_RESTART_CAPABILITY_VERSION } from "../src/lib/system-restart-contract";
 import { LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION } from "../src/lib/local-provider-reload-contract";
 import { resetCodexModelEntitlementCacheForTests } from "../src/codex/model-entitlements";
+import { getDebugLogEntries, resetDebugLogBufferForTests } from "../src/lib/debug-log-buffer";
+import { resetDebugSettingsForTests, setDebugSettings } from "../src/lib/debug-settings";
 
 import { watchdogMs } from "./helpers/ci-watchdog";
 const previousApiToken = process.env.OPENCODEX_API_AUTH_TOKEN;
@@ -143,6 +145,8 @@ afterEach(() => {
   clearAccountNeedsReauth("pool-b");
   clearAccountQuota();
   resetCodexModelEntitlementCacheForTests();
+  resetDebugSettingsForTests();
+  resetDebugLogBufferForTests();
   if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
 });
 
@@ -2107,6 +2111,7 @@ describe("server local API auth", () => {
   });
 
   test("Activation A: allow-listed 400 retries once on another eligible pool account", async () => {
+    setDebugSettings({ debug: true });
     const harness = await startPoolRetryHarness(accountId => accountId === "acct-pool-a"
       ? rejectionResponse(unsupportedModelBody())
       : Response.json({ id: "retry-success", status: "completed", output: [] }));
@@ -2118,6 +2123,18 @@ describe("server local API auth", () => {
       expect(getCodexUpstreamHealth("pool-a")).toBeNull();
       expect(getCodexUpstreamHealth("pool-b")).toBeNull();
       expect(harness.config.activeCodexAccountId).toBe("pool-a");
+      const affinity = getDebugLogEntries()
+        .map(entry => entry.line)
+        .filter(line => line.startsWith("[ocx:codex:affinity] "))
+        .map(line => JSON.parse(line.slice("[ocx:codex:affinity] ".length)) as {
+          status: number;
+          authKind: string;
+          credentialSubstituted: boolean;
+        });
+      expect(affinity).toEqual([
+        expect.objectContaining({ status: 400, authKind: "pool", credentialSubstituted: true }),
+        expect.objectContaining({ status: 200, authKind: "pool", credentialSubstituted: true }),
+      ]);
     } finally {
       await stopPoolRetryHarness(harness);
     }

@@ -1,4 +1,5 @@
 import type { Server } from "bun";
+import { randomUUID } from "node:crypto";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse, type ResponsesTerminalStatus } from "../../bridge";
 import { formatPassthroughUpstreamError } from "./passthrough-error";
 import {
@@ -15,17 +16,20 @@ import {
 import { parseRequest } from "../../responses/parser";
 import {
   bindReasoningReplayScope,
+  commitReasoningReplayServingIdentity,
   reasoningReplayCodexCredentialIdentity,
   reasoningReplayDestinationIdentity,
   durableReplayDestinationIdentity,
   durableReplayCredentialIdentity,
   reasoningReplayKeyCredentialIdentity,
   reasoningReplayOAuthCredentialIdentity,
+  reasoningReplayServingIdentityChanged,
 } from "../../responses/reasoning-replay-cache";
 import { awaitThoughtSignatureDurability, thoughtSignatureReplaySalt } from "../../responses/thought-signature-replay";
 import { buildCompactV1Output, COMPACT_PROMPT, decodeCompactionSummary, extractCompactUserMessages } from "../../responses/compaction";
 import { FORWARD_HEADERS, sanitizeReasoningInputContent } from "../../adapters/openai-responses";
 import {
+  copyPreviousResponseReplayProvenance,
   expandPreviousResponseInput,
   markBodyNonPersistable,
   previousResponseProviderState,
@@ -33,6 +37,13 @@ import {
   previousResponseScopeMismatch,
   rememberResponseState,
 } from "../../responses/state";
+import {
+  isValidProviderContinuationOwner,
+  mergeProviderContinuationPayload,
+  providerContinuationOwnerFromReplayIdentity,
+  providerContinuationRouteScope,
+  sameProviderContinuationOwner,
+} from "../../responses/provider-continuation";
 import {
   comboRouteDecisionTrace,
   NoEligiblePolicyCandidateError,
@@ -62,7 +73,17 @@ import { injectionDebugLog } from "../../lib/injection-debug-log";
 import { resolveClientRetryAfter } from "../../lib/retry-after";
 import { enrichOpenCodeZenRateLimitMessage } from "../../providers/opencode-zen-rate-limit";
 import { modelInList, namespacedToolName } from "../../types";
-import type { AdapterEvent, OcxConfig, OcxParsedRequest, OcxProviderConfig, OcxProviderContinuationState, OcxUsage, TierDecision } from "../../types";
+import type {
+  AdapterEvent,
+  OcxConfig,
+  OcxParsedRequest,
+  OcxProviderConfig,
+  OcxProviderContinuationOwner,
+  OcxProviderContinuationState,
+  OcxReasoningReplayIdentity,
+  OcxUsage,
+  TierDecision,
+} from "../../types";
 import {
   forceRefreshOAuthAccessSnapshot,
   getOAuthCredentialApiBaseUrl,
@@ -115,6 +136,7 @@ import {
   resolveCodexModelEntitlements,
 } from "../../codex/model-entitlements";
 import { ACCOUNT_GATED_NATIVE_OPENAI_MODELS } from "../../codex/catalog/native-models";
+import { captureCodexAffinityDiagnostic } from "../../codex/affinity-debug";
 import {
   computeQuotaCooldown,
   formatCodexProviderForLog,
@@ -276,6 +298,12 @@ import { createRoutedCustomToolRestoreBlockRewrite } from "../responses-custom-t
 import { restoreRoutedToolSearchCallsInJson } from "../../responses/tool-search-compat";
 import { createRoutedToolSearchRestoreBlockRewrite } from "../responses-tool-search-repair";
 import {
+  createRoutedNamespaceCallRestoreRewrite,
+  NamespaceToolCollisionError,
+  restoreRoutedNamespaceCallsInJson,
+  type RoutedNamespaceToolAliases,
+} from "../../responses/namespace-tool-compat";
+import {
   collectDeclaredWireToolNames,
   createUndeclaredToolCallGuardBlockRewrite,
   undeclaredToolCallMessage,
@@ -323,6 +351,62 @@ export { DEFAULT_SHADOW_SOURCE_MODELS, isShadowSourceModel, shadowSourceModels }
 
 export function codexLogAccountId(authCtx: CodexAuthContext): string | null {
   return authCtx.kind === "pool" || authCtx.kind === "main-pool" ? authCtx.accountId : null;
+}
+
+type ContinuationOwnerRead =
+  | { kind: "missing" }
+  | { kind: "invalid" }
+  | { kind: "valid"; owner: OcxProviderContinuationOwner };
+
+function readProviderContinuationOwner(
+  state: OcxProviderContinuationState | undefined,
+): ContinuationOwnerRead {
+  if (!state || state.__ocxOwner === undefined) return { kind: "missing" };
+  const owner = state.__ocxOwner;
+  if (!isValidProviderContinuationOwner(owner)) return { kind: "invalid" };
+  return { kind: "valid", owner: { ...owner } };
+}
+
+function providerContinuationPayload(
+  state: OcxProviderContinuationState | undefined,
+): OcxProviderContinuationState | undefined {
+  if (!state) return undefined;
+  const cloned = structuredClone(state);
+  delete cloned.__ocxOwner;
+  return Object.keys(cloned).length > 0 ? cloned : undefined;
+}
+
+function bindProviderContinuationForRoute(
+  parsed: OcxParsedRequest,
+  currentOwner: OcxProviderContinuationOwner | undefined,
+): void {
+  const candidate = parsed._providerContinuationCandidate;
+  const storedOwner = readProviderContinuationOwner(candidate);
+  const mayRestore = storedOwner.kind === "valid"
+    && !!currentOwner
+    && sameProviderContinuationOwner(storedOwner.owner, currentOwner);
+  const restored = mayRestore ? providerContinuationPayload(candidate) : undefined;
+  if (restored) parsed._providerContinuation = restored;
+  else delete parsed._providerContinuation;
+  const cursorConversationId = restored?.cursor?.conversationId;
+  if (cursorConversationId) parsed._cursorConversationId = cursorConversationId;
+  else delete parsed._cursorConversationId;
+  if (currentOwner) parsed._providerContinuationOwner = { ...currentOwner };
+  else delete parsed._providerContinuationOwner;
+}
+
+function providerContinuationDestinationIdentity(
+  parsed: OcxParsedRequest,
+  provider: OcxProviderConfig,
+): string | undefined {
+  const kiroContext = parsed._kiroAuthContext;
+  return reasoningReplayDestinationIdentity(JSON.stringify([
+    provider.baseUrl.trim().replace(/\/+$/, ""),
+    provider.responsesPath ?? "",
+    kiroContext?.profileArn ?? "",
+    kiroContext?.apiRegion ?? "",
+    kiroContext?.ssoRegion ?? "",
+  ]));
 }
 
 function bindRouteReasoningReplayScope(args: {
@@ -393,20 +477,202 @@ function bindRouteReasoningReplayScope(args: {
     );
   }
   const providerDestinationIdentity = reasoningReplayDestinationIdentity(provider.baseUrl);
-  bindReasoningReplayScope(
-    parsed._reasoningReplayScope,
-    credentialIdentity && providerDestinationIdentity
-      ? {
-          providerName,
-          providerDestinationIdentity,
-          providerDestinationDurableIdentity: durableReplayDestinationIdentity(provider.baseUrl),
-          adapterName,
-          modelId: parsed.modelId,
-          credentialIdentity,
-          ...(credentialDurableIdentity ? { credentialDurableIdentity } : {}),
-        }
+  const replayIdentity: OcxReasoningReplayIdentity | undefined = credentialIdentity && providerDestinationIdentity
+    ? {
+        providerName,
+        providerDestinationIdentity,
+        providerDestinationDurableIdentity: durableReplayDestinationIdentity(provider.baseUrl),
+        adapterName,
+        modelId: parsed.modelId,
+        credentialIdentity,
+        ...(credentialDurableIdentity ? { credentialDurableIdentity } : {}),
+      }
+    : undefined;
+  const continuationDestinationIdentity = providerContinuationDestinationIdentity(parsed, provider);
+  const continuationOwner = providerContinuationOwnerFromReplayIdentity(
+    replayIdentity && continuationDestinationIdentity
+      ? { ...replayIdentity, providerDestinationIdentity: continuationDestinationIdentity }
       : undefined,
   );
+  if (adapterName === "cursor") {
+    // The final route owner is authoritative for Cursor and supersedes the account-derived
+    // seed assigned before route binding. A Cursor conversation must be scoped to the exact
+    // provider/destination/adapter/model/credential that serves it.
+    if (continuationOwner) parsed._cursorIdentityScope = providerContinuationRouteScope(continuationOwner);
+    else if (!parsed._cursorIdentityScope?.startsWith("cursor-unowned:")) {
+      // Prevent the adapter's token-only fallback from recreating a provider-private id after the
+      // route owner failed closed. The sentinel is per parsed request and contains no credential.
+      parsed._cursorIdentityScope = `cursor-unowned:${randomUUID()}`;
+    }
+  }
+  bindReasoningReplayScope(
+    parsed._reasoningReplayScope,
+    replayIdentity,
+  );
+  // Keep this sticky for the whole outbound request: a later auth/key rebind may compare equal
+  // after the first mismatch, but it cannot make history minted by the prior route decodable.
+  if (reasoningReplayServingIdentityChanged(parsed._reasoningReplayScope)) {
+    parsed._stripReasoningEncryptedContent = true;
+  }
+  bindProviderContinuationForRoute(parsed, continuationOwner);
+}
+
+function adapterResponseReachedServingTerminal(
+  events: readonly AdapterEvent[],
+  response: Readonly<Record<string, unknown>>,
+): boolean {
+  return (response.status === "completed" || response.status === "incomplete")
+    && events.some(event => event.type === "done" || event.type === "incomplete");
+}
+
+const OPAQUE_RESPONSES_INPUT_TYPES = new Set([
+  "reasoning",
+  "compaction",
+  "compaction_summary",
+  "context_compaction",
+]);
+
+function outboundResponsesBodyCarriesOpaqueBlob(bodyText: string | undefined): boolean {
+  if (!bodyText) return false;
+  try {
+    const body = JSON.parse(bodyText) as unknown;
+    if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+    const input = (body as { input?: unknown }).input;
+    if (!Array.isArray(input)) return false;
+    return input.some(item => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+      const candidate = item as { type?: unknown; encrypted_content?: unknown };
+      return typeof candidate.type === "string"
+        && OPAQUE_RESPONSES_INPUT_TYPES.has(candidate.type)
+        && typeof candidate.encrypted_content === "string"
+        && candidate.encrypted_content.length > 0;
+    });
+  } catch {
+    return false;
+  }
+}
+
+function isSelfIdentifiedOpaqueBlobRejection(bodyText: string): boolean {
+  try {
+    const payload = JSON.parse(bodyText) as unknown;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+    const record = payload as { code?: unknown; error?: unknown };
+
+    if (record.error && typeof record.error === "object" && !Array.isArray(record.error)) {
+      const error = record.error as { type?: unknown; code?: unknown; message?: unknown };
+      if (error.type === "invalid_request_error") {
+        if (error.code === "invalid_encrypted_content") return true;
+        if (
+          (error.code === null || error.code === undefined)
+          && typeof error.message === "string"
+          && error.message.startsWith("The encrypted content ")
+          && error.message.endsWith(
+            " could not be verified. Reason: Encrypted content could not be decrypted or parsed.",
+          )
+        ) return true;
+      }
+    }
+
+    if (record.code !== "invalid-argument" || typeof record.error !== "string") return false;
+    return record.error.startsWith("Could not decode the compaction blob")
+      || record.error.startsWith("Could not decrypt the provided encrypted_content");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether an upstream Responses 4xx authoritatively rejected opaque replay state.
+ *
+ * The outbound-body check is intentional: the inbound transcript may contain a proxy envelope or
+ * compaction blob that the adapter already lowered, in which case a replay would be byte-identical.
+ * OpenAI usually exposes a dedicated nested code; ChatGPT also emits one exact code-less
+ * unverifiable-ciphertext message. xAI's code is generic, so its two concrete decoder error
+ * identities are also required. Unrelated error prose must never gain a hidden resend.
+ */
+export function shouldAttemptOpaqueBlobRecovery(args: {
+  status: number;
+  adapterName: string;
+  outboundBody?: string;
+  errorBody: string;
+  alreadyAttempted: boolean;
+}): boolean {
+  return args.status >= 400
+    && args.status < 500
+    && args.adapterName === "openai-responses"
+    && !args.alreadyAttempted
+    && outboundResponsesBodyCarriesOpaqueBlob(args.outboundBody)
+    && isSelfIdentifiedOpaqueBlobRejection(args.errorBody);
+}
+
+async function opaqueBlobRejectionBodyForRecovery(
+  response: Response,
+  outboundBody: string | undefined,
+  adapterName: string,
+  alreadyAttempted: boolean,
+  signal: AbortSignal,
+): Promise<string | undefined> {
+  if (
+    response.status < 400
+    || response.status >= 500
+    || adapterName !== "openai-responses"
+    || alreadyAttempted
+    || !outboundResponsesBodyCarriesOpaqueBlob(outboundBody)
+  ) return undefined;
+  try {
+    const body = await readBoundedResponseBody(response.clone(), { signal });
+    return body.displaySafe && !body.truncated ? body.text : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function prepareOpaqueBlobRecovery(parsed: OcxParsedRequest): void {
+  parsed._stripReasoningEncryptedContent = true;
+}
+
+type OpaqueBlobRecoveryGuard = { attempted: boolean };
+
+type OpaqueBlobRecoveryResult =
+  | { kind: "skipped" }
+  | { kind: "recovered"; response: Response }
+  | { kind: "failed"; response: Response };
+
+async function attemptOpaqueBlobRecovery(
+  args: {
+    response: Response;
+    outboundBody?: string;
+    adapterName: string;
+    parsed: OcxParsedRequest;
+    guard: OpaqueBlobRecoveryGuard;
+    signal: AbortSignal;
+  },
+  rebuild: (kind: AttemptRecoveryKind) => Promise<Response | { failed: Response }>,
+): Promise<OpaqueBlobRecoveryResult> {
+  const errorBody = await opaqueBlobRejectionBodyForRecovery(
+    args.response,
+    args.outboundBody,
+    args.adapterName,
+    args.guard.attempted,
+    args.signal,
+  );
+  if (errorBody === undefined || !shouldAttemptOpaqueBlobRecovery({
+    status: args.response.status,
+    adapterName: args.adapterName,
+    outboundBody: args.outboundBody,
+    errorBody,
+    alreadyAttempted: args.guard.attempted,
+  })) {
+    return { kind: "skipped" };
+  }
+
+  args.guard.attempted = true;
+  prepareOpaqueBlobRecovery(args.parsed);
+  try { void args.response.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
+  const result = await rebuild("opaque-blob-rejection");
+  return "failed" in result
+    ? { kind: "failed", response: result.failed }
+    : { kind: "recovered", response: result };
 }
 
 function nonEmptyProviderApiKey(provider: OcxProviderConfig): string | undefined {
@@ -521,6 +787,11 @@ interface CodexPoolAccountRetryArgs {
   connectMs: number;
   passthroughEstimate?: number;
   stream: boolean;
+  onResponse?: (
+    response: Response,
+    authCtx: Extract<CodexAuthContext, { kind: "pool" | "main-pool" }>,
+    request: Awaited<ReturnType<ReturnType<typeof resolveAdapter>["buildRequest"]>>,
+  ) => void;
 }
 
 type CodexPoolAccountRetryResult =
@@ -761,6 +1032,7 @@ async function retryCodexPoolOnAlternateAccount(
         route.provider.authMode === "forward",
       );
       retrySendCount += 1;
+      args.onResponse?.(upstreamResponse, retryAuthCtx, request);
       if (!retrySameConfirmedAccount || retrySendCount >= maxRetrySends) break;
       if (!await shouldRetryCodexPoolAccountModel400(
         upstreamResponse,
@@ -943,6 +1215,12 @@ export interface HandleResponsesOptions {
   stripClaudeMainAuthForNoncanonicalForward?: boolean;
   /** Internal recursion guard; callers outside this module must not set it. */
   comboAttempt?: boolean;
+  /** Internal combo handoff for one parent-validated continuation snapshot. */
+  comboReplaySnapshot?: {
+    sourceBody: unknown;
+    previousResponseInputExpanded: boolean;
+    providerContinuation: OcxProviderContinuationState | undefined;
+  };
   /** Internal combo handoff: allow a later same-provider model after a reset-derived 429/402. */
   deferCodexResetDerivedCooldown?: boolean;
   /** 030-owned handoff when a child consumed the original failure under bounds. */
@@ -1141,7 +1419,7 @@ function unreadableEncryptedAgentTaskResponse(): Response {
 }
 
 type ResponsesAuthResolution =
-  | { ok: true; authCtx: CodexAuthContext; headers: Headers }
+  | { ok: true; authCtx: CodexAuthContext; headers: Headers; substituteMainCredential: boolean }
   | { ok: false; response: Response };
 
 /**
@@ -1205,6 +1483,7 @@ async function resolveResponsesCodexAuth(
       ok: true,
       authCtx,
       headers: materializeCodexUpstreamAuth(req.headers, authCtx, { substituteMainCredential }),
+      substituteMainCredential,
     };
   } catch (err) {
     if (err instanceof CodexAccountCooldownError) {
@@ -1435,7 +1714,12 @@ export async function handleComboResponses(
   // Expand previous_response_id before image policy and child dispatch so a
   // continuation that only references prior images still fails closed when
   // imageInput is disabled (and so targets see the full replayed input).
-  const body = expandPreviousResponseInput(rawBody);
+  const inboundClientThreadId = req.headers.get("x-codex-parent-thread-id")?.trim() || undefined;
+  const body = expandPreviousResponseInput(rawBody, inboundClientThreadId);
+  const scopeMismatch = previousResponseScopeMismatch(body);
+  if (scopeMismatch) {
+    console.warn("[opencodex] dropped a previous_response_id with a mismatched client task scope; continuing fresh");
+  }
   if (previousResponseReplayFailure(body)) {
     return formatErrorResponse(
       400,
@@ -1462,11 +1746,14 @@ export async function handleComboResponses(
   if (combo.imageInput === "disabled" && comboRequestHasImageInput(body)) {
     return formatErrorResponse(400, "invalid_request_error", `Combo "${comboId}" does not accept image input`);
   }
-  // Expansion already materialised prior input. Drop the id so the child
-  // handleResponses path does not expand again and double-prepend history.
-  if (body !== rawBody && body && typeof body === "object" && !Array.isArray(body)) {
-    delete (body as Record<string, unknown>).previous_response_id;
-  }
+  const comboReplaySnapshot = {
+    sourceBody: body,
+    previousResponseInputExpanded: body !== rawBody
+      && typeof (body as { previous_response_id?: unknown }).previous_response_id === "string",
+    providerContinuation: !scopeMismatch && body !== rawBody && requestedPreviousId
+      ? previousResponseProviderState(requestedPreviousId)
+      : undefined,
+  };
   const adoptFailedChildLog = (childLog: RequestLogContext): void => {
     // Attempts remain the complete physical history; the logical row mirrors the most recent
     // failed target so an exhausted combo still has useful top-level reasoning diagnostics.
@@ -1573,6 +1860,7 @@ export async function handleComboResponses(
       response = await handleResponses(childRequest, config, childLog, {
         ...options,
         comboAttempt: true,
+        comboReplaySnapshot,
         deferCodexResetDerivedCooldown,
         // Attempt-relative TTFT is recorded HERE (not via childLog.firstOutputMs — a later
         // Object.assign(logCtx, childLog) would overwrite the request-relative value).
@@ -1842,19 +2130,24 @@ async function handleResponsesInner(
   );
   const inboundClientThreadId = req.headers.get("x-codex-parent-thread-id")?.trim() || undefined;
   const originalBody = body;
-  body = expandPreviousResponseInput(body, inboundClientThreadId);
-  if (previousResponseScopeMismatch(body)) {
-    console.warn("[opencodex] dropped a previous_response_id with a mismatched client task scope; continuing fresh");
+  if (options.comboReplaySnapshot) {
+    copyPreviousResponseReplayProvenance(options.comboReplaySnapshot.sourceBody, body);
+  } else {
+    body = expandPreviousResponseInput(body, inboundClientThreadId);
+    if (previousResponseScopeMismatch(body)) {
+      console.warn("[opencodex] dropped a previous_response_id with a mismatched client task scope; continuing fresh");
+    }
+    if (previousResponseReplayFailure(body)) {
+      return formatErrorResponse(
+        400,
+        "previous_response_not_found",
+        "Continuation state is unavailable or corrupt; resend the full conversation without previous_response_id.",
+      );
+    }
   }
-  if (previousResponseReplayFailure(body)) {
-    return formatErrorResponse(
-      400,
-      "previous_response_not_found",
-      "Continuation state is unavailable or corrupt; resend the full conversation without previous_response_id.",
-    );
-  }
-  const previousResponseInputExpanded = body !== originalBody
-    && typeof (body as { previous_response_id?: unknown }).previous_response_id === "string";
+  const previousResponseInputExpanded = options.comboReplaySnapshot?.previousResponseInputExpanded
+    ?? (body !== originalBody
+      && typeof (body as { previous_response_id?: unknown }).previous_response_id === "string");
 
   // Spawn-message compatibility (both directions): agent_message task payloads ride in
   // encrypted_content slots as plaintext. Rewrite them to input_text on the RAW body BEFORE
@@ -1877,8 +2170,10 @@ async function handleResponsesInner(
     parsed = parseRequest(body);
     toolBridgeMaps = buildToolBridgeMaps(parsed, translatorBudget);
     if (previousResponseInputExpanded) parsed._previousResponseInputExpanded = true;
-    parsed._providerContinuation = previousResponseProviderState(parsed.previousResponseId);
-    parsed._cursorConversationId = parsed._providerContinuation?.cursor?.conversationId;
+    const providerContinuationCandidate = options.comboReplaySnapshot
+      ? options.comboReplaySnapshot.providerContinuation
+      : previousResponseProviderState(parsed.previousResponseId);
+    if (providerContinuationCandidate) parsed._providerContinuationCandidate = providerContinuationCandidate;
     if (inboundClientThreadId) {
       parsed._clientThreadId = inboundClientThreadId;
       parsed._reasoningReplayScope = { clientThreadId: inboundClientThreadId };
@@ -2077,6 +2372,8 @@ async function handleResponsesInner(
           const kept: Array<keyof OcxParsedRequest> = [
             "_previousResponseInputExpanded",
             "_providerContinuation",
+            "_providerContinuationCandidate",
+            "_providerContinuationOwner",
             "_cursorConversationId",
             "_clientThreadId",
             "_reasoningReplayScope",
@@ -2217,11 +2514,13 @@ async function handleResponsesInner(
     pendingHostAdmissionLease = admission.lease;
   }
 
+  let substituteMainCredential = false;
   {
     const finalAuth = await resolveResponsesCodexAuth(req, config, route, options);
     if (!finalAuth.ok) return finalAuth.response;
     authCtx = finalAuth.authCtx;
     selectedForwardHeaders = finalAuth.headers;
+    substituteMainCredential = finalAuth.substituteMainCredential;
   }
 
   route.provider = applyCodexAuthContextToProvider(route.provider, authCtx, route.codexAccountMode);
@@ -2230,8 +2529,9 @@ async function handleResponsesInner(
     ? `${route.providerName}-${route.codexAccountNamespace}`
     : formatCodexProviderForLog(route.providerName, codexLogAccountId(authCtx), config);
   logCtx.accountLogLabel = codexAuthContextLogLabel(authCtx, config);
-  // Prefer Codex pool account as the Cursor thread namespace when present. Cursor routes without
-  // codexAccountMode still get a credential-derived scope inside the Cursor adapter.
+  // Seed an account-derived scope before final adapter binding. Cursor never treats it as
+  // authoritative: bindRouteReasoningReplayScope replaces it with the exact route owner or a
+  // per-request fail-closed sentinel after the final provider and credential are known.
   const identityScope = codexLogAccountId(authCtx);
   if (identityScope) parsed._cursorIdentityScope = identityScope;
   subagentFallbackAccountId = authCtx.kind === "pool" || authCtx.kind === "main-pool"
@@ -2345,6 +2645,9 @@ async function handleResponsesInner(
     codexAuthContext: authCtx,
     forwardHeaders: selectedForwardHeaders,
   });
+  if (!logCtx.conversationId && parsed._cursorConversationId) {
+    logCtx.conversationId = normalizeLogConversationId(parsed._cursorConversationId);
+  }
   logCtx.providerAdapter = adapter.name;
   // Ordinary requests receive one durable attempt only after their final initial
   // adapter is resolved. Combo children own their attempt and retries keep it.
@@ -2445,24 +2748,19 @@ async function handleResponsesInner(
     emitted?: OcxProviderContinuationState,
   ): OcxProviderContinuationState | undefined => {
     const cursorConversationId = parsed._cursorConversationId;
-    const inherited = parsed._providerContinuation;
-    if (!emitted && !inherited && !cursorConversationId) return undefined;
-    return {
-      ...(inherited ?? {}),
-      ...(emitted ?? {}),
-      ...((inherited?.kiro || emitted?.kiro)
-        ? { kiro: { ...(inherited?.kiro ?? {}), ...(emitted?.kiro ?? {}) } }
-        : {}),
-      ...(cursorConversationId
-        ? {
-            cursor: {
-              ...(inherited?.cursor ?? {}),
-              ...(emitted?.cursor ?? {}),
-              conversationId: cursorConversationId,
-            },
-          }
-        : {}),
-    };
+    const inherited = providerContinuationPayload(parsed._providerContinuation);
+    const emittedPayload = providerContinuationPayload(emitted);
+    if (!emittedPayload && !inherited && !cursorConversationId) return undefined;
+    const merged = mergeProviderContinuationPayload(
+      inherited ?? {},
+      emittedPayload ?? {},
+    ) as OcxProviderContinuationState;
+    if (cursorConversationId) {
+      merged.cursor = { ...(merged.cursor ?? {}), conversationId: cursorConversationId };
+    }
+    return parsed._providerContinuationOwner
+      ? { ...merged, __ocxOwner: { ...parsed._providerContinuationOwner } }
+      : merged;
   };
 
   // Remote compaction v2 on a ROUTED model: Codex sent `compaction_trigger` and requires exactly
@@ -2475,6 +2773,9 @@ async function handleResponsesInner(
   // message, and leave Codex fataling on a missing compaction item (#422).
   const routedCompaction = parsed._compactionRequest === true
     && !isCanonicalOpenAiForwardProvider(route.provider);
+  const commitReasoningReplayServingRoute = (): void => {
+    commitReasoningReplayServingIdentity(parsed._reasoningReplayScope);
+  };
   if (routedCompaction) {
     delete parsed.context.tools;
     delete parsed._webSearch;
@@ -2491,6 +2792,11 @@ async function handleResponsesInner(
     }
     parsed.context.messages.push({ role: "user", content: COMPACT_PROMPT, timestamp: Date.now() });
   }
+
+  let routedNamespaceToolAliases: RoutedNamespaceToolAliases = new Map();
+  const refreshRoutedNamespaceToolAliases = (builtRequest: AdapterRequest): void => {
+    routedNamespaceToolAliases = builtRequest.convertedRoutedNamespaceToolAliases ?? new Map();
+  };
 
   if ("passthrough" in adapter && adapter.passthrough && !routedCompaction) {
     let hostAdmissionLease = pendingHostAdmissionLease;
@@ -2527,11 +2833,21 @@ async function handleResponsesInner(
       request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders, translatorBudget });
     } catch (error) {
       releaseCodexAuthContextProbeLease(authCtx);
+      // A tool catalog this proxy cannot lower onto one wire namespace is a client input error, and
+      // the rotation-rebuild and bridged paths already answer 400 for the identical throw. Rethrowing
+      // it here escaped every catch up to the Bun handler, so the same request produced an
+      // unstructured 500 — and no request log — depending only on whether a rotation ran first.
+      if (error instanceof NamespaceToolCollisionError) {
+        return formatErrorResponse(400, "invalid_request_error", redactSecretString(error.message));
+      }
       throw error;
     }
-    if (route.provider.authMode !== "forward") {
+    if (!isCanonicalOpenAiForwardProvider(route.provider)) {
       for (const name of request.convertedRoutedCustomToolNames ?? []) {
-        if (toolBridgeMaps.freeformToolNames.has(name)) routedCustomToolNames.add(name);
+        if (
+          toolBridgeMaps.freeformToolNames.has(name)
+          || toolBridgeMaps.toolNsMap.get(name)?.freeform === true
+        ) routedCustomToolNames.add(name);
       }
     }
     for (const name of request.convertedRoutedToolSearchNames ?? []) {
@@ -2540,6 +2856,7 @@ async function handleResponsesInner(
       // would incorrectly disable restoration for the exact ambiguous-name case the alias fixes.
       routedToolSearchNames.add(name);
     }
+    refreshRoutedNamespaceToolAliases(request);
     // #1700: the bridged paths refuse a call to a tool the request never declared
     // (`declaredToolNames`, src/bridge.ts). The passthrough had no equivalent, so a routed
     // provider's top-level `apply_patch` — which under Codex code mode exists only as a nested
@@ -2554,14 +2871,17 @@ async function handleResponsesInner(
     // with no tools and Copilot answers with a `custom_tool_call` for `apply_patch`. Policing an
     // empty catalog truncates that turn. An unreadable body lands here too, since it yields no
     // names either.
-    const outboundRequestBody = (() => {
+    const parseOutboundRequestBody = (bodyText: string): Record<string, unknown> | undefined => {
       try {
-        const body = JSON.parse(request.body) as unknown;
-        return body && typeof body === "object" && !Array.isArray(body) ? body : undefined;
+        const body = JSON.parse(bodyText) as unknown;
+        return body && typeof body === "object" && !Array.isArray(body)
+          ? body as Record<string, unknown>
+          : undefined;
       } catch {
         return undefined;
       }
-    })();
+    };
+    let outboundRequestBody = parseOutboundRequestBody(request.body);
     const declaredWireToolNames = collectDeclaredWireToolNames(outboundRequestBody);
     // Union with the caller's own catalog, because the outbound body is not always a complete
     // record of it: hosted-tool preference REPLACES a client tool with its hosted form, so a
@@ -2643,7 +2963,7 @@ async function handleResponsesInner(
       }
       hostAdmissionLease = null;
     };
-    const passthroughEstimate = typeof request.usageLog?.inputTokens === "number"
+    let passthroughEstimate = typeof request.usageLog?.inputTokens === "number"
       ? request.usageLog.inputTokens
       : undefined;
     if (passthroughEstimate !== undefined) {
@@ -2730,11 +3050,89 @@ async function handleResponsesInner(
       request.releaseBodyObservation?.();
     }
 
+    const opaqueBlobRecoveryGuard: OpaqueBlobRecoveryGuard = { attempted: false };
+    let oauth401ReplayAttempted = false;
+    const rateLimitPolicy = rateLimitRetryPolicyFor(route.provider);
+    let rateLimitRetries = 0;
+    const rebuildAndRefetch = async (
+      recovery: AttemptRecoveryKind,
+    ): Promise<Response | { failed: Response }> => {
+      const retryAdapter = resolveAdapter(
+        resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire),
+        config.cacheRetention,
+      );
+      if (!("passthrough" in retryAdapter) || !retryAdapter.passthrough) {
+        upstream.abort();
+        return { failed: formatErrorResponse(502, "upstream_error", "Recovery changed the provider wire unexpectedly") };
+      }
+      try {
+        request = await retryAdapter.buildRequest(parsed, {
+          headers: selectedForwardHeaders,
+          translatorBudget,
+        });
+        refreshRoutedNamespaceToolAliases(request);
+        recordAdapterReasoning(logCtx, request);
+        recordAdapterTier(logCtx, request);
+      } catch (err) {
+        upstream.abort();
+        if (options.abortSignal?.aborted) return { failed: clientCancelledResponse() };
+        const msg = err instanceof Error ? err.message : String(err);
+        return { failed: formatErrorResponse(400, "invalid_request_error", redactSecretString(msg)) };
+      }
+      passthroughEstimate = typeof request.usageLog?.inputTokens === "number"
+        ? request.usageLog.inputTokens
+        : undefined;
+      if (passthroughEstimate !== undefined) logCtx.usageLogInputTokens = passthroughEstimate;
+      outboundRequestBody = parseOutboundRequestBody(request.body);
+      logCtx.providerAdapter = retryAdapter.name;
+      sealRequestAttemptIdentity(
+        logCtx.activeAttempt,
+        logCtx.provider,
+        retryAdapter.name,
+        logCtx.accountLogLabel,
+      );
+      try {
+        return await fetchWithTransientRetry(
+          innerRecovery => {
+            noteAttemptSend(logCtx.activeAttempt, passthroughEstimate, innerRecovery ?? recovery);
+            return fetchWithHeaderTimeout(request.url, applyUpstreamRecoveryInit({
+              method: request.method,
+              headers: request.headers,
+              body: request.body,
+            }, innerRecovery), upstream.signal, connectMs, parsed.stream,
+              providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+                providerName: route.providerName,
+                modelId: route.modelId,
+              }),
+              route.provider.authMode === "forward")
+              .then(response => {
+                settleObservedHostResponse();
+                return response;
+              });
+          },
+          { abortSignal: upstream.signal, label: safeHostLabel(request.url) },
+        );
+      } catch (err) {
+        return { failed: transportFailureResponse(err) };
+      } finally {
+        request.releaseBodyObservation?.();
+      }
+    };
+
+    // Keep recovery kinds in sync with the generic `recovery:` loop below.
+    passthroughRecovery: for (;;) {
+
     // Native Responses providers return before the generic adapter recovery loop below. Keep
     // their OAuth contract identical: one pre-stream 401 forces a credential refresh and one
     // rebuilt replay. xAI's current subscription models use this branch now that their official
     // Grok CLI catalog declares the Responses backend.
-    if (upstreamResponse.status === 401 && isOAuth401ReplayProvider && sentOAuthSnapshot) {
+    if (
+      upstreamResponse.status === 401
+      && isOAuth401ReplayProvider
+      && sentOAuthSnapshot
+      && !oauth401ReplayAttempted
+    ) {
+      oauth401ReplayAttempted = true;
       try { void upstreamResponse.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
       let refreshed: OAuthAccessSnapshot;
       try {
@@ -2786,6 +3184,7 @@ async function handleResponsesInner(
           headers: selectedForwardHeaders,
           translatorBudget,
         });
+        refreshRoutedNamespaceToolAliases(request);
         recordAdapterReasoning(logCtx, request);
         recordAdapterTier(logCtx, request);
       } catch (err) {
@@ -2828,8 +3227,6 @@ async function handleResponsesInner(
     // immediately with no same-key replay. Pre-stream only — nothing has been relayed yet, so
     // the replay is lossless (same invariant as the recovery loop). Forward/OAuth providers
     // keep their pool logic below (rateLimitRetryPolicyFor returns null for them).
-    const rateLimitPolicy = rateLimitRetryPolicyFor(route.provider);
-    let rateLimitRetries = 0;
     while (
       upstreamResponse.status === 429
       && rateLimitPolicy !== null
@@ -2884,6 +3281,29 @@ async function handleResponsesInner(
       }
     }
 
+    const captureAffinityResponse = (
+      response: Response,
+      captureAuthCtx: CodexAuthContext = authCtx,
+      captureRequest: Awaited<ReturnType<typeof adapter.buildRequest>> = request,
+      credentialSubstituted = substituteMainCredential
+        || captureAuthCtx.kind === "pool"
+        || captureAuthCtx.kind === "main-pool",
+    ): void => {
+      if (!isCanonicalOpenAiForwardProvider(route.provider)) return;
+      captureCodexAffinityDiagnostic({
+        inboundHeaders: req.headers,
+        outboundHeaders: captureRequest.headers,
+        authKind: captureAuthCtx.kind,
+        accountMode: route.codexAccountMode,
+        fixedAccount: isFixedCodexAccount(captureAuthCtx),
+        credentialSubstituted,
+        accountGatedModel: ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(route.modelId),
+        wireModelNormalized: parsed.modelId !== route.modelId,
+        status: response.status,
+      });
+    };
+    captureAffinityResponse(upstreamResponse);
+
     if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
       let poolRetryOutcome: number | undefined;
       if (await shouldRetryCodexPoolAccountModel400(
@@ -2912,6 +3332,9 @@ async function handleResponsesInner(
           connectMs,
           passthroughEstimate,
           stream: parsed.stream,
+          onResponse: (response, retryAuthCtx, retryRequest) => {
+            captureAffinityResponse(response, retryAuthCtx, retryRequest, true);
+          },
         });
         if (retry.kind === "transport") {
           authCtx = retry.authCtx;
@@ -2920,12 +3343,32 @@ async function handleResponsesInner(
         if (retry.kind === "retried") {
           authCtx = retry.authCtx;
           request = retry.request;
+          refreshRoutedNamespaceToolAliases(request);
           upstreamResponse = retry.upstreamResponse;
           selectedForwardHeaders = retry.selectedForwardHeaders;
           // Keep subagent quota-failure health keyed to the account that actually served.
           subagentFallbackAccountId = retry.authCtx.accountId;
         }
       }
+    }
+    // The deterministic route record cannot classify history it never observed (restart, expiry,
+    // eviction, or an older transcript). Inspect only a bounded clone of a 4xx whose exact outbound
+    // Responses body still carries opaque state, then rebuild once through the ordinary adapter
+    // sanitation path. A second rejection falls through unchanged because the guard stays armed.
+    const opaqueBlobRecovery = await attemptOpaqueBlobRecovery({
+      response: upstreamResponse,
+      outboundBody: request.body,
+      adapterName: adapter.name,
+      parsed,
+      guard: opaqueBlobRecoveryGuard,
+      signal: upstream.signal,
+    }, rebuildAndRefetch);
+    if (opaqueBlobRecovery.kind === "failed") return opaqueBlobRecovery.response;
+    if (opaqueBlobRecovery.kind === "recovered") {
+      upstreamResponse = opaqueBlobRecovery.response;
+      continue passthroughRecovery;
+    }
+    break;
     }
     const headers = sanitizePassthroughHeaders(upstreamResponse.headers);
     const resolvedModel = headers.get("openai-model")?.trim();
@@ -3050,6 +3493,10 @@ async function handleResponsesInner(
     // devlog/_fin/260731_macos_rss_retention/100_darwin_eager_optin.md).
     // The bundled known-bad runtime remains on tee by default on both platforms.
     if (isEventStream && upstreamResponse.body) {
+      // For streamed passthrough, a successful terminal response means non-error upstream status
+      // before relay starts. Waiting for SSE completion would retain request state across the whole
+      // stream; a later body failure does not undo that this destination accepted and served the turn.
+      commitReasoningReplayServingRoute();
       const terminalRepairPolicy = providerModelResponsesTerminalRepair(
         route.providerName,
         route.provider,
@@ -3074,6 +3521,9 @@ async function handleResponsesInner(
       // Compose opt-in payload rewrites into one parse/stringify pass (image-gen restore first).
       const payloadRewrites = [
         createImageGenCallRestoreRewrite(imageGenCallAliases),
+        routedNamespaceToolAliases.size > 0
+          ? createRoutedNamespaceCallRestoreRewrite(routedNamespaceToolAliases)
+          : undefined,
         hasResponsesItemIdRepair(repairConfig)
           ? createResponsesItemIdPayloadRewrite(repairConfig!, translatorBudget)
           : undefined,
@@ -3290,8 +3740,12 @@ async function handleResponsesInner(
       const text = bounded.text;
       inspectResponseLogJson(logCtx, text);
       const clientJson = (() => {
-        const restored = restoreRoutedCustomCallsInJson(
+        const restoredNamespace = restoreRoutedNamespaceCallsInJson(
           restoreImageGenCallsInJson(text, imageGenCallAliases),
+          routedNamespaceToolAliases,
+        );
+        const restored = restoreRoutedCustomCallsInJson(
+          restoredNamespace,
           routedCustomToolNames,
         );
         const restoredToolSearch = restoreRoutedToolSearchCallsInJson(
@@ -3328,6 +3782,7 @@ async function handleResponsesInner(
           return formatErrorResponse(502, "upstream_error", undeclaredToolCallMessage(undeclared));
         }
       }
+      commitReasoningReplayServingRoute();
       if (rememberPassthroughResponseChecked) {
         try {
           rememberPassthroughResponseChecked(
@@ -3409,6 +3864,9 @@ async function handleResponsesInner(
         headers,
       });
     }
+    // An unclassified passthrough body is relayed directly and has no bounded completion observer;
+    // use the same non-error-status success boundary as SSE instead of retaining per-stream state.
+    commitReasoningReplayServingRoute();
     const body = relayWithAbort(upstreamResponse.body, upstream);
     const turnAc = new AbortController();
     const tracked = body ? trackStreamLifetime(body, turnAc, undefined, options.turnAdmissionLease) : null;
@@ -3554,13 +4012,15 @@ async function handleResponsesInner(
       retryOn429Policy: rateLimitRetryPolicyFor(route.provider),
       ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
       ...(options.forceEmptyResponseId ? { forceEmptyResponseId: true } : {}),
-      onCompletedResponse: (response, providerState) =>
+      onCompletedResponse: (response, providerState) => {
+        commitReasoningReplayServingRoute();
         rememberResponseState(
           parsed._rawBody,
           response,
           continuationStateForResponse(providerState),
           responseStateOptions(adapterNeedsForcedContinuation(adapter.name)),
-        ),
+        );
+      },
     });
     if (imgResponse.body) {
       const imgTurnAc = new AbortController();
@@ -3586,6 +4046,11 @@ async function handleResponsesInner(
       backend: wsPlan.backend,
       forwardProvider: wsPlan.forwardSidecar?.provider,
       anthropicSidecar: wsPlan.anthropicSidecar,
+      xaiSidecar: wsPlan.xaiSidecar,
+      geminiSidecar: wsPlan.geminiSidecar,
+      xaiSearchOptions: wsPlan.xaiSearchOptions,
+      // The exa key never rides the plan: read it from config at unpack time (L9).
+      ...(wsPlan.exaConfigured ? { exaApiKey: config.webSearchSidecar?.exaApiKey } : {}),
       hostedTool: wsPlan.hostedTool,
       selectedForwardHeaders: wsPlan.forwardSidecar?.headers ?? selectedForwardHeaders,
       settings: wsPlan.settings,
@@ -3633,6 +4098,7 @@ async function handleResponsesInner(
         return rotatedAdapter;
       },
       retryOn429Policy: rateLimitRetryPolicyFor(route.provider),
+      onCompletedResponse: commitReasoningReplayServingRoute,
     });
     // Register the sidecar stream as an active turn so drainAndShutdown waits for (or aborts)
     // in-flight web-search turns instead of skipping them during graceful shutdown.
@@ -3796,15 +4262,17 @@ async function handleResponsesInner(
               if (logCtx.activeAttempt) logCtx.activeAttempt.usage = usage;
             }
           },
-          ...(routedCompaction ? {} : {
-            onCompletedResponse: (response: Record<string, unknown>, providerState?: OcxProviderContinuationState) =>
+          onCompletedResponse: (response: Record<string, unknown>, providerState?: OcxProviderContinuationState) => {
+            commitReasoningReplayServingRoute();
+            if (!routedCompaction) {
               rememberResponseState(
                 parsed._rawBody,
                 response,
                 continuationStateForResponse(providerState),
                 responseStateOptions(adapterNeedsForcedContinuation(adapter.name)),
-              ),
-          }),
+              );
+            }
+          },
         },
       );
       const bridgeTurnAc = new AbortController();
@@ -3867,6 +4335,9 @@ async function handleResponsesInner(
     // buildResponseJSON; bound the durability window before the JSON becomes
     // externally visible.
     await awaitThoughtSignatureDurability();
+    if (adapterResponseReachedServingTerminal(events, json)) {
+      commitReasoningReplayServingRoute();
+    }
     return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
   }
 
@@ -3889,6 +4360,7 @@ async function handleResponsesInner(
   let inputTokenEstimate: number | undefined;
   try {
     initialRequest = await activeAdapter.buildRequest(parsed, { headers: selectedForwardHeaders, translatorBudget });
+    refreshRoutedNamespaceToolAliases(initialRequest);
     recordAdapterReasoning(logCtx, initialRequest);
     recordAdapterTier(logCtx, initialRequest);
     inputTokenEstimate = typeof initialRequest.usageLog?.inputTokens === "number"
@@ -3977,12 +4449,14 @@ async function handleResponsesInner(
   // main request clear a 413 must not be forgotten on the very next continuation build.
   let imageTierBias = 0;
   if (!upstreamResponse.ok) {
-    // Recovery loop: multi-key 429 failover + at most ONE anthropic 413 tightened retry
+    // Recovery loop: multi-key 429 failover + at most ONE opaque-state rebuild and ONE
+    // anthropic 413 tightened retry
     // (devlog/260714_image_normalization_pipeline/030). One mutable activeAdapter serves
     // both paths so a 429→413 sequence never rebuilds against a stale pre-rotation
     // adapter, and imageTierBias — once armed — rides EVERY subsequent rebuild so a
     // 413→429 rotation cannot silently undo the tightening.
     let imageRetryAttempted = false;
+    const opaqueBlobRecoveryGuard: OpaqueBlobRecoveryGuard = { attempted: false };
     let oauth401ReplayAttempted = false;
     /**
      * Rebuild the request from the current parsed input (and any image-tier bias) and refetch
@@ -4019,6 +4493,7 @@ async function handleResponsesInner(
         sameTargetParsed = parsed;
         sameTargetToken = transportToken;
       }
+      refreshRoutedNamespaceToolAliases(retryRequest);
       const retryEstimate = typeof retryRequest.usageLog?.inputTokens === "number"
         ? retryRequest.usageLog.inputTokens
         : undefined;
@@ -4060,6 +4535,7 @@ async function handleResponsesInner(
         return { failed: formatErrorResponse(502, "upstream_error", msg) };
       }
     };
+    // Keep recovery kinds in sync with the native Responses `passthroughRecovery:` loop above.
     recovery: for (;;) {
       if (
         upstreamResponse.status === 401
@@ -4214,6 +4690,27 @@ async function handleResponsesInner(
         } catch {
           break;
         }
+      }
+      // Unknown provenance is deliberately fail-soft in pre-flight: after a restart, TTL expiry,
+      // or LRU eviction, a valid same-backend blob must survive. A decoder's own 4xx identity is
+      // the missing authoritative signal. Rebuild once through the same sanitation path used by a
+      // known route switch; invalidating is mandatory because `parsed` mutates in place and the
+      // same-target cache would otherwise replay the rejected bytes verbatim.
+      const opaqueBlobRecovery = await attemptOpaqueBlobRecovery({
+        response: upstreamResponse,
+        outboundBody: sameTargetRequest?.body,
+        adapterName: activeAdapter.name,
+        parsed,
+        guard: opaqueBlobRecoveryGuard,
+        signal: upstream.signal,
+      }, recovery => {
+        invalidateSameTargetRequest();
+        return rebuildAndRefetch(recovery);
+      });
+      if (opaqueBlobRecovery.kind === "failed") return opaqueBlobRecovery.response;
+      if (opaqueBlobRecovery.kind === "recovered") {
+        upstreamResponse = opaqueBlobRecovery.response;
+        continue recovery;
       }
       // Anthropic 413 request_too_large: rebuild once with every image one tier lower
       // (spiral guard: single attempt). The biased response re-enters the 429 check above.
@@ -4476,6 +4973,14 @@ async function handleResponsesInner(
             config.cacheRetention,
           );
           bindRouteReasoningReplayScope({
+            parsed: nextParsed,
+            providerName: route.providerName,
+            provider: route.provider,
+            adapterName: activeAdapter.name,
+          });
+          // Response persistence closes over the outer parsed request; keep its owner binding in
+          // sync with the terminal-guard clone that builds the rotated continuation request.
+          bindRouteReasoningReplayScope({
             parsed,
             providerName: route.providerName,
             provider: route.provider,
@@ -4636,18 +5141,20 @@ async function handleResponsesInner(
             if (logCtx.activeAttempt) logCtx.activeAttempt.usage = usage;
           }
         },
-        // Compaction turns must NOT enter the continuation cache: _rawBody still holds the full
-        // PRE-compaction history, and a later previous_response_id expansion would rehydrate the
-        // giant stale chain Codex just replaced.
-        ...(routedCompaction ? {} : {
-          onCompletedResponse: (response: Record<string, unknown>, providerState?: OcxProviderContinuationState) =>
+        onCompletedResponse: (response: Record<string, unknown>, providerState?: OcxProviderContinuationState) => {
+          commitReasoningReplayServingRoute();
+          // Compaction turns must NOT enter the continuation cache: _rawBody still holds the full
+          // PRE-compaction history, and a later previous_response_id expansion would rehydrate the
+          // giant stale chain Codex just replaced.
+          if (!routedCompaction) {
             rememberResponseState(
               parsed._rawBody,
               response,
               continuationStateForResponse(providerState),
               responseStateOptions(activeAdapter.name === "kiro"),
-            ),
-        }),
+            );
+          }
+        },
       },
     );
     const bridgeTurnAc = new AbortController();
@@ -4722,6 +5229,9 @@ async function handleResponsesInner(
     }
     // #1926 gap 2: same buffered-path durability bound as the primary branch.
     await awaitThoughtSignatureDurability();
+    if (adapterResponseReachedServingTerminal(events, json)) {
+      commitReasoningReplayServingRoute();
+    }
     return new Response(JSON.stringify(json), { headers: { "Content-Type": "application/json" } });
   }
 
