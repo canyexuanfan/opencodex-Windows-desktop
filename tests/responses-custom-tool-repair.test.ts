@@ -619,6 +619,7 @@ describe("routed Responses custom-tool compatibility", () => {
       expect(clientSse).toContain('"call_id":"call_patch_next"');
       expect(clientSse).toContain('"name":"apply_patch"');
       expect(clientSse).toContain('"type":"response.custom_tool_call_input.done"');
+      expect(clientSse).toContain("data: [DONE]");
       expect(clientSse).not.toContain('"type":"function_call"');
       expect(clientSse).not.toContain("response.function_call_arguments.done");
     } finally {
