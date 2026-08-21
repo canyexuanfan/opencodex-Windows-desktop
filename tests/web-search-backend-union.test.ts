@@ -17,7 +17,7 @@ function parsedWithWebSearch() {
   return parseRequest({ model: "routed/model", input: "search", stream: true, tools: [{ type: "web_search" }] });
 }
 
-describe("widened backend union stays inert (roadmap 060)", () => {
+describe("widened backend union remains fail-closed without backend authority", () => {
   test("resolveSidecarBackend: unset pin survives; new ids resolve to themselves", () => {
     expect(resolveSidecarBackend(undefined)).toBe("openai");
     expect(resolveSidecarBackend("xai")).toBe("xai");
@@ -25,7 +25,12 @@ describe("widened backend union stays inert (roadmap 060)", () => {
     expect(resolveSidecarBackend("exa")).toBe("exa");
   });
 
-  test.each(["xai", "gemini", "exa"] as const)("planWebSearch %s -> no plan (fail-closed inert)", backend => {
+  test("planWebSearch xai -> no plan without a configured Grok OAuth provider", () => {
+    const cfg = config({ webSearchSidecar: { backend: "xai" } });
+    expect(planWebSearch(cfg, parsedWithWebSearch(), false, routed, "model", undefined)).toBeUndefined();
+  });
+
+  test.each(["gemini", "exa"] as const)("planWebSearch %s -> no plan while its executor is inert", backend => {
     const cfg = config({ webSearchSidecar: { backend } });
     expect(planWebSearch(cfg, parsedWithWebSearch(), false, routed, "model", undefined)).toBeUndefined();
   });

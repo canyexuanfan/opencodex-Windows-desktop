@@ -232,8 +232,10 @@ Images API yollarını ve yanıt şeklini uygulamalıdır.
 | Alan | Tip | Varsayılan | Anlamı |
 | --- | --- | --- | --- |
 | `enabled?` | `boolean` | kullanılabilir olduğunda açık | Ana anahtar. |
-| `backend?` | `"openai" \| "anthropic" \| "xai" \| "gemini" \| "exa"` | `openai` | Açık seçim kazanır; ayarlanmadığında her zaman `openai` kullanılır. `xai`, `gemini` ve `exa` yalnızca açıkça yapılandırıldığında etkinleşir. |
-| `model?` | `string` | arka uca bağlı | OpenAI için `gpt-5.6-luna` veya Anthropic için `claude-sonnet-5`. Eski açık `gpt-5.4-mini` başlangıçta geçirilir. |
+| `backend?` | `"openai" \| "anthropic" \| "xai" \| "gemini" \| "exa"` | `openai` | Açık değer kazanır; ayarlanmadığında her zaman `openai` seçilir. `anthropic` ve `xai` yalnızca açıkça yapılandırıldığında çalışır; `gemini` ve `exa` executor'ları sunulana kadar ayrılmıştır. |
+| `model?` | `string` | arka uca bağlı | OpenAI için `gpt-5.6-luna`, Anthropic için `claude-sonnet-5` veya xAI için `grok-4.6`. Eski açık `gpt-5.4-mini` başlangıçta geçirilir. |
+| `exaApiKey?` | `string` | yok | `exa` arka ucu için operatör anahtarı. Yalnızca yazılır; yönetim okumaları saklanan değeri asla döndürmez. |
+| `xSearch?` | `object` | atlanmış | Yalnızca xAI için hosted `x_search` opt-in: `enabled`, birbirini dışlayan `allowedXHandles` / `excludedXHandles` dizileri (en fazla 20) ve ISO `fromDate` / `toDate` (`YYYY-MM-DD`). |
 | `reasoning?` | `string` | `low` | Sidecar çabası. `minimal` web araması ile reddedilir. |
 | `maxSearchesPerTurn?` | `number` | `3` | Ana model turu başına izin verilen gerçek aramalar. |
 | `routedModelStallTimeoutMs?` | `number` | `200000` | Yalnızca yapılandırma dosyasındaki yönlendirilen model ham gövde hareketsizlik süresi sınırı. Tamsayı 1–2147483647; boş olmayan her parça onu sıfırlar. |
@@ -246,6 +248,11 @@ etkinleştirilmiş bir Anthropic OAuth sağlayıcısından gelen aktif saklanan 
 bilgisini kullanır. Kullanılabilir hesabı olmayan açıkça seçilmiş bir Anthropic
 arka ucu geri dönmek yerine kapalı olarak başarısız olur. Anthropic yürütücüsü
 yerel `web_search_20250305` aracını kullanır.
+xAI arka ucu kullanılabilir, saklanmış bir Grok OAuth hesabı gerektirir, hosted `web_search` kullanır
+ve `xSearch.enabled` true olduğunda hosted `x_search` ekler. Hatalı `xSearch` yönetim girdisi `400`
+döndürür; hatalı kalıcı blok planlama sırasında kapalı olarak başarısız olur. `gemini` ve `exa`
+hatları kimlik bilgisi keşfi veya fallback ile hiçbir zaman etkinleşmez; operatör bunları açıkça
+seçmelidir. `exaApiKey` yazmalarda kabul edilir ancak yönetim yanıtlarından çıkarılır.
 
 Aramayı dört saat yönetir: temel `stallTimeoutSec`, `connectTimeoutMs`,
 yönlendirilen model hareketsizliği ve barındırılan arama zaman aşımı. Geçerli

@@ -4,16 +4,22 @@ import { isModelTextOnly } from "../vision";
 import type { SidecarSettings } from "./executor";
 import type { ResolvedOpenAiForwardSidecar } from "../providers/openai-sidecar";
 import { resolveSidecarAuth } from "../sidecar/auth";
+import { getAccountSet } from "../oauth/store";
+import { validateXaiSearchOptions, type XaiSearchOptions } from "./xai-executor";
+import type { OcxWebSearchSidecarConfig } from "../types";
 import { DEFAULT_STALL_TIMEOUT_SEC } from "../stall-timeout";
 import { buildWebSearchTool, extractHostedWebSearch, WEB_SEARCH_TOOL_NAME } from "./synthetic-tool";
 
 export { runWithWebSearch } from "./loop";
 export { buildWebSearchTool, extractHostedWebSearch, WEB_SEARCH_TOOL_NAME };
 export { runAnthropicWebSearch, parseAnthropicSidecarSSE } from "./anthropic-executor";
+export { runXaiWebSearch, parseXaiResponsesSSE, validateXaiSearchOptions, type XaiSearchOptions } from "./xai-executor";
 
 const DEFAULT_SIDECAR_MODEL = "gpt-5.6-luna";
 // Default Claude model for the anthropic-backed sidecar (used when cfg.model is unset).
 const DEFAULT_ANTHROPIC_SIDECAR_MODEL = "claude-sonnet-5";
+// Default Grok model for the xai-backed sidecar (probe-verified with hosted tools, devlog 003).
+const DEFAULT_XAI_SIDECAR_MODEL = "grok-4.6";
 // "low" is the lightest effort the ChatGPT backend allows with web_search ("minimal" is rejected:
 // "tools cannot be used with reasoning.effort 'minimal'") — keeps the sidecar fast/cheap.
 const DEFAULT_SIDECAR_REASONING = "low";
@@ -92,6 +98,35 @@ export function findAnthropicSidecarProvider(config: OcxConfig): AnthropicSideca
   return { providerName: auth.anthropicProviderName, provider: auth.anthropicProvider };
 }
 
+/**
+ * First enabled provider whose stored Grok OAuth account is active and not marked for
+ * reauth — the only credential the xai web-search executor may spend. Same account-set
+ * predicate the shared sidecar auth module applies to Anthropic.
+ */
+export function findXaiSidecarProvider(config: OcxConfig): { providerName: string; provider: OcxProviderConfig } | undefined {
+  // The stored Grok credential lives under the provider named "xai" (registry id);
+  // OAuth account sets are keyed by provider name, so the name IS the credential key.
+  const provider = config.providers["xai"];
+  if (!provider || provider.disabled === true || provider.authMode !== "oauth") return undefined;
+  const set = getAccountSet("xai");
+  const active = set?.accounts.find(account => account.id === set.activeAccountId);
+  if (active && active.needsReauth !== true) return { providerName: "xai", provider };
+  return undefined;
+}
+
+/** Lift the persisted xSearch config block into executor options (absent block = web_search only). */
+export function xaiSearchOptionsFromConfig(cfg: Pick<OcxWebSearchSidecarConfig, "xSearch">): XaiSearchOptions {
+  const x = cfg.xSearch;
+  if (!x || x.enabled !== true) return {};
+  return {
+    xSearch: true,
+    ...(x.allowedXHandles ? { allowedXHandles: x.allowedXHandles } : {}),
+    ...(x.excludedXHandles ? { excludedXHandles: x.excludedXHandles } : {}),
+    ...(x.fromDate ? { fromDate: x.fromDate } : {}),
+    ...(x.toDate ? { toDate: x.toDate } : {}),
+  };
+}
+
 /** Every backend id the config union admits. New ids are explicit-only and inert until their executor ships. */
 export type WebSearchBackendId = "openai" | "anthropic" | "xai" | "gemini" | "exa";
 
@@ -117,6 +152,10 @@ export interface SidecarPlan {
   forwardSidecar?: ResolvedOpenAiForwardSidecar;
   /** Present for the anthropic backend (stored-OAuth /v1/messages path); undefined for openai. */
   anthropicSidecar?: AnthropicSidecarProvider;
+  /** Present for the xai backend (stored Grok OAuth /v1/responses path). */
+  xaiSidecar?: { providerName: string; provider: OcxProviderConfig };
+  /** Opt-in x_search options for the xai backend (validated at the management layer and again in the executor). */
+  xaiSearchOptions?: XaiSearchOptions;
   hostedTool: Record<string, unknown>;
   settings: SidecarSettings;
   maxSearches: number;
@@ -167,10 +206,9 @@ export function planWebSearch(
     ? { providerName: auth.anthropicProviderName, provider: auth.anthropicProvider }
     : undefined;
   const backend = resolveSidecarBackend(cfg.backend);
-  // Inert arms (roadmap 060): the union admits these ids so config can carry them,
-  // but each stays fail-closed — no plan, the request takes the normal routed path —
-  // until its executor layer replaces the arm with a credential-gated plan.
-  if (backend === "xai" || backend === "gemini" || backend === "exa") return undefined;
+  // Inert arms (roadmap 060): gemini/exa stay fail-closed until their executor
+  // layers land. The xai arm went live in L7 below.
+  if (backend === "gemini" || backend === "exa") return undefined;
   const maxSearches = cfg.maxSearchesPerTurn ?? DEFAULT_MAX_SEARCHES;
   const stallTimeoutSec = webSearchStallTimeoutSec(
     config.stallTimeoutSec,
@@ -194,6 +232,27 @@ export function planWebSearch(
       anthropicSidecar,
       hostedTool: parsed._webSearch,
       settings: { model: cfg.model ?? DEFAULT_ANTHROPIC_SIDECAR_MODEL, reasoning, timeoutMs, describeImages },
+      maxSearches,
+      routedModelStallTimeoutMs,
+      stallTimeoutSec,
+      streamRoutedModelOutput,
+    };
+  }
+
+  // xAI backend (L7): explicit-only, authenticated by the STORED Grok OAuth credential.
+  // Same fail-closed stance as anthropic — an explicit choice with no usable credential
+  // produces no plan instead of borrowing another login.
+  if (backend === "xai") {
+    const xaiSidecar = findXaiSidecarProvider(config);
+    if (!xaiSidecar) return undefined;
+    const xaiOptions = xaiSearchOptionsFromConfig(cfg);
+    if (validateXaiSearchOptions(xaiOptions)) return undefined;
+    return {
+      backend: "xai",
+      xaiSidecar,
+      xaiSearchOptions: xaiOptions,
+      hostedTool: parsed._webSearch,
+      settings: { model: cfg.model ?? DEFAULT_XAI_SIDECAR_MODEL, reasoning, timeoutMs, describeImages },
       maxSearches,
       routedModelStallTimeoutMs,
       stallTimeoutSec,
