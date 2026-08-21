@@ -55,6 +55,10 @@ import { scheduleCatalogPrewarm } from "./catalog-prewarm";
 import { maybeShowUpdatePrompt } from "../update/notify";
 import { syncModelsToCodex } from "../codex/sync";
 import { setIntegrationEnabled, shouldSyncCodexOnStart, shouldSyncGrokOnStart, syncCodexOnStartIfEnabled } from "../codex/desired-state";
+import {
+  reconcileClientStartupBeforeReady,
+  syncClaudeAgentDefsAtProxyStartup,
+} from "./claude-agent-startup-sync";
 
 /**
  * A failed shell-hook reconcile is not cosmetic: a stale hook keeps sourcing
@@ -381,14 +385,18 @@ async function handleStart(options: { block?: boolean } = {}) {
   // The hook is useful only for an installed Claude Code CLI. Reconcile instead of
   // appending unconditionally so stale OpenCodex-owned hooks are removed as well.
   reportShellHookFailure(reconcileShellHook(systemEnv.injected));
-
   await maybeShowStarPrompt(); // once-only Yes/No GitHub-star prompt on first interactive start
-  // Post-startup sync drives the readiness gate AND the #1046 stale app-server
-  // warning. `syncCodexOnStartIfEnabled` respects the Codex integration toggle
-  // (OFF → no sync) and reports whether anything was written; the readiness gate
-  // observes the real sync outcome (ok/warning) so /readyz never advertises a
-  // half-synced proxy as ready while /healthz stays live.
-  const startupSync = await syncCodexOnStartIfEnabled(port, config, undefined, readinessGate);
+  // Codex sync owns the ready/failed verdict, but its successful transition is
+  // deferred until the best-effort Claude roster reconciliation settles. This
+  // keeps /readyz closed across both startup writes without making an optional
+  // Claude integration failure prevent the proxy from starting.
+  const startupSync = await reconcileClientStartupBeforeReady(
+    readinessGate,
+    gate => syncCodexOnStartIfEnabled(port, config, undefined, gate),
+    () => systemEnv.injected
+      ? Promise.resolve(null)
+      : syncClaudeAgentDefsAtProxyStartup(config, port),
+  );
   if (!startupSync.ran) console.log("   Codex integration OFF; startup left Codex native.");
   // #1046: one warning per startup, after BOTH writes. The server's cache
   // invalidation happens first and the catalog sync second, so the mtime is only
@@ -469,6 +477,7 @@ async function handleEnsure(options: { existingIsSuccess?: boolean } = {}): Prom
       // Ensure env file exists for already-running proxy (may have been deleted or pre-dates this feature).
       const systemEnv = await injectSystemEnv(live.port, config).catch(() => ({ injected: false }));
       reportShellHookFailure(reconcileShellHook(systemEnv.injected));
+      if (!systemEnv.injected) await syncClaudeAgentDefsAtProxyStartup(config, live.port);
       // Refresh the Grok Build fence too (same contract as start). live.hostname is the
       // hostname the running proxy actually bound — config.hostname may have drifted.
       try {
@@ -512,6 +521,10 @@ async function handleEnsure(options: { existingIsSuccess?: boolean } = {}): Prom
     return null;
   });
   if (synced?.status === "skipped") console.log("   Codex integration OFF; startup left Codex native.");
+  // The child opens /healthz before its best-effort roster reconcile. Await the same idempotent
+  // operation in the parent so `ocx ensure` cannot report success while stale ocx-*.md files are
+  // still observable. Always use the live port, including fallback-port starts.
+  await syncClaudeAgentDefsAtProxyStartup(config, port);
   console.log(`✅ Proxy running on port ${port}`);
   return true;
 }

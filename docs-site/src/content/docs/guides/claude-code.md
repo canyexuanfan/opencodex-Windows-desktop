@@ -263,8 +263,8 @@ When both `tierModels.haiku` and `smallFastModel` are absent, OpenCodex leaves b
 
 ## Roster agents (injectAgents)
 
-`ocx claude` (and the system-env daemon) syncs your featured subagent roster (Subagents tab,
-up to 5 models) plus `ocx-self` into `~/.claude/agents/ocx-*.md`.
+Proxy startup/ensure, `ocx claude`, and relevant dashboard saves sync your featured subagent roster
+(Subagents tab, up to 5 models) plus `ocx-self` into `~/.claude/agents/ocx-*.md`.
 
 - **`ocx-self`** pins your `/model` picker default (falling back to `claudeCode.model`); omitted
   when neither exists. It does NOT use model inheritance.
@@ -276,7 +276,8 @@ up to 5 models) plus `ocx-self` into `~/.claude/agents/ocx-*.md`.
   overwritten or pruned; your own agents are never touched.
 - Files are atomically synced per file (write + rename).
 - `enabled: false` or `injectAgents: false` prunes all verified-owned definitions.
-- GUI PUT and roster changes resync immediately; launcher/system-env sync at launch.
+- GUI PUT and roster changes resync immediately; every foreground or background proxy start/ensure
+  reconciles the owned files before a later Claude Code launch reads them.
 
 Dispatch: `subagent_type: "ocx-gpt-5-6-sol"`. 1M-capable targets carry `[1m]` automatically.
 
