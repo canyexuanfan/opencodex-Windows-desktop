@@ -1,5 +1,22 @@
 # Transports And Sidecars SOT
 
+## Background service command selection
+
+A bare `ocx service` is an idempotent install-or-repair command. Argument validation happens before
+any platform status probe. macOS and Linux choose from the registration file's proven presence;
+Windows combines the Task Scheduler and WinSW probes into `installed`, `absent`, or `unknown`.
+Only proven absence enters registration. A query failure refuses the bare command with status
+guidance, because treating `unknown` as absent can rerun elevated `schtasks /create` against an
+existing task. Explicit `ocx service install` remains the operator-owned registration request.
+
+[Decision Log]
+- 목적과 의도: Make a bare service refresh safe and idempotent without converting a localized or transient Windows status failure into an elevated re-registration.
+- 기존 구현 및 제약 조건: The command defaulted to install and later used a boolean diagnostic whose scheduler query fallback could collapse unknown into absent; repair must preserve the existing Windows launcher and Bun stability workarounds.
+- 검토한 주요 대안: Always repair; keep a boolean installed check; infer presence from saved state alone; use a tri-state live registration probe.
+- 선택한 방식: Validate arguments first, then use a narrow tri-state platform probe only for a bare backend-neutral invocation; route installed to repair, absent to install, and unknown to a refusal.
+- 다른 대안 대신 이 방식을 선택한 이유: Saved state can be stale and unconditional repair breaks first install, while a boolean cannot represent the exact uncertainty that must fail closed.
+- 장점, 단점 및 영향: Existing services avoid UAC and registration churn, invalid input performs no status I/O, and uncertain Windows hosts require one explicit status/installation decision instead of risking a destructive guess.
+
 ## Provider diagnostic outbound safety
 
 Provider connection tests and live model discovery share the GET-only provider outbound wrapper.

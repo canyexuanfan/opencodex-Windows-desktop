@@ -5,7 +5,7 @@ import { isAbsolute, join, posix, win32 } from "node:path";
 import * as serviceModule from "../src/service";
 import { saveConfig } from "../src/config";
 import { windowsEnvIndirectBatchValue } from "../src/lib/win-paths";
-import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsSchtasksCreateArgsForXml, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, installFreshWindowsSchedulerSafely, installServiceSafely, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceArgs, parseServiceInstallState, prepareServiceInstall, readWindowsSchedulerXmlState, registerFreshWindowsSchedulerTask, removeNativeWindowsServiceForScheduler, repairService, resolveServiceListenPort, runLaunchctl, selectServiceSubcommand, serviceLogPath, serviceStartableFromTray, serviceStatusReport, serviceRetryCommand, serviceStatusSummary, systemdNeedsDaemonReload, windowsListenPort, winswListenPort, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
+import { assertServiceAuthEnvironment, assertServiceEnvironmentMatchesInstall, bakedServicePathsDiagnostic, confirmServiceServing, launchdListenPort, systemdListenPort, buildPlist, buildUnit, buildWindowsLauncherVbs, buildWindowsSchtasksCreateArgs, buildWindowsSchtasksCreateArgsForXml, buildWindowsServiceScript, buildWindowsTaskXml, deriveWindowsServiceDiagnostic, installFreshWindowsSchedulerSafely, installServiceSafely, launchctlLoadFailed, launchdJobMatchesPlist, normalizeServiceSubcommand, parseServiceArgs, parseServiceInstallState, planServiceCommand, prepareServiceInstall, probeServiceInstallation, readWindowsSchedulerXmlState, registerFreshWindowsSchedulerTask, removeNativeWindowsServiceForScheduler, repairService, resolveServiceListenPort, runLaunchctl, selectServiceSubcommand, serviceLogPath, serviceStartableFromTray, serviceStatusReport, serviceRetryCommand, serviceStatusSummary, systemdNeedsDaemonReload, windowsListenPort, winswListenPort, startLaunchd, windowsTaskRegistrationHealthy } from "../src/service";
 import type { ServiceDiagnostic } from "../src/service";
 import { definitionCarriesCredential, resolvedProxyEnv, writeServiceDefinitionFile } from "../src/service";
 import { buildWinswXml } from "../src/lib/winsw";
@@ -107,11 +107,74 @@ describe("systemd service unit", () => {
       installed: true,
     })).toBe("install");
 
+    let probes = 0;
+    const installed = planServiceCommand([], {
+      probeInstallation: () => { probes += 1; return { state: "installed" }; },
+    });
+    expect(installed).toMatchObject({ ok: true, command: "repair" });
+    expect(probes).toBe(1);
+
+    const absent = planServiceCommand([], {
+      probeInstallation: () => ({ state: "absent" }),
+    });
+    expect(absent).toMatchObject({ ok: true, command: "install" });
+
+    const unknown = planServiceCommand([], {
+      probeInstallation: () => ({ state: "unknown", detail: "query failed" }),
+    });
+    expect(unknown).toMatchObject({ ok: false });
+    if (!unknown.ok) expect(unknown.message).toContain("Could not safely determine");
+
+    probes = 0;
+    const invalid = planServiceCommand(["--bogus"], {
+      probeInstallation: () => { probes += 1; return { state: "installed" }; },
+    });
+    expect(invalid).toMatchObject({ ok: false, message: "Unknown service option: --bogus" });
+    expect(probes).toBe(0);
+
+    const explicitInstall = planServiceCommand(["install"], {
+      probeInstallation: () => { probes += 1; return { state: "unknown" }; },
+    });
+    expect(explicitInstall).toMatchObject({ ok: true, command: "install" });
+    expect(probes).toBe(0);
+
     const service = await readText("src/service.ts");
     const serviceCommand = service.slice(service.indexOf("export async function serviceCommand"));
-    expect(serviceCommand).toContain("const parsed = parseServiceArgs(");
-    expect(serviceCommand).toContain("const command = selectServiceSubcommand(parsed");
+    expect(serviceCommand).toContain("const plan = planServiceCommand(filteredArgs);");
+    expect(serviceCommand).toContain("const { parsed, command } = plan;");
     expect(serviceCommand).toContain("switch (command)");
+  });
+
+  test("Windows install presence distinguishes unknown queries from proven absence", () => {
+    const present = probeServiceInstallation({
+      platform: "win32",
+      probeWindowsTask: () => ({ status: "present" }),
+      nativeStatus: () => "unknown",
+    });
+    expect(present.state).toBe("installed");
+
+    const absent = probeServiceInstallation({
+      platform: "win32",
+      probeWindowsTask: () => ({ status: "absent" }),
+      nativeStatus: () => "nonexistent",
+    });
+    expect(absent.state).toBe("absent");
+
+    const schedulerUnknown = probeServiceInstallation({
+      platform: "win32",
+      probeWindowsTask: () => ({ status: "unknown", detail: "localized query failure" }),
+      nativeStatus: () => "nonexistent",
+    });
+    expect(schedulerUnknown).toMatchObject({ state: "unknown" });
+    expect(schedulerUnknown.detail).toContain("localized query failure");
+
+    const nativeUnknown = probeServiceInstallation({
+      platform: "win32",
+      probeWindowsTask: () => ({ status: "absent" }),
+      nativeStatus: () => "unknown",
+    });
+    expect(nativeUnknown).toMatchObject({ state: "unknown" });
+    expect(nativeUnknown.detail).toContain("WinSW status");
   });
 
   test("uses unquoted append targets for service logs", () => {

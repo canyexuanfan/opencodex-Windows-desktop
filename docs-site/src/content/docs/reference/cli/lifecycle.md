@@ -221,6 +221,10 @@ run `ocx service repair` to refresh the task with the restored package paths.
 | `uninstall` | Remove the service and restore native Codex. |
 | `remove` | Alias of `uninstall`. |
 
+On Windows, a bare `ocx service` runs the install path only after both Task Scheduler and WinSW are
+proven absent. If either status query is inconclusive, it refuses to register anything and asks you
+to run `ocx service status`; use explicit `ocx service install` only after confirming absence.
+
 ```bash
 ocx service
 ocx service install
