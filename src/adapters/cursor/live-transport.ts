@@ -1000,7 +1000,27 @@ class LiveCursorTransport implements CursorTransport {
           framesReceived: this.framesReceived,
           elapsedMs: Date.now() - this.turnStartedAt,
         } : { framesReceived: this.framesReceived, elapsedMs: Date.now() - this.turnStartedAt });
-        if (endError) failAndClear(endError);
+        if (endError) {
+          failAndClear(endError);
+          return;
+        }
+        // Connect's clean END_STREAM envelope is the protocol terminal. Cursor's RunSSE body can
+        // remain open after this frame (or close through an AbortError), so waiting for HTTP EOF
+        // strands an otherwise completed turn until the outer bridge stall watchdog fires.
+        //
+        // Earlier frames in this serialized frameWork chain have already run. Preserve their real
+        // turnEnded terminal when present; otherwise finalize the clean protocol end once so open
+        // tool calls still fail closed and a text-only turn receives its normal done event.
+        if (
+          !this.expectedClose
+          && !state.terminated
+          && !this.emittedTerminal
+          && (state.openToolCalls.size > 0 || this.sawAssistantText)
+        ) {
+          for (const event of finalizeTurnEvents(state)) push(event);
+        }
+        releaseBacklogLease();
+        settler.settleFinish();
         return;
       }
       await this.handleServerMessage(fromBinary(AgentServerMessageSchema, frame.payload), state, push);

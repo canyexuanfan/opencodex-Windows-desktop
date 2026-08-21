@@ -79,6 +79,10 @@ function emptyFrame(): Uint8Array {
   return encodeConnectFrame(toBinary(AgentServerMessageSchema, create(AgentServerMessageSchema, {})));
 }
 
+function cleanConnectEndFrame(): Uint8Array {
+  return encodeConnectFrame(new TextEncoder().encode("{}"), { endStream: true });
+}
+
 function runRequest(tools?: CursorRunRequest["tools"]): CursorRunRequest {
   return {
     modelId: "composer-2",
@@ -151,6 +155,28 @@ describe("Cursor clean-EOF terminal gate", () => {
       expect(failure).toBeUndefined();
       expect(messages.some(m => m.type === "done")).toBe(true);
     });
+  });
+
+  test("clean Connect END_STREAM finishes before a held-open HTTP body (#2300)", async () => {
+    let fallback: ReturnType<typeof setTimeout> | undefined;
+    const startedAt = Date.now();
+    await withH2Server(stream => {
+      stream.on("error", () => {});
+      stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+      stream.write(Buffer.from(turnEndedFrame()));
+      stream.write(Buffer.from(cleanConnectEndFrame()));
+      // Model Cursor's observed shape: the protocol has ended, but the HTTP body has not. The
+      // fallback keeps the pre-fix test bounded; correct code returns well before it fires.
+      fallback = setTimeout(() => {
+        try { stream.end(); } catch { /* transport already closed */ }
+      }, 500);
+    }, async baseUrl => {
+      const { messages, failure } = await drain(baseUrl, runRequest());
+      expect(failure).toBeUndefined();
+      expect(messages.filter(message => message.type === "done")).toHaveLength(1);
+    });
+    if (fallback) clearTimeout(fallback);
+    expect(Date.now() - startedAt).toBeLessThan(450);
   });
 
   test("EOF with no open tool call keeps its existing graceful finish", async () => {
