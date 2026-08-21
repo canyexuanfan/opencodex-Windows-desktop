@@ -226,10 +226,14 @@ export function findAnthropicVisionProvider(config: OcxConfig): AnthropicVisionP
 }
 
 export function resolveVisionBackend(
-  explicit: "openai" | "anthropic" | undefined,
+  explicit: "openai" | "anthropic" | "routed" | undefined,
   anthropicSidecar: AnthropicVisionProvider | undefined,
 ): "openai" | "anthropic" {
   if (explicit === "openai" || explicit === "anthropic") return explicit;
+  // "routed" collapses to the legacy default order until its describe executor
+  // lands (roadmap 170 → 180 revised): a persisted routed backend without a
+  // dispatchable arm degrades exactly like unset rather than crashing. wp3
+  // replaces this collapse with the real routed arm in planVisionSidecar.
   return anthropicSidecar ? "anthropic" : "openai";
 }
 

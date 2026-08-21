@@ -1,52 +1,73 @@
-# 180 — Describe executors + runtime dispatch (wp3 implementation cycle)
+# 180 — Routed describe executor + dispatch (wp3, REVISED)
 
-Depends on: 170.
+Depends on: 170 (revised).
 
-## src/vision/xai-describe.ts (new)
+## src/vision/routed-describe.ts (new)
 
-Mirror xai-executor.ts scaffolding: pinned https://api.x.ai origin,
-getValidAccessToken("xai"), redirect "manual", fetchWithResetRetry,
-signalWithTimeout(settings.timeoutMs) + cancelBodyOnAbort,
-sidecarEnter("vision"), redactSecretString on every error path. Body: 160
-wire. Non-stream preferred if probe allows (stream:false) — else reduce SSE
-output_text deltas. validateImageUrl reused from describe.ts (data: allowed
-mimes + 20MB cap, https passthrough). Reasoning: settings.reasoning passes
-through as reasoning.effort only for low|medium|high; xhigh/max clamp to high
-(xai ladder). Returns DescribeOutcome, never throws.
+Loopback POST http://127.0.0.1:{config.port}/v1/chat/completions:
 
-## src/vision/gemini-describe.ts (new)
+```json
+{ "model": "<namespaced routed id>", "stream": false,
+  "messages": [
+    { "role": "system", "content": "<describe instruction>" },
+    { "role": "user", "content": [
+      { "type": "text", "text": "<context>" },
+      { "type": "image_url", "image_url": { "url": "<data:/https:>" } }
+    ]}]}
+```
 
-Mirror gemini-executor.ts: registry-pinned base, ANTIGRAVITY_REQUEST_UA,
-getValidAccessTokenSnapshot (token + projectId), CCA envelope from 160 with
-inlineData part; resolveAntigravityEffortWireModel(settings.model,
-settings.reasoning, base) for wire model + thinkingLevel; readBoundedResponseBytes;
-data: URLs only (https rejected with explicit error, documented delta);
-sidecarEnter("vision"); redactSecretString. Returns DescribeOutcome.
+- Auth: none on loopback binds (resolveApiAuth admits loopback without a
+  token); when OPENCODEX_API_AUTH_TOKEN is set, send it as Authorization
+  bearer (auth-cors.ts:399-400 accepts bearer on /v1/chat/completions).
+- signalWithTimeout(settings.timeoutMs) + cancelBodyOnAbort;
+  sidecarEnter("vision"); redactSecretString on error paths; response text
+  from choices[0].message.content; DESC clamp caller-side (existing).
+- validateImageUrl reused (data: mime allowlist + 20MB, https passthrough).
+- The chat inbound translates image_url → input_image and every adapter
+  compiles its own wire (anthropic blocks, CCA inlineData, xai Responses),
+  so provider coverage is the router's, not this file's.
 
-## Runtime dispatch (src/vision/index.ts)
+## planVisionSidecar routed arm
 
-- VisionPlan gains backend arms: { backend: "xai", xaiSidecar: {providerName,
-  provider} } and { backend: "gemini", geminiSidecar: {...} } following the
-  anthropicSidecar shape.
-- planVisionSidecar: after resolving cfg.backend, arms for xai/gemini require
-  their descriptor isActive (else fall through to legacy resolution — a
-  persisted xai backend with expired auth degrades exactly like anthropic
-  without OAuth: sidecar unavailable marker, never a crash).
-- resolveVisionBackend: explicit backend honored for all four; DEFAULT
-  (unset) order unchanged: anthropic-if-auth else openai. No default drift.
-- executeDescription: two new arms calling the new executors.
-- descriptionIdentity: backend already part of the cache key; reasoning is
-  keyed only for openai — include it for xai too (effort affects output);
-  gemini keys thinkingLevel via model+reasoning inputs.
-- resolveEffectiveVisionModel: per-backend defaults — xai: grok-4.3,
-  gemini: gemini-3.7-flash (both text,image in metadata); existing openai/
-  anthropic defaults unchanged.
+VisionPlan gains { backend: "routed", routedModel: string }. Arm requires
+explicit model + plan-time modelAcceptsImageInput !== false (recursion
+fence). executeDescription routed arm calls describeImageRouted.
 
-## Tests (wp3)
+## Tests
 
-- vision-xai.test.ts, vision-gemini.test.ts (new): executor wire shape
-  (mocked fetch), error taxonomy, redaction, data-URL validation, effort
-  clamp/wire-model mapping.
-- vision-sidecar-e2e.test.ts: plan arms for xai/gemini with oauth fixtures;
-  degraded no-auth path.
+vision-routed.test.ts: wire shape against a mock loopback server; recursion
+fence (text-only target never plans routed); timeout/error taxonomy;
+redaction. E2E: routed describer via a second mock provider.
+
+
+## Audit round 2 amendments (2026-08-22)
+
+- **Admission ladder (blocker 2):** token =
+  configuredApiAuthToken() || loadServiceTokenFromFile(env) || first
+  config.apiKeys entry; sent as `x-opencodex-api-key` (never Authorization —
+  gateway-cache.ts:77-86 rule); omitted entirely on loopback binds where
+  isApiAuthRequired is false.
+- **Terminal marker:** executor sets `x-opencodex-vision-describe: 1`; the
+  core.ts plan site checks it and strips images instead of planning vision.
+- Executor also passes stream:false and reads choices[0].message.content;
+  non-2xx → {error} with redacted body slice.
+
+
+## Audit round 3 amendment (2026-08-22) — marker propagation
+
+The chat→responses bridge rebuilds headers from the FORWARD_HEADERS allowlist
+(chat-completions.ts:198-203, openai-responses.ts:28-36), which would DROP
+`x-opencodex-vision-describe` before the plan site — on exactly the one path
+recursion lives. Therefore:
+
+- The marker is detected AT THE CHAT SURFACE (raw req.headers before the
+  bridge) and carried as an explicit option/flag into handleResponses
+  (`visionDescribeTerminal: true`), not as a header the bridge must
+  preserve. The Responses surface ALSO honors the raw header directly for
+  native /v1/responses callers.
+- Regression test drives the FULL chat-surface path: marked POST to
+  /v1/chat/completions with an image + text-only routed model → assert the
+  plan site STRIPS (no describe dispatch, no recursion), while the same
+  unmarked POST plans normally. A predicate-only test is insufficient and
+  would stay green with the marker broken.
 
