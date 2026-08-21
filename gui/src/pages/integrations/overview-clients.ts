@@ -107,6 +107,8 @@ export interface ClaudeDesktopPayload {
   observedKind?: string;
   applied?: boolean;
   stale?: boolean;
+  drift?: boolean;
+  driftReason?: string | null;
   activeProfile?: boolean | null;
   appliedAt?: string | null;
 }
@@ -305,6 +307,30 @@ function claudeDesktopRow(
     return { ...base, toggle: null, state: "unknown", installed: false, applied: false, detailKey: null };
   }
   const toggleOn = payload.desiredEnabled;
+  // Desired OFF keeps the switch off, but a still-selected gateway is not
+  // "absent": Desktop is still routing through OpenCodex until cleanup lands.
+  if (!toggleOn) {
+    const gatewayStillSelected = payload.applied === true
+      || payload.driftReason === "desired_off_gateway_selected";
+    if (gatewayStillSelected) {
+      return {
+        ...base,
+        state: "stale",
+        installed: payload.installed === true,
+        applied: true,
+        toggleOn: false,
+        detailKey: "integrations.detail.desktopDesiredOffCleanupPending",
+      };
+    }
+    return {
+      ...base,
+      state: "absent",
+      installed: payload.installed === true,
+      applied: false,
+      toggleOn: false,
+      detailKey: "integrations.detail.desktopDesiredOff",
+    };
+  }
   if (payload.applied !== true) {
     return {
       ...base,
@@ -312,7 +338,7 @@ function claudeDesktopRow(
       installed: payload.installed === true,
       applied: false,
       toggleOn,
-      detailKey: toggleOn ? "integrations.detail.desktopDesiredOnNotApplied" : "integrations.detail.desktopDesiredOff",
+      detailKey: "integrations.detail.desktopDesiredOnNotApplied",
     };
   }
   const drifted = payload.stale === true || payload.activeProfile === false;
