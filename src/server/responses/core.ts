@@ -140,6 +140,7 @@ import { ACCOUNT_GATED_NATIVE_OPENAI_MODELS } from "../../codex/catalog/native-m
 import { captureCodexAffinityDiagnostic } from "../../codex/affinity-debug";
 import {
   computeQuotaCooldown,
+  codexQuotaScopeForModel,
   formatCodexProviderForLog,
   previewCodexAccountForRequest,
   recordCodexUpstreamOutcome,
@@ -2302,11 +2303,15 @@ async function handleResponsesInner(
   // Preview the preferred Codex account without acquiring a probe lease or refreshing
   // tokens — auth is resolved only after the final route is selected.
   if (threadSpawn && !options.comboAttempt && route.codexAccountId === undefined) {
+    // The final resolveCodexAuthContext binds under codexQuotaScopeForModel(route.modelId),
+    // so the preview must read the same scope slot — an undefined scope would map to the
+    // "legacy" affinity bucket and never find a binding made under "shared" or a native
+    // model scope, making the preview diverge from the account that actually authenticates.
     const previewAccountId = previewCodexAccountForRequest(
       poolAffinityKey,
       config,
       Date.now(),
-      undefined,
+      codexQuotaScopeForModel(route.modelId),
       previewSelectionOptions,
     );
     subagentFallbackPreviewAccountId = previewAccountId;
