@@ -143,10 +143,10 @@ function servingIdentityFor(
 }
 
 /**
- * Compare this request's route with the last successfully serving route for its client thread.
+ * Compare this request's route with the last successfully serving route for its conversation.
  * A live mismatch means replayed opaque reasoning was minted by another backend and must not be
  * forwarded to this one. Comparison deliberately does not refresh or replace the recorded route:
- * a failed candidate request did not serve the thread.
+ * a failed candidate request did not serve the conversation.
  *
  * Serving provenance uses restart-stable destination and credential dimensions so token
  * generations and other volatile credential material cannot create false route changes. Missing
@@ -164,7 +164,7 @@ export function reasoningReplayServingIdentityChanged(
   return previous !== undefined && previous.identity !== current.identity;
 }
 
-/** Record the route only after it has successfully served the client thread. */
+/** Record the route only after it has successfully served the conversation. */
 export function commitReasoningReplayServingIdentity(
   scope: OcxReasoningReplayScopeRef | undefined,
 ): void {

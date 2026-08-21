@@ -2185,7 +2185,6 @@ async function handleResponsesInner(
     if (providerContinuationCandidate) parsed._providerContinuationCandidate = providerContinuationCandidate;
     if (inboundClientThreadId) {
       parsed._clientThreadId = inboundClientThreadId;
-      parsed._reasoningReplayScope = { clientThreadId: inboundClientThreadId };
     } else if (
       options.inboundWire === "anthropic"
       && options.promptCacheKeyIsSharedCohort !== true
@@ -2221,15 +2220,26 @@ async function handleResponsesInner(
     ...(force ? { force: true } : {}),
     ...(parsed._clientThreadId ? { clientThreadId: parsed._clientThreadId } : {}),
   });
+  const resolvedConversationId = conversationIdFromResponsesRequest({
+    clientThreadId: parsed._clientThreadId,
+    sessionIdHeader: sessionIdHeaderFromRequest(req.headers),
+    threadIdHeader: req.headers.get("thread-id"),
+    cursorConversationId: parsed._cursorConversationId,
+  });
+  // `_clientThreadId` remains the routing/continuation identity supplied by Codex. Replay state
+  // only needs a conversation namespace, so headerless callers may use the same opaque fallback
+  // already resolved for request logs. Keep the raw parent-thread key when present so that path is
+  // byte-for-byte unchanged.
+  if (!parsed._reasoningReplayScope) {
+    const reasoningReplayConversationId = parsed._clientThreadId ?? resolvedConversationId;
+    if (reasoningReplayConversationId) {
+      parsed._reasoningReplayScope = { clientThreadId: reasoningReplayConversationId };
+    }
+  }
   // Prefer a pre-populated id (routed Claude) over Responses headers that may be
   // absent or synthetically injected (session_id from prompt_cache_key).
   if (!logCtx.conversationId) {
-    logCtx.conversationId = conversationIdFromResponsesRequest({
-      clientThreadId: parsed._clientThreadId,
-      sessionIdHeader: sessionIdHeaderFromRequest(req.headers),
-      threadIdHeader: req.headers.get("thread-id"),
-      cursorConversationId: parsed._cursorConversationId,
-    });
+    logCtx.conversationId = resolvedConversationId;
   }
   logCtx.requestedModel = parsed.modelId;
   logCtx.requestedEffort = parsed.options.reasoning;
