@@ -40,6 +40,24 @@ Release command (maintainer-controlled): bun scripts/release.ts 2.28.0 --publish
 - Devlog: three-issue round record (#2181), backlog merge log (#2168),
   the 100-150 integration-train roadmap.
 
+## Bug-backlog train additions (260821, second loop)
+
+- #2269 — pool-switch ciphertext stripping locked + null-code encrypted-content
+  rejection recovery (fixes #2247).
+- #2271 — opencode-go /goal stream drops: namespace-flattening regression locked,
+  openaiChatEofTolerance opt-in for complete tool-call EOF (fixes #2260).
+- #2246 — google part-field contract enforcement (fixes #2233, maintainer PR
+  rebased+landed).
+- #2273 — deferred serving-identity commit + passthrough findings (credits #2264).
+- #2274 — zcode openai-compatible protocol, prefix-cache restore (credits #2261).
+- #2276 — MCode capability sync + writer locking (credits #2220).
+- #2277 — Cursor checkpoint reuse, fail-closed explicit refs (credits #2054).
+- Superseded/closed: #2267 (by #2262). Deferred to human security review: #2222.
+- Issues closed with evidence: #2247 #2260 #2233 #2240 #2188 #2190.
+
+RELEASE STATE: READY, NOT EXECUTED (user directive). One command away:
+`bun scripts/release.ts 2.28.0` (dry-run publish) or `--publish` — maintainer's call.
+
 ## Gate evidence (doc 150)
 - lidge full suite at 6aecc8f15: see /tmp/ocx-gate-final.log (this doc's D attest).
 - Local: tsc, oxlint (lint:gui), privacy:scan, build:gui + prepare-package green.
