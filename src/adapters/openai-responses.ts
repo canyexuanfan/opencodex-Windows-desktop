@@ -166,16 +166,20 @@ function stripInvalidItemIds(body: unknown): unknown {
  * with its own traversal, and the traversals disagreed about which containers they covered; a new
  * one should be a row here instead. `toolTypes` omitted means the field is private on any tool.
  */
-const CANONICAL_ONLY_TOOL_FIELDS: readonly { field: string; toolTypes?: ReadonlySet<string> }[] = [
+const CANONICAL_ONLY_TOOL_FIELDS: readonly { field: string; toolTypes?: ReadonlySet<string>; capabilityGated?: boolean }[] = [
   // ChatGPT's browsing policy bit. The public hosted tool is enabled by its presence alone.
-  { field: "external_web_access", toolTypes: new Set(["web_search", "web_search_preview"]) },
+  // OWNERSHIP: official OpenAI API-key traffic and unclassified gateways ACCEPT this field, so
+  // it is only stripped when the provider capability denies it (supportsOpenAiWebSearchToolFields
+  // === false), matching stripOpenAiOnlyWebSearchFields; see
+  // tests/responses-routed-web-search-fields.test.ts.
+  { field: "external_web_access", toolTypes: new Set(["web_search", "web_search_preview"]), capabilityGated: true },
   // Deferred-discovery marker. `activateDeferredTool` clears it only for tools a `tool_search_output`
   // already loaded, so a still-deferred declaration — including one promoted out of a namespace
   // group — otherwise reaches the wire carrying it.
   { field: "defer_loading" },
 ];
 
-function stripCanonicalOnlyToolFields(body: unknown): unknown {
+function stripCanonicalOnlyToolFields(body: unknown, includeCapabilityGated: boolean): unknown {
   if (!isPlainObject(body)) return body;
 
   const rewriteTools = (tools: unknown[]): unknown[] => {
@@ -183,7 +187,8 @@ function stripCanonicalOnlyToolFields(body: unknown): unknown {
     const rewritten = tools.map(tool => {
       if (!isPlainObject(tool)) return tool;
       let next = tool;
-      for (const { field, toolTypes } of CANONICAL_ONLY_TOOL_FIELDS) {
+      for (const { field, toolTypes, capabilityGated } of CANONICAL_ONLY_TOOL_FIELDS) {
+        if (capabilityGated && !includeCapabilityGated) continue;
         if (!Object.hasOwn(next, field)) continue;
         if (toolTypes && (typeof next.type !== "string" || !toolTypes.has(next.type))) continue;
         const { [field]: _private, ...rest } = next;
@@ -1722,7 +1727,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         outBody = rewritten.body;
         convertedRoutedNamespaceToolAliases = rewritten.aliases;
         // Last, so promoted namespace children are also cleared of Codex-private fields.
-        outBody = stripCanonicalOnlyToolFields(outBody);
+        outBody = stripCanonicalOnlyToolFields(outBody, provider.supportsOpenAiWebSearchToolFields === false);
       }
       const threadServingIdentityChanged = parsed._stripReasoningEncryptedContent === true;
       const sanitizedBody = normalizeToolSchemas(stripSparkCompatibility(stripUnsupportedReasoningParams(stripItemIdsWhenUnstored(stripInvalidItemIds(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(

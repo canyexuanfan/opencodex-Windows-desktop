@@ -976,13 +976,16 @@ describe("OpenAI Responses passthrough sanitization", () => {
     expect(body.tools[0]).toMatchObject({ type: "image_generation" });
   });
 
-  test("drops ChatGPT's external_web_access hint but keeps routed web search", () => {
-    const adapter = createResponsesPassthroughAdapter({
-      adapter: "openai-responses",
-      baseUrl: "https://api.x.ai/v1",
-      authMode: "key" as const,
-      apiKey: "xai-test",
-    });
+ test("drops ChatGPT's external_web_access hint but keeps routed web search", () => {
+   const adapter = createResponsesPassthroughAdapter({
+     adapter: "openai-responses",
+     baseUrl: "https://api.x.ai/v1",
+     authMode: "key" as const,
+     apiKey: "xai-test",
+      // The registry declares this denial for xAI; the strip is capability-driven, not
+      // hostname-driven (official OpenAI API-key traffic keeps the fields).
+      supportsOpenAiWebSearchToolFields: false,
+   });
     const request = adapter.buildRequest({
       modelId: "grok-4.6",
       context: { messages: [] },
@@ -1033,13 +1036,14 @@ describe("OpenAI Responses passthrough sanitization", () => {
   // `activateDeferredTool` clears `defer_loading` only for tools a `tool_search_output` already
   // loaded, so the first turn of a deferred catalog — and any child promoted out of a namespace
   // group — otherwise carries the private field to a gateway that rejects unknown arguments.
-  test("drops Codex-private tool fields from routed declarations", () => {
-    const adapter = createResponsesPassthroughAdapter({
-      adapter: "openai-responses",
-      baseUrl: "https://api.x.ai/v1",
-      authMode: "key" as const,
-      apiKey: "xai-test",
-    });
+ test("drops Codex-private tool fields from routed declarations", () => {
+   const adapter = createResponsesPassthroughAdapter({
+     adapter: "openai-responses",
+     baseUrl: "https://api.x.ai/v1",
+     authMode: "key" as const,
+     apiKey: "xai-test",
+      supportsOpenAiWebSearchToolFields: false,
+   });
     const request = adapter.buildRequest({
       modelId: "grok-4.6",
       context: { messages: [] },
