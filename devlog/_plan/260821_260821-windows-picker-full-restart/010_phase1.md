@@ -34,6 +34,21 @@ PowerShell 5.1-compatible script:
 
 ## Verification
 
+## Cycle 2 addendum (2026-08-21, provider verification + push)
+
+- command-code stealth/ox-alpha re-probed after credit purchase: /v1/chat/completions
+  and /v1/responses both return 200 with valid completions. No code change needed.
+- opencode-go upstream (https://opencode.ai/zen/go/v1) returns 500 Internal server
+  error for every model probed directly (kimi-k2.7-code, ox-alpha-free); the proxy
+  502 "upstream stream ended" is an upstream outage, not an adapter defect.
+  ox-alpha-free is also absent from models.dev opencode-go roster and from
+  scripts/model-metadata.source.json, so the opencode-go/ox-alpha-free slug was
+  never a registered catalog model; opencode-free/x-preview-f-free is the working
+  free-tier route (verified 200 on both endpoints).
+- Direct push to origin/dev rejected by ruleset 20763889 (pull_request rule, admin
+  bypass = pull_requests_only). Fallback per user intent: branch
+  codex/windows-restart-helper pushed, PR #2293 opened targeting dev (MERGEABLE).
+
 - powershell -File scripts/restart-codex-desktop-app.ps1 -DryRun -> exit 0
   AND output names the live root PID (e.g. 9928) and its child codex.exe;
   nothing stopped. Record $PSVersionTable.PSVersion.
