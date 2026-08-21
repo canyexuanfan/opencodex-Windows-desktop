@@ -46,5 +46,17 @@ itself (audit R1-B4).
 | #2213 | louis-tepe | OUT (draft, overlaps doc-130 design) | revisit post-switch |
 | #2072 | olddonkey | DEFERRED (audit R2-B2) | Fast policy composes later; must re-verify against both wires |
 
+## New wave (user expansion 260821, lands in step 5-6 order after the chat-default unit)
+
+| PR | author | disposition | rationale |
+|---|---|---|---|
+| #2248 | olddonkey | MERGE after #2227 unit | cross-backend reasoning strip on model switch; wire-agnostic hygiene |
+| #2249 | olddonkey | MERGE after #2228 line | compaction blob serving-identity comparison; composes with provenance fix |
+| #2251 | olddonkey | MERGE after #2227 unit | recovery when upstream rejects foreign opaque state |
+| #2252 | olddonkey | MERGE | strip output-only reasoning status unconditionally; small + wire-agnostic |
+| #2254 | olddonkey | RECONCILE with doc 130 | restores Grok Responses on the native passthrough route — must compose with the chat default + opt-in switch, not fight them; adjudicate against the doc-100 matrix |
+| #2250 | lilinxiong | MERGE (bug) | integrations honor OFF for Claude Desktop drift + Grok ensure |
+| #2253 | lilinxiong | MERGE (bug, gui) | dropdown opacity; needs screenshot per PR gate |
+
 Rebase anchors are named at execution time in each phase's B (exact dev head SHA),
 with cascade verification (typecheck + focused suites) after every land.
