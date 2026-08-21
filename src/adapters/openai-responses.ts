@@ -1692,12 +1692,6 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       // that already recorded a single-query web_search_call replays it every turn, and
       // a strict parser rejects the whole request over it (#930).
       outBody = backfillWebSearchQueries(outBody);
-      // Same predicate as the routedCompaction gate in handleResponses(): an
-      // authMode check would let a noncanonical custom forward provider skip this
-      // rewrite while the server still routes it as a summarizer turn (#422).
-      if (parsed._compactionRequest === true && !isCanonicalOpenAiForwardProvider(provider)) {
-        outBody = buildRoutedCompactionBody(outBody);
-      }
       if (!isCanonicalOpenAiForwardProvider(provider)) {
         outBody = promoteClientLoadedTools(outBody);
       }
@@ -1731,6 +1725,14 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         convertedRoutedNamespaceToolAliases = rewritten.aliases;
         // Last, so promoted namespace children are also cleared of Codex-private fields.
         outBody = stripCanonicalOnlyToolFields(outBody, provider.supportsOpenAiWebSearchToolFields === false);
+      }
+      // Same predicate as the routedCompaction gate in handleResponses(): an authMode check would
+      // let a noncanonical custom forward provider skip this rewrite while the server still routes
+      // it as a summarizer turn (#422). The compaction body build removes the tool surface and must
+      // therefore be the last routed transform: anything before it may depend on the declarations;
+      // anything after it cannot.
+      if (parsed._compactionRequest === true && !isCanonicalOpenAiForwardProvider(provider)) {
+        outBody = buildRoutedCompactionBody(outBody);
       }
       const threadServingIdentityChanged = parsed._stripReasoningEncryptedContent === true;
       const sanitizedBody = normalizeToolSchemas(stripSparkCompatibility(stripUnsupportedReasoningParams(stripItemIdsWhenUnstored(stripInvalidItemIds(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(

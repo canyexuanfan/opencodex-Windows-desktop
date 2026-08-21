@@ -52,10 +52,11 @@ Two coordinates that lower to the same wire name are treated as one tool when th
 a `functions` child of the same name are the duplicate the parser already tolerates — and the one
 `promoteClientLoadedTools` produces. The declaration is emitted once instead of failing the request.
 
-Replayed call items are lowered whether or not this turn declares the group they name. A routed
-compaction turn strips the whole tool surface before the boundary runs, and a catalog can change
-mid-session, but the client is still replaying items this layer's own response restoration stamped
-with a private `namespace`. Only `tool_choice` resolves a bare name through the catalog: a history
+Replayed call items are lowered whether or not this turn declares the group they name. A catalog can
+be absent or change mid-session, but the client is still replaying items this layer's own response
+restoration stamped with a private `namespace`. Routed compaction runs this boundary before removing
+the tool surface so request-local aliases remain available for response restoration. Only
+`tool_choice` resolves a bare name through the catalog: a history
 item records which tool actually ran, so re-pointing it at a same-named namespace child would
 rewrite that record on a coincidence rather than translate it.
 
