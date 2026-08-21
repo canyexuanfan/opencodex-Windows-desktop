@@ -228,6 +228,18 @@ export interface ProviderRegistryEntry {
   /** Registry default for exact model service-tier capability; explicit config keys win. */
   modelSupportsServiceTier?: Record<string, boolean>;
   /**
+   * Registry-only service-tier defaults for an OAuth preset's explicit API-key transport.
+   * Applied only when `allowKeyAuthOverride` is true and the captured effective auth transport
+   * is key-based. Explicit provider config still wins field-by-field, including `false`.
+   */
+  keyAuthServiceTier?: {
+    supportsServiceTier?: boolean;
+    modelSupportsServiceTier?: Record<string, boolean>;
+    chatServiceTier?: boolean;
+  };
+  /** Provider-specific copy for the Codex catalog's Fast tier. */
+  fastTierDescription?: string;
+  /**
    * Registry-only destination guard for `modelSupportsServiceTier`. This scopes vendor evidence
    * without changing provider ownership, routing, authentication, or config validation.
    */
@@ -1023,6 +1035,14 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     baseUrl: "https://api.x.ai/v1",
     authKind: "oauth",
     allowKeyAuthOverride: true,
+    // Priority Processing is documented for xAI's public API-key Chat Completions and
+    // Responses endpoints. OAuth is a separate Grok CLI subscription gateway and remains
+    // unclassified; do not turn this into a provider-wide supportsServiceTier declaration.
+    keyAuthServiceTier: {
+      supportsServiceTier: true,
+      chatServiceTier: true,
+    },
+    fastTierDescription: "Priority processing, 2x token price",
     featured: true,
     oauthId: "xai",
     jawcodeBundle: "xai",
