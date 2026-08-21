@@ -117,7 +117,7 @@ export function analyzeTerminalTurn(parsed: OcxParsedRequest, events: readonly A
   return { decision: "continue", reason: "suspicious_no_tool", assistantText: text, userText, hasToolCall };
 }
 
-function assistantMessageFromEvents(events: readonly AdapterEvent[]): OcxAssistantMessage | undefined {
+function assistantMessageFromEvents(events: readonly AdapterEvent[], timestamp: number): OcxAssistantMessage | undefined {
   let text = "";
   let thinking = "";
   let signature: string | undefined;
@@ -134,14 +134,18 @@ function assistantMessageFromEvents(events: readonly AdapterEvent[]): OcxAssista
   }
   if (text) content.push({ type: "text", text });
   if (content.length === 0) return undefined;
-  return { role: "assistant", content, timestamp: Date.now() };
+  return { role: "assistant", content, timestamp };
 }
 
 export function buildContinuationRequest(parsed: OcxParsedRequest, events: readonly AdapterEvent[]): OcxParsedRequest {
   const messages = [...parsed.context.messages];
-  const assistant = assistantMessageFromEvents(events);
+  // One clock read for the whole rebuild. Two Date.now() calls could straddle a millisecond
+  // boundary, which made the retained-heartbeat contract test fail intermittently in CI on a
+  // 1ms skew between the assistant message and the nudge that follows it.
+  const timestamp = Date.now();
+  const assistant = assistantMessageFromEvents(events, timestamp);
   if (assistant) messages.push(assistant);
-  messages.push({ role: "developer", content: TERMINAL_GUARD_NUDGE, timestamp: Date.now() });
+  messages.push({ role: "developer", content: TERMINAL_GUARD_NUDGE, timestamp });
   return { ...parsed, context: { ...parsed.context, messages } };
 }
 
