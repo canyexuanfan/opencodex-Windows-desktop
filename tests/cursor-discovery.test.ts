@@ -6,6 +6,7 @@ import {
   CURSOR_ROUTING_LEVELS,
   CURSOR_STATIC_MODELS,
   cursorCodexToWireModelId,
+  cursorCheckpointModelAffinityId,
   filterCursorConfiguredModelsByLiveDiscovery,
   isCursorModelAvailableForAccount,
   cursorModelContextWindows,
@@ -196,5 +197,17 @@ describe("Cursor discovery metadata", () => {
     expect(cursorNeedsExternalToolContinuation("cursor/composer-2.5-fast")).toBe(false);
     expect(cursorNeedsExternalToolContinuation("auto")).toBe(false);
     expect(cursorNeedsExternalToolContinuation("gpt-5.6-sol")).toBe(true);
+  });
+
+  test("normalizes Cursor checkpoint model affinity across prefix and effort", () => {
+    expect(cursorCheckpointModelAffinityId("cursor/grok-4.6")).toBe(
+      cursorCheckpointModelAffinityId("cursor-grok-4.6-low"),
+    );
+    expect(cursorCheckpointModelAffinityId("grok-4.6")).toBe(
+      cursorCheckpointModelAffinityId("cursor/grok-4.6"),
+    );
+    expect(cursorCheckpointModelAffinityId("cursor/gpt-5.6-sol")).not.toBe(
+      cursorCheckpointModelAffinityId("cursor/grok-4.6"),
+    );
   });
 });

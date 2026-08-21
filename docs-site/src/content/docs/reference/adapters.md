@@ -218,6 +218,14 @@ compatibility pair: `agent.v1.AgentService/RunSSE` for server output and
 - Replays conversation state through content-addressed blobs, maps server tool calls back to Codex,
   discovers live Cursor models through the protobuf `GetUsableModels` RPC, and retries only before a
   run request is committed to the wire.
+- After a successful no-tool turn, the adapter keeps Cursor's returned ConversationStateStructure
+  in a process-local store and reuses that checkpoint on the next validated linear continuation
+  instead of rebuilding the full root history. Tool-result turns reuse the last completed-turn
+  checkpoint plus only the uncovered suffix when the covered message boundary is known.
+  Compaction, helper/shadow isolation, account/model mismatch, missing refs, decode failures,
+  forced-fresh recovery, and invalid_argument retries fall back to the existing full replay. A
+  process restart drops the in-memory store and full-replays. Cursor Connect still does not expose
+  authoritative cache_read_tokens, so OpenCodex usage is not a cache-hit counter.
 - Honors `upstreamHttpVersion` for both live model discovery and inference. `auto`, `http2`, and `h2`
   preserve the existing HTTP/2 transport; only `http1.1` and `h1` select compatibility mode.
 - Exposes Cursor Router as `cursor/auto` plus explicit `cursor/auto-cost`,

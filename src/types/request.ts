@@ -282,6 +282,8 @@ export interface OcxProviderContinuationState {
     [field: string]: unknown;
     conversationId?: string;
     checkpointUsable?: boolean;
+    /** Opaque process-local Cursor ConversationStateStructure snapshot ref. Never raw protobuf. */
+    checkpointRef?: string;
   };
   kiro?: {
     [field: string]: unknown;
