@@ -32,7 +32,8 @@ export interface OcxReasoningReplayIdentity {
 export interface OcxReasoningReplayScopeRef {
   /**
    * Conversation namespace for replay state. Historically this was always the Codex parent-thread
-   * id; headerless Responses callers use an opaque session/thread/Cursor conversation fallback.
+   * id; headerless Responses callers use a raw sanitized thread/Cursor/session fallback, never the
+   * hashed request-log conversation id.
    */
   readonly clientThreadId: string;
   current?: Readonly<OcxReasoningReplayIdentity>;

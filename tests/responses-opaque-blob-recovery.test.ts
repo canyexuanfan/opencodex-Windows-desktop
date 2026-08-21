@@ -719,6 +719,61 @@ describe("reasoning replay serving identity commit through /v1/responses", () =>
     expect(outbound.map(hasBlob)).toEqual([true, false, true]);
   });
 
+  test("a later session_id fallback continues the same raw parent-thread conversation", async () => {
+    const outbound: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return success(`resp-${outbound.length}`);
+    }) as typeof fetch;
+
+    const identity = "mixed-header-conversation";
+    const first = await handleResponses(
+      requestWithIdentityHeaders("first", { "x-codex-parent-thread-id": identity }),
+      config(),
+      { model: "", provider: "" },
+    );
+    expect(first.status).toBe(200);
+    await first.text();
+    const second = await handleResponses(
+      requestWithIdentityHeaders("second", { session_id: identity }),
+      config(),
+      { model: "", provider: "" },
+    );
+    expect(second.status).toBe(200);
+    await second.text();
+
+    expect(outbound).toHaveLength(2);
+    expect(outbound.map(hasBlob)).toEqual([true, false]);
+  });
+
+  test("a shared session_id does not coalesce distinct thread-id conversations", async () => {
+    const outbound: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return success(`resp-${outbound.length}`);
+    }) as typeof fetch;
+
+    const cases = [
+      ["first", "thread-a"],
+      ["second", "thread-b"],
+    ] as const;
+    for (const [provider, threadId] of cases) {
+      const response = await handleResponses(
+        requestWithIdentityHeaders(provider, {
+          "thread-id": threadId,
+          session_id: "shared-cache-session",
+        }),
+        config(),
+        { model: "", provider: "" },
+      );
+      expect(response.status).toBe(200);
+      await response.text();
+    }
+
+    expect(outbound).toHaveLength(2);
+    expect(outbound.map(hasBlob)).toEqual([true, true]);
+  });
+
   test("requests without any usable conversation identity keep blobs and record nothing", async () => {
     const outbound: Array<Record<string, unknown>> = [];
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {

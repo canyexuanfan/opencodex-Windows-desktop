@@ -227,6 +227,7 @@ import {
 import {
   conversationIdFromResponsesRequest,
   normalizeLogConversationId,
+  reasoningReplayConversationIdFromResponsesRequest,
   sessionIdHeaderFromRequest,
 } from "../request-log-conversation";
 import type { AttemptRecoveryKind } from "../../usage/log";
@@ -2242,12 +2243,17 @@ async function handleResponsesInner(
     threadIdHeader: req.headers.get("thread-id"),
     cursorConversationId: parsed._cursorConversationId,
   });
-  // `_clientThreadId` remains the routing/continuation identity supplied by Codex. Replay state
-  // only needs a conversation namespace, so headerless callers may use the same opaque fallback
-  // already resolved for request logs. Keep the raw parent-thread key when present so that path is
-  // byte-for-byte unchanged.
+  // _clientThreadId remains the routing/continuation identity supplied by Codex. Replay state uses
+  // a dedicated raw conversation namespace so mixed headers that carry the same identity still
+  // match, and a shared/synthetic session_id cannot coalesce distinct thread/Cursor conversations.
+  // Keep an Anthropic prompt_cache_key scope already bound above (#1735/#1926).
   if (!parsed._reasoningReplayScope) {
-    const reasoningReplayConversationId = parsed._clientThreadId ?? resolvedConversationId;
+    const reasoningReplayConversationId = reasoningReplayConversationIdFromResponsesRequest({
+      clientThreadId: parsed._clientThreadId,
+      threadIdHeader: req.headers.get("thread-id"),
+      cursorConversationId: parsed._cursorConversationId,
+      sessionIdHeader: sessionIdHeaderFromRequest(req.headers),
+    });
     if (reasoningReplayConversationId) {
       parsed._reasoningReplayScope = { clientThreadId: reasoningReplayConversationId };
     }
