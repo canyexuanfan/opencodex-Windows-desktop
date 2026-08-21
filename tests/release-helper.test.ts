@@ -279,29 +279,29 @@ function executeGitSshCommand(gitSshCommand: string): { calls: SshInvocation[]; 
   const shimDir = mkdtempSync(join(tmpdir(), "ocx-release-ssh-"));
   const logPath = join(shimDir, "ssh-log.jsonl");
   const jsPath = join(shimDir, "ssh.js");
-  const launcherPath = join(shimDir, "ssh");
-  const cmdPath = join(shimDir, "ssh.cmd");
   writeFileSync(logPath, "", "utf8");
   writeFileSync(jsPath, `import { appendFileSync } from "node:fs";
 appendFileSync(process.env.FAKE_SSH_LOG, JSON.stringify({ args: process.argv.slice(2) }) + "\\n");
 process.exit(0);
 `, "utf8");
-  writeExecutable(launcherPath, `#!${process.execPath}\nimport "./ssh.js";\n`);
-  writeFileSync(cmdPath, `@echo off\r\n"${process.execPath}" "%~dp0\\ssh.js" %*\r\n`, "utf8");
+
+  // Use a native executable directly on every platform. A Windows `.cmd` shim that forwards `%*`
+  // reparses quoting and can make a broken GIT_SSH_COMMAND look correct after the damage, turning
+  // this regression into a false green. Only replace the executable token; Git still parses the
+  // exact emitted `-i` argument and hostile key path.
+  expect(gitSshCommand.startsWith("ssh ")).toBe(true);
+  const quote = (value: string) => `"${value.replace(/(["\\`$])/g, "\\$1")}"`;
+  const nativeFakeCommand = `${quote(process.execPath)} ${quote(jsPath)}${gitSshCommand.slice(3)}`;
 
   const inheritedEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"
-      && key !== "GIT_SSH" && key !== "GIT_SSH_COMMAND"),
+    Object.entries(process.env).filter(([key]) => key !== "GIT_SSH" && key !== "GIT_SSH_COMMAND"),
   );
-  const pathKey = process.platform === "win32" ? "Path" : "PATH";
-  const pathValue = `${shimDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? process.env.Path ?? ""}`;
   const result = spawnSync("git", ["ls-remote", "ssh://example.invalid/owner/repository.git"], {
     cwd: repoRoot,
     env: {
       ...inheritedEnv,
-      [pathKey]: pathValue,
       FAKE_SSH_LOG: logPath,
-      GIT_SSH_COMMAND: gitSshCommand,
+      GIT_SSH_COMMAND: nativeFakeCommand,
     },
     encoding: "utf8",
   });
@@ -507,6 +507,10 @@ describe("release helper", () => {
   test("credential-bearing SSH targets are rejected without logging the credential", () => {
     for (const scenario of [
       { releaseSshRepo: "ssh://git:SECRET@example.test/owner/repository.git" },
+      { releaseSshRepo: "ssh://SECRET@example.test/owner/repository.git" },
+      { releaseSshRepo: "ssh://git%3ASECRET@example.test/owner/repository.git" },
+      { releaseSshRepo: "git@example.test:owner/repository.git?token=SECRET" },
+      { originUrl: "ssh://git:SECRET@example.test/owner/repository.git" },
       { originUrl: "git:SECRET@example.test:owner/repository.git" },
     ]) {
       const { calls, result } = runRelease("9.9.9", {
@@ -518,6 +522,23 @@ describe("release helper", () => {
       expect(result.status).not.toBe(0);
       expect(output).not.toContain("SECRET");
       expect(calls.find(call => call.name === "git" && call.args[0] === "push")).toBeUndefined();
+    }
+  });
+
+  test("credential-free ssh URL and scp-like release targets remain accepted", () => {
+    for (const releaseSshRepo of [
+      "ssh://git@example.test/owner/repository.git",
+      "ssh://example.test/owner/repository.git",
+      "git@example.test:owner/repository.git",
+    ]) {
+      const { calls, result } = runRelease("9.9.9", {
+        releaseSshKey: "/tmp/k",
+        releaseSshRepo,
+        pendingBump: true,
+      });
+      expect(result.status).toBe(0);
+      expect(calls.find(call => call.name === "git" && call.args[0] === "push")?.args[1])
+        .toBe(releaseSshRepo);
     }
   });
 

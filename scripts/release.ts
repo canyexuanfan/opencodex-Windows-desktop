@@ -183,11 +183,9 @@ function isSshRemote(value: string): boolean {
   if (trimmed.startsWith("ssh://")) {
     try {
       const parsed = new URL(trimmed);
-      const authority = trimmed.slice("ssh://".length).split("/", 1)[0] ?? "";
-      const userInfo = authority.includes("@") ? authority.slice(0, authority.lastIndexOf("@")) : "";
-      let decodedUserInfo: string;
+      let decodedUsername: string;
       try {
-        decodedUserInfo = decodeURIComponent(userInfo);
+        decodedUsername = decodeURIComponent(parsed.username);
       } catch {
         return false;
       }
@@ -195,7 +193,9 @@ function isSshRemote(value: string): boolean {
         && parsed.hostname.length > 0
         && parsed.pathname.length > 1
         && parsed.password === ""
-        && !decodedUserInfo.includes(":")
+        // The release deploy key uses GitHub's fixed SSH principal. Treat any other userinfo as
+        // credential-shaped rather than trying to distinguish a harmless username from a token.
+        && (decodedUsername === "" || decodedUsername === SSH_USER)
         && parsed.search === ""
         && parsed.hash === "";
     } catch {
@@ -203,7 +203,9 @@ function isSshRemote(value: string): boolean {
     }
   }
 
-  return /^[^@:\s/]+@[^:\s/]+:.+$/.test(trimmed);
+  // scp-like syntax has no parser-level query/fragment boundary. Reject those delimiters rather
+  // than allowing a token-shaped suffix to reach the target log or failed-command output.
+  return /^git@[^:\s/?#]+:[^?#]+$/.test(trimmed);
 }
 
 /** Split out so the scp-like SSH target is assembled rather than written as an address literal. */
@@ -217,7 +219,7 @@ async function releasePushCommand(branch: string): Promise<{ command: string[]; 
   // silently retarget a production release. Check the shape, and print the resolved target either
   // way so the destination is visible before the push rather than inferred afterwards.
   if (configured && !isSshRemote(configured)) {
-    console.error("✗ OCX_RELEASE_SSH_REPO is not an ssh:// or user@host:owner/repo remote; refusing to push.");
+    console.error("✗ OCX_RELEASE_SSH_REPO is not a credential-free ssh:// or git@host:owner/repo remote; refusing to push.");
     process.exit(1);
   }
   const slug = configured || sshTargetFromOrigin(await capture(["git", "remote", "get-url", "origin"]));
