@@ -227,7 +227,12 @@ function runRelease(version: string, scenario: ReleaseScenario = {}) {
   // script aborted before logging a single call. Strip every case variant, then
   // set exactly one.
   const inheritedEnv = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"),
+    Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"
+      // A real release EXPORTS the deploy-key variables, and the preflight runs this suite as a
+      // child that inherits them — so an inherited value would make the "no key configured"
+      // scenario run WITH a key and fail the release at its own preflight. Scrub them the same
+      // way PATH is scrubbed, then let the scenario add back exactly what it asked for.
+      && key !== "OCX_RELEASE_SSH_KEY" && key !== "OCX_RELEASE_SSH_REPO"),
   );
   const pathKey = process.platform === "win32" ? "Path" : "PATH";
   const pathValue = `${shimDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? process.env.Path ?? ""}`;
@@ -399,6 +404,59 @@ describe("release helper", () => {
 
     const push = calls.find(call => call.name === "git" && call.args[0] === "push");
     expect(push?.args[1]).toBe(`${"git"}@${"github.com"}:someone-else/opencodex.git`);
+  });
+
+  /**
+   * A credential-bearing origin must not be transplanted into the SSH target: `runLoud` prints the
+   * failing command, so a folded `user:token@` would put the token on the terminal and in the
+   * release log. Refuse instead of building a target.
+   */
+  test("an origin carrying credentials is refused rather than transplanted", () => {
+    const { calls, result } = runRelease("9.9.9", {
+      releaseSshKey: "/tmp/k",
+      originUrl: `https://x-access-token:SECRET@${"github.com"}/lidge-jun/opencodex.git`,
+      pendingBump: true,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr + result.stdout).toContain("origin carries credentials");
+    expect(result.stderr + result.stdout).not.toContain("SECRET");
+    expect(calls.find(call => call.name === "git" && call.args[0] === "push")).toBeUndefined();
+  });
+
+  test("a malformed OCX_RELEASE_SSH_REPO override is refused instead of pushed to", () => {
+    const { calls, result } = runRelease("9.9.9", {
+      releaseSshKey: "/tmp/k",
+      releaseSshRepo: "not-a-remote",
+      pendingBump: true,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr + result.stdout).toContain("OCX_RELEASE_SSH_REPO");
+    expect(calls.find(call => call.name === "git" && call.args[0] === "push")).toBeUndefined();
+  });
+
+  test("an ssh origin is reused verbatim rather than rewritten", () => {
+    const { calls } = runRelease("9.9.9", {
+      releaseSshKey: "/tmp/k",
+      originUrl: `${"git"}@${"github.com"}:lidge-jun/opencodex.git`,
+      pendingBump: true,
+    });
+
+    const push = calls.find(call => call.name === "git" && call.args[0] === "push");
+    expect(push?.args[1]).toBe(`${"git"}@${"github.com"}:lidge-jun/opencodex.git`);
+  });
+
+  test("an origin that yields no ssh target aborts instead of guessing one", () => {
+    const { calls, result } = runRelease("9.9.9", {
+      releaseSshKey: "/tmp/k",
+      originUrl: "/srv/git/opencodex.git",
+      pendingBump: true,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr + result.stdout).toContain("no SSH push target");
+    expect(calls.find(call => call.name === "git" && call.args[0] === "push")).toBeUndefined();
   });
 
   test("without a configured key the push is unchanged and carries no ssh override", () => {

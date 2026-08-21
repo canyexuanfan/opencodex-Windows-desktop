@@ -154,11 +154,24 @@ function quoteSshArgument(value: string): string {
 function sshTargetFromOrigin(originUrl: string): string | undefined {
   const trimmed = originUrl.trim();
   if (!trimmed) return undefined;
-  const https = /^https?:\/\/([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(trimmed);
+  // Reject a credential-bearing remote outright rather than transplanting it. A URL like
+  // https://user:TOKEN@host/o/r.git would otherwise fold the userinfo into the SSH target, and
+  // runLoud() prints the failing command — putting the token on the terminal and in the release
+  // log. The host capture below therefore excludes '@' as well as '/'.
+  const https = /^https?:\/\/([^/@]+)\/(.+?)(?:\.git)?\/?$/.exec(trimmed);
   if (https) return `${SSH_USER}@${https[1]}:${https[2]}.git`;
+  if (/^https?:\/\//.test(trimmed)) {
+    console.error("✗ origin carries credentials in its URL; refusing to build a release push target from it.");
+    process.exit(1);
+  }
   // Already an SSH remote (either scp-like or ssh://): reuse it verbatim.
-  if (trimmed.startsWith("ssh://") || /^[^/]+@[^/]+:/.test(trimmed)) return trimmed;
+  if (isSshRemote(trimmed)) return trimmed;
   return undefined;
+}
+
+/** `ssh://host/owner/repo` or the scp-like `user@host:owner/repo`. Used for both derivation and override validation. */
+function isSshRemote(value: string): boolean {
+  return /^ssh:\/\/[^/]+\/.+$/.test(value) || /^[^@\s/]+@[^:\s/]+:.+$/.test(value);
 }
 
 /** Split out so the scp-like SSH target is assembled rather than written as an address literal. */
@@ -168,11 +181,19 @@ async function releasePushCommand(branch: string): Promise<{ command: string[]; 
   const keyPath = process.env.OCX_RELEASE_SSH_KEY?.trim();
   if (!keyPath) return { command: ["git", "push", "origin", branch] };
   const configured = process.env.OCX_RELEASE_SSH_REPO?.trim();
+  // An unvalidated override outranking origin means a stale exported value from a fork session can
+  // silently retarget a production release. Check the shape, and print the resolved target either
+  // way so the destination is visible before the push rather than inferred afterwards.
+  if (configured && !isSshRemote(configured)) {
+    console.error("✗ OCX_RELEASE_SSH_REPO is not an ssh:// or user@host:owner/repo remote; refusing to push.");
+    process.exit(1);
+  }
   const slug = configured || sshTargetFromOrigin(await capture(["git", "remote", "get-url", "origin"]));
   if (!slug) {
     console.error("✗ OCX_RELEASE_SSH_KEY is set but no SSH push target could be derived from origin; set OCX_RELEASE_SSH_REPO.");
     process.exit(1);
   }
+  console.log(`→ release push target: ${slug}`);
   return {
     // Push to the SSH URL explicitly rather than rewriting the `origin` remote: the remote stays
     // HTTPS for every other command, so nothing outside this call inherits the key.
