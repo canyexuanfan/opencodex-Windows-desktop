@@ -181,6 +181,12 @@ function isSshRemote(value: string): boolean {
   if (!trimmed || /[\u0000-\u001f\u007f]/.test(trimmed)) return false;
 
   if (trimmed.startsWith("ssh://")) {
+    // WHATWG URL collapses an empty password ("git:@host" -> password ""), so the parsed fields
+    // cannot distinguish it from a credential-free principal. Reject any ':' in the raw userinfo
+    // segment instead: a colon there is always credential-shaped.
+    const authority = trimmed.slice("ssh://".length);
+    const userinfoEnd = authority.indexOf("@");
+    if (userinfoEnd !== -1 && authority.slice(0, userinfoEnd).includes(":")) return false;
     try {
       const parsed = new URL(trimmed);
       let decodedUsername: string;
@@ -203,9 +209,10 @@ function isSshRemote(value: string): boolean {
     }
   }
 
-  // scp-like syntax has no parser-level query/fragment boundary. Reject those delimiters rather
-  // than allowing a token-shaped suffix to reach the target log or failed-command output.
-  return /^git@[^:\s/?#]+:[^?#]+$/.test(trimmed);
+  // scp-like syntax has no parser-level query/fragment boundary. Reject those delimiters and any
+  // second '@' in the host segment rather than allowing a credential-shaped suffix to reach the
+  // target log or failed-command output.
+  return /^git@[^:@\s/?#]+:[^?#]+$/.test(trimmed);
 }
 
 /** Split out so the scp-like SSH target is assembled rather than written as an address literal. */

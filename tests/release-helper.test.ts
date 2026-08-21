@@ -509,6 +509,8 @@ describe("release helper", () => {
       { releaseSshRepo: "ssh://git:SECRET@example.test/owner/repository.git" },
       { releaseSshRepo: "ssh://SECRET@example.test/owner/repository.git" },
       { releaseSshRepo: "ssh://git%3ASECRET@example.test/owner/repository.git" },
+      { releaseSshRepo: "git@SECRET@example.test:owner/repository.git" },
+      { releaseSshRepo: "ssh://git:@example.test/owner/repository.git" },
       { releaseSshRepo: "git@example.test:owner/repository.git?token=SECRET" },
       { originUrl: "ssh://git:SECRET@example.test/owner/repository.git" },
       { originUrl: "git:SECRET@example.test:owner/repository.git" },
