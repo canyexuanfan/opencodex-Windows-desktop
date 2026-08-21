@@ -24,7 +24,7 @@ on:
     # `push:` stays pinned to the integration lines: it gates the release path,
     # and this trigger already covers review.
   push:
-    branches: [main, preview, dev, preview-dev]
+    branches: [main, preview, dev]
     paths:
       - "src/**"
       - "bin/**"
@@ -754,75 +754,6 @@ jobs:
   # The one check name that means "CI passed".
   #
   # Shard names move whenever the shard count changes, and the platform legs come
-  # Bun 1.4 qualification lane. preview-dev only, and deliberately OUTSIDE the
-  # `ci` aggregate below: the source is oven-sh/bun's ROLLING `canary` tag, so an
-  # upstream breakage at any hour must not red a branch whose own code is fine.
-  # It reports a revision; promoting that revision into
-  # scripts/runtime/qualified-bun.json stays a human decision.
-  bun-canary-qualify:
-    name: bun-canary-qualify
-    if: github.event_name == 'push' && github.ref == 'refs/heads/preview-dev'
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    continue-on-error: true
-    steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        with:
-          persist-credentials: false
-
-      - name: Setup project Bun (canary channel)
-        id: bun
-        uses: ./.github/actions/setup-project-bun
-        with:
-          channel: github-canary
-
-      - name: Install dependencies
-        run: |
-          bun install --frozen-lockfile
-          cd gui
-          bun install --frozen-lockfile
-
-      - name: Build GUI
-        run: |
-          cd gui
-          bun run build
-
-      # Run with the canary binary itself, not the bundled one.
-      # OPENCODEX_BUN_PATH is exported by the composite action so any child
-      # process the tests spawn also lands on the candidate runtime.
-      #
-      # Use the batch runner, never a bare `bun test`. The suite is not designed
-      # to run as one process: scripts/test.ts owns HOME isolation and concurrent
-      # runner detection, and the shards exist because a single process stalls.
-      # A bare `bun test` reproduced exactly that stall locally against the
-      # canary, which is a property of the harness, not of Bun 1.4 — the same
-      # file passes in 231ms when run on its own.
-      - name: Typecheck under the canary runtime
-        run: |
-          echo "Qualifying revision: ${{ steps.bun.outputs.revision }}"
-          "$OPENCODEX_BUN_PATH" --revision
-          "$OPENCODEX_BUN_PATH" x tsc --noEmit
-
-      - name: Test under the canary runtime
-        env:
-          TEST_SHARD: 1/1
-        run: bash scripts/ci/run-bun-test-batches.sh "$TEST_SHARD"
-
-      - name: Record qualification result
-        if: always()
-        run: |
-          {
-            echo "### Bun canary qualification"
-            echo
-            echo "- revision: \`${{ steps.bun.outputs.revision }}\`"
-            echo "- outcome: ${{ job.status }}"
-            echo
-            echo "A green run here is evidence, not promotion. To trust this"
-            echo "revision in src/, add it to qualifiedRevisions in"
-            echo "scripts/runtime/qualified-bun.json in its own commit."
-          } >> "$GITHUB_STEP_SUMMARY"
-
   # and go by trigger. Neither is a stable thing to require in branch protection.
   # This job is: it depends on every other job and asserts each result. `dev` has
   # no branch protection configured today, so nothing has to be re-pointed — but

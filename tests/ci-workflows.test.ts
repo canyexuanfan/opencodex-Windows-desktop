@@ -167,18 +167,9 @@ describe("GitHub Actions hardening", () => {
     // keys closes all three — a hardcoded list rots on the next job added.
     const gate = ci.jobs?.ci as { if?: unknown; needs?: string[] } | undefined;
     expect(gate?.if).toBe("always()");
-    // `bun-canary-qualify` is the one deliberate exception. It builds against
-    // oven-sh/bun's ROLLING `canary` tag, so its result reflects upstream's
-    // state at that minute, not this repository's correctness — gating on it
-    // would let an upstream breakage red a branch whose own code is fine. It
-    // carries `continue-on-error`, runs only on preview-dev pushes, and reports
-    // a revision for a human to promote. Every OTHER job must stay gated, so
-    // the exclusion is named here rather than loosening the derivation.
-    const ungated = new Set(["ci", "bun-canary-qualify"]);
+    const ungated = new Set(["ci"]);
     expect([...(gate?.needs ?? [])].sort())
       .toEqual(Object.keys(ci.jobs ?? {}).filter(name => !ungated.has(name)).sort());
-    const canary = ci.jobs?.["bun-canary-qualify"] as { "continue-on-error"?: unknown } | undefined;
-    expect(canary?.["continue-on-error"]).toBe(true);
 
     // The focused doctor contract config is ADDITIVE evidence. It must never
     // replace the repository-wide strict typecheck: doing so made the aggregate
@@ -396,12 +387,8 @@ describe("GitHub Actions hardening", () => {
       };
       jobs?: Record<string, Record<string, unknown> | undefined>;
     };
-    // preview-dev is the Bun 1.4 candidate line. It is a CI target on purpose —
-    // the branch exists to prove a runtime migration, and a lighter lane than
-    // dev would defeat that. It is NOT a release target: release.yml still
-    // gates on main and preview only, which the release-workflow test pins.
     expect([...(ci.on?.push?.branches ?? [])].sort())
-      .toEqual(["dev", "main", "preview", "preview-dev"]);
+      .toEqual(["dev", "main", "preview"]);
 
     // The PR trigger must carry NO base-branch filter, and the two triggers
     // differ on purpose. GitHub matches `branches:` against the BASE ref, so
