@@ -111,6 +111,7 @@ import { describeImagesInPlace, isModelTextOnly, planVisionSidecar, resolveOpenA
 import { createAdapterEventQueue, preflightAdapterEvents, type AdapterEventQueue } from "../../adapters/run-turn-queue";
 import {
   applyCodexAuthContextToProvider,
+  codexPoolAffinityKey,
   CodexAccountCooldownError,
   codexMainProfileDrainingResponse,
   cooldownErrorResponse,
@@ -2285,6 +2286,7 @@ async function handleResponsesInner(
   let subagentFallbackPreviewAccountId: string | null | undefined;
   let subagentQuotaFailureModel = parsed.modelId;
   const parentThreadId = req.headers.get("x-codex-parent-thread-id")?.trim() ?? null;
+  const poolAffinityKey = codexPoolAffinityKey(req.headers) ?? null;
 
   try {
     if (
@@ -2300,9 +2302,8 @@ async function handleResponsesInner(
   // Preview the preferred Codex account without acquiring a probe lease or refreshing
   // tokens — auth is resolved only after the final route is selected.
   if (threadSpawn && !options.comboAttempt && route.codexAccountId === undefined) {
-    const threadId = req.headers.get("x-codex-parent-thread-id");
     const previewAccountId = previewCodexAccountForRequest(
-      threadId,
+      poolAffinityKey,
       config,
       Date.now(),
       undefined,

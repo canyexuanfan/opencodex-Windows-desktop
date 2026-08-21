@@ -44,22 +44,25 @@ import { retainedUtf8Bytes } from "../lib/admission";
 const CODEX_AFFINITY_COMPONENT_MAX_BYTES = 512;
 const CODEX_APP_AFFINITY_KEY = randomBytes(32);
 
+function boundedCodexAffinityComponent(value: string | null): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) return undefined;
+  if (retainedUtf8Bytes(normalized) > CODEX_AFFINITY_COMPONENT_MAX_BYTES) return undefined;
+  return normalized;
+}
+
 /**
  * Preserve Codex's parent-thread affinity when present. Desktop App requests can omit that
  * header while retaining a stable session/thread pair, so derive an opaque process-local key
  * only from the complete bounded pair. Raw identifiers and durable hashes never enter Pool state.
  */
-function codexPoolAffinityKey(headers: Headers): string | undefined {
-  const parentThreadId = headers.get("x-codex-parent-thread-id");
+export function codexPoolAffinityKey(headers: Headers): string | undefined {
+  const parentThreadId = boundedCodexAffinityComponent(headers.get("x-codex-parent-thread-id"));
   if (parentThreadId) return parentThreadId;
 
-  const sessionId = headers.get("session-id")?.trim();
-  const threadId = headers.get("thread-id")?.trim();
+  const sessionId = boundedCodexAffinityComponent(headers.get("session-id"));
+  const threadId = boundedCodexAffinityComponent(headers.get("thread-id"));
   if (!sessionId || !threadId) return undefined;
-  if (
-    retainedUtf8Bytes(sessionId) > CODEX_AFFINITY_COMPONENT_MAX_BYTES
-    || retainedUtf8Bytes(threadId) > CODEX_AFFINITY_COMPONENT_MAX_BYTES
-  ) return undefined;
 
   return `app:${createHmac("sha256", CODEX_APP_AFFINITY_KEY)
     .update("opencodex-app-pool-affinity-v1\0")

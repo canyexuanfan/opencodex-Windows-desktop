@@ -545,7 +545,7 @@ describe("Codex auth context", () => {
       chatgptAccountId: "pool_a_acc",
     });
     const headers = new Headers({
-      "x-codex-parent-thread-id": "canonical-parent-thread",
+      "x-codex-parent-thread-id": "  canonical-parent-thread  ",
       "session-id": "desktop-session-private",
       "thread-id": "desktop-thread-private",
     });
@@ -556,6 +556,30 @@ describe("Codex auth context", () => {
       accountId: "pool-a",
       affinityKey: "canonical-parent-thread",
     });
+  });
+
+  test("an oversized parent-thread id falls back to the bounded Desktop pair", async () => {
+    const cfg = config();
+    cfg.autoSwitchThreshold = 0;
+    saveCodexAccountCredential("pool-a", {
+      accessToken: "pool_a_token",
+      refreshToken: "pool_a_refresh",
+      expiresAt: Date.now() + 5 * 60_000,
+      chatgptAccountId: "pool_a_acc",
+    });
+    const headers = new Headers({
+      "x-codex-parent-thread-id": "p".repeat(513),
+      "session-id": "desktop-session-private",
+      "thread-id": "desktop-thread-private",
+    });
+
+    const resolved = await resolveCodexAuthContext(headers, cfg, "pool");
+    expect(resolved).toMatchObject({ kind: "pool", accountId: "pool-a" });
+    expect(resolved.kind).toBe("pool");
+    if (resolved.kind !== "pool") throw new Error("expected pool context");
+    expect(resolved.affinityKey?.startsWith("app:")).toBe(true);
+    expect(resolved.affinityKey).not.toContain("desktop-session-private");
+    expect(resolved.affinityKey).not.toContain("desktop-thread-private");
   });
 
   test("incomplete or oversized Desktop affinity headers remain unbound", async () => {

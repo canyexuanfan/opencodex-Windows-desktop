@@ -19,11 +19,14 @@ current caller/main-login bearer. Neither mode may fall through to `openai-apike
 provider may not fall through to Codex-login credentials.
 
 Pool affinity preserves the existing `x-codex-parent-thread-id` supplied by ordinary Codex clients.
-When Codex Desktop omits that header, the complete bounded `session-id` plus `thread-id` pair is
-mapped to an opaque HMAC under a random process-local key. Missing or oversized components remain
-unbound, raw identifiers and durable hashes are never stored, and account-qualified selectors skip
-both lookup and mutation. Selection and terminal outcome accounting carry the same opaque key so a
-transient failure clears the binding that actually selected the account.
+The parent id is trimmed and bounded under the same 512-byte component limit as the Desktop
+fallback. When Codex Desktop omits it or sends an unusable value, the complete bounded `session-id`
+plus `thread-id` pair is mapped to an opaque HMAC under a random process-local key. Missing or
+oversized components remain unbound, raw identifiers and durable hashes are never stored, and
+account-qualified selectors skip both lookup and mutation. Selection, subagent fallback preview,
+and terminal outcome accounting carry the same key so route planning cannot preview one account
+and authenticate another, and a transient failure clears the binding that actually selected the
+account.
 
 [Decision Log]
 - 목적과 의도: Keep Desktop reconnects on the account selected for the App task without persisting
@@ -34,7 +37,8 @@ transient failure clears the binding that actually selected the account.
 - 검토한 주요 대안: Leave reconnects unbound, persist a plain hash, bind from either header alone,
   delete App turn metadata, or derive one process-local key from the complete pair.
 - 선택한 방식: Preserve the parent-thread key when present; otherwise HMAC the two bounded headers
-  under a random per-process key and carry that opaque value through selection and outcome handling.
+  under a random per-process key and carry that opaque value through selection, subagent preview,
+  and outcome handling.
 - 다른 대안 대신 이 방식을 선택한 이유: A complete pair avoids weak partial identities, a
   process-local HMAC prevents durable correlation or dictionary recovery, and no upstream metadata
   needs to be mutated before the first-403 cause is proven.
