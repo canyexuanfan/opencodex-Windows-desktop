@@ -112,6 +112,8 @@ const ZH_TW_KEEP_ENGLISH: ReadonlySet<string> = new Set([
   "integrations.tab.zcode",
   "api.clientConfig.clientMcode",
   "api.clientConfig.clientZcode",
+  "integrations.tab.prime",
+  "api.clientConfig.clientPrime",
   "integrations.codex.title",
   // Provider proper nouns kept in English
   "provider.name.commandCodeAuth",
@@ -124,6 +126,12 @@ const ZH_TW_KEEP_ENGLISH: ReadonlySet<string> = new Set([
   "routing.analyticsP99",
   // Format template with placeholder only; other locales (zh/ja/ko) keep it identical to en
   "models.shadowCallOriginal",
+  // A one-glyph marker plus the model id, sitting inside a narrow table column. The glyph is
+  // an icon-shaped affordance rather than a word, and its meaning is carried by the tooltip
+  // (`logs.badge.interceptedHelperTitle`), which IS translated. Localizing the glyph per
+  // locale would make the same badge unrecognizable across a screenshot or a bug report for
+  // no gain in comprehension.
+  "logs.badge.interceptedHelper",
   "models.v2Mode_default",
   "models.v2Mode_v1",
   "models.v2Mode_v2",

@@ -24,6 +24,7 @@ import {
   sseDataPayload,
   type SseBlockRewrite,
 } from "../sse-payload-rewrite";
+import { isCompactionItemType } from "../../responses/compaction";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -34,6 +35,14 @@ const ITEM_ID_PREFIXES: Readonly<Record<string, string>> = {
   message: "msg_",
   reasoning: "rs_",
   function_call: "fc_",
+  custom_tool_call: "ctc_",
+  // A routed tool_search lowering is restored to `tool_search_call` without an id, so this
+  // backfill is what names it. The generic `item_` fallback is not merely cosmetic here:
+  // `stripInvalidItemIds` in the Responses adapter deletes any id whose prefix does not match
+  // the type, so an `item_`-named tool_search_call silently loses its id on the NEXT turn and
+  // the client sees an item it cannot correlate. The prefixes here must stay a superset of the
+  // ones that serializer enforces.
+  tool_search_call: "tsc_",
   web_search_call: "ws_",
   file_search_call: "fs_",
   code_interpreter_call: "ci_",
@@ -112,23 +121,18 @@ function backfillContentArray(content: unknown): unknown {
 }
 
 /**
- * Item types that are NOT Responses output items and must be returned byte-for-byte.
- *
- * `compaction` is the `/v1/responses/compact` wire format, not a Responses output item. It has
- * no `id` in that contract, so synthesizing one changes a response body the client compares
- * exactly. The backfill exists to satisfy strict Responses decoders; a shape those decoders
- * never see is outside its remit.
- */
-const NON_RESPONSES_ITEM_TYPES: ReadonlySet<string> = new Set(["compaction"]);
-
-/**
  * Walk an output item and backfill output_text parts in its content.
  * Also backfills a missing required id on the item itself.
  * Returns the same object reference if nothing changed.
  */
 function backfillOutputItem(item: unknown, slot: ItemIdSlot): unknown {
   if (!isPlainObject(item)) return item;
-  if (typeof item.type === "string" && NON_RESPONSES_ITEM_TYPES.has(item.type)) return item;
+  // The compact wire family is the `/v1/responses/compact` format, not a Responses output item.
+  // Those items have no `id` in that contract, so synthesizing one changes a response body the
+  // client compares exactly — and the client replays the item on every later turn, where the
+  // minting backend rejects it as modified. The backfill exists to satisfy strict Responses
+  // decoders; a shape those decoders never see is outside its remit.
+  if (isCompactionItemType(item.type)) return item;
   const content = item.content;
   const repaired = backfillContentArray(content);
   const withId = backfillItemId(item, slot);

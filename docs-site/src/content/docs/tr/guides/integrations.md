@@ -31,6 +31,9 @@ son olarak `~/.minimax` dizinine geri döner. Yönetilen blok yalnızca
 `custom_provider.opencodex` alanına sahiptir; `defaultModel` değerini, seçilen
 MiniMax kimlik bilgisi kaynağını veya kullanıcının MiniMax oturumunu değiştirmez.
 Bağladıktan sonra MCode içinde bir `custom_provider:opencodex/<provider/model>` girdisi seçin.
+Entegrasyon yenilendiğinde model başına doğrulanmış bağlam pencereleri ve akıl yürütme
+çabası seçenekleri de yenilenir; bilinmeyen yetenekler atlanır ve MCode oturumunun
+yönettiği geçerli çaba seçimi korunur.
 
 Yollar, varsa her istemcinin kendi ortam geçersiz kılmalarını dikkate alır. OMP
 için `OMP_PROFILE`, açıkça boş olduğunda bile varlığıyla `PI_PROFILE`'a üstün
@@ -171,6 +174,11 @@ MiniMax Code için sağlayıcıyı bir kez bağlayın ve denetimli başlatıcı 
 ocx integration client enable --client mcode
 ocx mcode
 ```
+
+Bağlandıktan sonra `ocx sync`, yönetilen MCode bloğunu güncel bağlam pencereleri ve
+akıl yürütme çabası seçenekleriyle de yeniler. Eksik, dışarıdan düzenlenmiş, güvenli
+olmayan veya hiç sahiplenilmemiş bloklara dokunmaz; yeniden bağlamak istediğinizde
+entegrasyonu açıkça yeniden etkinleştirin.
 
 Ayrı MiniMax platform CLI'si (`mmx`) bir dosya anahtarı entegrasyonu değildir.
 Metin komutları MiniMax'ın Anthropic uyumlu uç noktasını kullandığı için OpenCodex,

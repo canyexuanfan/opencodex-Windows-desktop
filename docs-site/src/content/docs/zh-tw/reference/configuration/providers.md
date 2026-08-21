@@ -67,6 +67,7 @@ description: 供應商項目、認證、端點、模型目錄、配額、context
 | `modelSupportsReasoningSummaries?` | `Record<string, boolean>` | 將模型設為 `false` 以停止廣告摘要並剝離 summary-delivery 欄位。 |
 | `modelReasoningSummaryDelivery?` | `Record<string, "sequential" \| "sequential_cutoff" \| "concurrent" \| "concurrent_cutoff">` | Per-model Responses delivery 列舉；重寫既有的 delivery 欄位。 |
 | `modelAdapters?` | `Record<string, string>` | 混合 wire 閘道的 Per-model `openai-chat` 或 `openai-responses` wire 覆寫。明確項目勝過 registry 預設；DeepSeek 的預設可為 `deepseek-v4-flash` 選擇原生 Responses。單一 wire 上游 pin 與規範 ChatGPT forward 拒絕覆寫。 |
+| xAI Responses 選用（儀表板） | 開關 | 僅用於 `xai`，以原子方式設定或清除 `grok-4.5` 與 `grok-4.6` 的 `modelAdapters` 項目。若只有一個項目，會顯示混合狀態，直到下次開關寫入統一兩者。其他覆寫與層級行為不變。 |
 | `reasoningEffortMap?` | `Record<string, string>` | 供應商範圍的 reasoning 標籤 wire 別名。 |
 | `modelReasoningEffortMap?` | `Record<string, Record<string, string>>` | Per-model 的 reasoning 標籤 wire 別名。 |
 | `noReasoningModels?` | `string[]` | 拒絕 reasoning/thinking 參數的模型。 |

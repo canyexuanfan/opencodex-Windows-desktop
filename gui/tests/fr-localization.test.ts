@@ -47,6 +47,9 @@ const INTENTIONAL_ENGLISH = new Set<TKey>([
   "dash.updateVersionTransition",
   "prov.accountId",
   "models.shadowCallOriginal",
+  // One-glyph marker plus a model id in a narrow column; the meaning lives in the translated
+  // tooltip (`logs.badge.interceptedHelperTitle`), not in the glyph.
+  "logs.badge.interceptedHelper",
   "models.v2Mode_v1",
   "models.v2Mode_default",
   "models.v2Mode_v2",
@@ -88,6 +91,8 @@ const INTENTIONAL_ENGLISH = new Set<TKey>([
   "api.clientConfig.clientDsh",
   "api.clientConfig.clientMcode",
   "api.clientConfig.clientZcode",
+  "integrations.tab.prime",
+  "api.clientConfig.clientPrime",
   "models.reasoningEffort.minimal",
   "models.reasoningEffort.max",
   "pws.pacingRpmUnit",

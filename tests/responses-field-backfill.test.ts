@@ -365,6 +365,36 @@ describe("responses-field-backfill", () => {
     expect(result.output[0]!.id).toBe("ig_ocx_0");
   });
 
+  // A routed tool_search lowering is restored as `tool_search_call` with no id, so this
+  // backfill names it. The generic `item_` fallback was not cosmetic: `stripInvalidItemIds`
+  // in the Responses adapter deletes an id whose prefix does not match its type, so the item
+  // silently lost its id on the NEXT turn and the client could no longer correlate it.
+  test("tool_search_call gets the prefix the request serializer accepts", () => {
+    const response = {
+      id: "resp_1",
+      object: "response",
+      status: "completed",
+      output: [{ type: "tool_search_call", call_id: "call_x", execution: "client" }],
+    };
+    const result = JSON.parse(backfillResponsesFieldsJson(JSON.stringify(response))) as {
+      output: { id: string }[];
+    };
+    expect(result.output[0]!.id).toBe("tsc_ocx_0");
+  });
+
+  test("custom_tool_call gets its own prefix too", () => {
+    const response = {
+      id: "resp_1",
+      object: "response",
+      status: "completed",
+      output: [{ type: "custom_tool_call", call_id: "call_y" }],
+    };
+    const result = JSON.parse(backfillResponsesFieldsJson(JSON.stringify(response))) as {
+      output: { id: string }[];
+    };
+    expect(result.output[0]!.id).toBe("ctc_ocx_0");
+  });
+
   // A malformed `output_index` falls back to a counter. While that counter lived in the same
   // numeric namespace as real indexes, a response whose real index reached the counter's base
   // produced the SAME id as a fallback — a duplicate, which is the one thing this backfill
@@ -403,21 +433,25 @@ describe("responses-field-backfill", () => {
     expect(new Set(ids).size).toBe(2);
   });
 
-  // `compaction` is the /v1/responses/compact wire format, not a Responses output item: it
-  // carries no id in that contract, and clients compare the body exactly. Synthesizing an id
-  // here changed a response that had nothing to do with strict Responses decoding — a defect
-  // that only appeared once this backfill and the compact endpoint were on the same tree.
-  test("a compaction item is returned byte-for-byte", () => {
-    const response = {
-      id: "resp_1",
-      object: "response",
-      status: "completed",
-      output: [{ type: "compaction", encrypted_content: "gAAAAAB-test-opaque" }],
-    };
-    const result = JSON.parse(backfillResponsesFieldsJson(JSON.stringify(response))) as {
-      output: Record<string, unknown>[];
-    };
-    expect(result.output[0]).toEqual({ type: "compaction", encrypted_content: "gAAAAAB-test-opaque" });
-    expect(result.output[0]).not.toHaveProperty("id");
+  // The compact wire family is the /v1/responses/compact format, not Responses output items: they
+  // carry no id in that contract, clients compare the body exactly, and the client replays the item
+  // on every later turn where the minting backend rejects a modified one. Synthesizing an id here
+  // changed a response that had nothing to do with strict Responses decoding — a defect that only
+  // appeared once this backfill and the compact endpoint were on the same tree. It originally
+  // covered `compaction` alone, so the sibling types kept receiving synthesized ids.
+  test("every compact wire item type is returned byte-for-byte", () => {
+    for (const type of ["compaction", "compaction_summary", "context_compaction"]) {
+      const item = { type, encrypted_content: "gAAAAAB-test-opaque" };
+      const response = { id: "resp_1", object: "response", status: "completed", output: [item] };
+      const result = JSON.parse(backfillResponsesFieldsJson(JSON.stringify(response))) as {
+        output: Record<string, unknown>[];
+      };
+      expect(result.output[0]).toEqual(item);
+      expect(result.output[0]).not.toHaveProperty("id");
+
+      const streamed = parseData(apply(sseBlock({ type: "response.output_item.done", output_index: 0, item })));
+      expect(streamed[0].item).toEqual(item);
+      expect(streamed[0].item).not.toHaveProperty("id");
+    }
   });
 });

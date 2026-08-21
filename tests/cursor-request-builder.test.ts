@@ -1,10 +1,20 @@
 import { describe, expect, test } from "bun:test";
+import { create, toBinary } from "@bufbuild/protobuf";
+import { ConversationStateStructureSchema } from "../src/adapters/cursor/gen/agent_pb";
+import {
+  clearCursorCheckpointsForTests,
+  commitCursorCheckpoint,
+  getCursorCheckpoint,
+} from "../src/adapters/cursor/checkpoint-store";
 import {
   applyCursorToolBudget,
   createCursorRequest,
+  cursorCoveredPrefixDigest,
+  cursorInstructionDigest,
   CURSOR_TOOL_BYTES_LIMIT,
   CURSOR_TOOL_COUNT_LIMIT,
 } from "../src/adapters/cursor/request-builder";
+import { cursorCheckpointModelAffinityId } from "../src/adapters/cursor/discovery";
 import { cursorMcpToolsEncodedSize } from "../src/adapters/cursor/tool-definitions";
 import { parseRequest } from "../src/responses/parser";
 import type { OcxParsedRequest } from "../src/types";
@@ -64,6 +74,42 @@ describe("Cursor request builder", () => {
     });
 
     expect(continuation.conversationId).toBe(initial.conversationId);
+  });
+
+  test("prefix digests do not collide across delimiter boundaries", () => {
+    const left = {
+      ...base,
+      context: {
+        messages: [
+          { role: "user" as const, content: "ab", timestamp: 1 },
+          { role: "user" as const, content: "c", timestamp: 2 },
+        ],
+      },
+    };
+    const right = {
+      ...base,
+      context: {
+        messages: [
+          { role: "user" as const, content: "a", timestamp: 1 },
+          { role: "user" as const, content: "bc", timestamp: 2 },
+        ],
+      },
+    };
+    expect(cursorCoveredPrefixDigest(left, 2)).not.toBe(cursorCoveredPrefixDigest(right, 2));
+  });
+
+  test("does not own a Cursor conversation from the first user message alone", () => {
+    const first = createCursorRequest({
+      ...base,
+      modelId: "cursor/gpt-5.6-sol",
+      context: { messages: [{ role: "user", content: "fix the tests", timestamp: 1 }] },
+    });
+    const second = createCursorRequest({
+      ...base,
+      modelId: "cursor/gpt-5.6-sol",
+      context: { messages: [{ role: "user", content: "fix the tests", timestamp: 1 }] },
+    });
+    expect(second.conversationId).not.toBe(first.conversationId);
   });
 
   test("isolates client threads even when they share a prompt cache key", () => {
@@ -136,6 +182,82 @@ describe("Cursor request builder", () => {
       _cursorIsolateConversation: true,
     });
     expect(helper.conversationId).not.toBe(main.conversationId);
+  });
+
+  test("isolated helper turns keep their own cache and never reuse the parent checkpoint", () => {
+    clearCursorCheckpointsForTests();
+    const parentBytes = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      pendingToolCalls: ["parent-fixture"],
+    }));
+    const parentRef = commitCursorCheckpoint({
+      conversationId: "cursor_parent_real",
+      identityScope: "acct-1",
+      modelId: "default",
+      checkpointBytes: parentBytes,
+      coveredMessageCount: 1,
+    });
+    expect(parentRef).toBeDefined();
+
+    const helperPrompt = { role: "user" as const, content: "summarize this helper task", timestamp: 1 };
+    const first = createCursorRequest({
+      ...base,
+      _cursorConversationId: "cursor_parent_real",
+      _cursorIdentityScope: "acct-1",
+      _cursorIsolateConversation: true,
+      _clientThreadId: "thread-a",
+      _providerContinuation: {
+        cursor: { conversationId: "cursor_parent_real", checkpointUsable: true, checkpointRef: parentRef },
+      },
+      context: { messages: [helperPrompt] },
+    });
+    expect(first.conversationId).not.toBe("cursor_parent_real");
+    expect(first.continuationMode).toBe("full-replay");
+    expect(first.checkpointBytes).toBeUndefined();
+
+    const helperBytes = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      pendingToolCalls: ["helper-fixture"],
+    }));
+    const helperParsed = { ...base, _cursorIdentityScope: "acct-1", context: { messages: [helperPrompt] } };
+    const helperRef = commitCursorCheckpoint({
+      conversationId: first.conversationId,
+      identityScope: "acct-1",
+      modelId: first.modelId,
+      checkpointBytes: helperBytes,
+      coveredMessageCount: 1,
+      prefixDigest: cursorCoveredPrefixDigest(helperParsed, 1),
+      systemDigest: cursorInstructionDigest(helperParsed),
+    });
+    expect(helperRef).toBeDefined();
+
+    const second = createCursorRequest({
+      ...base,
+      _cursorConversationId: "cursor_parent_real",
+      _cursorIdentityScope: "acct-1",
+      _cursorIsolateConversation: true,
+      _clientThreadId: "thread-a",
+      _providerContinuation: {
+        cursor: { conversationId: "cursor_parent_real", checkpointUsable: true, checkpointRef: parentRef },
+      },
+      context: {
+        messages: [
+          helperPrompt,
+          { role: "assistant", content: [{ type: "text", text: "calling" }], timestamp: 2 },
+          {
+            role: "toolResult",
+            toolCallId: "call-1",
+            toolName: "read_file",
+            content: "ok",
+            isError: false,
+            timestamp: 3,
+          },
+        ],
+      },
+    });
+    expect(second.conversationId).not.toBe("cursor_parent_real");
+    expect(second.continuationMode).toBe("checkpoint");
+    expect(second.checkpointBytes?.byteLength).toBe(helperBytes.byteLength);
+    expect(getCursorCheckpoint(parentRef)?.ref).toBe(parentRef);
+    clearCursorCheckpointsForTests();
   });
 
   test("isolation wins over a remembered parent conversation id", () => {
@@ -697,5 +819,376 @@ describe("Cursor request builder", () => {
 
     expect(request.conversationId).not.toBe("cursor_force_me");
     expect(request.conversationId.startsWith("cursor_")).toBe(true);
+  });
+
+  test("reuses a validated checkpoint and ignores it for isolation or uncovered tool results", () => {
+    clearCursorCheckpointsForTests();
+    const covered = [
+      { role: "user" as const, content: "read", timestamp: 1 },
+      { role: "assistant" as const, content: [{ type: "text" as const, text: "calling" }], timestamp: 2 },
+    ];
+    const coveredParsed = { ...base, _cursorIdentityScope: "acct-1", context: { messages: covered } };
+    const checkpointBytes = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      pendingToolCalls: ["builder-fixture"],
+    }));
+    const checkpointRef = commitCursorCheckpoint({
+      conversationId: "cursor_stable",
+      identityScope: "acct-1",
+      modelId: "default",
+      checkpointBytes,
+      coveredMessageCount: 2,
+      prefixDigest: cursorCoveredPrefixDigest(coveredParsed, 2),
+      systemDigest: cursorInstructionDigest(coveredParsed),
+    });
+    expect(checkpointRef).toBeDefined();
+
+    const reused = createCursorRequest({
+      ...base,
+      _cursorConversationId: "cursor_stable",
+      _cursorIdentityScope: "acct-1",
+      _providerContinuation: {
+        cursor: { conversationId: "cursor_stable", checkpointUsable: true, checkpointRef },
+      },
+      context: { messages: [...covered, { role: "user", content: "continue", timestamp: 3 }] },
+    });
+    expect(reused.continuationMode).toBe("checkpoint");
+    expect(reused.checkpointBytes?.byteLength).toBe(checkpointBytes.byteLength);
+
+    const isolated = createCursorRequest({
+      ...base,
+      _cursorConversationId: "cursor_stable",
+      _cursorIdentityScope: "acct-1",
+      _cursorIsolateConversation: true,
+      _providerContinuation: {
+        cursor: { conversationId: "cursor_stable", checkpointUsable: true, checkpointRef },
+      },
+    });
+    expect(isolated.conversationId).not.toBe("cursor_stable");
+    expect(isolated.continuationMode).toBe("full-replay");
+    expect(isolated.checkpointBytes).toBeUndefined();
+
+    const toolResult = createCursorRequest({
+      ...base,
+      _cursorConversationId: "cursor_stable",
+      _cursorIdentityScope: "acct-1",
+      _providerContinuation: {
+        cursor: { conversationId: "cursor_stable", checkpointUsable: false, checkpointRef },
+      },
+      context: {
+        messages: [
+          { role: "user", content: "read", timestamp: 1 },
+          { role: "assistant", content: [{ type: "text", text: "calling" }], timestamp: 2 },
+          {
+            role: "toolResult",
+            toolCallId: "call-1",
+            toolName: "read_file",
+            content: "ok",
+            isError: false,
+            timestamp: 3,
+          },
+        ],
+      },
+    });
+    expect(toolResult.continuationMode).toBe("checkpoint");
+    expect(toolResult.checkpointSuffixStart).toBe(2);
+
+    const uncovered = createCursorRequest({
+      ...base,
+      _cursorConversationId: "cursor_stable",
+      _cursorIdentityScope: "acct-1",
+      _providerContinuation: {
+        cursor: { conversationId: "cursor_stable", checkpointUsable: false, checkpointRef },
+      },
+      context: {
+        messages: [{
+          role: "toolResult",
+          toolCallId: "call-1",
+          toolName: "read_file",
+          content: "ok",
+          isError: false,
+          timestamp: 2,
+        }],
+      },
+    });
+    expect(uncovered.continuationMode).toBe("full-replay");
+    expect(uncovered.checkpointInvalidationReason).toBe("lineage_mismatch");
+    clearCursorCheckpointsForTests();
+  });
+
+  test("falls back to full replay when the checkpoint identity no longer matches", () => {
+    clearCursorCheckpointsForTests();
+    const checkpointBytes = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      pendingToolCalls: ["identity-fixture"],
+    }));
+    const checkpointRef = commitCursorCheckpoint({
+      conversationId: "cursor_stable",
+      identityScope: "acct-1",
+      modelId: "grok-4.6",
+      checkpointBytes,
+    });
+    expect(checkpointRef).toBeDefined();
+
+    const implied = createCursorRequest({
+      ...base,
+      modelId: "cursor/grok-4.6",
+      _cursorConversationId: "cursor_stable",
+      _cursorIdentityScope: "acct-1",
+    });
+    expect(implied.continuationMode).toBe("full-replay");
+    expect(implied.checkpointInvalidationReason).toBe("missing_ref");
+
+    const missing = createCursorRequest({
+      ...base,
+      _cursorConversationId: "cursor_unknown",
+      _cursorIdentityScope: "acct-1",
+    });
+    expect(missing.continuationMode).toBe("full-replay");
+    expect(missing.checkpointInvalidationReason).toBe("missing_ref");
+
+    const expired = createCursorRequest({
+      ...base,
+      _cursorConversationId: "cursor_stable",
+      _cursorIdentityScope: "acct-1",
+      _providerContinuation: {
+        cursor: { conversationId: "cursor_stable", checkpointUsable: true, checkpointRef: "missing-ref" },
+      },
+    });
+    expect(expired.continuationMode).toBe("full-replay");
+    expect(expired.checkpointInvalidationReason).toBe("expired");
+
+    const modelChanged = createCursorRequest({
+      ...base,
+      modelId: "cursor/gpt-5.6-sol",
+      _cursorConversationId: "cursor_stable",
+      _cursorIdentityScope: "acct-1",
+      _providerContinuation: {
+        cursor: { conversationId: "cursor_stable", checkpointUsable: true, checkpointRef },
+      },
+    });
+    expect(modelChanged.continuationMode).toBe("full-replay");
+    expect(modelChanged.checkpointInvalidationReason).toBe("model_changed");
+
+    const identityChanged = createCursorRequest({
+      ...base,
+      _cursorConversationId: "cursor_stable",
+      _cursorIdentityScope: "acct-2",
+      _providerContinuation: {
+        cursor: { conversationId: "cursor_stable", checkpointUsable: true, checkpointRef },
+      },
+    });
+    expect(identityChanged.continuationMode).toBe("full-replay");
+    expect(identityChanged.checkpointInvalidationReason).toBe("identity_changed");
+
+    const conversationChanged = createCursorRequest({
+      ...base,
+      _cursorConversationId: "cursor_other",
+      _cursorIdentityScope: "acct-1",
+      _providerContinuation: {
+        cursor: { conversationId: "cursor_stable", checkpointUsable: true, checkpointRef },
+      },
+    });
+    expect(conversationChanged.continuationMode).toBe("full-replay");
+    expect(conversationChanged.checkpointInvalidationReason).toBe("conversation_changed");
+
+    const forceFresh = createCursorRequest({
+      ...base,
+      _cursorConversationId: "cursor_stable",
+      _cursorIdentityScope: "acct-1",
+      _providerContinuation: {
+        cursor: { conversationId: "cursor_stable", checkpointUsable: true, checkpointRef },
+      },
+    }, { forceFreshConversation: true });
+    expect(forceFresh.continuationMode).toBe("full-replay");
+    expect(forceFresh.checkpointInvalidationReason).toBe("force_fresh");
+
+    const compaction = createCursorRequest({
+      ...base,
+      _cursorConversationId: "cursor_stable",
+      _cursorIdentityScope: "acct-1",
+      _compactionRequest: true,
+      _providerContinuation: {
+        cursor: { conversationId: "cursor_stable", checkpointUsable: true, checkpointRef },
+      },
+    });
+    expect(compaction.continuationMode).toBe("full-replay");
+    expect(compaction.checkpointInvalidationReason).toBe("compaction");
+    expect(compaction.checkpointBytes).toBeUndefined();
+    expect(getCursorCheckpoint(checkpointRef)?.ref).toBe(checkpointRef);
+    clearCursorCheckpointsForTests();
+  });
+
+  test("does not substitute another snapshot when an explicit checkpoint ref is missing", () => {
+    clearCursorCheckpointsForTests();
+    const parsed = {
+      ...base,
+      modelId: "cursor/grok-4.6",
+      _cursorIdentityScope: "acct-1",
+      context: { messages: [{ role: "user" as const, content: "same prompt", timestamp: 1 }] },
+    };
+    const checkpointBytes = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      pendingToolCalls: ["other-snap"],
+    }));
+    const liveRef = commitCursorCheckpoint({
+      conversationId: "cursor_stable",
+      identityScope: "acct-1",
+      modelId: "grok-4.6",
+      checkpointBytes,
+      coveredMessageCount: 1,
+      prefixDigest: cursorCoveredPrefixDigest(parsed, 1),
+      systemDigest: cursorInstructionDigest(parsed),
+    });
+    expect(liveRef).toBeDefined();
+    const missed = createCursorRequest({
+      ...parsed,
+      _cursorConversationId: "cursor_stable",
+      _providerContinuation: {
+        cursor: { conversationId: "cursor_stable", checkpointUsable: true, checkpointRef: "missing-ref" },
+      },
+    });
+    expect(missed.continuationMode).toBe("full-replay");
+    expect(missed.checkpointInvalidationReason).toBe("expired");
+    expect(missed.checkpointBytes).toBeUndefined();
+
+    const refLess = createCursorRequest({
+      ...parsed,
+      _cursorConversationId: "cursor_stable",
+    });
+    expect(refLess.continuationMode).toBe("checkpoint");
+    expect(refLess.checkpointBytes).toEqual(checkpointBytes);
+    clearCursorCheckpointsForTests();
+  });
+
+  test("does not share a checkpoint across two chats that start with the same user text", () => {
+    clearCursorCheckpointsForTests();
+    const firstTurn = {
+      ...base,
+      modelId: "cursor/gpt-5.6-sol",
+      _cursorIdentityScope: "acct-1",
+      context: { messages: [{ role: "user" as const, content: "fix the tests", timestamp: 1 }] },
+    };
+    const bytesA = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      pendingToolCalls: ["chat-a"],
+    }));
+    const bytesB = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      pendingToolCalls: ["chat-b"],
+    }));
+    expect(commitCursorCheckpoint({
+      conversationId: "cursor_a",
+      identityScope: "acct-1",
+      modelId: createCursorRequest(firstTurn).modelId,
+      checkpointBytes: bytesA,
+      coveredMessageCount: 1,
+      prefixDigest: cursorCoveredPrefixDigest(firstTurn, 1),
+      systemDigest: cursorInstructionDigest(firstTurn),
+    })).toBeDefined();
+    expect(commitCursorCheckpoint({
+      conversationId: "cursor_b",
+      identityScope: "acct-1",
+      modelId: createCursorRequest(firstTurn).modelId,
+      checkpointBytes: bytesB,
+      coveredMessageCount: 1,
+      prefixDigest: cursorCoveredPrefixDigest(firstTurn, 1),
+      systemDigest: cursorInstructionDigest(firstTurn),
+    })).toBeDefined();
+    const followUp = createCursorRequest({
+      ...firstTurn,
+      context: {
+        messages: [
+          { role: "user", content: "fix the tests", timestamp: 1 },
+          { role: "assistant", content: [{ type: "text", text: "A reply" }], timestamp: 2 },
+          { role: "user", content: "now this file", timestamp: 3 },
+        ],
+      },
+    });
+    expect(followUp.continuationMode).toBe("full-replay");
+    expect(followUp.checkpointInvalidationReason).toBe("missing_ref");
+    clearCursorCheckpointsForTests();
+  });
+
+  test("rejects a divergent branch and a changed system prompt", () => {
+    clearCursorCheckpointsForTests();
+    const covered = [
+      { role: "user" as const, content: "start here", timestamp: 1 },
+      { role: "assistant" as const, content: [{ type: "text" as const, text: "ok" }], timestamp: 2 },
+    ];
+    const parsed = { ...base, _cursorIdentityScope: "acct-1", context: { messages: covered } };
+    const checkpointBytes = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      pendingToolCalls: ["branch"],
+    }));
+    const ref = commitCursorCheckpoint({
+      conversationId: "cursor_stable",
+      identityScope: "acct-1",
+      modelId: "default",
+      checkpointBytes,
+      coveredMessageCount: 2,
+      prefixDigest: cursorCoveredPrefixDigest(parsed, 2),
+      systemDigest: cursorInstructionDigest(parsed),
+    });
+    expect(ref).toBeDefined();
+    const branched = createCursorRequest({
+      ...base,
+      _cursorConversationId: "cursor_stable",
+      _cursorIdentityScope: "acct-1",
+      _providerContinuation: {
+        cursor: { conversationId: "cursor_stable", checkpointUsable: true, checkpointRef: ref },
+      },
+      context: {
+        messages: [
+          { role: "user", content: "start here", timestamp: 1 },
+          { role: "assistant", content: [{ type: "text", text: "different reply" }], timestamp: 2 },
+          { role: "user", content: "continue", timestamp: 3 },
+        ],
+      },
+    });
+    expect(branched.continuationMode).toBe("full-replay");
+    expect(branched.checkpointInvalidationReason).toBe("lineage_mismatch");
+    const systemChanged = createCursorRequest({
+      ...parsed,
+      _cursorConversationId: "cursor_stable",
+      _cursorIdentityScope: "acct-1",
+      context: { systemPrompt: ["new system"], messages: covered },
+      _providerContinuation: {
+        cursor: { conversationId: "cursor_stable", checkpointUsable: true, checkpointRef: ref },
+      },
+    });
+    expect(systemChanged.continuationMode).toBe("full-replay");
+    expect(systemChanged.checkpointInvalidationReason).toBe("lineage_mismatch");
+    clearCursorCheckpointsForTests();
+  });
+
+  test("reuses a unique covered prefix when chat omits the continuation ref", () => {
+    clearCursorCheckpointsForTests();
+    const firstTurn = {
+      ...base,
+      modelId: "cursor/gpt-5.6-sol",
+      _cursorIdentityScope: "acct-1",
+      context: { messages: [{ role: "user" as const, content: "unique sol prompt 7f3c", timestamp: 1 }] },
+    };
+    const built = createCursorRequest(firstTurn);
+    const checkpointBytes = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      pendingToolCalls: ["unique-sol"],
+    }));
+    expect(commitCursorCheckpoint({
+      conversationId: built.conversationId,
+      identityScope: "acct-1",
+      modelId: cursorCheckpointModelAffinityId(built.modelId),
+      checkpointBytes,
+      coveredMessageCount: 1,
+      prefixDigest: cursorCoveredPrefixDigest(firstTurn, 1),
+      systemDigest: cursorInstructionDigest(firstTurn),
+    })).toBeDefined();
+    const followUp = createCursorRequest({
+      ...firstTurn,
+      context: {
+        messages: [
+          { role: "user", content: "unique sol prompt 7f3c", timestamp: 1 },
+          { role: "assistant", content: [{ type: "text", text: "ack" }], timestamp: 2 },
+          { role: "user", content: "go on", timestamp: 3 },
+        ],
+      },
+    });
+    expect(followUp.continuationMode).toBe("checkpoint");
+    expect(followUp.checkpointBytes?.byteLength).toBe(checkpointBytes.byteLength);
+    clearCursorCheckpointsForTests();
   });
 });

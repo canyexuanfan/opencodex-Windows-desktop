@@ -1563,6 +1563,16 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         pendingToolCalls.length = 0;
         return calls;
       };
+      const pendingToolCallsAreCompleteJsonObjects = (): boolean =>
+        pendingToolCalls.length > 0 && pendingToolCalls.every(call => {
+          if (call.name.trim().length === 0 || !call.sawArgumentsString || call.args.length === 0) return false;
+          try {
+            const parsed = JSON.parse(call.args) as unknown;
+            return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed);
+          } catch {
+            return false;
+          }
+        });
       // Returns "terminate" when a pending call cannot be dispatched, so every flush site
       // stops the turn instead of emitting an unusable call. `closeToolCalls()` runs first,
       // so budget reservations are released for every pending call even on the early return.
@@ -1743,6 +1753,21 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
               if (idDelta && !call.id) call.id = idDelta;
               if (typeof rawName === "string" && rawName && !call.name) call.name = rawName;
               if (typeof rawArguments === "string") call.sawArgumentsString = true;
+              // Tool-call deltas are BUFFERED until a terminal signal, so this adapter can
+              // consume upstream frames for a long time while yielding nothing. The Responses
+              // bridge reads adapter activity, not socket activity, so a model that streams a
+              // large argument payload looks identical to a hung upstream and the stall
+              // watchdog can abort a turn that was progressing normally.
+              //
+              // Found while investigating #2156, but it is NOT that bug: a stall abort emits
+              // `response.incomplete` with `upstream_stall_timeout` from the bridge, whereas
+              // that report shows the adapter's own end-of-stream error after `reader.read()`
+              // returned EOF with tool calls still pending. Different path, different frame.
+              //
+              // A heartbeat is invisible downstream — the bridge consumes it to re-arm the
+              // watchdog and emits nothing — which is the same remedy the Cursor, Anthropic,
+              // Google, and Kiro adapters already use for their own silent phases.
+              yield { type: "heartbeat" };
               if (typeof rawArguments === "string" && rawArguments) {
                 const previousBytes = call.argsBytes;
                 const nextBytes = previousBytes + budgetEncoder.encode(rawArguments).byteLength;
@@ -1808,6 +1833,15 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         }
         const sawFinish = finishReason !== undefined;
         if (!sawFinish && pendingToolCalls.length > 0) {
+          // Some OpenAI-compatible gateways close immediately after a complete function-call
+          // delta and omit both terminal conventions. Keep the default fail-closed policy, and
+          // let an opted-in provider recover only calls whose assembled argument payload is a
+          // complete JSON object. A partial JSON prefix still takes the truncation path below.
+          if (provider.openaiChatEofTolerance === true && pendingToolCallsAreCompleteJsonObjects()) {
+            if ((yield* flushToolCalls()) === "terminate") return;
+            yield { type: "done", usage: pendingUsage };
+            return;
+          }
           debugProviderDiagnostic("openai-chat", "stream-truncated", {
             finishReason: null,
             hadUsage: pendingUsage !== undefined,

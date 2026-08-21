@@ -145,7 +145,7 @@ v1 别名按字面解码（历史上 model ID 中包含的两字符序列 `~s` /
 
 ## 名册代理（injectAgents）
 
-`ocx claude`（以及系统环境守护进程）会把你的精选子代理名册（Subagents 标签页，最多 5 个模型）
+代理启动/ensure、`ocx claude` 和相关的控制面板保存会把你的精选子代理名册（Subagents 标签页，最多 5 个模型）
 和 `ocx-self` 同步到 `~/.claude/agents/ocx-*.md`。
 
 - **`ocx-self`** 固定你在 `/model` 选择器中的默认模型（回退到 `claudeCode.model`）；两者均

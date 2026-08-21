@@ -153,6 +153,16 @@ export interface GuardedEventStreamOptions {
   maxAutoContinuations?: number;
 }
 
+/**
+ * Events that are useful to the downstream stream consumer but carry no state used by the
+ * terminal-continuation decision or its rebuilt request. Keep them out of the retained event
+ * list so adapter liveness markers and arbitrarily large tool-argument fragments cannot make
+ * the guard's per-turn memory grow without adding any continuation semantics.
+ */
+export function isTerminalGuardPassthroughOnly(event: AdapterEvent): boolean {
+  return event.type === "heartbeat" || event.type === "tool_call_delta";
+}
+
 function mergeUsage(first: OcxUsage | undefined, second: OcxUsage | undefined): OcxUsage | undefined {
   if (!first) return second;
   if (!second) return first;
@@ -193,6 +203,13 @@ export async function* guardTerminalEventStream(options: GuardedEventStreamOptio
     const seen: AdapterEvent[] = [];
     let terminalSeen = false;
     for await (const event of source) {
+      // Liveness markers and tool argument fragments are passed through to the bridge, but
+      // neither analyzeTerminalTurn nor buildContinuationRequest consumes them. Retaining the
+      // fragments would duplicate arbitrarily large argument payloads in `seen` for no effect.
+      if (isTerminalGuardPassthroughOnly(event)) {
+        yield event;
+        continue;
+      }
       if (event.type === "done") {
         terminalSeen = true;
         const analysis = (options.adapterName === "anthropic" || options.adapterName === "openai-chat")

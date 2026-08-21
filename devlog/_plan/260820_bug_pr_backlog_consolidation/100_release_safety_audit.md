@@ -27,7 +27,7 @@ and the adapter forwarded our own proxy secret. Reproduced through the real adap
 
 ```
 URL:  https://chatgpt.com/backend-api/codex/responses
-AUTH: Bearer [redacted proxy key]
+AUTH: Bearer <the proxy's own admission secret, verbatim>
 LEAKED: true
 ```
 
