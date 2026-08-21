@@ -29,6 +29,8 @@ import {
   openclawHomeDir,
   piAgentDir,
   piConfigPath,
+  primeAgentDir,
+  primeConfigPath,
   zcodeConfigPath,
   zcodeHomeDir,
   type ExportClientId,
@@ -137,6 +139,14 @@ export const INTEGRATION_CLIENTS: Record<IntegrationClientId, IntegrationClientS
     id: "zcode",
     configPath: (env = process.env, home = homedir()) => zcodeConfigPath(env, home),
     detectDir: (env = process.env, home = homedir()) => zcodeHomeDir(env, home),
+  },
+  prime: {
+    id: "prime",
+    configPath: (env = process.env, home = homedir()) => primeConfigPath(env, home),
+    // The agent directory, not its parent: `PRIME_AGENT_CODING_AGENT_DIR` names
+    // that directory directly, so there is no parent to test when the override
+    // is set. Same choice as OMP, whose detect signal is `ompAgentDir`.
+    detectDir: (env = process.env, home = homedir()) => primeAgentDir(env, home),
   },
 };
 
