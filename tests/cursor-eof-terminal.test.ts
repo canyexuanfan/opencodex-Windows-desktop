@@ -3,6 +3,7 @@ import { create, toBinary } from "@bufbuild/protobuf";
 import { describe, expect, test } from "bun:test";
 import {
   AgentServerMessageSchema,
+  ExecServerMessageSchema,
   InteractionUpdateSchema,
   McpArgsSchema,
   McpToolCallSchema,
@@ -63,6 +64,29 @@ function toolCallStartedFrame(callId: string, toolName: string): Uint8Array {
   return encodeConnectFrame(toBinary(AgentServerMessageSchema, message));
 }
 
+function clientToolArgsFrame(callId: string, toolName: string, argText: string): Uint8Array {
+  const message = create(AgentServerMessageSchema, {
+    message: {
+      case: "execServerMessage",
+      value: create(ExecServerMessageSchema, {
+        id: 1,
+        execId: `exec-${callId}`,
+        message: {
+          case: "mcpArgs",
+          value: create(McpArgsSchema, {
+            name: toolName,
+            toolName,
+            toolCallId: callId,
+            providerIdentifier: PROVIDER,
+            args: { text: new TextEncoder().encode(JSON.stringify(argText)) },
+          }),
+        },
+      }),
+    },
+  });
+  return encodeConnectFrame(toBinary(AgentServerMessageSchema, message));
+}
+
 function turnEndedFrame(): Uint8Array {
   const message = create(AgentServerMessageSchema, {
     message: {
@@ -98,6 +122,12 @@ const APPLY_PATCH_TOOL = [{
   description: "apply a patch",
   parameters: { type: "object", properties: { input: { type: "string" } }, required: ["input"] },
   freeform: true,
+}] as unknown as CursorRunRequest["tools"];
+
+const ECHO_TOOL = [{
+  name: "echo_a",
+  description: "echo text",
+  parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
 }] as unknown as CursorRunRequest["tools"];
 
 async function drain(baseUrl: string, request: CursorRunRequest): Promise<{
@@ -193,6 +223,21 @@ describe("Cursor clean-EOF terminal gate", () => {
     }, async baseUrl => {
       const { messages, failure } = await drain(baseUrl, runRequest());
       expect(failure).toBeUndefined();
+      expect(messages.filter(message => message.type === "done")).toHaveLength(1);
+      expect(messages.some(message => message.type === "error")).toBe(false);
+    });
+  });
+
+  test("clean Connect END_STREAM preserves a drained client-tool terminal before its grace timer", async () => {
+    await withH2Server(respondWith([
+      toolCallStartedFrame("call_client_1", "echo_a"),
+      clientToolArgsFrame("call_client_1", "echo_a", "A"),
+      cleanConnectEndFrame(),
+    ]), async baseUrl => {
+      const { messages, failure } = await drain(baseUrl, runRequest(ECHO_TOOL));
+
+      expect(failure).toBeUndefined();
+      expect(messages.filter(message => message.type === "tool_call_end")).toHaveLength(1);
       expect(messages.filter(message => message.type === "done")).toHaveLength(1);
       expect(messages.some(message => message.type === "error")).toBe(false);
     });

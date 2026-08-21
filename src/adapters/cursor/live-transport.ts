@@ -1026,14 +1026,24 @@ class LiveCursorTransport implements CursorTransport {
         //
         // Earlier frames in this serialized frameWork chain have already run. Preserve their real
         // turnEnded terminal when present; otherwise finalize the clean protocol end once so open
-        // tool calls still fail closed and a text-only turn receives its normal done event.
+        // tool calls still fail closed, a text-only turn receives its normal done event, and a
+        // drained client-tool turn does not lose the pending terminal when protocol cleanup clears
+        // its grace timer.
+        const hasPendingClientToolFinalization = this.pendingFinalize !== undefined;
         if (
           !this.expectedClose
           && !state.terminated
           && !this.emittedTerminal
-          && (state.openToolCalls.size > 0 || this.sawAssistantText)
+          && (
+            state.openToolCalls.size > 0
+            || this.sawAssistantText
+            || hasPendingClientToolFinalization
+          )
         ) {
-          for (const event of finalizeTurnEvents(state)) push(event);
+          const terminal = hasPendingClientToolFinalization
+            ? finalizeAfterDrain(state)
+            : finalizeTurnEvents(state);
+          for (const event of terminal) push(event);
         }
         this.markProtocolComplete();
         releaseBacklogLease();
