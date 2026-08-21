@@ -92,21 +92,27 @@ export function findAnthropicSidecarProvider(config: OcxConfig): AnthropicSideca
   return { providerName: auth.anthropicProviderName, provider: auth.anthropicProvider };
 }
 
+/** Every backend id the config union admits. New ids are explicit-only and inert until their executor ships. */
+export type WebSearchBackendId = "openai" | "anthropic" | "xai" | "gemini" | "exa";
+
 /**
  * Precedence: explicit config wins; unset defaults to "openai" (ChatGPT forward path). The
  * anthropic backend (web_search_20250305) is only used when explicitly configured — auto-selecting
  * it from credential availability caused the sidecar to send incompatible models (e.g. gpt-5.6-luna)
  * to the Anthropic API.
+ * The 2188 follow-up ids (xai/gemini/exa) resolve to themselves the same explicit-only way; their
+ * planWebSearch arms stay fail-closed until each executor layer lands.
  */
 export function resolveSidecarBackend(
-  explicit: "openai" | "anthropic" | undefined,
-): "openai" | "anthropic" {
-  return explicit === "anthropic" ? "anthropic" : "openai";
+  explicit: WebSearchBackendId | undefined,
+): WebSearchBackendId {
+  if (explicit === "anthropic" || explicit === "xai" || explicit === "gemini" || explicit === "exa") return explicit;
+  return "openai";
 }
 
 export interface SidecarPlan {
   /** Which executor runs the search. Anthropic does not require a forward provider. */
-  backend: "openai" | "anthropic";
+  backend: WebSearchBackendId;
   /** Present for the openai backend (ChatGPT forward path); undefined for anthropic. */
   forwardSidecar?: ResolvedOpenAiForwardSidecar;
   /** Present for the anthropic backend (stored-OAuth /v1/messages path); undefined for openai. */
@@ -161,6 +167,10 @@ export function planWebSearch(
     ? { providerName: auth.anthropicProviderName, provider: auth.anthropicProvider }
     : undefined;
   const backend = resolveSidecarBackend(cfg.backend);
+  // Inert arms (roadmap 060): the union admits these ids so config can carry them,
+  // but each stays fail-closed — no plan, the request takes the normal routed path —
+  // until its executor layer replaces the arm with a credential-gated plan.
+  if (backend === "xai" || backend === "gemini" || backend === "exa") return undefined;
   const maxSearches = cfg.maxSearchesPerTurn ?? DEFAULT_MAX_SEARCHES;
   const stallTimeoutSec = webSearchStallTimeoutSec(
     config.stallTimeoutSec,

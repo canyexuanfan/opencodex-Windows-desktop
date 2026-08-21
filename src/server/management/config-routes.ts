@@ -541,7 +541,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     if (raw.webSearch !== undefined && !isPlainRecord(raw.webSearch)) return jsonResponse({ error: "webSearch must be an object" }, 400);
     if (raw.vision !== undefined && !isPlainRecord(raw.vision)) return jsonResponse({ error: "vision must be an object" }, 400);
     const body = raw as {
-      webSearch?: { model?: unknown; backend?: unknown; reasoning?: unknown; streamRoutedModelOutput?: unknown };
+      webSearch?: { model?: unknown; backend?: unknown; reasoning?: unknown; streamRoutedModelOutput?: unknown; exaApiKey?: unknown };
       vision?: {
         model?: unknown;
         backend?: unknown;
@@ -551,9 +551,10 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
         timeoutMs?: unknown;
       };
     };
+    const WEB_SEARCH_BACKENDS_UNION = ["openai", "anthropic", "xai", "gemini", "exa"] as const;
     if (body.webSearch && body.webSearch.backend !== undefined && body.webSearch.backend !== null
-      && body.webSearch.backend !== "openai" && body.webSearch.backend !== "anthropic") {
-      return jsonResponse({ error: "webSearch.backend must be openai, anthropic, or null" }, 400);
+      && !WEB_SEARCH_BACKENDS_UNION.includes(body.webSearch.backend as never)) {
+      return jsonResponse({ error: "webSearch.backend must be openai, anthropic, xai, gemini, exa, or null" }, 400);
     }
     if (body.webSearch?.model !== undefined && typeof body.webSearch.model !== "string") {
       return jsonResponse({ error: "webSearch.model must be a string" }, 400);
@@ -634,10 +635,16 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
         else config.webSearchSidecar.model = body.webSearch.model;
       }
       if (body.webSearch.backend === null) delete config.webSearchSidecar.backend;
-      else if (body.webSearch.backend === "openai" || body.webSearch.backend === "anthropic") {
-        config.webSearchSidecar.backend = body.webSearch.backend;
+      else if (WEB_SEARCH_BACKENDS_UNION.includes(body.webSearch.backend as never)) {
+        config.webSearchSidecar.backend = body.webSearch.backend as typeof WEB_SEARCH_BACKENDS_UNION[number];
       }
       if (typeof body.webSearch.reasoning === "string") config.webSearchSidecar.reasoning = body.webSearch.reasoning;
+      // Operator secret for the exa backend: string sets, empty string clears. The GET
+      // payload deliberately never carries it and redact.ts strips the key from logs.
+      if (typeof body.webSearch.exaApiKey === "string") {
+        if (body.webSearch.exaApiKey === "") delete config.webSearchSidecar.exaApiKey;
+        else config.webSearchSidecar.exaApiKey = body.webSearch.exaApiKey;
+      }
       if (typeof body.webSearch.streamRoutedModelOutput === "boolean") {
         // `false` is the default — drop the key so config files stay minimal.
         if (body.webSearch.streamRoutedModelOutput) config.webSearchSidecar.streamRoutedModelOutput = true;

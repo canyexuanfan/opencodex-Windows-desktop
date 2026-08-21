@@ -133,7 +133,7 @@ Codex は、タイトルやコミット メッセージなどのタスクに小�
 |フィールド |タイプ |デフォルト |意味 |
 | --- | --- | --- | --- |
 | `enabled?` | `boolean` |使用可能な場合はオン |マスタースイッチ。 |
-| `backend?` | `"openai" \| "anthropic"` |自動 |明示的な勝利。それ以外の場合は使用可能な保存された Anthropic OAuth は `anthropic` を選択し、次に `openai` を選択します。 |
+| `backend?` | `"openai" \| "anthropic" \| "xai" \| "gemini" \| "exa"` | `openai` |明示指定が優先され、未指定時は常に `openai` です。`xai`、`gemini`、`exa` は明示的に設定した場合のみ有効になります。 |
 | `model?` | `string` |バックエンド依存 | OpenAI の場合は `gpt-5.6-luna`、Anthropic の場合は `claude-sonnet-5`。従来の明示的な `gpt-5.4-mini` は開始時に移行されます。 |
 | `reasoning?` | `string` | `low` |サイドカーの取り組み。 `minimal` は Web 検索で拒否されます。 |
 | `maxSearchesPerTurn?` | `number` | `3` |メインモデルのターンごとに許可される実際の検索。 |
@@ -149,7 +149,7 @@ OpenAI バックエンドには、ChatGPT ログインと有効な ChatGPT `forw
 |フィールド |タイプ |デフォルト |意味 |
 | --- | --- | --- | --- |
 | `enabled?` | `boolean` |使用可能な場合はオン |マスターイメージと説明のスイッチ。 |
-| `backend?` | `"openai" \| "anthropic"` |自動 | Web 検索と同じ、明示的優先、人間認証情報を意識した選択。 |
+| `backend?` | `"openai" \| "anthropic"` |自動 | 明示的な値が優先されます。未設定の場合、使用可能な保存済み Anthropic OAuth 認証情報が優先され、それ以外は `openai` になります。 |
 | `model?` | `string` |バックエンド依存 | OpenAI の場合は `gpt-5.4-mini`、Anthropic の場合は `claude-sonnet-5`。 |
 | `reasoning?` | `"low" \| "medium" \| "high" \| "xhigh" \| "max"` | `"low"` | OpenAI Responses の推論負荷。Anthropic は無視します。 |
 | `maxDescriptionsPerTurn?` | `number` | `8` |新しい説明のキャッシュミスはメインターンごとに許可されます。 `0` は通話を無効にします。無効な値にはデフォルトが使用されます。 |

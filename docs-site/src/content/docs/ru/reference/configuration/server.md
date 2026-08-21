@@ -162,7 +162,7 @@ Codex использует маленькие helper-model'и для задач 
 | Поле | Тип | По умолчанию | Значение |
 | --- | --- | --- | --- |
 | `enabled?` | `boolean` | on when usable | Главный переключатель. |
-| `backend?` | `"openai" \| "anthropic"` | auto | Явный выбор выигрывает; иначе usable stored Anthropic OAuth выбирает `anthropic`, затем `openai`. |
+| `backend?` | `"openai" \| "anthropic" \| "xai" \| "gemini" \| "exa"` | `openai` | Явный выбор имеет приоритет; без него всегда используется `openai`. `xai`, `gemini` и `exa` активируются только при явной настройке. |
 | `model?` | `string` | backend-dependent | `gpt-5.6-luna` для OpenAI или `claude-sonnet-5` для Anthropic. Старый явный `gpt-5.4-mini` мигрирует при старте. |
 | `reasoning?` | `string` | `low` | Effort sidecar'а. Значение `minimal` с web search отклоняется. |
 | `maxSearchesPerTurn?` | `number` | `3` | Число реальных поисков, разрешённых за один turn основной модели. |
@@ -184,7 +184,7 @@ routed-model и hosted-search timeout. Эффективный watchdog мост�
 | Поле | Тип | По умолчанию | Значение |
 | --- | --- | --- | --- |
 | `enabled?` | `boolean` | on when usable | Главный переключатель описания изображений. |
-| `backend?` | `"openai" \| "anthropic"` | auto | Та же логика выбора explicit-first/Anthropic-credential-aware, что и у web search. |
+| `backend?` | `"openai" \| "anthropic"` | auto | Явное значение имеет приоритет; если оно не задано, предпочтение отдаётся пригодным сохранённым учётным данным Anthropic OAuth, иначе используется `openai`. |
 | `model?` | `string` | backend-dependent | `gpt-5.4-mini` для OpenAI или `claude-sonnet-5` для Anthropic. |
 | `reasoning?` | `"low" \| "medium" \| "high" \| "xhigh" \| "max"` | `"low"` | Уровень рассуждений OpenAI Responses. Anthropic его игнорирует. |
 | `maxDescriptionsPerTurn?` | `number` | `8` | Максимум новых промахов description-cache за один main turn. `0` отключает вызовы; некорректные значения возвращают дефолт. |

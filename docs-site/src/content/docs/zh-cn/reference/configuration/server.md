@@ -145,7 +145,7 @@ Codex 会为标题、提交信息等任务使用较小的辅助模型。启用
 | 字段 | 类型 | 默认值 | 含义 |
 | --- | --- | --- | --- |
 | `enabled?` | `boolean` | 在可用时启用 | 总开关。 |
-| `backend?` | `"openai" \| "anthropic"` | auto | 显式优先；否则若可用的 Anthropic OAuth 存储凭据存在则选择 `anthropic`，否则选择 `openai`。 |
+| `backend?` | `"openai" \| "anthropic" \| "xai" \| "gemini" \| "exa"` | `openai` | 显式选择优先；未设置时始终使用 `openai`。`xai`、`gemini` 和 `exa` 仅在显式配置后启用。 |
 | `model?` | `string` | 依后端而定 | OpenAI 使用 `gpt-5.6-luna`，Anthropic 使用 `claude-sonnet-5`。旧的显式 `gpt-5.4-mini` 会在启动时迁移。 |
 | `reasoning?` | `string` | `low` | 侧车努力级别。`minimal` 与 web search 不兼容，会被拒绝。 |
 | `maxSearchesPerTurn?` | `number` | `3` | 每个主模型轮次允许的实际搜索次数。 |
@@ -163,7 +163,7 @@ routed 重放会把主 ChatGPT 认证注入内部请求。Anthropic 后端使用
 | 字段 | 类型 | 默认值 | 含义 |
 | --- | --- | --- | --- |
 | `enabled?` | `boolean` | 在可用时启用 | 图像描述总开关。 |
-| `backend?` | `"openai" \| "anthropic"` | auto | 与 web search 相同的显式优先、感知 Anthropic 凭据的选择方式。 |
+| `backend?` | `"openai" \| "anthropic"` | auto | 显式值优先；未设置时优先使用可用的已保存 Anthropic OAuth 凭据，否则使用 `openai`。 |
 | `model?` | `string` | 依后端而定 | OpenAI 使用 `gpt-5.4-mini`，Anthropic 使用 `claude-sonnet-5`。 |
 | `reasoning?` | `"low" \| "medium" \| "high" \| "xhigh" \| "max"` | `"low"` | OpenAI Responses 推理强度；Anthropic 会忽略该项。 |
 | `maxDescriptionsPerTurn?` | `number` | `8` | 每个主轮次允许的新增描述缓存未命中次数。`0` 会禁用调用；无效值会使用默认值。 |

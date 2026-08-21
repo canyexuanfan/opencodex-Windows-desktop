@@ -209,7 +209,7 @@ l'API Images d'OpenAI et la forme de réponse attendue par Codex.
 | Champ | Type | Par défaut | Signification |
 | --- | --- | --- | --- |
 | `enabled?` | `boolean` | activé lorsqu'il est utilisable | Interrupteur principal. |
-| `backend?` | `"openai" \| "anthropic"` | automatique | Une valeur explicite est prioritaire ; sinon, la présence d'identifiants OAuth Anthropic stockés et utilisables sélectionne `anthropic`, puis `openai`. |
+| `backend?` | `"openai" \| "anthropic" \| "xai" \| "gemini" \| "exa"` | `openai` | Une valeur explicite est prioritaire ; sans valeur, `openai` est toujours utilisé. `xai`, `gemini` et `exa` ne s'activent que s'ils sont configurés explicitement. |
 | `model?` | `string` | dépendant du backend | `gpt-5.6-luna` pour OpenAI ou `claude-sonnet-5` pour Anthropic. L'héritage explicite `gpt-5.4-mini` migre au démarrage. |
 | `reasoning?` | `string` | `low` | Effort secondaire. `minimal` est rejeté lors de la recherche sur le Web. |
 | `maxSearchesPerTurn?` | `number` | `3` | Recherches réelles autorisées par tour de modèle principal. |
@@ -231,7 +231,7 @@ une garde d'inactivité, pas un délai de génération total.
 | Champ | Type | Par défaut | Signification |
 | --- | --- | --- | --- |
 | `enabled?` | `boolean` | activé lorsqu'il est utilisable | Commutateur principal de description d'images. |
-| `backend?` | `"openai" \| "anthropic"` | automatique | Même sélection, prioritaire lorsqu'elle est explicite et tenant compte des identifiants Anthropic, que pour la recherche Web. |
+| `backend?` | `"openai" \| "anthropic"` | automatique | La valeur explicite prévaut ; si elle est omise, un identifiant OAuth Anthropic stocké et utilisable est privilégié, sinon `openai`. |
 | `model?` | `string` | dépendant du backend | `gpt-5.4-mini` pour OpenAI ou `claude-sonnet-5` pour Anthropic. |
 | `maxDescriptionsPerTurn?` | `number` | `8` | Nouvelles descriptions des ratés du cache admises par tour principal. `0` désactive les appels ; les valeurs non valides utilisent la valeur par défaut. |
 | `timeoutMs?` | `number` | `45000` | Délai d'expiration de la récupération par le service auxiliaire. Entier 1–2147483647. |

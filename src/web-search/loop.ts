@@ -6,6 +6,7 @@ import type { AttemptRecoveryKind } from "../usage/log";
 import { bridgeToResponsesSSE } from "../bridge";
 import { runWebSearch, type SidecarOutcome, type SidecarOutcomeRecorder, type SidecarSettings } from "./executor";
 import { runAnthropicWebSearch } from "./anthropic-executor";
+import type { WebSearchBackendId } from "./index";
 import { clearableDeadline } from "../lib/abort";
 import { redactSecretString } from "../lib/redact";
 import { readBoundedResponseBody } from "../lib/bounded-body";
@@ -250,8 +251,12 @@ export interface WebSearchLoopDeps {
   parsed: OcxParsedRequest;
   adapter: ProviderAdapter;
   incomingMeta: IncomingMeta;
-  /** Which executor runs searches. Defaults to "openai" so existing callers keep the ChatGPT path (audit F4). */
-  backend?: "openai" | "anthropic";
+  /**
+   * Which executor runs searches. Defaults to "openai" so existing callers keep the ChatGPT path
+   * (audit F4). The widened ids (xai/gemini/exa) cannot reach the loop yet: planWebSearch returns
+   * no plan for them (inert 060 arms), and the dispatch below only branches on "anthropic".
+   */
+  backend?: WebSearchBackendId;
   /** Required for the openai backend; unused (and typically undefined) for the anthropic backend. */
   forwardProvider?: OcxProviderConfig;
   /** Required for the anthropic backend: the stored-OAuth provider that runs web_search_20250305. */
