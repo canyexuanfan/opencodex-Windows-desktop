@@ -412,6 +412,13 @@ export interface OcxProviderConfig {
    */
   terminalContinuationGuard?: boolean;
   /**
+   * Opt-in for OpenAI-compatible chat gateways that may close after emitting a complete
+   * tool-call delta without `finish_reason` or `[DONE]`. The adapter accepts that EOF only
+   * when every pending call has a non-empty name and complete JSON-object arguments;
+   * incomplete JSON, missing arguments, and empty streams remain truncation errors.
+   */
+  openaiChatEofTolerance?: boolean;
+  /**
    * Opt-in: forward `prompt_cache_key` to the upstream `/chat/completions` body.
    * OpenAI-specific extension; strict backends (Groq, Cerebras, etc.) reject unknown
    * fields. Default off; only enable for providers that document this parameter.
