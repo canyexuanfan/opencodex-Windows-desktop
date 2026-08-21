@@ -37,6 +37,10 @@ interface ReleaseScenario {
   originUrl?: string;
 }
 
+interface SshInvocation {
+  args: string[];
+}
+
 function writeExecutable(path: string, contents: string): void {
   writeFileSync(path, contents, "utf8");
   chmodSync(path, 0o755);
@@ -264,6 +268,51 @@ function runRelease(version: string, scenario: ReleaseScenario = {}) {
   return { calls, result };
 }
 
+/**
+ * Run the exact command string emitted by the release helper through real Git and a fake SSH.
+ *
+ * The release shim proves which string was placed in the environment, but Git owns the parsing
+ * contract for `GIT_SSH_COMMAND`. Exercising a real Git process here catches quoting that looks
+ * correct in text yet splits, substitutes, or reinterprets the private-key path before SSH sees it.
+ */
+function executeGitSshCommand(gitSshCommand: string): { calls: SshInvocation[]; result: ReturnType<typeof spawnSync> } {
+  const shimDir = mkdtempSync(join(tmpdir(), "ocx-release-ssh-"));
+  const logPath = join(shimDir, "ssh-log.jsonl");
+  const jsPath = join(shimDir, "ssh.js");
+  const launcherPath = join(shimDir, "ssh");
+  const cmdPath = join(shimDir, "ssh.cmd");
+  writeFileSync(logPath, "", "utf8");
+  writeFileSync(jsPath, `import { appendFileSync } from "node:fs";
+appendFileSync(process.env.FAKE_SSH_LOG, JSON.stringify({ args: process.argv.slice(2) }) + "\\n");
+process.exit(0);
+`, "utf8");
+  writeExecutable(launcherPath, `#!${process.execPath}\nimport "./ssh.js";\n`);
+  writeFileSync(cmdPath, `@echo off\r\n"${process.execPath}" "%~dp0\\ssh.js" %*\r\n`, "utf8");
+
+  const inheritedEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"
+      && key !== "GIT_SSH" && key !== "GIT_SSH_COMMAND"),
+  );
+  const pathKey = process.platform === "win32" ? "Path" : "PATH";
+  const pathValue = `${shimDir}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? process.env.Path ?? ""}`;
+  const result = spawnSync("git", ["ls-remote", "ssh://example.invalid/owner/repository.git"], {
+    cwd: repoRoot,
+    env: {
+      ...inheritedEnv,
+      [pathKey]: pathValue,
+      FAKE_SSH_LOG: logPath,
+      GIT_SSH_COMMAND: gitSshCommand,
+    },
+    encoding: "utf8",
+  });
+  const raw = readFileSync(logPath, "utf8").trim();
+  const calls = raw
+    ? raw.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line) as SshInvocation)
+    : [];
+  rmSync(shimDir, { recursive: true, force: true });
+  return { calls, result };
+}
+
 describe("release helper", () => {
   test("preflight runs the shared audit, typecheck, test suite, and privacy scan before version bump", () => {
     const { calls, result } = runRelease("9.9.9");
@@ -391,6 +440,25 @@ describe("release helper", () => {
     expect(push?.gitSshCommand).toBe('ssh -i "C:\\\\Users\\\\Jun Kim\\\\.ssh\\\\ocx release key" -o IdentitiesOnly=yes');
   });
 
+  test("Git passes the emitted deploy-key path to SSH as one literal argument", () => {
+    const keyPath = 'C:\\Users\\Jun Kim\\.ssh\\ocx "quoted" $HOME $(not-run) `not-run`; key';
+    const { calls: releaseCalls } = runRelease("9.9.9", {
+      releaseSshKey: keyPath,
+      releaseSshRepo: sshTarget,
+      pendingBump: true,
+    });
+    const push = releaseCalls.find(call => call.name === "git" && call.args[0] === "push");
+    expect(push?.gitSshCommand).toBeDefined();
+
+    const { calls } = executeGitSshCommand(push?.gitSshCommand ?? "");
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      const identityIndex = call.args.indexOf("-i");
+      expect(identityIndex).toBeGreaterThanOrEqual(0);
+      expect(call.args[identityIndex + 1]).toBe(keyPath);
+    }
+  });
+
   /**
    * The SSH target is derived from `origin` rather than hardcoded, so a fork's release pushes to
    * the fork instead of silently targeting upstream.
@@ -434,6 +502,23 @@ describe("release helper", () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr + result.stdout).toContain("OCX_RELEASE_SSH_REPO");
     expect(calls.find(call => call.name === "git" && call.args[0] === "push")).toBeUndefined();
+  });
+
+  test("credential-bearing SSH targets are rejected without logging the credential", () => {
+    for (const scenario of [
+      { releaseSshRepo: "ssh://git:SECRET@example.test/owner/repository.git" },
+      { originUrl: "git:SECRET@example.test:owner/repository.git" },
+    ]) {
+      const { calls, result } = runRelease("9.9.9", {
+        releaseSshKey: "/tmp/k",
+        pendingBump: true,
+        ...scenario,
+      });
+      const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+      expect(result.status).not.toBe(0);
+      expect(output).not.toContain("SECRET");
+      expect(calls.find(call => call.name === "git" && call.args[0] === "push")).toBeUndefined();
+    }
   });
 
   test("an ssh origin is reused verbatim rather than rewritten", () => {
