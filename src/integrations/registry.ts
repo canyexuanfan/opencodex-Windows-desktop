@@ -134,6 +134,7 @@ export const INTEGRATION_CLIENTS: Record<IntegrationClientId, IntegrationClientS
     id: "mcode",
     configPath: (env = process.env, home = homedir()) => mcodeConfigPath(env, home),
     detectDir: (env = process.env, home = homedir()) => mcodeHomeDir(env, home),
+    writerLock: { suffix: ".lock" },
   },
   zcode: {
     id: "zcode",
