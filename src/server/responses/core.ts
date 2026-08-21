@@ -550,9 +550,17 @@ function isSelfIdentifiedOpaqueBlobRejection(bodyText: string): boolean {
     const record = payload as { code?: unknown; error?: unknown };
 
     if (record.error && typeof record.error === "object" && !Array.isArray(record.error)) {
-      const error = record.error as { type?: unknown; code?: unknown };
-      if (error.type === "invalid_request_error" && error.code === "invalid_encrypted_content") {
-        return true;
+      const error = record.error as { type?: unknown; code?: unknown; message?: unknown };
+      if (error.type === "invalid_request_error") {
+        if (error.code === "invalid_encrypted_content") return true;
+        if (
+          (error.code === null || error.code === undefined)
+          && typeof error.message === "string"
+          && error.message.startsWith("The encrypted content ")
+          && error.message.endsWith(
+            " could not be verified. Reason: Encrypted content could not be decrypted or parsed.",
+          )
+        ) return true;
       }
     }
 
@@ -569,8 +577,9 @@ function isSelfIdentifiedOpaqueBlobRejection(bodyText: string): boolean {
  *
  * The outbound-body check is intentional: the inbound transcript may contain a proxy envelope or
  * compaction blob that the adapter already lowered, in which case a replay would be byte-identical.
- * OpenAI exposes a dedicated nested code. xAI's code is generic, so its two concrete decoder error
- * identities are also required; unrelated invalid-argument prose must never gain a hidden resend.
+ * OpenAI usually exposes a dedicated nested code; ChatGPT also emits one exact code-less
+ * unverifiable-ciphertext message. xAI's code is generic, so its two concrete decoder error
+ * identities are also required. Unrelated error prose must never gain a hidden resend.
  */
 export function shouldAttemptOpaqueBlobRecovery(args: {
   status: number;

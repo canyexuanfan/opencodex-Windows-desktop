@@ -1,10 +1,12 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clearReasoningReplayCacheForTests } from "../src/responses/reasoning-replay-cache";
 import { OPAQUE_COMPACTION_NOTE } from "../src/responses/compaction";
 import { resetThoughtSignatureReplayForTests } from "../src/responses/thought-signature-replay";
+import * as authContextModule from "../src/codex/auth-context";
+import { saveCodexAccountCredential } from "../src/codex/account-store";
 import {
   handleResponses,
   shouldAttemptOpaqueBlobRecovery,
@@ -20,6 +22,14 @@ const OPENAI_BLOB_ERROR = JSON.stringify({
     message: "The encrypted content could not be verified.",
     type: "invalid_request_error",
     code: "invalid_encrypted_content",
+  },
+});
+const CHATGPT_UNVERIFIABLE_BLOB_ERROR = JSON.stringify({
+  error: {
+    message: "The encrypted content 6871-test-ef-0 could not be verified. Reason: Encrypted content could not be decrypted or parsed.",
+    type: "invalid_request_error",
+    param: "input",
+    code: null,
   },
 });
 const XAI_DECODE_ERROR = JSON.stringify({
@@ -148,6 +158,10 @@ describe("opaque blob recovery trigger", () => {
 
   test("accepts OpenAI and both xAI opaque-state rejection identities", () => {
     expect(shouldAttemptOpaqueBlobRecovery(base)).toBe(true);
+    expect(shouldAttemptOpaqueBlobRecovery({
+      ...base,
+      errorBody: CHATGPT_UNVERIFIABLE_BLOB_ERROR,
+    })).toBe(true);
     expect(shouldAttemptOpaqueBlobRecovery({ ...base, errorBody: XAI_DECODE_ERROR })).toBe(true);
     expect(shouldAttemptOpaqueBlobRecovery({ ...base, errorBody: XAI_DECRYPT_ERROR })).toBe(true);
   });
@@ -166,10 +180,136 @@ describe("opaque blob recovery trigger", () => {
     })).toBe(false);
     expect(shouldAttemptOpaqueBlobRecovery({ ...base, adapterName: "openai-chat" })).toBe(false);
     expect(shouldAttemptOpaqueBlobRecovery({ ...base, alreadyAttempted: true })).toBe(false);
+    expect(shouldAttemptOpaqueBlobRecovery({
+      ...base,
+      errorBody: JSON.stringify({
+        error: {
+          type: "invalid_request_error",
+          code: null,
+          message: "The encrypted content 6871-test-ef-0 could not be verified. Reason: Signature expired.",
+        },
+      }),
+    })).toBe(false);
   });
 });
 
 describe("opaque blob recovery through /v1/responses", () => {
+  test("#2247 strips reasoning and compaction ciphertext before a pooled thread moves accounts", async () => {
+    const outbound: Array<{ accountId: string | null; body: Record<string, unknown> }> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      outbound.push({
+        accountId: headers.get("chatgpt-account-id"),
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      });
+      return success(`resp-${outbound.length}`);
+    }) as typeof fetch;
+    for (const account of [
+      { id: "pool-a", accessToken: "shared-test-token-a", chatgptAccountId: "workspace-a" },
+      { id: "pool-b", accessToken: "shared-test-token-b", chatgptAccountId: "workspace-b" },
+    ]) {
+      saveCodexAccountCredential(account.id, {
+        accessToken: account.accessToken,
+        refreshToken: `${account.id}-refresh-token`,
+        expiresAt: Date.now() + 300_000,
+        chatgptAccountId: account.chatgptAccountId,
+      });
+    }
+    const authSpy = spyOn(authContextModule, "resolveCodexAuthContext")
+      .mockResolvedValueOnce({
+        kind: "pool",
+        accountId: "pool-a",
+        writerGeneration: 11,
+        generation: 1,
+        accessToken: "shared-test-token-a",
+        chatgptAccountId: "workspace-a",
+      })
+      .mockResolvedValueOnce({
+        kind: "pool",
+        accountId: "pool-b",
+        writerGeneration: 12,
+        generation: 1,
+        accessToken: "shared-test-token-b",
+        chatgptAccountId: "workspace-b",
+      });
+    const poolConfig = {
+      defaultProvider: "openai",
+      providers: {
+        openai: {
+          adapter: "openai-responses",
+          baseUrl: "https://chatgpt.com/backend-api/codex",
+          authMode: "forward",
+          codexAccountMode: "pool",
+        },
+      },
+      codexAccounts: [
+        { id: "pool-a", email: "a@example.test", chatgptAccountId: "workspace-a", isMain: false },
+        { id: "pool-b", email: "b@example.test", chatgptAccountId: "workspace-b", isMain: false },
+      ],
+    } as OcxConfig;
+    const poolRequest = () => new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-codex-parent-thread-id": "thread-2247-pool-switch",
+      },
+      body: JSON.stringify({
+        model: "gpt-5.6-sol",
+        stream: false,
+        store: false,
+        input: reasoningReplayInput(),
+      }),
+    });
+
+    try {
+      for (let turn = 0; turn < 2; turn += 1) {
+        const response = await handleResponses(poolRequest(), poolConfig, { model: "", provider: "" });
+        expect(response.status).toBe(200);
+        await response.text();
+      }
+      expect(authSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      authSpy.mockRestore();
+    }
+
+    expect(outbound).toHaveLength(2);
+    expect(outbound.map(entry => entry.accountId)).toEqual(["workspace-a", "workspace-b"]);
+    expect(hasBlob(outbound[0]!.body)).toBe(true);
+    const firstInput = outbound[0]!.body.input as Array<Record<string, unknown>>;
+    expect(firstInput[1]?.encrypted_content).toBe(BLOB);
+    expect(firstInput[2]).toEqual({ type: "compaction", encrypted_content: BLOB });
+    expect(hasBlob(outbound[1]!.body)).toBe(false);
+    const secondInput = outbound[1]!.body.input as Array<Record<string, unknown>>;
+    expect(secondInput[1]).toEqual({
+      type: "reasoning",
+      content: [],
+      summary: [{ type: "summary_text", text: "prior reasoning" }],
+    });
+    expect(secondInput[2]).toEqual({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: OPAQUE_COMPACTION_NOTE }],
+    });
+  });
+
+  test("#2247 retries the reported ChatGPT unverifiable-ciphertext rejection once", async () => {
+    const outbound: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      outbound.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return outbound.length === 1
+        ? rejection(CHATGPT_UNVERIFIABLE_BLOB_ERROR)
+        : success("resp-2247-recovered");
+    }) as typeof fetch;
+
+    const response = await handleResponses(request(), config(), { model: "", provider: "" });
+    expect(response.status).toBe(200);
+    await response.text();
+
+    expect(outbound).toHaveLength(2);
+    expect(hasBlob(outbound[0]!)).toBe(true);
+    expect(hasBlob(outbound[1]!)).toBe(false);
+  });
+
   test("rebuilds once without the rejected blob and preserves surrounding items", async () => {
     const outbound: Array<Record<string, unknown>> = [];
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
