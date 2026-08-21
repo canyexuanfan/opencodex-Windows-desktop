@@ -278,6 +278,46 @@ describe("Responses custom-tool destination capability", () => {
     } as OcxConfig, "xai/grok-4.6");
     expect(routed.provider.supportsResponsesCustomTools).toBe(false);
   });
+
+  test("noncanonical forward destinations that deny custom tools lower apply_patch", () => {
+    const rawBody = {
+      model: "routed-model",
+      input: [
+        { type: "custom_tool_call", id: "ctc_patch", call_id: "c1", name: "apply_patch", input: "noop" },
+      ],
+      tools: [
+        { type: "custom", name: "apply_patch", description: "Apply a patch", format: { type: "grammar", syntax: "lark" } },
+      ],
+    };
+    const parsed = {
+      modelId: "routed-model",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: rawBody,
+    };
+    const request = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://provider.example/v1",
+      authMode: "forward",
+      headers: { authorization: "Bearer provider-static" },
+      supportsResponsesCustomTools: false,
+    }).buildRequest(parsed, { headers: new Headers({ authorization: "Bearer caller-secret" }) });
+    const body = JSON.parse(request.body) as {
+      tools: Array<Record<string, unknown>>;
+      input: Array<Record<string, unknown>>;
+    };
+
+    expect(request.headers.authorization).toBe("Bearer provider-static");
+    expect(body.tools[0]).toMatchObject({ type: "function", name: "apply_patch" });
+    expect(body.input[0]).toMatchObject({
+      type: "function_call",
+      call_id: "c1",
+      name: "apply_patch",
+      arguments: JSON.stringify({ input: "noop" }),
+    });
+    expect([...(request.convertedRoutedCustomToolNames ?? [])]).toEqual(["apply_patch"]);
+  });
 });
 
 describe("routed compaction lowering order", () => {
