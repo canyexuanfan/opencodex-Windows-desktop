@@ -593,11 +593,11 @@ describe("fetchProviderQuotaReports", () => {
     expect(rejectedRefresh.reports).toEqual([]);
   });
 
-  function keyQuotaConfig(name: string, baseUrl: string): OcxConfig {
+  function keyQuotaConfig(name: string, baseUrl: string, apiKey = `${name}-secret`): OcxConfig {
     return {
       defaultProvider: name,
       providers: {
-        [name]: { adapter: "openai-chat", authMode: "key", baseUrl, apiKey: `${name}-secret` },
+        [name]: { adapter: "openai-chat", authMode: "key", baseUrl, apiKey },
       },
     } as OcxConfig;
   }
@@ -931,7 +931,7 @@ describe("fetchProviderQuotaReports", () => {
     }) as typeof fetch;
 
     const result = await fetchProviderQuotaReports(
-      keyQuotaConfig("zhipu-bigmodel-coding", "https://open.bigmodel.cn/api/coding/paas/v4"),
+      keyQuotaConfig("zhipu-bigmodel-coding", "https://open.bigmodel.cn/api/coding/paas/v4", "zai-secret"),
       true,
     );
 
@@ -944,7 +944,7 @@ describe("fetchProviderQuotaReports", () => {
     });
     expect(seen).toHaveLength(1);
     expect(seen[0]?.url).toBe("https://open.bigmodel.cn/api/monitor/usage/quota/limit");
-    expect(seen[0]?.authorization).toBe("Bearer zhipu-bigmodel-coding-secret");
+    expect(seen[0]?.authorization).toBe("Bearer zai-secret");
     expect(seen[0]?.redirect).toBe("error");
   });
 
@@ -992,7 +992,7 @@ describe("fetchProviderQuotaReports", () => {
     }) as typeof fetch;
 
     const result = await fetchProviderQuotaReports(
-      keyQuotaConfig("zhipu-bigmodel-coding", "https://open.bigmodel.cn/api/v1"),
+      keyQuotaConfig("zhipu-bigmodel-coding", "https://open.bigmodel.cn/api/v1", "zai-secret"),
       true,
     );
 
@@ -1005,7 +1005,7 @@ describe("fetchProviderQuotaReports", () => {
     });
     expect(seen).toHaveLength(1);
     expect(seen[0]?.url).toBe("https://open.bigmodel.cn/api/monitor/usage/quota/limit");
-    expect(seen[0]?.authorization).toBe("Bearer zhipu-bigmodel-coding-secret");
+    expect(seen[0]?.authorization).toBe("Bearer zai-secret");
   });
 
   test("Z.AI quota treats an unsuccessful payload as a no-report", async () => {
