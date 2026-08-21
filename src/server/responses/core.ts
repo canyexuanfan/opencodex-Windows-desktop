@@ -22,8 +22,10 @@ import {
   durableReplayDestinationIdentity,
   durableReplayCredentialIdentity,
   reasoningReplayKeyCredentialIdentity,
+  reasoningReplayOpaqueBlobRejectionMemoized,
   reasoningReplayOAuthCredentialIdentity,
   reasoningReplayServingIdentityChanged,
+  rememberReasoningReplayOpaqueBlobRejection,
 } from "../../responses/reasoning-replay-cache";
 import { awaitThoughtSignatureDurability, thoughtSignatureReplaySalt } from "../../responses/thought-signature-replay";
 import { buildCompactV1Output, COMPACT_PROMPT, decodeCompactionSummary, extractCompactUserMessages } from "../../responses/compaction";
@@ -515,6 +517,9 @@ function bindRouteReasoningReplayScope(args: {
   if (reasoningReplayServingIdentityChanged(parsed._reasoningReplayScope)) {
     parsed._stripReasoningEncryptedContent = true;
   }
+  if (reasoningReplayOpaqueBlobRejectionMemoized(parsed._reasoningReplayScope)) {
+    parsed._stripReasoningEncryptedContent = true;
+  }
   bindProviderContinuationForRoute(parsed, continuationOwner);
 }
 
@@ -668,9 +673,20 @@ async function attemptOpaqueBlobRecovery(
   }
 
   args.guard.attempted = true;
+  const rejectedScope = args.parsed._reasoningReplayScope
+    ? {
+        clientThreadId: args.parsed._reasoningReplayScope.clientThreadId,
+        ...(args.parsed._reasoningReplayScope.current
+          ? { current: { ...args.parsed._reasoningReplayScope.current } }
+          : {}),
+      }
+    : undefined;
   prepareOpaqueBlobRecovery(args.parsed);
   try { void args.response.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
   const result = await rebuild("opaque-blob-rejection");
+  if (!("failed" in result) && result.ok) {
+    rememberReasoningReplayOpaqueBlobRejection(rejectedScope);
+  }
   return "failed" in result
     ? { kind: "failed", response: result.failed }
     : { kind: "recovered", response: result };
