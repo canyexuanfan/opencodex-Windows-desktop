@@ -356,8 +356,23 @@ describe("release helper", () => {
     const push = calls.find(call => call.name === "git" && call.args[0] === "push");
     expect(push).toBeDefined();
     expect(push?.args).toEqual(["push", "git@github.com:lidge-jun/opencodex.git", "HEAD:main"]);
-    expect(push?.gitSshCommand).toContain("/tmp/ocx-release-key");
-    expect(push?.gitSshCommand).toContain("IdentitiesOnly=yes");
+    expect(push?.gitSshCommand).toBe('ssh -i "/tmp/ocx-release-key" -o IdentitiesOnly=yes');
+  });
+
+  /**
+   * Git parses `GIT_SSH_COMMAND` with shell-style word splitting rather than exec'ing it, so a
+   * bare interpolation splits any key path containing a space — the Windows default
+   * (`C:\Users\Jun Kim\.ssh\...`) is exactly that shape, and ssh would read the tail as its next
+   * flag. Assert the whole command string, not a substring: `toContain` passes on the broken form.
+   */
+  test("a key path with spaces and backslashes stays a single ssh argument", () => {
+    const { calls } = runRelease("9.9.9", {
+      releaseSshKey: "C:\\Users\\Jun Kim\\.ssh\\ocx release key",
+      pendingBump: true,
+    });
+
+    const push = calls.find(call => call.name === "git" && call.args[0] === "push");
+    expect(push?.gitSshCommand).toBe('ssh -i "C:\\\\Users\\\\Jun Kim\\\\.ssh\\\\ocx release key" -o IdentitiesOnly=yes');
   });
 
   test("without a configured key the push is unchanged and carries no ssh override", () => {

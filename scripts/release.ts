@@ -129,6 +129,20 @@ async function runLoud(command: string[], env?: Record<string, string>): Promise
  * remote, so a contributor or CI clone is unaffected. The key is used for this one push and nothing
  * else; ordinary git operations keep the maintainer's normal credential.
  */
+/**
+ * Quote one argument for `GIT_SSH_COMMAND`.
+ *
+ * Git does not exec this variable directly — it parses it with shell-style word splitting, so a
+ * bare interpolation breaks on any key path containing a space (`C:\Users\Jun Kim\.ssh\key` splits
+ * into two words and ssh reads `Kim...` as its next flag). Double quotes are the form both POSIX
+ * shells and Git's own Windows parser accept, and unlike single quotes they do not mangle a
+ * backslash path. Escape the characters that stay special inside double quotes so a path can never
+ * introduce a second word or a substitution.
+ */
+function quoteSshArgument(value: string): string {
+  return `"${value.replace(/(["\\`$])/g, "\\$1")}"`;
+}
+
 function releasePushCommand(branch: string): { command: string[]; env?: Record<string, string> } {
   const keyPath = process.env.OCX_RELEASE_SSH_KEY?.trim();
   if (!keyPath) return { command: ["git", "push", "origin", branch] };
@@ -139,7 +153,7 @@ function releasePushCommand(branch: string): { command: string[]; env?: Record<s
     command: ["git", "push", slug, `HEAD:${branch}`],
     // IdentitiesOnly stops ssh from offering the agent's other keys first, which would authenticate
     // as the maintainer and get rejected by the ruleset again.
-    env: { GIT_SSH_COMMAND: `ssh -i ${keyPath} -o IdentitiesOnly=yes` },
+    env: { GIT_SSH_COMMAND: `ssh -i ${quoteSshArgument(keyPath)} -o IdentitiesOnly=yes` },
   };
 }
 
