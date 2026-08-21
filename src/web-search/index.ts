@@ -154,7 +154,12 @@ export function planWebSearch(
   const routedModelStallTimeoutMs = resolveRoutedModelStallTimeoutMs(cfg.routedModelStallTimeoutMs);
   // Same `?? 200_000` default the server applies when threading connectTimeoutMs into the loop.
   const connectTimeoutMs = config.connectTimeoutMs ?? 200_000;
-  const anthropicSidecar = findAnthropicSidecarProvider(config);
+  // Shared auth state (#2188): presence only — backend PREFERENCE stays with
+  // resolveSidecarBackend's explicit-or-openai contract.
+  const auth = resolveSidecarAuth(config);
+  const anthropicSidecar = auth.isAnthropicAuth && auth.anthropicProviderName && auth.anthropicProvider
+    ? { providerName: auth.anthropicProviderName, provider: auth.anthropicProvider }
+    : undefined;
   const backend = resolveSidecarBackend(cfg.backend);
   const maxSearches = cfg.maxSearchesPerTurn ?? DEFAULT_MAX_SEARCHES;
   const stallTimeoutSec = webSearchStallTimeoutSec(
