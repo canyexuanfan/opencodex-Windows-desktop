@@ -12,7 +12,7 @@ import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 
-const RESPONSES_ENDPOINT = `${XAI_GROK_CLI_BASE_URL}/responses`;
+const CHAT_ENDPOINT = `${XAI_GROK_CLI_BASE_URL}/chat/completions`;
 const encoder = new TextEncoder();
 
 let testDir = "";
@@ -23,8 +23,8 @@ let originalFetch: typeof fetch;
 beforeEach(async () => {
   originalFetch = globalThis.fetch;
   previousHome = process.env.OPENCODEX_HOME;
-  isolatedCodexHome = installIsolatedCodexHome("ocx-xai-responses-codex-");
-  testDir = mkdtempSync(join(tmpdir(), "ocx-xai-responses-"));
+  isolatedCodexHome = installIsolatedCodexHome("ocx-xai-chat-reasoning-codex-");
+  testDir = mkdtempSync(join(tmpdir(), "ocx-xai-chat-reasoning-"));
   process.env.OPENCODEX_HOME = testDir;
   await saveCredential("xai", {
     access: "stream-access",
@@ -49,26 +49,23 @@ function config(): OcxConfig {
     port: 0,
     hostname: "127.0.0.1",
     defaultProvider: "xai",
-    fastMode: true,
     providers: {
       xai: {
         adapter: "openai-chat",
         baseUrl: "https://api.x.ai/v1",
         authMode: "oauth",
         models: ["grok-4.6"],
-        modelAdapters: { "grok-4.6": "openai-responses" },
-        modelSupportsServiceTier: { "grok-4.6": false },
       },
     },
   } as OcxConfig;
 }
 
-function sse(payload: unknown): Uint8Array {
+function chatSse(payload: unknown): Uint8Array {
   return encoder.encode(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
-describe("xAI OAuth Responses streaming opt-in", () => {
-  test("uses the native Responses wire and relays the first delta before completion", async () => {
+describe("xAI OAuth Chat reasoning streaming", () => {
+  test("bridges reasoning_content before content and response.completed", async () => {
     let releaseCompletion!: () => void;
     const completionGate = new Promise<void>(resolve => { releaseCompletion = resolve; });
     let completionReleased = false;
@@ -78,81 +75,47 @@ describe("xAI OAuth Responses streaming opt-in", () => {
 
     globalThis.fetch = (async (input, init) => {
       const url = input instanceof Request ? input.url : String(input);
-      if (url !== RESPONSES_ENDPOINT) return originalFetch(input, init);
+      if (url !== CHAT_ENDPOINT) return originalFetch(input, init);
       upstreamCalls += 1;
       outboundHeaders = new Headers(init?.headers);
       outboundBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
 
       const body = new ReadableStream<Uint8Array>({
         start(controller) {
-          controller.enqueue(sse({
-            type: "response.created",
-            sequence_number: 0,
-            response: {
-              id: "resp_xai_stream",
-              object: "response",
-              status: "in_progress",
-              model: "grok-4.6",
-              output: [],
-            },
+          controller.enqueue(chatSse({
+            id: "chatcmpl_xai_reasoning",
+            object: "chat.completion.chunk",
+            model: "grok-4.6",
+            choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
           }));
-          controller.enqueue(sse({
-            type: "response.output_item.added",
-            sequence_number: 1,
-            output_index: 0,
-            item: { id: "msg_xai_stream", type: "message", status: "in_progress", role: "assistant", content: [] },
+          controller.enqueue(chatSse({
+            id: "chatcmpl_xai_reasoning",
+            object: "chat.completion.chunk",
+            model: "grok-4.6",
+            choices: [{ index: 0, delta: { reasoning_content: "first thought" }, finish_reason: null }],
           }));
-          controller.enqueue(sse({
-            type: "response.content_part.added",
-            sequence_number: 2,
-            item_id: "msg_xai_stream",
-            output_index: 0,
-            content_index: 0,
-            part: { type: "output_text", text: "", annotations: [] },
-          }));
-          controller.enqueue(sse({
-            type: "response.output_text.delta",
-            sequence_number: 3,
-            item_id: "msg_xai_stream",
-            output_index: 0,
-            content_index: 0,
-            delta: "first",
+          controller.enqueue(chatSse({
+            id: "chatcmpl_xai_reasoning",
+            object: "chat.completion.chunk",
+            model: "grok-4.6",
+            choices: [{ index: 0, delta: { reasoning_content: " then second" }, finish_reason: null }],
           }));
           void completionGate.then(() => {
             completionReleased = true;
-            const message = {
-              id: "msg_xai_stream",
-              type: "message",
-              status: "completed",
-              role: "assistant",
-              content: [{ type: "output_text", text: "first second", annotations: [] }],
-            };
-            controller.enqueue(sse({
-              type: "response.output_text.delta",
-              sequence_number: 4,
-              item_id: "msg_xai_stream",
-              output_index: 0,
-              content_index: 0,
-              delta: " second",
+            controller.enqueue(chatSse({
+              id: "chatcmpl_xai_reasoning",
+              object: "chat.completion.chunk",
+              model: "grok-4.6",
+              choices: [{ index: 0, delta: { content: "answer" }, finish_reason: null }],
             }));
-            controller.enqueue(sse({
-              type: "response.output_item.done",
-              sequence_number: 5,
-              output_index: 0,
-              item: message,
+            controller.enqueue(chatSse({
+              id: "chatcmpl_xai_reasoning",
+              object: "chat.completion.chunk",
+              model: "grok-4.6",
+              choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+              usage: { prompt_tokens: 1, completion_tokens: 3, total_tokens: 4 },
             }));
-            controller.enqueue(sse({
-              type: "response.completed",
-              sequence_number: 6,
-              response: {
-                id: "resp_xai_stream",
-                object: "response",
-                status: "completed",
-                model: "grok-4.6",
-                output: [message],
-                usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
-              },
-            }));
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
             controller.close();
           });
         },
@@ -182,28 +145,29 @@ describe("xAI OAuth Responses streaming opt-in", () => {
       let received = "";
       await Promise.race([
         (async () => {
-          while (!received.includes("response.output_text.delta")) {
+          while (!received.includes("response.reasoning_summary_text.delta")) {
             const chunk = await reader!.read();
-            if (chunk.done) throw new Error("stream ended before the first xAI delta");
+            if (chunk.done) throw new Error("stream ended before the first xAI reasoning delta");
             received += decoder.decode(chunk.value, { stream: true });
           }
         })(),
         new Promise<never>((_, reject) => setTimeout(
-          () => reject(new Error("the first xAI delta was not relayed before completion")),
+          () => reject(new Error("xAI reasoning was not relayed before completion")),
           1_500,
         )),
       ]);
 
-      expect(received).toContain("first");
+      expect(received).toContain("first thought");
+      expect(received).not.toContain("response.completed");
       expect(completionReleased).toBe(false);
       expect(upstreamCalls).toBe(1);
       expect(outboundBody?.model).toBe("grok-4.6");
-      expect(outboundBody?.input).toBe("hello");
+      expect(outboundBody?.messages).toBeArray();
       expect(outboundBody?.stream).toBe(true);
       expect(outboundBody?.service_tier).toBeUndefined();
-      expect(outboundBody?.reasoning).toMatchObject({ effort: "xhigh" });
-      expect(outboundBody?.messages).toBeUndefined();
-      expect(outboundBody?.reasoning_effort).toBeUndefined();
+      expect(outboundBody?.reasoning_effort).toBe("xhigh");
+      expect(outboundBody?.input).toBeUndefined();
+      expect(outboundBody?.reasoning).toBeUndefined();
       expect(outboundHeaders?.get("authorization")).toBe("Bearer stream-access");
       expect(outboundHeaders?.get("x-grok-client-identifier")).toBe("opencodex");
       expect(outboundHeaders?.get("x-grok-client-version")).toBe(XAI_GROK_CLIENT_VERSION);
@@ -214,8 +178,14 @@ describe("xAI OAuth Responses streaming opt-in", () => {
         if (chunk.done) break;
         received += decoder.decode(chunk.value, { stream: true });
       }
-      expect(received).toContain("response.completed");
-      expect(received).toContain(" second");
+      const reasoningIndex = received.indexOf("response.reasoning_summary_text.delta");
+      const contentIndex = received.indexOf("response.output_text.delta");
+      const completedIndex = received.indexOf("response.completed");
+      expect(reasoningIndex).toBeGreaterThanOrEqual(0);
+      expect(contentIndex).toBeGreaterThan(reasoningIndex);
+      expect(completedIndex).toBeGreaterThan(contentIndex);
+      expect(received).toContain("then second");
+      expect(received).toContain("answer");
     } finally {
       releaseCompletion();
       await reader?.cancel().catch(() => {});
