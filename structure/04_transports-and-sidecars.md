@@ -39,6 +39,37 @@ Responses-compatible streaming output.
 - 다른 대안 대신 이 방식을 선택한 이유: Provider-specific workarounds fragment the contract, while unconditional restoration could turn an untrusted ordinary function call into a privileged client discovery action.
 - 장점, 단점 및 영향: Strict third-party Responses gateways can start and continue deferred discovery without changing native ChatGPT behavior; ordinary same-named functions remain distinct, and the proxy performs a capped SSE lifecycle rewrite only when the request actually required compatibility translation.
 
+[Decision Log]
+- 목적과 의도: Keep Codex 0.147 namespace tool catalogs usable after a routed provider adopts native Responses but implements only the public flat tool variants.
+- 기존 구현 및 제약 조건: Chat translation already flattened namespace children, while native Responses passthrough forwarded the private `namespace` variant unchanged. xAI therefore rejected Grok requests before inference after its OAuth Grok 4.5/4.6 route moved to Responses.
+- 검토한 주요 대안: Move Grok back to Chat; special-case only xAI or the reserved `functions` group; flatten every complete namespace on noncanonical Responses and restore request-authorized aliases on return.
+- 선택한 방식: Noncanonical Responses lowers `functions` children to their bare top-level names and every other complete namespace to collision-checked `<namespace>__<name>` aliases after custom/tool-search conversion. It rewrites matching replay calls and tool selectors, records the aliases on the built request, and restores only those aliases in JSON/SSE call items before custom/tool-search lifecycle repair. Canonical OpenAI forward preserves native namespace shapes.
+- 다른 대안 대신 이 방식을 선택한 이유: A transport regression should not discard Responses streaming or create a provider-specific fork, and restoration without request-local authorization could reinterpret an unrelated upstream function as a client namespace call.
+- 장점, 단점 및 영향: Grok and other public-schema Responses gateways accept current Codex catalogs while Codex still receives explicit namespace routing. No `type: "namespace"` value survives the boundary: a group the layer cannot express — empty, nested, or with an unusable child name — is dropped along with the children it cannot represent, because relaying the private shape costs the whole request rather than one tool. Genuinely ambiguous wire names still fail closed, now as a 400 rather than an unstructured 500.
+
+Two coordinates that lower to the same wire name are treated as one tool when they denote one:
+`buildTools` flattens the reserved `functions` group without a namespace, so a bare declaration and
+a `functions` child of the same name are the duplicate the parser already tolerates — and the one
+`promoteClientLoadedTools` produces. The declaration is emitted once instead of failing the request.
+
+Replayed call items are lowered whether or not this turn declares the group they name. A routed
+compaction turn strips the whole tool surface before the boundary runs, and a catalog can change
+mid-session, but the client is still replaying items this layer's own response restoration stamped
+with a private `namespace`. Only `tool_choice` resolves a bare name through the catalog: a history
+item records which tool actually ran, so re-pointing it at a same-named namespace child would
+rewrite that record on a coincidence rather than translate it.
+
+Codex-private tool fields are removed at the same boundary from one table
+(`CANONICAL_ONLY_TOOL_FIELDS`) rather than one bespoke pass each: `external_web_access` on either
+web-search variant, and `defer_loading` on any declaration, which `activateDeferredTool` clears only
+for tools a `tool_search_output` already loaded. A new private bit is a row there.
+
+The same noncanonical boundary strips ChatGPT's private `external_web_access` bit from routed
+`web_search` declarations. The public tool remains enabled and all other options remain intact;
+canonical OpenAI forwarding preserves the bit. xAI's public Responses schema enables browsing by
+the presence of `web_search` and rejects the private argument, so forwarding it made the first
+post-namespace request fail with HTTP 400.
+
 The option-aware `openai` provider uses `openai-responses` with `authMode: "forward"`. Pool mode
 resolves main plus added accounts through affinity/quota/cooldown ownership; Direct forwards only
 the allowed Codex/OpenAI auth/session headers from the current request and short-circuits pool
@@ -69,6 +100,43 @@ alone never opt a gateway in.
 `POST /v1/responses/compact` handles remote compaction v1 before the generic `/v1/responses` branch
 and before the `/v1/*` guard. Unknown `/v1/*` paths return JSON 404 errors instead of falling through
 to GUI static serving.
+
+A replayed compaction item carries an `encrypted_content` blob only its minting backend can decode,
+and the client replays it on every later turn. The proxy's own `ocx1:` envelopes are transparent
+base64, so they always lower to plain user messages. A native blob is relayed only when there is no
+known serving-identity mismatch and the destination is known to decode native blobs — the canonical
+ChatGPT forward surface, the official OpenAI API, or a provider with the explicit
+`decodesNativeCompactionBlobs` capability. The destination gate alone is insufficient because more
+than one backend, including OpenAI and xAI, mints native blobs: a destination can decode its own blob
+without being able to decode the previous backend's. The same serving-identity mismatch signal
+therefore strips reasoning `encrypted_content` and degrades native compaction blobs through the
+existing opaque-note path. When the thread has no recorded identity, the destination-only behavior
+is deliberately unchanged. Forward auth alone is not evidence: noncanonical forward providers
+receive no caller credentials and may point at any backend. On any other routed destination the blob
+also degrades to the same opaque note the bridged parser uses, because forwarding it there fails the
+turn and the item outlives the failure in the client transcript, repeating on every later turn
+including the compaction turn the proxy itself drives. With `store: false`, request sanitization
+strips ids from every input item, including compact-wire items, matching codex-rs
+(`core/src/client.rs:918-925`). Compact-wire items remain exempt from response-side field backfill.
+
+[Decision Log]
+- 목적과 의도: Keep a session usable after its history crosses backends, instead of wedging it on a
+  compaction blob the current upstream cannot decode.
+- 기존 구현 및 제약 조건: Compaction handling was binary — `ocx1:` envelopes were ours, everything
+  else was treated as a native blob and gated only by the destination, even though multiple backends
+  mint mutually incompatible blobs. Response-side field backfill exempted only `compaction`, so its
+  two sibling types received synthesized ids the client then replayed.
+- 검토한 주요 대안: Tag every compaction item with its minting provider/credential/model identity;
+  drop compaction items on any route change; gate relay on the destination that would decode them.
+- 선택한 방식: Reuse the thread's recorded serving identity to degrade native blobs after a known
+  route change; otherwise retain the destination capability gate, and treat the compact wire family
+  as one enumeration so id-bearing passes cannot diverge per type.
+- 다른 대안 대신 이 방식을 선택한 이유: Full per-item provenance tagging is unnecessary when the
+  existing thread identity proves a route change, while dropping the item would silently discard
+  compacted context and widening unknown-identity behavior needs a separate decision.
+- 장점, 단점 및 영향: A cross-backend session degrades one compaction summary to a note instead of
+  failing every later turn. A self-hosted OpenAI relay keeps its blobs only when explicitly opted in;
+  other routed gateways see a note because routed compaction produces an `ocx1:` envelope.
 
 ### Mixed-wire provider defaults
 
@@ -222,9 +290,11 @@ items restore `{ namespace: "image_gen", name: "<inner-name>" }` so Codex can di
 extension. When item-id repair is also enabled, both transforms compose in one SSE parse/stringify
 pass (`src/server/sse-payload-rewrite.ts`) rather than chaining separate JS pull wrappers.
 Inspection and continuation-cache branches keep the raw upstream alias, allowing stored
-replays to return upstream without leaking a client-only namespace shape. Malformed, empty, and
-unrelated namespaces remain untouched. ChatGPT forward mode preserves the private namespace and
-hosted tool because that backend understands their native semantics.
+replays to return upstream without leaking a client-only namespace shape. The image-gen layer itself
+leaves malformed and empty image-gen namespaces untouched, but on a noncanonical route the general
+namespace boundary above runs after it and lowers whatever remains, so no private group reaches the
+wire. ChatGPT forward mode preserves the private namespace and hosted tool because that backend
+understands their native semantics.
 
 Per-model `modelReasoningSummaryDelivery` is a narrow compatibility layer for
 `openai-responses` gateways whose summary capability is real but whose accepted delivery enum
@@ -478,6 +548,52 @@ replays are explicit and receive the same repair.
 
 These compatibility guards are covered by focused tests and should stay close to the adapters that
 need them.
+
+Responses passthrough always removes output-only `status` from `reasoning` input items, including
+items that retain opaque `encrypted_content`. The prior retains-blob-keeps-status invariant was
+defensive rather than observed: measured OpenAI reasoning items never contain `status`, and Grok
+accepts its own blob with `status` removed. Keeping it on a cold cross-backend replay instead made
+OpenAI reject the unknown field before validating the blob, starving opaque-blob recovery of the
+provenance error it needs. The established raw-`content` rule remains separate: ChatGPT accepts
+reasoning input only with empty `content`, so a native blob plus raw content keeps the blob but still
+blanks `content`. The blob is kept unless the in-process thread record proves that the current
+provider, destination, adapter, model, or credential differs from the route recorded for the prior
+request on that client thread. On a proven change the blob is removed while the reasoning item and
+its summary survive; `status` has already been removed on every path. Missing, expired, or evicted
+identity state is unknown. The comparison uses the durable destination and credential identities
+with the provider, adapter, and model, so OAuth token-generation refreshes do not look like backend
+changes; when either durable dimension is unavailable it refuses to record rather than falling back
+to a volatile identity. This deterministic pre-flight is the primary path and covers threads the
+process has served while their record remains inside the TTL/LRU bounds. Missing, expired, evicted, and
+pre-process history stays fail-soft on the first send. If a Responses upstream then returns its own
+self-identifying opaque-blob 4xx (`invalid_encrypted_content`, or xAI's two `invalid-argument`
+decoder errors), the proxy rebuilds once through the same sanitation path: reasoning
+`encrypted_content` is removed and compaction blobs use the existing text degradation. A one-shot
+guard makes a second rejection terminal, and a successful recovery records the current serving
+identity so later route changes return to deterministic pre-flight. A cold-record cross-backend
+switch therefore costs one extra upstream round trip and one turn of degraded reasoning, rather than
+wedging the thread; unrelated 4xx responses and requests whose outbound body carries no blob never
+enter this recovery.
+
+A combo target rotation between turns legitimately changes that serving identity, so the following
+turn drops blobs minted by the prior target. This is correct because the new target cannot decode
+them, but it is intentionally unobvious to the client: `pickComboTarget` keys selection state only by
+combo id, without a conversation dimension, and the SSE model-name rewrite preserves the requested
+combo name instead of exposing the concrete target switch. A user can therefore observe a reasoning
+cache drop with no visible model change.
+
+The image and web-search auxiliary loops consume `_reasoningReplayScope` for bridge-level replay but
+never call `bindRouteReasoningReplayScope`, so their internal small-model requests do not update the
+serving-identity record. That omission is intentional: binding those routes would poison the main
+conversation's last-serving identity and cause a later main-model turn to strip valid blobs.
+
+[Decision Log]
+- 목적과 의도: Keep same-backend opaque reasoning replay while preventing backend-private blobs and output-only fields from breaking the first turn after a route change.
+- 기존 구현 및 제약 조건: Reasoning-input sanitation already handled raw content and `ocxr1:` envelopes; the replay cache already supplied a bounded, thread-scoped physical-route identity, but no record connected that identity to native `encrypted_content` provenance.
+- 검토한 주요 대안: Strip every opaque blob, persist provenance across restarts, trust generic 4xx prose, rely only on a retry, or combine deterministic route comparison with a narrowly identified recovery.
+- 선택한 방식: Remove output-only `status` from every reasoning input item without changing the pre-existing raw-`content` blanking rule; compare and update a 64-entry/256 KiB/one-hour in-process serving-identity record using durable destination and credential dimensions at request time, pass a proven change into the Responses adapter before the first send, and use one self-identified opaque-blob recovery only when provenance was unknown.
+- 다른 대안 대신 이 방식을 선택한 이유: The former blob/status coupling was defensive rather than observed, and live backends showed that removing `status` preserves same-backend Grok replay while allowing cold cross-backend requests to reach blob validation. Unknown provenance can still be valid after restart, durable storage is unnecessary for this bounded compatibility hint, and deterministic pre-flight avoids the extra paid or stateful upstream attempt whenever the process has evidence. The upstream's narrow error identity supplies authoritative evidence only for histories the process could not observe.
+- 장점, 단점 및 영향: Same-route and unknown replay retain cached reasoning on the first send without replaying an output-only field, known cross-route replay keeps the reasoning item without its undecodable blob, and a cold cross-route replay can reach opaque-blob recovery instead of failing early on `status`. A repeated blob rejection is surfaced unchanged after exactly one recovery attempt.
 
 DeepSeek's stateless Responses compatibility pass normalizes only unambiguous tool-call batches.
 Calls emitted before the first matched output stay together as one assistant batch, followed by
@@ -823,6 +939,16 @@ Codex app, so tool cells group like native models — while the text still round
 `preserveReasoningContentModels` replay. Visible mode (summary "auto") keeps the raw
 `content[reasoning_text]` shape. Diagnosis and codex-rs grouping evidence:
 `devlog/_fin/260709_native_response_pattern/`.
+
+The content-to-summary channel rewrite skips any reasoning item that carries a native
+`encrypted_content` blob. The blob is opaque, state-bearing provider data, so the item must
+round-trip unchanged unless that backend has an explicit replay contract permitting a rewrite.
+This defensively protects providers that issue blobs and later join the route through
+`preserveReasoningContentModels`. The rewrite's round trip was verified against DeepSeek, which is
+`statelessResponses` and issues no blob. Grok is unaffected in practice because it natively emits
+summary-channel reasoning and no `reasoning_text` events, so this content-to-summary item rewrite
+does not engage on its route. Only the stored item is exempt — `reasoning_text` delta events carry
+no blob and still route to the summary channel, so the live expandable trace is unchanged.
 
 The process-local raw-reasoning fallback is fail-closed unless a request has an explicit client
 thread plus an exact provider destination, wire adapter, final model, and physical credential
