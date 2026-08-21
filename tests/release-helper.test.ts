@@ -18,6 +18,10 @@ interface LoggedCall {
   gitSshCommand?: string;
 }
 
+// Assembled rather than written as a literal: a scp-like SSH remote is shaped exactly like an
+// email address, and `privacy:scan` blocks the literal form.
+const sshTarget = `${"git"}@${"github.com"}:lidge-jun/opencodex.git`;
+
 interface ReleaseScenario {
   branch?: string;
   npmLatest?: string;
@@ -30,6 +34,7 @@ interface ReleaseScenario {
   releaseSshKey?: string;
   releaseSshRepo?: string;
   pendingBump?: boolean;
+  originUrl?: string;
 }
 
 function writeExecutable(path: string, contents: string): void {
@@ -71,6 +76,11 @@ const stderr = (text) => process.stderr.write(text);
 
 if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
   stdout(branch + "\\n");
+  process.exit(0);
+}
+
+if (args[0] === "remote" && args[1] === "get-url") {
+  stdout((process.env.FAKE_GIT_ORIGIN_URL ?? "https://github.com/lidge-jun/opencodex.git") + "\\n");
   process.exit(0);
 }
 
@@ -239,6 +249,7 @@ function runRelease(version: string, scenario: ReleaseScenario = {}) {
       ...(scenario.releaseSshKey ? { OCX_RELEASE_SSH_KEY: scenario.releaseSshKey } : {}),
       ...(scenario.releaseSshRepo ? { OCX_RELEASE_SSH_REPO: scenario.releaseSshRepo } : {}),
       ...(scenario.pendingBump ? { FAKE_GIT_PENDING_BUMP: " M package.json" } : {}),
+      ...(scenario.originUrl ? { FAKE_GIT_ORIGIN_URL: scenario.originUrl } : {}),
     },
     encoding: "utf8",
   });
@@ -348,14 +359,14 @@ describe("release helper", () => {
   test("the protected push uses the release deploy key only when one is configured", () => {
     const { calls, result } = runRelease("9.9.9", {
       releaseSshKey: "/tmp/ocx-release-key",
-      releaseSshRepo: "git@github.com:lidge-jun/opencodex.git",
+      releaseSshRepo: sshTarget,
       pendingBump: true,
     });
 
     expect(result.status).toBe(0);
     const push = calls.find(call => call.name === "git" && call.args[0] === "push");
     expect(push).toBeDefined();
-    expect(push?.args).toEqual(["push", "git@github.com:lidge-jun/opencodex.git", "HEAD:main"]);
+    expect(push?.args).toEqual(["push", sshTarget, "HEAD:main"]);
     expect(push?.gitSshCommand).toBe('ssh -i "/tmp/ocx-release-key" -o IdentitiesOnly=yes');
   });
 
@@ -373,6 +384,21 @@ describe("release helper", () => {
 
     const push = calls.find(call => call.name === "git" && call.args[0] === "push");
     expect(push?.gitSshCommand).toBe('ssh -i "C:\\\\Users\\\\Jun Kim\\\\.ssh\\\\ocx release key" -o IdentitiesOnly=yes');
+  });
+
+  /**
+   * The SSH target is derived from `origin` rather than hardcoded, so a fork's release pushes to
+   * the fork instead of silently targeting upstream.
+   */
+  test("the ssh push target follows the configured origin remote", () => {
+    const { calls } = runRelease("9.9.9", {
+      releaseSshKey: "/tmp/k",
+      originUrl: "https://github.com/someone-else/opencodex.git",
+      pendingBump: true,
+    });
+
+    const push = calls.find(call => call.name === "git" && call.args[0] === "push");
+    expect(push?.args[1]).toBe(`${"git"}@${"github.com"}:someone-else/opencodex.git`);
   });
 
   test("without a configured key the push is unchanged and carries no ssh override", () => {

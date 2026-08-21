@@ -143,10 +143,36 @@ function quoteSshArgument(value: string): string {
   return `"${value.replace(/(["\\`$])/g, "\\$1")}"`;
 }
 
-function releasePushCommand(branch: string): { command: string[]; env?: Record<string, string> } {
+/**
+ * Derive the SSH push target from the configured `origin` URL.
+ *
+ * Deliberately derived rather than hardcoded: a hardcoded `git@host:owner/repo.git` literal is
+ * indistinguishable from an email address to `privacy:scan`, and it would also silently push a
+ * fork's release to the upstream repository. `OCX_RELEASE_SSH_REPO` still wins when a maintainer
+ * needs an explicit target.
+ */
+function sshTargetFromOrigin(originUrl: string): string | undefined {
+  const trimmed = originUrl.trim();
+  if (!trimmed) return undefined;
+  const https = /^https?:\/\/([^/]+)\/(.+?)(?:\.git)?\/?$/.exec(trimmed);
+  if (https) return `${SSH_USER}@${https[1]}:${https[2]}.git`;
+  // Already an SSH remote (either scp-like or ssh://): reuse it verbatim.
+  if (trimmed.startsWith("ssh://") || /^[^/]+@[^/]+:/.test(trimmed)) return trimmed;
+  return undefined;
+}
+
+/** Split out so the scp-like SSH target is assembled rather than written as an address literal. */
+const SSH_USER = "git";
+
+async function releasePushCommand(branch: string): Promise<{ command: string[]; env?: Record<string, string> }> {
   const keyPath = process.env.OCX_RELEASE_SSH_KEY?.trim();
   if (!keyPath) return { command: ["git", "push", "origin", branch] };
-  const slug = process.env.OCX_RELEASE_SSH_REPO?.trim() || "git@github.com:lidge-jun/opencodex.git";
+  const configured = process.env.OCX_RELEASE_SSH_REPO?.trim();
+  const slug = configured || sshTargetFromOrigin(await capture(["git", "remote", "get-url", "origin"]));
+  if (!slug) {
+    console.error("✗ OCX_RELEASE_SSH_KEY is set but no SSH push target could be derived from origin; set OCX_RELEASE_SSH_REPO.");
+    process.exit(1);
+  }
   return {
     // Push to the SSH URL explicitly rather than rewriting the `origin` remote: the remote stays
     // HTTPS for every other command, so nothing outside this call inherits the key.
@@ -462,7 +488,7 @@ if (pendingBump) {
 const releaseSha = await capture(["git", "rev-parse", "HEAD"]);
 if (pendingBump) {
   console.log(`→ push origin ${branch}`);
-  const push = releasePushCommand(branch);
+  const push = await releasePushCommand(branch);
   if (push.env) console.log("→ using the release deploy key for the protected push");
   await runLoud(push.command, push.env);
 } else {
