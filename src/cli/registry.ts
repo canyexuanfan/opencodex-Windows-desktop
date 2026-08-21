@@ -108,6 +108,10 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     name: "doctor",
     usage: "ocx doctor",
     summary: "Diagnose environment/network issues (paths, WSL /mnt, proxy env, ChatGPT reachability).",
+    details: [
+      "Default mode is observe-only and reports the native-write coordinator state and exact path.",
+      "After stopping the proxy/service, `--recover-zero-byte-coordinator --yes` moves only a proven zero-byte coordinator to a same-directory backup.",
+    ],
   },
   {
     name: "debug",

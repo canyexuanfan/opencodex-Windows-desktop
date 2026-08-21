@@ -162,6 +162,23 @@ unreachable; and 64 for invalid arguments.
 
 ### `ocx doctor`
 
+The default report includes the native-write coordinator state and exact path using immutable
+read-only SQLite inspection. Zero-byte, empty-unversioned, and rowless states are shown separately
+from catalog/app-server health, so a successful catalog refresh is not mistaken for successful
+Codex config injection.
+
+After stopping the OpenCodex proxy/service, explicitly preserve and move a proven non-authoritative
+coordinator, then retry sync:
+
+```bash
+ocx doctor --recover-zero-byte-coordinator --yes
+ocx sync
+```
+
+The recovery accepts only a proven zero-byte remnant. It refuses every non-empty, valid, unknown,
+changed, unsafe, or busy database and creates a same-directory `.zero-byte-backup-*` file instead
+of deleting anything.
+
 Run read-only environment and connectivity diagnostics: state paths and filesystem type, WSL dual
 installs, proxy environment/config, ChatGPT reachability, Codex plugin and project-config warnings,
 and pending history migration. The Codex app-home targeting section also detects the narrow Windows
