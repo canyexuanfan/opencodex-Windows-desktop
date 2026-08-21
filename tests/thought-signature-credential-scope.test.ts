@@ -86,6 +86,27 @@ describe("#1926 durable credential scope", () => {
     expect(lookupReplayThoughtSignature("call_w", scopeFor("credential:aaa"))).toBe(SIG);
   });
 
+  test("Codex pool account identities survive reload without crossing account slots", async () => {
+    const salt = thoughtSignatureReplaySalt();
+    const poolA = durableReplayCredentialIdentity("codex", "pool-a", undefined, salt);
+    const poolB = durableReplayCredentialIdentity("codex", "pool-b", undefined, salt);
+    expect(poolA).toBeDefined();
+    expect(poolB).toBeDefined();
+    expect(poolA).not.toBe(poolB);
+
+    rememberThoughtSignatureForReplay("call_pool", SIG, scopeFor(poolA, "thread-pool"));
+    await flushThoughtSignatureReplayForTests();
+    resetThoughtSignatureReplayForTests();
+
+    const reloadedSalt = thoughtSignatureReplaySalt();
+    const reloadedPoolA = durableReplayCredentialIdentity("codex", "pool-a", undefined, reloadedSalt);
+    const reloadedPoolB = durableReplayCredentialIdentity("codex", "pool-b", undefined, reloadedSalt);
+    expect(reloadedPoolA).toBe(poolA);
+    expect(reloadedPoolB).toBe(poolB);
+    expect(lookupReplayThoughtSignature("call_pool", scopeFor(reloadedPoolB, "thread-pool"))).toBeUndefined();
+    expect(lookupReplayThoughtSignature("call_pool", scopeFor(reloadedPoolA, "thread-pool"))).toBe(SIG);
+  });
+
   test("salt is minted once, persisted, and produces stable full-width identities", () => {
     const salt = thoughtSignatureReplaySalt();
     expect(salt).toBeDefined();
@@ -118,4 +139,3 @@ describe("#1926 durable credential scope", () => {
     expect(snapshot.entries.length).toBe(1);
   });
 });
-

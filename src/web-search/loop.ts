@@ -6,6 +6,10 @@ import type { AttemptRecoveryKind } from "../usage/log";
 import { bridgeToResponsesSSE } from "../bridge";
 import { runWebSearch, type SidecarOutcome, type SidecarOutcomeRecorder, type SidecarSettings } from "./executor";
 import { runAnthropicWebSearch } from "./anthropic-executor";
+import { runXaiWebSearch, type XaiSearchOptions } from "./xai-executor";
+import { runGeminiWebSearch } from "./gemini-executor";
+import { runExaWebSearch } from "./exa-executor";
+import type { WebSearchBackendId } from "./index";
 import { clearableDeadline } from "../lib/abort";
 import { redactSecretString } from "../lib/redact";
 import { readBoundedResponseBody } from "../lib/bounded-body";
@@ -250,12 +254,24 @@ export interface WebSearchLoopDeps {
   parsed: OcxParsedRequest;
   adapter: ProviderAdapter;
   incomingMeta: IncomingMeta;
-  /** Which executor runs searches. Defaults to "openai" so existing callers keep the ChatGPT path (audit F4). */
-  backend?: "openai" | "anthropic";
+  /**
+   * Which executor runs searches. Defaults to "openai" so existing callers keep the ChatGPT path
+   * (audit F4). The widened ids (xai/gemini/exa) cannot reach the loop yet: planWebSearch returns
+   * no plan for them (inert 060 arms), and the dispatch below only branches on "anthropic".
+   */
+  backend?: WebSearchBackendId;
   /** Required for the openai backend; unused (and typically undefined) for the anthropic backend. */
   forwardProvider?: OcxProviderConfig;
   /** Required for the anthropic backend: the stored-OAuth provider that runs web_search_20250305. */
   anthropicSidecar?: { providerName: string; provider: OcxProviderConfig };
+  /** Required for the xai backend: the stored Grok OAuth provider (L7). */
+  xaiSidecar?: { providerName: string; provider: OcxProviderConfig };
+  /** Required for the gemini backend: the stored Antigravity CCA provider (L8). */
+  geminiSidecar?: { providerName: string; provider: OcxProviderConfig };
+  /** Required for the exa backend: the operator key, read from config at plan unpack (L9). */
+  exaApiKey?: string;
+  /** Opt-in x_search options for the xai backend. */
+  xaiSearchOptions?: XaiSearchOptions;
   hostedTool: Record<string, unknown>;
   selectedForwardHeaders: Headers;
   settings: SidecarSettings;
@@ -294,6 +310,8 @@ export interface WebSearchLoopDeps {
   on429?: (retryAfterHeader: string | null) => ProviderAdapter | null;
   /** Opt-in same-target 429 policy (key-auth providers). When present, 429 replays on the SAME key before on429 rotation. */
   retryOn429Policy?: Required<RateLimitRetryPolicy> | null;
+  /** Called only when the final bridged Responses stream reaches completed or incomplete. */
+  onCompletedResponse?: (response: Record<string, unknown>) => void;
 }
 
 /**
@@ -656,9 +674,30 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
         // signal.aborted both after the await and in the catch (a fulfilled {error} on an aborted
         // signal would otherwise look like an ordinary degradable failure).
         try {
-          outcome = backend === "anthropic" && anthropicSidecar
-            ? await runAnthropicWebSearch(query, anthropicSidecar.providerName, anthropicSidecar.provider, settings, signal)
-            : await runWebSearch(query, hostedTool, forwardProvider!, selectedForwardHeaders, settings, signal, recordSidecarOutcome);
+          if (backend === "anthropic" && anthropicSidecar) {
+            outcome = await runAnthropicWebSearch(query, anthropicSidecar.providerName, anthropicSidecar.provider, settings, signal);
+          } else if (backend === "xai") {
+            // L7: stored Grok OAuth to the pinned api.x.ai Responses endpoint; same
+            // never-throws contract and no Codex/OpenAI pool outcome recording (F5 parity).
+            // A missing xaiSidecar is an invariant violation — fail CLOSED with an error
+            // outcome rather than falling through to the forward-header OpenAI executor
+            // (review High: that fallthrough would be credential-sensitive).
+            outcome = deps.xaiSidecar
+              ? await runXaiWebSearch(query, deps.xaiSidecar.providerName, deps.xaiSidecar.provider, settings, deps.xaiSearchOptions ?? {}, signal)
+              : { text: "", sources: [], error: "xai backend selected without a resolved Grok OAuth provider" };
+          } else if (backend === "gemini") {
+            // L8: Antigravity CCA grounding; same fail-closed invariant stance as xai.
+            outcome = deps.geminiSidecar
+              ? await runGeminiWebSearch(query, deps.geminiSidecar.providerName, deps.geminiSidecar.provider, settings, signal)
+              : { text: "", sources: [], error: "gemini backend selected without a resolved Antigravity provider" };
+          } else if (backend === "exa") {
+            // L9: non-LLM lane; key comes from the loop deps, never the plan. Fail closed.
+            outcome = deps.exaApiKey
+              ? await runExaWebSearch(query, deps.exaApiKey, settings, signal)
+              : { text: "", sources: [], error: "exa backend selected without an exaApiKey" };
+          } else {
+            outcome = await runWebSearch(query, hostedTool, forwardProvider!, selectedForwardHeaders, settings, signal, recordSidecarOutcome);
+          }
           if (signal.aborted) throw new LoopError(499, "client closed request during web-search");
         } catch (e) {
           if (e instanceof LoopError) throw e;
@@ -847,6 +886,7 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       ...(deps.stallTimeoutSec !== undefined ? { stallTimeoutSec: deps.stallTimeoutSec } : {}),
       ...(deps.onFirstOutput ? { onFirstOutput: deps.onFirstOutput } : {}),
       ...(deps.onUsage ? { onUsage: deps.onUsage } : {}),
+      ...(deps.onCompletedResponse ? { onCompletedResponse: deps.onCompletedResponse } : {}),
     },
   );
   return new Response(sse, { headers: SSE_HEADERS });

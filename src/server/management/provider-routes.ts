@@ -82,6 +82,10 @@ import {
   LOCAL_PROVIDER_RELOAD_PATH,
 } from "../../lib/local-provider-reload-contract";
 import { refreshUserCostOverlays } from "../../usage/user-cost-overlays";
+import {
+  XAI_RESPONSES_OPT_IN_MODELS,
+  xaiResponsesOptInState,
+} from "../../providers/xai-responses-opt-in";
 
 import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostReason, costResult, requestLogDto, stripRegistryOnlyStaticHeaders, fetchAllModels } from "./shared";
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
@@ -180,6 +184,20 @@ function applyProviderPatchFields(
   if (Object.hasOwn(rawBody, "liveModels")) {
     if (typeof rawBody.liveModels !== "boolean") return { error: "liveModels must be a boolean" };
     next.liveModels = rawBody.liveModels;
+    touched = true;
+  }
+  if (Object.hasOwn(rawBody, "xaiResponsesOptIn")) {
+    if (name !== "xai") return { error: "xaiResponsesOptIn is valid only for provider xai" };
+    if (typeof rawBody.xaiResponsesOptIn !== "boolean") {
+      return { error: "xaiResponsesOptIn must be a boolean" };
+    }
+    const modelAdapters = { ...(next.modelAdapters ?? {}) };
+    for (const model of XAI_RESPONSES_OPT_IN_MODELS) {
+      if (rawBody.xaiResponsesOptIn) modelAdapters[model] = "openai-responses";
+      else delete modelAdapters[model];
+    }
+    if (Object.keys(modelAdapters).length > 0) next.modelAdapters = modelAdapters;
+    else delete next.modelAdapters;
     touched = true;
   }
   if (Object.hasOwn(rawBody, "requestPacing")) {
@@ -394,6 +412,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       apiKeyTransport: p.apiKeyTransport,
       disabled: p.disabled === true,
       codexAccountMode: providerCodexAccountMode(name, p),
+      ...(name === "xai" ? { xaiResponsesOptInState: xaiResponsesOptInState(p) } : {}),
       discovery: p.liveModels === false ? undefined : getProviderDiscoveryStatus(name),
     })));
   }
@@ -694,6 +713,9 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       name,
       disabled: config.providers[name]!.disabled === true,
       hasApiKey: !!config.providers[name]!.apiKey,
+      ...(name === "xai"
+        ? { xaiResponsesOptInState: xaiResponsesOptInState(config.providers[name]!) }
+        : {}),
       catalogRefresh,
     });
   }

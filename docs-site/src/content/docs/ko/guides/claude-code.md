@@ -179,7 +179,7 @@ Claude 페이지에서 압축 값을 조절할 수 있어요. **경고:** 모델
 
 ## 로스터 에이전트(injectAgents)
 
-`ocx claude`와 시스템 환경 데몬은 추천 서브에이전트 로스터(Subagents 탭, 최대 5개 모델)와
+프록시 시작/ensure, `ocx claude`, 관련 대시보드 저장은 추천 서브에이전트 로스터(Subagents 탭, 최대 5개 모델)와
 `ocx-self`를 `~/.claude/agents/ocx-*.md`에 동기화해요.
 
 - **`ocx-self`**는 `/model` 선택기의 기본값을 고정하고, 값이 없으면 `claudeCode.model`을 사용해요.

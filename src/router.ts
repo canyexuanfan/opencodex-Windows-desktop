@@ -355,6 +355,17 @@ export function routedProviderConfig(providerName: string, provider: OcxProvider
     ...(provider.supportsServiceTier === undefined && registryEntry.supportsServiceTier !== undefined
       ? { supportsServiceTier: registryEntry.supportsServiceTier }
       : {}),
+    // Registry-only web-search capability: without this backfill a saved provider row reaches
+    // the Responses adapter with the flag `undefined`, so the capability gate added in #2262
+    // reads "unclassified" and forwards Codex's OpenAI-only `web_search` config fields. xAI
+    // rejects the whole request before inference ("Argument not supported:
+    // external_web_access"), which killed every routed Grok turn on the Responses lane.
+    // enrichProviderFromRegistry() already fills this, but the request path resolves through
+    // routedProviderConfig() and never called it.
+    ...(provider.supportsOpenAiWebSearchToolFields === undefined
+      && registryEntry.supportsOpenAiWebSearchToolFields !== undefined
+      ? { supportsOpenAiWebSearchToolFields: registryEntry.supportsOpenAiWebSearchToolFields }
+      : {}),
     ...(provider.preserveResponsesReasoningContent === undefined && registryEntry.preserveResponsesReasoningContent !== undefined
       ? { preserveResponsesReasoningContent: registryEntry.preserveResponsesReasoningContent }
       : {}),
@@ -398,6 +409,9 @@ export function routedProviderConfig(providerName: string, provider: OcxProvider
     ...(provider.parallelToolCalls === undefined && registryEntry.parallelToolCalls !== undefined ? { parallelToolCalls: registryEntry.parallelToolCalls } : {}),
     ...(provider.promptCacheKey === undefined && registryEntry.promptCacheKey !== undefined ? { promptCacheKey: registryEntry.promptCacheKey } : {}),
     ...(provider.chatServiceTier === undefined && registryEntry.chatServiceTier !== undefined ? { chatServiceTier: registryEntry.chatServiceTier } : {}),
+    ...(provider.openaiChatEofTolerance === undefined && registryEntry.openaiChatEofTolerance !== undefined
+      ? { openaiChatEofTolerance: registryEntry.openaiChatEofTolerance }
+      : {}),
     ...(provider.reasoningWireFormat === undefined && registryEntry.reasoningWireFormat !== undefined
       ? { reasoningWireFormat: registryEntry.reasoningWireFormat }
       : {}),
