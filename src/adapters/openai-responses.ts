@@ -1701,7 +1701,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       if (!isCanonicalOpenAiForwardProvider(provider)) {
         outBody = promoteClientLoadedTools(outBody);
       }
-      if (provider.authMode !== "forward") {
+      if (!isCanonicalOpenAiForwardProvider(provider)) {
         const rewritten = rewriteRoutedCustomToolsForUpstream(outBody);
         outBody = rewritten.body;
         convertedRoutedCustomToolNames = rewritten.names;

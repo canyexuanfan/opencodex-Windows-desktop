@@ -1,5 +1,6 @@
 import type { CodexAccountMode, OcxConfig, OcxProviderConfig, ProviderCostOverlay } from "../types";
 import { OPENAI_PROVIDER_TIER_VERSION } from "../types";
+import { openaiResponsesUrl } from "../adapters/openai-responses-url";
 import { MAX_COST4_RATE } from "../usage/expected-prices";
 
 export const OPENAI_CODEX_PROVIDER_ID = "openai";
@@ -36,7 +37,35 @@ export function isCanonicalOpenAiForwardProvider(provider: OcxProviderConfig): b
     && normalizedBaseUrl(provider.baseUrl) === CODEX_FORWARD_BASE_URL;
 }
 
-const OPENAI_API_BASE_URL = "https://api.openai.com/v1";
+const OPENAI_API_ORIGIN = "https://api.openai.com";
+const OPENAI_API_BASE_URL = `${OPENAI_API_ORIGIN}/v1`;
+const OPENAI_API_RESPONSES_URL = `${OPENAI_API_BASE_URL}/responses`;
+
+/**
+ * The Responses endpoint the adapter would actually POST key-auth traffic to, normalized.
+ *
+ * Mirrors the adapter's own construction (`src/adapters/openai-responses.ts`): a configured
+ * `responsesPath` is appended to the base verbatim, and only the default branch runs the
+ * `/v1/responses` suffix normalization. Classifying on the base URL alone would call
+ * `baseUrl: "https://api.openai.com"` with `responsesPath: "/other"` official even though that
+ * request never reaches the official Responses endpoint.
+ */
+function resolvedResponsesEndpoint(provider: OcxProviderConfig): string | undefined {
+  try {
+    const raw = provider.responsesPath === undefined
+      ? openaiResponsesUrl(provider.baseUrl)
+      : `${provider.baseUrl.replace(/\/$/, "")}${provider.responsesPath}`;
+    return normalizedBaseUrl(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+function isOfficialOpenAiResponsesDestination(provider: OcxProviderConfig): boolean {
+  // Exact normalized URL keeps lookalike/suffix hosts out of this set: `api.openai.com.evil.test`
+  // resolves to its own origin, never to the official one.
+  return resolvedResponsesEndpoint(provider) === OPENAI_API_RESPONSES_URL;
+}
 
 /**
  * Whether this provider can serve `POST /responses/compact`. The canonical ChatGPT
@@ -65,7 +94,7 @@ export function supportsNativeResponsesCompactEndpoint(
 export function isOpenAiOperatedResponsesDestination(provider: OcxProviderConfig): boolean {
   if (isCanonicalOpenAiForwardProvider(provider)) return true;
   return provider.adapter === "openai-responses"
-    && normalizedBaseUrl(provider.baseUrl) === OPENAI_API_BASE_URL;
+    && isOfficialOpenAiResponsesDestination(provider);
 }
 
 /**
