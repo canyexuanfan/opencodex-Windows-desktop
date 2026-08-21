@@ -8,7 +8,7 @@ adversarial xai/grok-4.6 subagent verdicts, and a final green dev CI gate.
 
 | PR | Title | Head | Behind dev | Draft | CI on head | Existing review state |
 |----|-------|------|-----------:|-------|------------|----------------------|
-| #2294 | fix(release): reject credential-bearing SSH remotes | 71598fa45 (ingw/fix-release-ssh-credential-boundary, moved from 86ed0a46a — re-fetch before review) | 3 | yes | green (test 1-4/4 pass on prior head; re-verify) | none; security-review boundary (scripts/release.ts) — Draft on purpose |
+| #2294 | fix(release): reject credential-bearing SSH remotes | 71598fa45 + hardening 2cdfba24d (train-stacked) | 3 | yes | green | MERGED to train; grok blocker fixed; re-verdict PASS; landing on dev |
 | #2289 | fix(service): restart existing installs w/o re-register | 240fc9364 (fix/2287-service-restart) | 9 | yes | green incl. Service lifecycle | none; Closes #2287 |
 | #2295 | fix(codex): recover zero-byte coordinator remnants | 6d5f0cf2c (ingw/fix-zero-byte-coordinator-2291) | 0 | yes | green | MERGED to train 728ca1e8b; suite green; landing on dev |
 | #2270 | fix(responses): apply_patch on routed Responses | 398b7ade4 (fix/apply-patch-routed-lowering) | 48 | yes | Ingwannu: two CHANGES_REQUESTED resolved on this head; third review says no remaining technical blocker | Linux shards green |
