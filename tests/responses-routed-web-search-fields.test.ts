@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createResponsesPassthroughAdapter as createResponsesPassthroughAdapterProduction, stripOpenAiOnlyWebSearchFields } from "../src/adapters/openai-responses";
 import { enrichProviderFromRegistry, providerConfigSeed } from "../src/providers/derive";
 import { getProviderRegistryEntry } from "../src/providers/registry";
+import { routedProviderConfig } from "../src/router";
 import type { OcxProviderConfig } from "../src/types";
 import { withTestTranslatorBudget } from "./helpers/translator-budget";
 
@@ -79,5 +80,54 @@ describe("Responses buildRequest web_search capability", () => {
       type: "web_search",
       user_location: { type: "approximate" },
     }]);
+  });
+});
+
+// The request path resolves a saved provider row through routedProviderConfig(), NOT through
+// enrichProviderFromRegistry(). Until this backfill existed, a saved xai row reached the
+// Responses adapter with supportsOpenAiWebSearchToolFields === undefined, so the #2262
+// capability gate read "unclassified" and forwarded the fields; live xAI answered
+// `400 Argument not supported: external_web_access` and every routed Grok turn on the
+// Responses lane died before inference (verified against cli-chat-proxy.grok.com 2026-08-21).
+// Asserting on the adapter with a hand-built provider cannot catch this — the gap is upstream
+// of the adapter, in what the router hands it.
+describe("routedProviderConfig web_search capability backfill", () => {
+  test("a saved xai row without the flag is classified by the registry", () => {
+    const saved: OcxProviderConfig = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.x.ai/v1",
+      authMode: "oauth",
+      // The GUI Responses opt-in writes only modelAdapters; it never writes the capability.
+      modelAdapters: { "grok-4.6": "openai-responses" },
+    };
+    expect(saved.supportsOpenAiWebSearchToolFields).toBeUndefined();
+
+    const routed = routedProviderConfig("xai", saved);
+    expect(routed.supportsOpenAiWebSearchToolFields).toBe(false);
+  });
+
+  test("the routed row actually strips the fatal fields at the adapter", () => {
+    const routed = routedProviderConfig("xai", {
+      adapter: "openai-chat",
+      baseUrl: "https://api.x.ai/v1",
+      authMode: "oauth",
+      modelAdapters: { "grok-4.6": "openai-responses" },
+    });
+
+    const body = buildWebSearchBody({ ...routed, adapter: "openai-responses" });
+    expect(body.tools).toEqual([{
+      type: "web_search",
+      user_location: { type: "approximate" },
+    }]);
+  });
+
+  test("an explicit saved value still overrides the registry default", () => {
+    const routed = routedProviderConfig("xai", {
+      adapter: "openai-responses",
+      baseUrl: "https://api.x.ai/v1",
+      authMode: "oauth",
+      supportsOpenAiWebSearchToolFields: true,
+    });
+    expect(routed.supportsOpenAiWebSearchToolFields).toBe(true);
   });
 });
