@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
+import { getDebugLogEntries, resetDebugLogBufferForTests } from "../src/lib/debug-log-buffer";
+import { resetDebugSettingsForTests, setDebugSettings } from "../src/lib/debug-settings";
 
 /**
  * #1686 end to end: a Codex client injected with `env_key` presents the proxy admission
@@ -68,6 +70,8 @@ beforeEach(() => {
   process.env.OPENCODEX_HOME = ocxHome;
   process.env.CODEX_HOME = codexHome;
   delete process.env.OPENCODEX_API_AUTH_TOKEN;
+  resetDebugSettingsForTests();
+  resetDebugLogBufferForTests();
   upstreamAuth = [];
   globalThis.fetch = (async (input, init) => {
     const raw = input instanceof Request ? input.url : String(input);
@@ -83,6 +87,8 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  resetDebugSettingsForTests();
+  resetDebugLogBufferForTests();
   if (previousOcxHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousOcxHome;
   if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
@@ -105,6 +111,7 @@ async function postResponses(url: string | URL, authorization: string): Promise<
 
 describe("#1686 env_key bearer admission reaches Direct with substitution", () => {
   test("an admission bearer is served and the stored main credential goes upstream", async () => {
+    setDebugSettings({ debug: true });
     saveConfig(directConfig());
     const stored = liveJwt();
     writeStoredMain(stored);
@@ -119,6 +126,16 @@ describe("#1686 env_key bearer admission reaches Direct with substitution", () =
       expect(upstreamAuth).toEqual([`Bearer ${stored}`]);
       // The proof that matters: our own secret never reached the wire.
       expect(upstreamAuth.join("|")).not.toContain(ADMISSION_SECRET);
+      const affinityLine = getDebugLogEntries()
+        .map(entry => entry.line)
+        .find(line => line.startsWith("[ocx:codex:affinity] "));
+      expect(affinityLine).toBeDefined();
+      expect(JSON.parse(affinityLine!.slice("[ocx:codex:affinity] ".length))).toMatchObject({
+        authKind: "main",
+        accountMode: "direct",
+        credentialSubstituted: true,
+        status: 200,
+      });
     } finally {
       await server.stop(true);
     }
@@ -156,4 +173,3 @@ describe("#1686 env_key bearer admission reaches Direct with substitution", () =
     }
   });
 });
-
