@@ -40,3 +40,29 @@ Luna swarm (5 lanes) + primary-source verification. All findings below were sour
 2. Anthropic executor (anthropic-executor.ts) currently pins web_search_20250305 — fine (not deprecated, ZDR-eligible, direct default). Upgrading to 20260209 would REQUIRE allowed_callers:["direct"] — record as follow-up, not this unit.
 3. encrypted_content replay + srvtoolu_ pairing are existing executor obligations — verify tests cover replay-unchanged before touching anthropic paths in L3.
 
+
+## LIVE PROBE RESULTS (2026-08-21, this machine, ocx credentials)
+
+All five lanes verified live. Raw scripts in .tmp/probes/ (gitignored scratch).
+
+### OpenAI (ChatGPT forward) — PASS, shipped executor
+runWebSearch via main-account token against chatgpt.com/backend-api/codex/responses, model gpt-5.6-luna: 287 text chars, 2 sources with url+title. Executor path proven end to end.
+
+### Anthropic (stored OAuth) — PASS, shipped executor
+runAnthropicWebSearch via anthropic OAuth, model claude-haiku-4-5, web_search_20250305: 150 result chars, outcome keys {text, sources}. Executor path proven end to end.
+
+### xAI Responses (Grok OAuth, api.x.ai/v1/responses, grok-4.6) — PASS with two contract findings
+- web_search: HTTP 200. SSE events response.web_search_call.in_progress|searching|completed (6 each), item types reasoning/web_search_call/message, id prefixes rs_/ws_/msg_. Matches the OpenAI-shaped contract 002 predicted; the undocumented SSE names are now probe-confirmed.
+- x_search: HTTP 200 BUT the server emits it as custom_tool_call items (ctc_ prefix) with response.custom_tool_call_input.delta/done events — NOT x_search_call as docs.x.ai implies for Responses. allowed_x_handles accepted (200). Consequence for #2190: the OAuth transport's wire item is custom_tool_call; #2173's ctc_ prefix handling already covers the id family, but a dedicated x_search_call extractor would see nothing on this transport. Re-probe with an api.x.ai API key before assuming parity.
+
+### Gemini (Antigravity CCA OAuth) — PASS
+v1internal:generateContent envelope (project from stored credential, ANTIGRAVITY_REQUEST_UA, wireModelId gemini-3.7-flash-tiered) with tools [{google_search:{}}]: HTTP 200, grounded answer, groundingMetadata {webSearchQueries:2, groundingChunks:2, groundingSupports:1, searchEntryPoint present}. Plain "antigravity" UA gets 404 (fingerprint gate) — any future executor must reuse the adapter's UA + envelope builder.
+NOTE: this proves the CCA transport grounds; AI-Studio-key transport (x-goog-api-key) remains unprobed (no key on this machine).
+
+### Exa /search — PASS (new account, key stored at ~/.opencodex/.exa-probe-key, 0600)
+POST api.exa.ai/search x-api-key: HTTP 200, {requestId(32-hex), resolvedSearchType, results[3]{id,title,url,publishedDate,text,image,favicon}, searchTime, costDollars{total:0.007}}. result.id === result.url confirmed. resolvedSearchType still present despite docs marking it deprecated. Non-LLM JSON lane shape confirmed for a future SidecarOutcome mapping.
+
+### Registry consequences
+- xAI + Gemini(CCA) + Exa all clear the "live probe" half of the WEB_SEARCH_BACKENDS activation bar. Still missing: executors + wire mapping (extractor/relay) per backend — activation stays blocked on the executor half, as designed.
+- The x_search custom_tool_call finding narrows #2190 step 1: OAuth-transport probes are done, API-key transport still required.
+
