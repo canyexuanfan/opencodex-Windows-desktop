@@ -129,6 +129,7 @@ import type { PersistedUsageAttempt } from "../../usage/log";
 import { isAllowedRequestOrigin, jsonResponse, providerManagementConfigError, publicProviderBaseUrl, safeConfigDTO, corsHeaders } from "../auth-cors";
 import { applySystemEnvToggle } from "../system-env";
 import {
+  ClientPathError,
   EXPORT_CLIENTS,
   EXPORT_CLIENT_IDS,
   OPENCODE_PROVIDER_ID,
@@ -228,10 +229,25 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
       config,
     });
     const document = built.document;
+    let destination: string;
+    try {
+      destination = spec.destination(process.env);
+    } catch (error) {
+      // A client's own environment override can name a path the resolver
+      // refuses — a relative value, which this process and the client would
+      // resolve against different working directories. That is a
+      // user-correctable configuration error, not a server fault, so it leaves
+      // this boundary as a bounded 400 instead of escaping handleManagementAPI
+      // as a generic 500 and stripping the message that says how to fix it.
+      // `integrations/state.ts` and `integrations/writer.ts` already catch the
+      // same error on their paths; this route was the one that did not.
+      if (!(error instanceof ClientPathError)) throw error;
+      return jsonResponse({ error: error.message }, 400, req, config);
+    }
     return jsonResponse({
       client: spec.id,
       filename: spec.filename,
-      destination: spec.destination(process.env),
+      destination,
       apiKeyEnv: spec.apiKeyEnv,
       exportHint: spec.exportHint,
       // The client's own format and the exact bytes for it. The GUI previously
