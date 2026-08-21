@@ -753,6 +753,22 @@ class LiveCursorTransport implements CursorTransport {
     }
   }
 
+  /**
+   * A clean Connect END_STREAM owns the turn terminal even when Cursor keeps the
+   * HTTP body open or tears it down with an abort/reset immediately afterward.
+   * Stop client-side liveness work and classify that later transport close as
+   * expected without actively sending an RST_STREAM back to Cursor.
+   */
+  private markProtocolComplete(): void {
+    this.expectedClose = true;
+    this.clearPendingFinalize();
+    if (this.heartbeat) {
+      clearInterval(this.heartbeat);
+      this.heartbeat = undefined;
+    }
+    this.clearFirstFrameTimer();
+  }
+
   private startShellCleanup(): Promise<BackgroundShellTerminationReport> {
     return this.shellCleanup ??= terminateBackgroundShellsForSession(this.shellOwnerId);
   }
@@ -1019,6 +1035,7 @@ class LiveCursorTransport implements CursorTransport {
         ) {
           for (const event of finalizeTurnEvents(state)) push(event);
         }
+        this.markProtocolComplete();
         releaseBacklogLease();
         settler.settleFinish();
         return;

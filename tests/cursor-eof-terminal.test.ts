@@ -179,6 +179,25 @@ describe("Cursor clean-EOF terminal gate", () => {
     expect(Date.now() - startedAt).toBeLessThan(450);
   });
 
+  test("clean Connect END_STREAM wins over an immediate abort-shaped body teardown (#2300)", async () => {
+    await withH2Server(stream => {
+      stream.on("error", () => {});
+      stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+      stream.write(Buffer.from(turnEndedFrame()));
+      stream.write(Buffer.from(cleanConnectEndFrame()));
+      setImmediate(() => {
+        const abort = new Error("The operation was aborted");
+        abort.name = "AbortError";
+        stream.destroy(abort);
+      });
+    }, async baseUrl => {
+      const { messages, failure } = await drain(baseUrl, runRequest());
+      expect(failure).toBeUndefined();
+      expect(messages.filter(message => message.type === "done")).toHaveLength(1);
+      expect(messages.some(message => message.type === "error")).toBe(false);
+    });
+  });
+
   test("EOF with no open tool call keeps its existing graceful finish", async () => {
     await withH2Server(respondWith([emptyFrame()]), async baseUrl => {
       const { failure } = await drain(baseUrl, runRequest());
