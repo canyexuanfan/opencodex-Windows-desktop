@@ -14,6 +14,8 @@ const releaseScriptPath = join(repoRoot, "scripts", "release.ts");
 interface LoggedCall {
   args: string[];
   name: string;
+  /** Only the ssh override is recorded: the release deploy-key path is the reason it exists. */
+  gitSshCommand?: string;
 }
 
 interface ReleaseScenario {
@@ -25,6 +27,9 @@ interface ReleaseScenario {
   privacyExitCode?: number;
   testExitCode?: number;
   typecheckExitCode?: number;
+  releaseSshKey?: string;
+  releaseSshRepo?: string;
+  pendingBump?: boolean;
 }
 
 function writeExecutable(path: string, contents: string): void {
@@ -57,7 +62,7 @@ process.exit(exitCode);
     return `import { appendFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
-appendFileSync(process.env.FAKE_RELEASE_LOG, JSON.stringify({ name: "git", args }) + "\\n");
+appendFileSync(process.env.FAKE_RELEASE_LOG, JSON.stringify({ name: "git", args, ...(process.env.GIT_SSH_COMMAND ? { gitSshCommand: process.env.GIT_SSH_COMMAND } : {}) }) + "\\n");
 
 const headSha = process.env.FAKE_GIT_HEAD_SHA ?? "abc123def456";
 const branch = process.env.FAKE_GIT_BRANCH ?? "main";
@@ -70,7 +75,10 @@ if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD")
 }
 
 if (args[0] === "status" && args[1] === "--porcelain") {
-  stdout((process.env.FAKE_GIT_STATUS ?? "") + "\\n");
+  // The clean-tree preflight and the pendingBump probe both land here. Only the second one
+  // passes a path, so a scenario can report a pending bump without failing the first gate.
+  const pathScoped = args.length > 2;
+  stdout((pathScoped ? (process.env.FAKE_GIT_PENDING_BUMP ?? "") : (process.env.FAKE_GIT_STATUS ?? "")) + "\\n");
   process.exit(0);
 }
 
@@ -228,6 +236,9 @@ function runRelease(version: string, scenario: ReleaseScenario = {}) {
       FAKE_BUN_PRIVACY_EXIT_CODE: String(scenario.privacyExitCode ?? 0),
       ...(scenario.npmLatest ? { FAKE_NPM_LATEST: scenario.npmLatest } : {}),
       ...(scenario.npmPreview ? { FAKE_NPM_PREVIEW: scenario.npmPreview } : {}),
+      ...(scenario.releaseSshKey ? { OCX_RELEASE_SSH_KEY: scenario.releaseSshKey } : {}),
+      ...(scenario.releaseSshRepo ? { OCX_RELEASE_SSH_REPO: scenario.releaseSshRepo } : {}),
+      ...(scenario.pendingBump ? { FAKE_GIT_PENDING_BUMP: " M package.json" } : {}),
     },
     encoding: "utf8",
   });
@@ -322,6 +333,40 @@ describe("release helper", () => {
       && call.args.includes("release.yml")
       && call.args.includes("expected-sha=deadbeefcafe1234"),
     )).toBeGreaterThanOrEqual(0);
+  });
+
+  /**
+   * `main` and `preview` carry rulesets whose admin bypass is `pull_request` — enough to merge a
+   * PR, not enough to push. That is where v2.29.0 died. The carve-out is a dedicated write deploy
+   * key registered as a `DeployKey` bypass actor, selected for this one push and nothing else.
+   *
+   * Pin both halves: the key path must reach git as `GIT_SSH_COMMAND` with `IdentitiesOnly` (an
+   * ssh-agent holding the maintainer's key would otherwise authenticate as the maintainer and be
+   * rejected by the ruleset again), and the default path must stay byte-identical so a contributor
+   * or CI clone without the variable is unaffected.
+   */
+  test("the protected push uses the release deploy key only when one is configured", () => {
+    const { calls, result } = runRelease("9.9.9", {
+      releaseSshKey: "/tmp/ocx-release-key",
+      releaseSshRepo: "git@github.com:lidge-jun/opencodex.git",
+      pendingBump: true,
+    });
+
+    expect(result.status).toBe(0);
+    const push = calls.find(call => call.name === "git" && call.args[0] === "push");
+    expect(push).toBeDefined();
+    expect(push?.args).toEqual(["push", "git@github.com:lidge-jun/opencodex.git", "HEAD:main"]);
+    expect(push?.gitSshCommand).toContain("/tmp/ocx-release-key");
+    expect(push?.gitSshCommand).toContain("IdentitiesOnly=yes");
+  });
+
+  test("without a configured key the push is unchanged and carries no ssh override", () => {
+    const { calls, result } = runRelease("9.9.9", { pendingBump: true });
+
+    expect(result.status).toBe(0);
+    const push = calls.find(call => call.name === "git" && call.args[0] === "push");
+    expect(push?.args).toEqual(["push", "origin", "main"]);
+    expect(push?.gitSshCommand).toBeUndefined();
   });
 
   test("aborts before dispatch when the remote branch moved during the CI wait", () => {

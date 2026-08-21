@@ -15,6 +15,13 @@
  *           bun scripts/release.ts 0.1.0 --publish  # actually publish 0.1.0
  *
  * Requires: gh CLI (authed). Publishing is tokenless via Trusted Publishing (OIDC) — no NPM_TOKEN.
+ *
+ * Protected-branch push: `main` and `preview` carry rulesets that require a pull request, and the
+ * admin bypass is `bypass_mode: "pull_request"` — enough to merge a PR, not enough to push. Set
+ * `OCX_RELEASE_SSH_KEY` to the private key of the dedicated write deploy key registered as a
+ * `DeployKey` bypass actor on those rulesets, and the version-bump push (and only that push) uses
+ * it. Override the SSH remote with `OCX_RELEASE_SSH_REPO` when releasing a fork. Unset, the push
+ * behaves exactly as before.
  */
 import { commandInvocation } from "../src/lib/win-exec";
 
@@ -86,12 +93,13 @@ async function capture(command: string[]): Promise<string> {
 }
 
 /** Run a command with its output attached to this terminal; abort on failure. */
-async function runLoud(command: string[]): Promise<void> {
+async function runLoud(command: string[], env?: Record<string, string>): Promise<void> {
   const [bin, ...rest] = command;
   const invocation = commandInvocation(bin ?? "", rest);
   const proc = Bun.spawn([invocation.file, ...invocation.args], {
     stdout: "inherit",
     stderr: "inherit",
+    ...(env ? { env: { ...process.env, ...env } } : {}),
     ...(invocation.options.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
   });
   const exitCode = await proc.exited;
@@ -99,6 +107,40 @@ async function runLoud(command: string[]): Promise<void> {
     console.error(`✗ ${command.join(" ")} failed (exit ${exitCode})`);
     process.exit(1);
   }
+}
+
+/**
+ * Release-key push target for a protected branch.
+ *
+ * `main` and `preview` are covered by branch-protection rulesets that require a pull request,
+ * so the maintainer's own credential cannot push the version-bump commit even with admin rights:
+ * the admin bypass is `bypass_mode: "pull_request"`, which permits merging a PR but not a direct
+ * push. The v2.29.0 release died exactly there.
+ *
+ * The carve-out is a dedicated write deploy key registered as a `DeployKey` bypass actor on both
+ * rulesets. It is deliberately NOT a runtime toggle of the ruleset itself: flipping protection off
+ * around the push and back on afterwards is crash-open — a SIGKILL, a lost network, or a hung push
+ * between the two calls leaves the branch unprotected with no lease to expire it, and while the
+ * window is open the bypass applies to every holder of the admin role, not just this release. A
+ * key fails closed instead: if the process dies, protection was never weakened, and revoking one
+ * credential closes the carve-out without touching repository configuration.
+ *
+ * Opt-in by path: without `OCX_RELEASE_SSH_KEY` the push runs exactly as before over the configured
+ * remote, so a contributor or CI clone is unaffected. The key is used for this one push and nothing
+ * else; ordinary git operations keep the maintainer's normal credential.
+ */
+function releasePushCommand(branch: string): { command: string[]; env?: Record<string, string> } {
+  const keyPath = process.env.OCX_RELEASE_SSH_KEY?.trim();
+  if (!keyPath) return { command: ["git", "push", "origin", branch] };
+  const slug = process.env.OCX_RELEASE_SSH_REPO?.trim() || "git@github.com:lidge-jun/opencodex.git";
+  return {
+    // Push to the SSH URL explicitly rather than rewriting the `origin` remote: the remote stays
+    // HTTPS for every other command, so nothing outside this call inherits the key.
+    command: ["git", "push", slug, `HEAD:${branch}`],
+    // IdentitiesOnly stops ssh from offering the agent's other keys first, which would authenticate
+    // as the maintainer and get rejected by the ruleset again.
+    env: { GIT_SSH_COMMAND: `ssh -i ${keyPath} -o IdentitiesOnly=yes` },
+  };
 }
 
 async function readPackageName(): Promise<string> {
@@ -406,7 +448,9 @@ if (pendingBump) {
 const releaseSha = await capture(["git", "rev-parse", "HEAD"]);
 if (pendingBump) {
   console.log(`→ push origin ${branch}`);
-  await runLoud(["git", "push", "origin", branch]);
+  const push = releasePushCommand(branch);
+  if (push.env) console.log("→ using the release deploy key for the protected push");
+  await runLoud(push.command, push.env);
 } else {
   console.log(`→ release commit ${releaseSha.slice(0, 9)} already pushed; reusing it`);
 }
