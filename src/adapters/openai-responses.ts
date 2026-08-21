@@ -1702,7 +1702,10 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         outBody = promoteClientLoadedTools(outBody);
       }
       if (!isCanonicalOpenAiForwardProvider(provider)) {
-        const rewritten = rewriteRoutedCustomToolsForUpstream(outBody);
+        const rewritten = rewriteRoutedCustomToolsForUpstream(
+          outBody,
+          provider.supportsResponsesCustomTools,
+        );
         outBody = rewritten.body;
         convertedRoutedCustomToolNames = rewritten.names;
       }

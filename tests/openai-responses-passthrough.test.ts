@@ -3,6 +3,7 @@ import { createResponsesPassthroughAdapter as createResponsesPassthroughAdapterP
 import { openaiResponsesUrl } from "../src/adapters/openai-responses-url";
 import { enrichProviderFromRegistry, providerConfigSeed } from "../src/providers/derive";
 import { getProviderRegistryEntry } from "../src/providers/registry";
+import { routeModel } from "../src/router";
 import { handleResponses, sanitizeEncryptedContentInPlace } from "../src/server/responses";
 import {
   encodeCompactionSummary,
@@ -245,6 +246,37 @@ describe("DeepSeek Responses endpoint contract", () => {
     const custom = { adapter: "openai-chat", baseUrl: "https://api.deepseek.com", apiKey: "sk-test", responsesPath: "/custom/responses" } as Parameters<typeof enrichProviderFromRegistry>[1];
     enrichProviderFromRegistry("deepseek", custom);
     expect(custom.responsesPath).toBe("/custom/responses");
+  });
+});
+
+describe("Responses custom-tool destination capability", () => {
+  test("xAI explicitly denies native custom tools and registry enrichment preserves an override", () => {
+    const entry = getProviderRegistryEntry("xai")!;
+    expect(entry.supportsResponsesCustomTools).toBe(false);
+
+    const inherited = {
+      adapter: entry.adapter,
+      baseUrl: entry.baseUrl,
+    } as Parameters<typeof enrichProviderFromRegistry>[1];
+    enrichProviderFromRegistry("xai", inherited);
+    expect(inherited.supportsResponsesCustomTools).toBe(false);
+
+    const explicit = {
+      adapter: entry.adapter,
+      baseUrl: entry.baseUrl,
+      supportsResponsesCustomTools: true,
+    } as Parameters<typeof enrichProviderFromRegistry>[1];
+    enrichProviderFromRegistry("xai", explicit);
+    expect(explicit.supportsResponsesCustomTools).toBe(true);
+
+    const routed = routeModel({
+      port: 0,
+      defaultProvider: "xai",
+      providers: {
+        xai: { adapter: entry.adapter, baseUrl: entry.baseUrl, authMode: "oauth" },
+      },
+    } as OcxConfig, "xai/grok-4.6");
+    expect(routed.provider.supportsResponsesCustomTools).toBe(false);
   });
 });
 
