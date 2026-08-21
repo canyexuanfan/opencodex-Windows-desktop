@@ -56,8 +56,11 @@ function config(): OcxConfig {
         baseUrl: "https://api.x.ai/v1",
         authMode: "oauth",
         models: ["grok-4.6"],
-        modelAdapters: { "grok-4.6": "openai-responses" },
-        modelSupportsServiceTier: { "grok-4.6": false },
+       modelAdapters: { "grok-4.6": "openai-responses" },
+       modelSupportsServiceTier: { "grok-4.6": false },
+        // Raw test config bypasses registry enrichment; production xai providers get
+        // this denial from the registry entry (see derive.ts enrichProviderFromRegistry).
+        supportsOpenAiWebSearchToolFields: false,
       },
     },
   } as OcxConfig;
