@@ -163,6 +163,73 @@ describe("google provider hardening", () => {
     });
   }
 
+  // A Google functionCall is delivered atomically in one part, so there is no later delta that
+  // can repair a missing name. Passing one through violates AdapterEvent's string-name contract
+  // and lets the bridge attempt to dispatch a call that cannot be identified. Keep streaming and
+  // buffered parsing fail-closed on the same field shapes (#2233).
+  const invalidFunctionCallCases: [string, unknown, string][] = [
+    ["a string call", "x", "google response contained invalid function call (function_call_not_object; partIndex=0; valueType=string) — cannot dispatch"],
+    ["a numeric call", 5, "google response contained invalid function call (function_call_not_object; partIndex=0; valueType=number) — cannot dispatch"],
+    ["an array call", [], "google response contained invalid function call (function_call_not_object; partIndex=0; valueType=array) — cannot dispatch"],
+    ["a call without a name", { args: {} }, "google response contained invalid function call name (function_call_name_invalid; partIndex=0; valueType=undefined) — cannot dispatch"],
+    ["a call with a numeric name", { name: 5, args: {} }, "google response contained invalid function call name (function_call_name_invalid; partIndex=0; valueType=number) — cannot dispatch"],
+    ["a call with an empty name", { name: "", args: {} }, "google response contained blank function call name (function_call_name_blank; partIndex=0; valueType=string) — cannot dispatch"],
+    ["a call with a whitespace name", { name: "   ", args: {} }, "google response contained blank function call name (function_call_name_blank; partIndex=0; valueType=string) — cannot dispatch"],
+  ];
+
+  for (const [label, functionCall, message] of invalidFunctionCallCases) {
+    test(`${label} is a terminal stream error`, async () => {
+      const events = await collect(createGoogleAdapter(provider()).parseStream(
+        sseResponse([{
+          candidates: [{ content: { parts: [{ functionCall }] }, finishReason: "STOP" }],
+        }]),
+      ));
+
+      expect(events).toEqual([{ type: "error", message }]);
+      expect(events.some(event => event.type === "done")).toBe(false);
+    });
+
+    test(`${label} is a terminal non-streaming error`, async () => {
+      const events = await createGoogleAdapter(provider()).parseResponse!(
+        new Response(JSON.stringify({
+          candidates: [{ content: { parts: [{ functionCall }] }, finishReason: "STOP" }],
+        }), { status: 200 }),
+      );
+
+      expect(events).toEqual([{ type: "error", message }]);
+      expect(events.some(event => event.type === "done")).toBe(false);
+    });
+  }
+
+  // Text is optional, but when present it must already be a string. Coercing an object or number
+  // would invent assistant output, while terminating an otherwise valid turn would be harsher than
+  // the field warrants. Drop only the malformed text field and keep other parts/terminal state.
+  const nonStringTextParts: [string, Record<string, unknown>][] = [
+    ["numeric text", { text: 5 }],
+    ["object text", { text: { a: 1 } }],
+    ["array text", { text: [1, 2] }],
+    ["numeric thought text", { text: 5, thought: true }],
+  ];
+
+  for (const [label, part] of nonStringTextParts) {
+    test(`${label} is dropped on both response paths`, async () => {
+      const payload = {
+        candidates: [{ content: { parts: [part] }, finishReason: "STOP" }],
+      };
+      const streamEvents = await collect(createGoogleAdapter(provider()).parseStream(sseResponse([payload])));
+      const responseEvents = await createGoogleAdapter(provider()).parseResponse!(
+        new Response(JSON.stringify(payload), { status: 200 }),
+      );
+
+      for (const events of [streamEvents, responseEvents]) {
+        expect(events.some(event => event.type === "text_delta")).toBe(false);
+        expect(events.some(event => event.type === "reasoning_raw_delta")).toBe(false);
+        expect(events.some(event => event.type === "error")).toBe(false);
+        expect(events.at(-1)?.type).toBe("done");
+      }
+    });
+  }
+
   // `content` itself has the same status as `parts`: claimed output the parser cannot read. The
   // one tolerated non-record form is an empty array, which is how a JSON writer with no distinct
   // empty-object form spells an empty `content`. A NON-empty array is where the payload used to

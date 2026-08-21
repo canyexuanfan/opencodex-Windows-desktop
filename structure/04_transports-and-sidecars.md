@@ -673,6 +673,23 @@ classification, preserving the opaque continuation state independently of displa
 - 다른 대안 대신 이 방식을 선택한 이유: Dropping the text loses reasoning replay/display policy input, while duplicated parser rules can drift and exposing marked thoughts violates the provider's visibility boundary.
 - 장점, 단점 및 영향: Internal reasoning no longer leaks into normal answers and both transports stay consistent; downstream reasoning policy still decides whether raw reasoning is rendered or only preserved, and malformed non-boolean markers remain ordinary text rather than broadening hidden-content inference.
 
+## Google response-part field boundary
+
+Google-family adapters validate the values inside an otherwise well-formed response part before
+they become `AdapterEvent`s. A present `functionCall` must be an object with a nonblank string
+`name`; because Gemini delivers that call atomically rather than across deltas, an invalid name is a
+terminal protocol error and is never dispatched. A non-string optional `text` value is dropped
+without coercion, while the rest of the part and turn continue. Structured `functionCall.args`
+remain provider-native and are serialized as before.
+
+[Decision Log]
+- 목적과 의도: Keep malformed Google-compatible response fields from violating the internal string-only text and tool-name contract or dispatching an unidentified tool.
+- 기존 구현 및 제약 조건: Container validation guaranteed object parts, but truthy string/number/array functionCall values emitted a nameless tool call and truthy non-string text values crossed as text or reasoning events. Gemini supplies a complete call in one part, so there is no later name fragment to await.
+- 검토한 주요 대안: Pass malformed values through; coerce them to strings; silently drop every malformed field; terminate the turn for every malformed field; distinguish dispatch identity from optional text.
+- 선택한 방식: Prevalidate function calls and terminate on a non-object, non-string, empty, or whitespace name; drop only non-string text; leave arguments untouched.
+- 다른 대안 대신 이 방식을 선택한 이유: Passing or coercing can execute the wrong tool or fabricate transcript text, while terminating for optional malformed text discards an otherwise usable response. An invalid call name cannot be recovered or safely ignored once the model selected a tool.
+- 장점, 단점 및 영향: Streaming and buffered paths enforce the same AdapterEvent contract and invalid calls cannot enter thought-signature replay. Nonconforming third-party Google-compatible text fields are ignored rather than surfaced, and operators receive a structured terminal error for call identity failures.
+
 ## Google tool-call thought-signature replay
 
 Gemini may attach an opaque `thoughtSignature` to a `functionCall` and requires that exact value on

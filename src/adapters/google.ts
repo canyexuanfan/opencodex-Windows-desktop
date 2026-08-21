@@ -409,11 +409,16 @@ function artifactMarkdownUrl(filePath: string): string {
 }
 
 interface GoogleResponsePart {
-  text?: string;
+  text?: unknown;
   thought?: boolean;
   thoughtSignature?: string;
   thought_signature?: string;
-  functionCall?: { name: string; args: unknown };
+  functionCall?: unknown;
+}
+
+interface GoogleFunctionCall {
+  name: string;
+  args?: unknown;
 }
 
 /**
@@ -436,10 +441,22 @@ function googleToolCallMetadataFromPart(
  * cannot accidentally expose the same hidden reasoning through different event types.
  */
 function googlePartTextEvent(part: GoogleResponsePart): AdapterEvent | undefined {
-  if (!part.text) return undefined;
+  // A malformed scalar/object is not text and must not cross the AdapterEvent boundary. Dropping
+  // only this optional field preserves the rest of the part without inventing assistant output by
+  // coercion; an empty string keeps its existing no-event behavior.
+  if (typeof part.text !== "string" || part.text.length === 0) return undefined;
   return part.thought === true
     ? { type: "reasoning_raw_delta", text: part.text }
     : { type: "text_delta", text: part.text };
+}
+
+interface InvalidGoogleFunctionCallDiagnostic {
+  reason:
+    | "function_call_not_object"
+    | "function_call_name_invalid"
+    | "function_call_name_blank";
+  partIndex: number;
+  valueType: string;
 }
 
 interface InvalidGoogleShapeDiagnostic {
@@ -460,6 +477,63 @@ function isGoogleRecord(value: unknown): value is Record<string, unknown> {
 function googleStructuralValueType(value: unknown): string {
   if (value === null) return "null";
   return Array.isArray(value) ? "array" : typeof value;
+}
+
+/**
+ * Gemini delivers one complete functionCall per part, so a missing name cannot be repaired by a
+ * later delta. Validate the whole parts array before observing signatures or emitting content: a
+ * malformed call must terminate the claimed response rather than enter replay state or reach the
+ * bridge as a nameless dispatch. Null remains an absence encoding, matching other optional fields.
+ */
+function diagnoseGoogleFunctionCalls(
+  parts: readonly GoogleResponsePart[],
+): InvalidGoogleFunctionCallDiagnostic | undefined {
+  for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+    const functionCall = parts[partIndex]?.functionCall;
+    if (functionCall === undefined || functionCall === null) continue;
+    if (!isGoogleRecord(functionCall)) {
+      return {
+        reason: "function_call_not_object",
+        partIndex,
+        valueType: googleStructuralValueType(functionCall),
+      };
+    }
+    if (typeof functionCall.name !== "string") {
+      return {
+        reason: "function_call_name_invalid",
+        partIndex,
+        valueType: googleStructuralValueType(functionCall.name),
+      };
+    }
+    if (functionCall.name.trim().length === 0) {
+      return {
+        reason: "function_call_name_blank",
+        partIndex,
+        valueType: "string",
+      };
+    }
+  }
+  return undefined;
+}
+
+function googleFunctionCall(part: GoogleResponsePart): GoogleFunctionCall | undefined {
+  const functionCall = part.functionCall;
+  if (!isGoogleRecord(functionCall) || typeof functionCall.name !== "string") return undefined;
+  return { name: functionCall.name, args: functionCall.args };
+}
+
+function invalidGoogleFunctionCallEvent(
+  diagnostic: InvalidGoogleFunctionCallDiagnostic,
+): Extract<AdapterEvent, { type: "error" }> {
+  const subject = diagnostic.reason === "function_call_not_object"
+    ? "invalid function call"
+    : diagnostic.reason === "function_call_name_blank"
+      ? "blank function call name"
+      : "invalid function call name";
+  return {
+    type: "error",
+    message: `google response contained ${subject} (${diagnostic.reason}; partIndex=${diagnostic.partIndex}; valueType=${diagnostic.valueType}) — cannot dispatch`,
+  };
 }
 
 /**
@@ -865,6 +939,11 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
             return "terminate";
           }
           parts = rawParts as GoogleResponsePart[];
+          const invalidFunctionCall = diagnoseGoogleFunctionCalls(parts);
+          if (invalidFunctionCall) {
+            yield invalidGoogleFunctionCallEvent(invalidFunctionCall);
+            return "terminate";
+          }
         }
         // Record Gemini thought signatures for the next stateless tool-result turn. Vertex and
         // Antigravity use separate model namespaces so opaque provider state cannot cross routes.
@@ -905,18 +984,19 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
                 }
               }
             }
-            if (part.functionCall) {
+            const functionCall = googleFunctionCall(part);
+            if (functionCall) {
               const id = `call_${crypto.randomUUID().slice(0, 8)}`;
               toolCallsStarted++;
               emittedContentEvent = true;
-              const restoredName = restoreGoogleToolName(part.functionCall.name);
+              const restoredName = restoreGoogleToolName(functionCall.name);
               yield {
                 type: "tool_call_start",
                 id,
                 name: restoredName,
                 ...googleToolCallMetadataFromPart(part, pendingStreamThoughtSig),
               };
-              yield { type: "tool_call_delta", arguments: JSON.stringify(part.functionCall.args ?? {}) };
+              yield { type: "tool_call_delta", arguments: JSON.stringify(functionCall.args ?? {}) };
               yield { type: "tool_call_end" };
             }
           }
@@ -1132,6 +1212,8 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         const invalidParts = diagnoseGoogleParts(rawParts);
         if (invalidParts) return finish([invalidGoogleShapeEvent(invalidParts)]);
         const parts = rawParts as GoogleResponsePart[];
+        const invalidFunctionCall = diagnoseGoogleFunctionCalls(parts);
+        if (invalidFunctionCall) return finish([invalidGoogleFunctionCallEvent(invalidFunctionCall)]);
         // Non-streaming Google-family response: observe thought signatures for the next turn,
         // using the same transport-scoped namespace as the streaming path.
         const replayModel = provider.googleMode === "cloud-code-assist" ? antigravityModel : vertexReplayModel;
@@ -1162,16 +1244,17 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
               }
             }
           }
-          if (part.functionCall) {
+          const functionCall = googleFunctionCall(part);
+          if (functionCall) {
             const id = `call_${crypto.randomUUID().slice(0, 8)}`;
             toolCallsStarted++;
             events.push({
               type: "tool_call_start",
               id,
-              name: restoreGoogleToolName(part.functionCall.name),
+              name: restoreGoogleToolName(functionCall.name),
               ...googleToolCallMetadataFromPart(part, pendingThoughtSig),
             });
-            events.push({ type: "tool_call_delta", arguments: JSON.stringify(part.functionCall.args ?? {}) });
+            events.push({ type: "tool_call_delta", arguments: JSON.stringify(functionCall.args ?? {}) });
             events.push({ type: "tool_call_end" });
           }
         }
