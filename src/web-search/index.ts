@@ -15,6 +15,7 @@ export { buildWebSearchTool, extractHostedWebSearch, WEB_SEARCH_TOOL_NAME };
 export { runAnthropicWebSearch, parseAnthropicSidecarSSE } from "./anthropic-executor";
 export { runXaiWebSearch, parseXaiResponsesSSE, validateXaiSearchOptions, type XaiSearchOptions } from "./xai-executor";
 export { runGeminiWebSearch, mapCcaGroundedResponse } from "./gemini-executor";
+export { runExaWebSearch, mapExaSearchResponse } from "./exa-executor";
 
 const DEFAULT_SIDECAR_MODEL = "gpt-5.6-luna";
 // Default Claude model for the anthropic-backed sidecar (used when cfg.model is unset).
@@ -178,6 +179,8 @@ export interface SidecarPlan {
   geminiSidecar?: { providerName: string; provider: OcxProviderConfig };
   /** Opt-in x_search options for the xai backend (validated at the management layer and again in the executor). */
   xaiSearchOptions?: XaiSearchOptions;
+  /** Presence marker for the exa backend — the API key itself never rides the plan. */
+  exaConfigured?: true;
   hostedTool: Record<string, unknown>;
   settings: SidecarSettings;
   maxSearches: number;
@@ -228,9 +231,6 @@ export function planWebSearch(
     ? { providerName: auth.anthropicProviderName, provider: auth.anthropicProvider }
     : undefined;
   const backend = resolveSidecarBackend(cfg.backend);
-  // Inert arm (roadmap 060): exa stays fail-closed until its executor layer lands.
-  // xai went live in L7; gemini in L8 below.
-  if (backend === "exa") return undefined;
   const maxSearches = cfg.maxSearchesPerTurn ?? DEFAULT_MAX_SEARCHES;
   const stallTimeoutSec = webSearchStallTimeoutSec(
     config.stallTimeoutSec,
@@ -292,6 +292,23 @@ export function planWebSearch(
       geminiSidecar,
       hostedTool: parsed._webSearch,
       settings: { model: cfg.model ?? DEFAULT_GEMINI_SIDECAR_MODEL, reasoning, timeoutMs, describeImages },
+      maxSearches,
+      routedModelStallTimeoutMs,
+      stallTimeoutSec,
+      streamRoutedModelOutput,
+    };
+  }
+
+  // exa (L9): explicit-only, keyed by the operator-supplied exaApiKey. The KEY never
+  // rides the plan object — core.ts reads it from config at unpack time; the plan
+  // carries only a presence marker. Fail-closed without a key.
+  if (backend === "exa") {
+    if (!cfg.exaApiKey) return undefined;
+    return {
+      backend: "exa",
+      exaConfigured: true,
+      hostedTool: parsed._webSearch,
+      settings: { model: cfg.model ?? DEFAULT_SIDECAR_MODEL, reasoning, timeoutMs, describeImages },
       maxSearches,
       routedModelStallTimeoutMs,
       stallTimeoutSec,

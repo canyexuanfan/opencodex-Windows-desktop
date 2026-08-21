@@ -8,6 +8,7 @@ import { runWebSearch, type SidecarOutcome, type SidecarOutcomeRecorder, type Si
 import { runAnthropicWebSearch } from "./anthropic-executor";
 import { runXaiWebSearch, type XaiSearchOptions } from "./xai-executor";
 import { runGeminiWebSearch } from "./gemini-executor";
+import { runExaWebSearch } from "./exa-executor";
 import type { WebSearchBackendId } from "./index";
 import { clearableDeadline } from "../lib/abort";
 import { redactSecretString } from "../lib/redact";
@@ -267,6 +268,8 @@ export interface WebSearchLoopDeps {
   xaiSidecar?: { providerName: string; provider: OcxProviderConfig };
   /** Required for the gemini backend: the stored Antigravity CCA provider (L8). */
   geminiSidecar?: { providerName: string; provider: OcxProviderConfig };
+  /** Required for the exa backend: the operator key, read from config at plan unpack (L9). */
+  exaApiKey?: string;
   /** Opt-in x_search options for the xai backend. */
   xaiSearchOptions?: XaiSearchOptions;
   hostedTool: Record<string, unknown>;
@@ -685,6 +688,11 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
             outcome = deps.geminiSidecar
               ? await runGeminiWebSearch(query, deps.geminiSidecar.providerName, deps.geminiSidecar.provider, settings, signal)
               : { text: "", sources: [], error: "gemini backend selected without a resolved Antigravity provider" };
+          } else if (backend === "exa") {
+            // L9: non-LLM lane; key comes from the loop deps, never the plan. Fail closed.
+            outcome = deps.exaApiKey
+              ? await runExaWebSearch(query, deps.exaApiKey, settings, signal)
+              : { text: "", sources: [], error: "exa backend selected without an exaApiKey" };
           } else {
             outcome = await runWebSearch(query, hostedTool, forwardProvider!, selectedForwardHeaders, settings, signal, recordSidecarOutcome);
           }

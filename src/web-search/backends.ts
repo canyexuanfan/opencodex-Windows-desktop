@@ -79,6 +79,13 @@ export const WEB_SEARCH_BACKENDS: readonly WebSearchBackendDescriptor[] = [
     },
     eligibleModel: candidate => candidate.provider === "google-antigravity",
   },
+  {
+    backend: "exa",
+    // Probe = operator key present. Exa is not an LLM: no candidate models ever
+    // match, so the GUI's model list stays untouched by this backend.
+    isActive: (_auth, config) => !!config.webSearchSidecar?.exaApiKey,
+    eligibleModel: () => false,
+  },
 ];
 
 /**

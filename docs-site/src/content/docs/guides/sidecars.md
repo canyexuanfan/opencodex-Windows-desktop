@@ -18,6 +18,18 @@ closed. Explicit `xai` requires a usable stored Grok OAuth account and does not 
 requires both ChatGPT login auth and an enabled `forward` provider.
 :::
 
+### Additional web-search backends (explicit-only)
+
+Three more web-search backends exist beyond the ChatGPT and Claude paths. Each is
+**explicit-only** — it never activates from credential presence — and **fails closed**:
+a missing credential produces no sidecar plan and the request takes the normal routed path.
+
+| Backend | Runs | Credential | Notes |
+| --- | --- | --- | --- |
+| `xai` | Grok hosted `web_search` (+ opt-in `x_search`) on `api.x.ai` Responses | Stored Grok OAuth (`ocx login xai`) | `webSearchSidecar.xSearch` enables X search with `allowedXHandles`/`excludedXHandles` (max 20, mutually exclusive) and ISO `fromDate`/`toDate`. Default model `grok-4.6`. |
+| `gemini` | `google_search` grounding on the Antigravity transport | Stored Antigravity OAuth with a discovered project (`ocx login google-antigravity`) | Default model `gemini-3.7-flash`; reasoning maps to the tiered thinking level. |
+| `exa` | Exa Search API (non-LLM result digest) | `webSearchSidecar.exaApiKey` | The key is write-only through the management API (never echoed, redacted from logs). No sidecar model applies. |
+
 ## Web-search sidecar
 
 When Codex requests hosted `web_search` for a non-passthrough routed model, opencodex:
