@@ -212,8 +212,38 @@ describe("terminal guard", () => {
     // The guard must not let liveness markers change what the continuation decides or sends.
     expect(analyzeTerminalTurn(request, padded).assistantText)
       .toBe(analyzeTerminalTurn(request, clean).assistantText);
-    expect(JSON.stringify(buildContinuationRequest(request, padded).context.messages))
-      .toBe(JSON.stringify(buildContinuationRequest(request, clean).context.messages));
+    // Compare the CONTENT of the two rebuilds, not their wall-clock stamps. Each call reads the
+    // clock once (see the next test), but two separate calls legitimately land in different
+    // milliseconds — comparing raw JSON made this assert the scheduler rather than the heartbeat
+    // contract, and it failed intermittently on CI for exactly that reason.
+    const withoutTimestamps = (events: AdapterEvent[]) =>
+      JSON.stringify(buildContinuationRequest(request, events).context.messages
+        .map(({ timestamp: _timestamp, ...rest }) => rest));
+    expect(withoutTimestamps(padded)).toBe(withoutTimestamps(clean));
+  });
+
+  // The rebuild used to read the clock twice — once for the assistant message, once for the
+  // nudge pushed after it — so a millisecond boundary between the two reads gave one rebuild two
+  // different timestamps. That is what made the contract test above fail intermittently on CI
+  // (shard 2/4, twice in a row) while passing locally: the compared records differed by 1ms.
+  // Pin the invariant on the rebuild itself rather than on the comparison that exposed it.
+  test("one rebuild carries a single timestamp across a millisecond boundary", () => {
+    const events: AdapterEvent[] = [{ type: "text_delta", text: "我接下来会修改相关文件。" }];
+    const request = parsed("继续检查");
+    // Sample across real boundary crossings: a single-shot assertion passes even on the
+    // two-clock-read version whenever both reads land in the same millisecond.
+    const deadline = Date.now() + 25;
+    let sampled = 0;
+    while (Date.now() < deadline) {
+      const messages = buildContinuationRequest(request, events).context.messages;
+      const assistant = messages.at(-2);
+      const nudge = messages.at(-1);
+      expect(assistant?.role).toBe("assistant");
+      expect(nudge?.role).toBe("developer");
+      expect(assistant?.timestamp).toBe(nudge?.timestamp);
+      sampled += 1;
+    }
+    expect(sampled).toBeGreaterThan(0);
   });
 
   test("heartbeats reach the consumer so the bridge watchdog stays armed", async () => {
