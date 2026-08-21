@@ -130,6 +130,11 @@ const ECHO_TOOL = [{
   parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
 }] as unknown as CursorRunRequest["tools"];
 
+const ECHO_AND_APPLY_PATCH_TOOLS = [
+  ...(ECHO_TOOL ?? []),
+  ...(APPLY_PATCH_TOOL ?? []),
+] as CursorRunRequest["tools"];
+
 async function drain(baseUrl: string, request: CursorRunRequest): Promise<{
   messages: CursorServerMessage[];
   failure?: Error;
@@ -240,6 +245,24 @@ describe("Cursor clean-EOF terminal gate", () => {
       expect(messages.filter(message => message.type === "tool_call_end")).toHaveLength(1);
       expect(messages.filter(message => message.type === "done")).toHaveLength(1);
       expect(messages.some(message => message.type === "error")).toBe(false);
+    });
+  });
+
+  test("clean Connect END_STREAM keeps a later open sibling fail-closed after a client-tool drain", async () => {
+    await withH2Server(respondWith([
+      toolCallStartedFrame("call_client_2", "echo_a"),
+      clientToolArgsFrame("call_client_2", "echo_a", "A"),
+      toolCallStartedFrame("call_open_2", "apply_patch"),
+      cleanConnectEndFrame(),
+    ]), async baseUrl => {
+      const { messages, failure } = await drain(baseUrl, runRequest(ECHO_AND_APPLY_PATCH_TOOLS));
+
+      expect(failure).toBeUndefined();
+      expect(messages.filter(message => message.type === "tool_call_end")).toHaveLength(1);
+      const terminal = messages.at(-1);
+      expect(terminal?.type).toBe("error");
+      expect((terminal as { message?: string }).message).toContain("call_open_2");
+      expect(messages.some(message => message.type === "done")).toBe(false);
     });
   });
 

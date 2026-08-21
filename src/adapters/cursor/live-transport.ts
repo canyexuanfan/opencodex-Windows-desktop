@@ -1040,7 +1040,7 @@ class LiveCursorTransport implements CursorTransport {
             || hasPendingClientToolFinalization
           )
         ) {
-          const terminal = hasPendingClientToolFinalization
+          const terminal = hasPendingClientToolFinalization && state.openToolCalls.size === 0
             ? finalizeAfterDrain(state)
             : finalizeTurnEvents(state);
           for (const event of terminal) push(event);
