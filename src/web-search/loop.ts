@@ -7,6 +7,7 @@ import { bridgeToResponsesSSE } from "../bridge";
 import { runWebSearch, type SidecarOutcome, type SidecarOutcomeRecorder, type SidecarSettings } from "./executor";
 import { runAnthropicWebSearch } from "./anthropic-executor";
 import { runXaiWebSearch, type XaiSearchOptions } from "./xai-executor";
+import { runGeminiWebSearch } from "./gemini-executor";
 import type { WebSearchBackendId } from "./index";
 import { clearableDeadline } from "../lib/abort";
 import { redactSecretString } from "../lib/redact";
@@ -264,6 +265,8 @@ export interface WebSearchLoopDeps {
   anthropicSidecar?: { providerName: string; provider: OcxProviderConfig };
   /** Required for the xai backend: the stored Grok OAuth provider (L7). */
   xaiSidecar?: { providerName: string; provider: OcxProviderConfig };
+  /** Required for the gemini backend: the stored Antigravity CCA provider (L8). */
+  geminiSidecar?: { providerName: string; provider: OcxProviderConfig };
   /** Opt-in x_search options for the xai backend. */
   xaiSearchOptions?: XaiSearchOptions;
   hostedTool: Record<string, unknown>;
@@ -677,6 +680,11 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
             outcome = deps.xaiSidecar
               ? await runXaiWebSearch(query, deps.xaiSidecar.providerName, deps.xaiSidecar.provider, settings, deps.xaiSearchOptions ?? {}, signal)
               : { text: "", sources: [], error: "xai backend selected without a resolved Grok OAuth provider" };
+          } else if (backend === "gemini") {
+            // L8: Antigravity CCA grounding; same fail-closed invariant stance as xai.
+            outcome = deps.geminiSidecar
+              ? await runGeminiWebSearch(query, deps.geminiSidecar.providerName, deps.geminiSidecar.provider, settings, signal)
+              : { text: "", sources: [], error: "gemini backend selected without a resolved Antigravity provider" };
           } else {
             outcome = await runWebSearch(query, hostedTool, forwardProvider!, selectedForwardHeaders, settings, signal, recordSidecarOutcome);
           }

@@ -3587,6 +3587,7 @@ async function handleResponsesInner(
       forwardProvider: wsPlan.forwardSidecar?.provider,
       anthropicSidecar: wsPlan.anthropicSidecar,
       xaiSidecar: wsPlan.xaiSidecar,
+      geminiSidecar: wsPlan.geminiSidecar,
       xaiSearchOptions: wsPlan.xaiSearchOptions,
       hostedTool: wsPlan.hostedTool,
       selectedForwardHeaders: wsPlan.forwardSidecar?.headers ?? selectedForwardHeaders,

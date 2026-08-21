@@ -14,12 +14,15 @@ export { runWithWebSearch } from "./loop";
 export { buildWebSearchTool, extractHostedWebSearch, WEB_SEARCH_TOOL_NAME };
 export { runAnthropicWebSearch, parseAnthropicSidecarSSE } from "./anthropic-executor";
 export { runXaiWebSearch, parseXaiResponsesSSE, validateXaiSearchOptions, type XaiSearchOptions } from "./xai-executor";
+export { runGeminiWebSearch, mapCcaGroundedResponse } from "./gemini-executor";
 
 const DEFAULT_SIDECAR_MODEL = "gpt-5.6-luna";
 // Default Claude model for the anthropic-backed sidecar (used when cfg.model is unset).
 const DEFAULT_ANTHROPIC_SIDECAR_MODEL = "claude-sonnet-5";
 // Default Grok model for the xai-backed sidecar (probe-verified with hosted tools, devlog 003).
 const DEFAULT_XAI_SIDECAR_MODEL = "grok-4.6";
+// Default Gemini model for the gemini-backed sidecar (CCA grounding probe, devlog 002).
+const DEFAULT_GEMINI_SIDECAR_MODEL = "gemini-3.7-flash";
 // "low" is the lightest effort the ChatGPT backend allows with web_search ("minimal" is rejected:
 // "tools cannot be used with reasoning.effort 'minimal'") — keeps the sidecar fast/cheap.
 const DEFAULT_SIDECAR_REASONING = "low";
@@ -114,6 +117,23 @@ export function findXaiSidecarProvider(config: OcxConfig): { providerName: strin
   return undefined;
 }
 
+/**
+ * First usable Antigravity credential holder: the "google-antigravity" provider
+ * (registry id = OAuth store key, same narrowing as findXaiSidecarProvider) whose
+ * active stored account is healthy AND carries a discovered CCA projectId — the
+ * executor cannot form the envelope without it.
+ */
+export function findGeminiSidecarProvider(config: OcxConfig): { providerName: string; provider: OcxProviderConfig } | undefined {
+  const provider = config.providers["google-antigravity"];
+  if (!provider || provider.disabled === true || provider.authMode !== "oauth") return undefined;
+  const set = getAccountSet("google-antigravity");
+  const active = set?.accounts.find(account => account.id === set.activeAccountId);
+  if (!active || active.needsReauth === true) return undefined;
+  const projectId = (active.credential as { projectId?: string } | undefined)?.projectId;
+  if (!projectId) return undefined;
+  return { providerName: "google-antigravity", provider };
+}
+
 /** Lift the persisted xSearch config block into executor options (absent block = web_search only). */
 export function xaiSearchOptionsFromConfig(cfg: Pick<OcxWebSearchSidecarConfig, "xSearch">): XaiSearchOptions {
   const x = cfg.xSearch;
@@ -154,6 +174,8 @@ export interface SidecarPlan {
   anthropicSidecar?: AnthropicSidecarProvider;
   /** Present for the xai backend (stored Grok OAuth /v1/responses path). */
   xaiSidecar?: { providerName: string; provider: OcxProviderConfig };
+  /** Present for the gemini backend (Antigravity CCA grounding path). */
+  geminiSidecar?: { providerName: string; provider: OcxProviderConfig };
   /** Opt-in x_search options for the xai backend (validated at the management layer and again in the executor). */
   xaiSearchOptions?: XaiSearchOptions;
   hostedTool: Record<string, unknown>;
@@ -206,9 +228,9 @@ export function planWebSearch(
     ? { providerName: auth.anthropicProviderName, provider: auth.anthropicProvider }
     : undefined;
   const backend = resolveSidecarBackend(cfg.backend);
-  // Inert arms (roadmap 060): gemini/exa stay fail-closed until their executor
-  // layers land. The xai arm went live in L7 below.
-  if (backend === "gemini" || backend === "exa") return undefined;
+  // Inert arm (roadmap 060): exa stays fail-closed until its executor layer lands.
+  // xai went live in L7; gemini in L8 below.
+  if (backend === "exa") return undefined;
   const maxSearches = cfg.maxSearchesPerTurn ?? DEFAULT_MAX_SEARCHES;
   const stallTimeoutSec = webSearchStallTimeoutSec(
     config.stallTimeoutSec,
@@ -253,6 +275,23 @@ export function planWebSearch(
       xaiSearchOptions: xaiOptions,
       hostedTool: parsed._webSearch,
       settings: { model: cfg.model ?? DEFAULT_XAI_SIDECAR_MODEL, reasoning, timeoutMs, describeImages },
+      maxSearches,
+      routedModelStallTimeoutMs,
+      stallTimeoutSec,
+      streamRoutedModelOutput,
+    };
+  }
+
+  // Gemini backend (L8): explicit-only, authenticated by the stored Antigravity CCA
+  // OAuth credential; requires the discovered projectId. Fail-closed like the others.
+  if (backend === "gemini") {
+    const geminiSidecar = findGeminiSidecarProvider(config);
+    if (!geminiSidecar) return undefined;
+    return {
+      backend: "gemini",
+      geminiSidecar,
+      hostedTool: parsed._webSearch,
+      settings: { model: cfg.model ?? DEFAULT_GEMINI_SIDECAR_MODEL, reasoning, timeoutMs, describeImages },
       maxSearches,
       routedModelStallTimeoutMs,
       stallTimeoutSec,

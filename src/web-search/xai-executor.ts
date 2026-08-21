@@ -127,7 +127,7 @@ export async function runXaiWebSearch(
   } catch (e) {
     const kind = e instanceof Error && e.name === "TimeoutError" ? "timeout" : "connect_error";
     console.warn(`[web-search] xai sidecar ${kind} (${Date.now() - t0}ms)`);
-    return { text: "", sources: [], error: e instanceof Error ? redactSecretString(e.message) : String(e) };
+    return { text: "", sources: [], error: redactSecretString(e instanceof Error ? e.message : String(e)) };
   } finally {
     sidecarExit();
     linkedSignal.cleanup();
@@ -208,7 +208,7 @@ export async function parseXaiResponsesSSE(response: Response): Promise<SidecarO
       }
     }
   } catch (e) {
-    error = e instanceof Error ? redactSecretString(e.message) : String(e);
+    error = redactSecretString(e instanceof Error ? e.message : String(e));
   } finally {
     reader.releaseLock();
   }

@@ -66,6 +66,19 @@ export const WEB_SEARCH_BACKENDS: readonly WebSearchBackendDescriptor[] = [
     },
     eligibleModel: candidate => candidate.provider === "xai",
   },
+  {
+    backend: "gemini",
+    // Probe = usable Antigravity OAuth + discovered projectId (findGeminiSidecarProvider's predicate).
+    isActive: (_auth, config) => {
+      const provider = config.providers["google-antigravity"];
+      if (!provider || provider.disabled === true || provider.authMode !== "oauth") return false;
+      const set = getAccountSet("google-antigravity");
+      const active = set?.accounts.find(account => account.id === set.activeAccountId);
+      if (!active || active.needsReauth === true) return false;
+      return !!(active.credential as { projectId?: string } | undefined)?.projectId;
+    },
+    eligibleModel: candidate => candidate.provider === "google-antigravity",
+  },
 ];
 
 /**
