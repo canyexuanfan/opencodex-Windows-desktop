@@ -126,6 +126,7 @@ function toolResultImageParts(content: string | OcxContentPart[]): unknown[] {
  */
 const GEMINI_EMPTY_PLACEHOLDER = "(empty)";
 const GEMINI_EMPTY_TOOL_OUTPUT_PLACEHOLDER = "(empty tool output)";
+const GEMINI_MISSING_TOOL_RESULT = "[missing tool_result for this tool_use in history]";
 
 /** A Gemini text part, or undefined when the value cannot form a valid non-empty text block. */
 function geminiTextPart(text: unknown): { text: string } | undefined {
@@ -142,6 +143,42 @@ function geminiToolResultText(content: string | OcxContentPart[]): string {
   if (typeof content === "string") return content || GEMINI_EMPTY_TOOL_OUTPUT_PLACEHOLDER;
   const hasContent = content.some(p => p.type === "image" || (typeof p.text === "string" && p.text.length > 0));
   return hasContent ? contentPartsToText(content) : GEMINI_EMPTY_TOOL_OUTPUT_PLACEHOLDER;
+}
+
+function geminiToolResultParts(
+  msg: OcxToolResultMessage,
+  wireName: string,
+  wireCallId: string,
+): unknown[] {
+  const functionResponse: Record<string, unknown> = {
+    name: wireName,
+    response: { result: geminiToolResultText(msg.content) },
+    id: wireCallId,
+  };
+  return [{ functionResponse }, ...toolResultImageParts(msg.content)];
+}
+
+function geminiMissingToolResultPart(wireName: string, wireCallId: string): unknown {
+  return {
+    functionResponse: {
+      name: wireName,
+      response: { result: GEMINI_MISSING_TOOL_RESULT },
+      id: wireCallId,
+    },
+  };
+}
+
+function geminiUnrepresentableToolCallPart(tc: OcxToolCall, wireName: string): unknown {
+  const args = typeof tc.arguments === "string" ? tc.arguments : JSON.stringify(tc.arguments);
+  return { text: `[tool_use without a usable id: ${wireName}]\n${args}` };
+}
+
+function geminiOrphanToolResultParts(msg: OcxToolResultMessage): unknown[] {
+  const label = msg.toolName ? `${msg.toolName} (${msg.toolCallId})` : msg.toolCallId;
+  return [
+    { text: `[tool_result without adjacent tool_use: ${label}]\n${geminiToolResultText(msg.content)}` },
+    ...toolResultImageParts(msg.content),
+  ];
 }
 
 function messagesToGeminiFormat(
@@ -170,7 +207,8 @@ function messagesToGeminiFormat(
       callIds.reserve((msg as OcxToolResultMessage).toolCallId);
     }
   }
-  for (const msg of parsed.context.messages) {
+  for (let i = 0; i < parsed.context.messages.length; i++) {
+    const msg = parsed.context.messages[i];
     switch (msg.role) {
       case "user":
       case "developer": {
@@ -197,6 +235,7 @@ function messagesToGeminiFormat(
       case "assistant": {
         const aMsg = msg as OcxAssistantMessage;
         const parts: unknown[] = [];
+        const toolCalls: Array<{ wireCallId: string; wireName: string }> = [];
         for (const p of aMsg.content) {
           if (p.type === "text") {
             const textPart = geminiTextPart((p as OcxTextContent).text);
@@ -209,10 +248,19 @@ function messagesToGeminiFormat(
             // Responses parser also stashes synthetic item ids (`fc_...`) on this field, and sending
             // those as a thoughtSignature breaks continuity (the replay cache supplies the real one).
             const callId = callIds.allocate(tc.id);
-            const functionCall: Record<string, unknown> = { name: namespacedToolName(tc.namespace, tc.name), args: tc.arguments };
+            const wireName = namespacedToolName(tc.namespace, tc.name);
+            if (callId === undefined) {
+              // Claude-on-Antigravity requires a usable id for every translated tool_use. An empty
+              // source id cannot be paired safely, so preserve the call as text and let its result
+              // follow the same orphan-text path instead of emitting an invalid functionCall.
+              parts.push(geminiUnrepresentableToolCallPart(tc, wireName));
+              continue;
+            }
+            const functionCall: Record<string, unknown> = { name: wireName, args: tc.arguments };
             // Claude-on-Antigravity maps this id to Anthropic `tool_use.id`; without it the upstream
             // conversion 400s. Gemini accepts the optional id and pairs call/response by it.
-            if (callId !== undefined) functionCall.id = callId;
+            functionCall.id = callId;
+            toolCalls.push({ wireCallId: callId, wireName });
             const part: Record<string, unknown> = { functionCall };
             // Prefer the metadata that travelled with this exact call; fall back to the legacy
             // field for callers that have not been migrated. Never merge or synthesize.
@@ -232,22 +280,44 @@ function messagesToGeminiFormat(
         // adapter does for its own empty assistant content.
         if (parts.length === 0) break;
         contents.push({ role: "model", parts });
+        if (toolCalls.length > 0) {
+          // Gemini/Claude-on-Antigravity requires one adjacent response batch for the whole
+          // function-call turn. Replayed histories can be interrupted, reversed, duplicated, or
+          // contain an orphan result; repair only this wire boundary without inventing success.
+          const requiredIds = new Set(toolCalls.map(call => call.wireCallId));
+          const resultsById = new Map<string, OcxToolResultMessage>();
+          const orphanResults: OcxToolResultMessage[] = [];
+          let j = i + 1;
+          while (j < parsed.context.messages.length && parsed.context.messages[j].role === "toolResult") {
+            const result = parsed.context.messages[j] as OcxToolResultMessage;
+            const wireResultId = callIds.lookup(result.toolCallId);
+            if (wireResultId !== undefined && requiredIds.has(wireResultId) && !resultsById.has(wireResultId)) {
+              resultsById.set(wireResultId, result);
+            } else {
+              orphanResults.push(result);
+            }
+            j++;
+          }
+
+          const responseParts: unknown[] = [];
+          for (const call of toolCalls) {
+            const result = resultsById.get(call.wireCallId);
+            if (result) responseParts.push(...geminiToolResultParts(result, call.wireName, call.wireCallId));
+            else responseParts.push(geminiMissingToolResultPart(call.wireName, call.wireCallId));
+          }
+          for (const orphan of orphanResults) {
+            responseParts.push(...geminiOrphanToolResultParts(orphan));
+          }
+          contents.push({ role: "user", parts: responseParts });
+          i = j - 1;
+        }
         break;
       }
       case "toolResult": {
-        // The functionResponse part carries the textual result. Gemini cannot embed images inside a
-        // functionResponse, but it does accept sibling inline_data parts in the same user turn, so
-        // tool-result screenshots (e.g. Computer Use) ride along as inline_data instead of being
-        // flattened to a "[image]" marker the model can't actually see.
-        // lookup(), not allocate(): a response must reuse its call's id and must never mint a new one.
-        const responseId = callIds.lookup(msg.toolCallId);
-        const functionResponse: Record<string, unknown> = { name: namespacedToolName(msg.toolNamespace, msg.toolName), response: { result: geminiToolResultText(msg.content) } };
-        // Mirror the matching functionCall id so Claude-on-Antigravity can pair this result with its
-        // `tool_use` block (-> Anthropic `tool_result.tool_use_id`).
-        if (responseId !== undefined) functionResponse.id = responseId;
-        const parts: unknown[] = [{ functionResponse }];
-        for (const part of toolResultImageParts(msg.content)) parts.push(part);
-        contents.push({ role: "user", parts });
+        // A standalone functionResponse is invalid without an immediately preceding matching
+        // functionCall batch. Preserve the result as explicit user text (plus any representable
+        // image siblings) rather than manufacturing a successful call or sending a 400-prone shape.
+        contents.push({ role: "user", parts: geminiOrphanToolResultParts(msg as OcxToolResultMessage) });
         break;
       }
     }
@@ -339,11 +409,16 @@ function artifactMarkdownUrl(filePath: string): string {
 }
 
 interface GoogleResponsePart {
-  text?: string;
+  text?: unknown;
   thought?: boolean;
   thoughtSignature?: string;
   thought_signature?: string;
-  functionCall?: { name: string; args: unknown };
+  functionCall?: unknown;
+}
+
+interface GoogleFunctionCall {
+  name: string;
+  args?: unknown;
 }
 
 /**
@@ -366,10 +441,152 @@ function googleToolCallMetadataFromPart(
  * cannot accidentally expose the same hidden reasoning through different event types.
  */
 function googlePartTextEvent(part: GoogleResponsePart): AdapterEvent | undefined {
-  if (!part.text) return undefined;
+  // A malformed scalar/object is not text and must not cross the AdapterEvent boundary. Dropping
+  // only this optional field preserves the rest of the part without inventing assistant output by
+  // coercion; an empty string keeps its existing no-event behavior.
+  if (typeof part.text !== "string" || part.text.length === 0) return undefined;
   return part.thought === true
     ? { type: "reasoning_raw_delta", text: part.text }
     : { type: "text_delta", text: part.text };
+}
+
+interface InvalidGoogleFunctionCallDiagnostic {
+  reason:
+    | "function_call_not_object"
+    | "function_call_name_invalid"
+    | "function_call_name_blank";
+  partIndex: number;
+  valueType: string;
+}
+
+interface InvalidGoogleShapeDiagnostic {
+  reason:
+    | "candidates_not_array"
+    | "candidate_not_object"
+    | "content_not_object"
+    | "parts_not_array"
+    | "part_not_object";
+  partIndex?: number;
+  valueType: string;
+}
+
+function isGoogleRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function googleStructuralValueType(value: unknown): string {
+  if (value === null) return "null";
+  return Array.isArray(value) ? "array" : typeof value;
+}
+
+/**
+ * Gemini delivers one complete functionCall per part, so a missing name cannot be repaired by a
+ * later delta. Validate the whole parts array before observing signatures or emitting content: a
+ * malformed call must terminate the claimed response rather than enter replay state or reach the
+ * bridge as a nameless dispatch. Null remains an absence encoding, matching other optional fields.
+ */
+function diagnoseGoogleFunctionCalls(
+  parts: readonly GoogleResponsePart[],
+): InvalidGoogleFunctionCallDiagnostic | undefined {
+  for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+    const functionCall = parts[partIndex]?.functionCall;
+    if (functionCall === undefined || functionCall === null) continue;
+    if (!isGoogleRecord(functionCall)) {
+      return {
+        reason: "function_call_not_object",
+        partIndex,
+        valueType: googleStructuralValueType(functionCall),
+      };
+    }
+    if (typeof functionCall.name !== "string") {
+      return {
+        reason: "function_call_name_invalid",
+        partIndex,
+        valueType: googleStructuralValueType(functionCall.name),
+      };
+    }
+    if (functionCall.name.trim().length === 0) {
+      return {
+        reason: "function_call_name_blank",
+        partIndex,
+        valueType: "string",
+      };
+    }
+  }
+  return undefined;
+}
+
+function googleFunctionCall(part: GoogleResponsePart): GoogleFunctionCall | undefined {
+  const functionCall = part.functionCall;
+  if (!isGoogleRecord(functionCall) || typeof functionCall.name !== "string") return undefined;
+  return { name: functionCall.name, args: functionCall.args };
+}
+
+function invalidGoogleFunctionCallEvent(
+  diagnostic: InvalidGoogleFunctionCallDiagnostic,
+): Extract<AdapterEvent, { type: "error" }> {
+  const subject = diagnostic.reason === "function_call_not_object"
+    ? "invalid function call"
+    : diagnostic.reason === "function_call_name_blank"
+      ? "blank function call name"
+      : "invalid function call name";
+  return {
+    type: "error",
+    message: `google response contained ${subject} (${diagnostic.reason}; partIndex=${diagnostic.partIndex}; valueType=${diagnostic.valueType}) — cannot dispatch`,
+  };
+}
+
+/**
+ * A candidate's `content` is claimed model output inside a well-formed frame, so it is governed by
+ * the #1332 nested-shape rule (fail closed) rather than #1240's root-frame padding rule (skip).
+ *
+ * Absence stays legal, and so does one encoding of it: an empty array is how a JSON writer with no
+ * distinct empty-object form spells an empty `content`, and it already behaves as "no parts". A
+ * NON-empty array is the opposite case — `content?.parts` silently reads `undefined` from it, so a
+ * candidate shaped `content: [{ parts: [...] }]` dropped its own text and completed as an empty
+ * turn.
+ */
+function diagnoseGoogleContent(content: unknown): InvalidGoogleShapeDiagnostic | undefined {
+  if (content === undefined || content === null || isGoogleRecord(content)) return undefined;
+  if (Array.isArray(content) && content.length === 0) return undefined;
+  return { reason: "content_not_object", valueType: googleStructuralValueType(content) };
+}
+
+/**
+ * `content.parts` sits one rung below the candidate guard added in #1332, and both parsers
+ * consumed it unchecked: `for (const part of {})` throws `{} is not iterable`, and a `[null]`
+ * element throws on `part.thoughtSignature`. A `parts` that is absent or `null` keeps its existing
+ * skip — only a present, non-null container is validated.
+ */
+function diagnoseGoogleParts(parts: unknown): InvalidGoogleShapeDiagnostic | undefined {
+  if (!Array.isArray(parts)) {
+    return { reason: "parts_not_array", valueType: googleStructuralValueType(parts) };
+  }
+  for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+    const part: unknown = parts[partIndex];
+    if (!isGoogleRecord(part)) {
+      return { reason: "part_not_object", partIndex, valueType: googleStructuralValueType(part) };
+    }
+  }
+  return undefined;
+}
+
+function invalidGoogleShapeEvent(
+  diagnostic: InvalidGoogleShapeDiagnostic,
+): Extract<AdapterEvent, { type: "error" }> {
+  const at = diagnostic.partIndex !== undefined ? `; partIndex=${diagnostic.partIndex}` : "";
+  // The subject names the rung that failed, so an operator reading a log can tell a broken
+  // candidate list from a well-formed candidate whose parts are broken. The candidate subject keeps
+  // the exact wording #1332 introduced as its prefix, so an existing grep still matches.
+  const subject = diagnostic.reason === "candidates_not_array" || diagnostic.reason === "candidate_not_object"
+    ? "candidates"
+    : diagnostic.reason === "content_not_object"
+      ? "content"
+      : "content parts";
+  return {
+    type: "error",
+    message: `google response contained invalid ${subject} (${diagnostic.reason}${at}; valueType=${diagnostic.valueType})`,
+  };
 }
 
 export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapter {
@@ -669,22 +886,34 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
           sawTerminalSignal = true;
         }
         const rawCandidates = root.candidates;
-        if (rawCandidates === undefined) return "continue";
+        // `null` is an absence encoding, not corruption, and terminating on it is the #1219
+        // failure mode one rung in: a `{"candidates":null}` frame arriving between a content
+        // delta and the finish chunk killed a turn whose answer had already fully arrived. An
+        // absent key and an empty array are already skipped here; `null` joins them. A non-null
+        // non-array container is still claimed structure the parser cannot read, and stays
+        // terminal.
+        if (rawCandidates === undefined || rawCandidates === null) return "continue";
         if (!Array.isArray(rawCandidates)) {
-          yield { type: "error", message: "google response contained invalid candidates" };
+          yield invalidGoogleShapeEvent({
+            reason: "candidates_not_array",
+            valueType: googleStructuralValueType(rawCandidates),
+          });
           return "terminate";
         }
         if (rawCandidates.length === 0) return "continue";
         const rawCandidate = rawCandidates[0];
-        if (rawCandidate === null || typeof rawCandidate !== "object" || Array.isArray(rawCandidate)) {
+        if (!isGoogleRecord(rawCandidate)) {
           // Unlike a root `data: null` keepalive, this is a claimed response candidate. Treat it
           // as terminal protocol corruption so the turn cannot complete after silently losing
           // a candidate or tool call (#1325).
-          yield { type: "error", message: "google response contained invalid candidates" };
+          yield invalidGoogleShapeEvent({
+            reason: "candidate_not_object",
+            valueType: googleStructuralValueType(rawCandidate),
+          });
           return "terminate";
         }
         const candidate = rawCandidate as {
-          content?: { parts?: unknown[] };
+          content?: unknown;
           finishReason?: string;
         };
 
@@ -693,7 +922,29 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
           sawTerminalSignal = true;
         }
 
-        const parts = candidate.content?.parts as GoogleResponsePart[] | undefined;
+        // One rung below the candidate guard above, same rule: this is claimed content, not
+        // padding, so it fails closed rather than being iterated or silently dropped (#1325).
+        const rawContent: unknown = candidate.content;
+        const invalidContent = diagnoseGoogleContent(rawContent);
+        if (invalidContent) {
+          yield invalidGoogleShapeEvent(invalidContent);
+          return "terminate";
+        }
+        const rawParts: unknown = isGoogleRecord(rawContent) ? rawContent.parts : undefined;
+        let parts: GoogleResponsePart[] | undefined;
+        if (rawParts !== undefined && rawParts !== null) {
+          const invalidParts = diagnoseGoogleParts(rawParts);
+          if (invalidParts) {
+            yield invalidGoogleShapeEvent(invalidParts);
+            return "terminate";
+          }
+          parts = rawParts as GoogleResponsePart[];
+          const invalidFunctionCall = diagnoseGoogleFunctionCalls(parts);
+          if (invalidFunctionCall) {
+            yield invalidGoogleFunctionCallEvent(invalidFunctionCall);
+            return "terminate";
+          }
+        }
         // Record Gemini thought signatures for the next stateless tool-result turn. Vertex and
         // Antigravity use separate model namespaces so opaque provider state cannot cross routes.
         const replayModel = provider.googleMode === "cloud-code-assist" ? antigravityModel : vertexReplayModel;
@@ -733,17 +984,19 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
                 }
               }
             }
-            if (part.functionCall) {
+            const functionCall = googleFunctionCall(part);
+            if (functionCall) {
               const id = `call_${crypto.randomUUID().slice(0, 8)}`;
               toolCallsStarted++;
               emittedContentEvent = true;
+              const restoredName = restoreGoogleToolName(functionCall.name);
               yield {
                 type: "tool_call_start",
                 id,
-                name: restoreGoogleToolName(part.functionCall.name),
+                name: restoredName,
                 ...googleToolCallMetadataFromPart(part, pendingStreamThoughtSig),
               };
-              yield { type: "tool_call_delta", arguments: JSON.stringify(part.functionCall.args ?? {}) };
+              yield { type: "tool_call_delta", arguments: JSON.stringify(functionCall.args ?? {}) };
               yield { type: "tool_call_end" };
             }
           }
@@ -923,23 +1176,54 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       }
       const events: AdapterEvent[] = [];
 
-      const candidates = json.candidates as { content?: { parts?: GoogleResponsePart[] }; finishReason?: string }[] | undefined;
+      const rawCandidates: unknown = json.candidates;
+      // Parity with the streaming path, which has rejected a non-array `candidates` since #1332.
+      // Buffered accepted `"abc"` outright (`"abc".length` is 3, so the emptiness check below
+      // passed and `candidates[0]` was the character `"a"`), and reported `{}`/`5` as an absent
+      // candidate list rather than a malformed one.
+      if (rawCandidates !== undefined && rawCandidates !== null && !Array.isArray(rawCandidates)) {
+        return finish([invalidGoogleShapeEvent({
+          reason: "candidates_not_array",
+          valueType: googleStructuralValueType(rawCandidates),
+        })]);
+      }
+      const candidates = rawCandidates as { finishReason?: string }[] | undefined;
       if (!candidates?.length) {
         return finish([{ type: "error", message: "google response contained no candidates" }]);
       }
+      const rawCandidate: unknown = candidates[0];
+      if (!isGoogleRecord(rawCandidate)) {
+        // The streaming parser already treats this as terminal protocol corruption (#1325/#1332).
+        // Buffered returned a bare `done`, so a claimed-but-malformed candidate was reported to
+        // the caller as a successful empty turn.
+        return finish([invalidGoogleShapeEvent({
+          reason: "candidate_not_object",
+          valueType: googleStructuralValueType(rawCandidate),
+        })]);
+      }
+      const candidate = rawCandidate as { content?: unknown; finishReason?: string };
       let toolCallsStarted = 0;
       const imageBudget = createImageBudget();
-      if (candidates?.[0]?.content?.parts) {
+      const rawContent: unknown = candidate.content;
+      const invalidContent = diagnoseGoogleContent(rawContent);
+      if (invalidContent) return finish([invalidGoogleShapeEvent(invalidContent)]);
+      const rawParts: unknown = isGoogleRecord(rawContent) ? rawContent.parts : undefined;
+      if (rawParts !== undefined && rawParts !== null) {
+        const invalidParts = diagnoseGoogleParts(rawParts);
+        if (invalidParts) return finish([invalidGoogleShapeEvent(invalidParts)]);
+        const parts = rawParts as GoogleResponsePart[];
+        const invalidFunctionCall = diagnoseGoogleFunctionCalls(parts);
+        if (invalidFunctionCall) return finish([invalidGoogleFunctionCallEvent(invalidFunctionCall)]);
         // Non-streaming Google-family response: observe thought signatures for the next turn,
         // using the same transport-scoped namespace as the streaming path.
         const replayModel = provider.googleMode === "cloud-code-assist" ? antigravityModel : vertexReplayModel;
         const replaySession = provider.googleMode === "cloud-code-assist" ? antigravitySession : vertexReplaySession;
         if ((provider.googleMode === "cloud-code-assist" || provider.googleMode === "vertex")
           && replayModel && replaySession) {
-          observeAntigravityReplay(replayModel, replaySession, candidates[0].content.parts as unknown[]);
+          observeAntigravityReplay(replayModel, replaySession, parts as unknown[]);
         }
         let pendingThoughtSig: string | undefined;
-        for (const part of candidates[0].content.parts) {
+        for (const part of parts) {
           const sig = part.thoughtSignature ?? part.thought_signature;
           if (part.thought === true && sig && isLikelyRealThoughtSignature(sig)) {
             pendingThoughtSig = sig;
@@ -960,16 +1244,17 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
               }
             }
           }
-          if (part.functionCall) {
+          const functionCall = googleFunctionCall(part);
+          if (functionCall) {
             const id = `call_${crypto.randomUUID().slice(0, 8)}`;
             toolCallsStarted++;
             events.push({
               type: "tool_call_start",
               id,
-              name: restoreGoogleToolName(part.functionCall.name),
+              name: restoreGoogleToolName(functionCall.name),
               ...googleToolCallMetadataFromPart(part, pendingThoughtSig),
             });
-            events.push({ type: "tool_call_delta", arguments: JSON.stringify(part.functionCall.args ?? {}) });
+            events.push({ type: "tool_call_delta", arguments: JSON.stringify(functionCall.args ?? {}) });
             events.push({ type: "tool_call_end" });
           }
         }
@@ -978,8 +1263,8 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       // Fail-closed truncation, same as the stream path: a non-stream turn cut off mid tool call
       // (MAX_TOKENS / MALFORMED_FUNCTION_CALL) surfaces an error instead of a silent done.
       if ((provider.googleMode === "vertex" || provider.googleMode === "cloud-code-assist")
-        && isVertexTruncatedTurn(candidates?.[0]?.finishReason, toolCallsStarted)) {
-        return finish([{ type: "error", message: vertexTruncationErrorMessage(candidates?.[0]?.finishReason) }]);
+        && isVertexTruncatedTurn(candidate.finishReason, toolCallsStarted)) {
+        return finish([{ type: "error", message: vertexTruncationErrorMessage(candidate.finishReason) }]);
       }
 
       const usage = json.usageMetadata as Record<string, number> | undefined;
@@ -987,7 +1272,7 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       // must carry its stop reason, or the bridge sees a clean `done` and reports the truncated
       // turn as completed — and, on a compaction turn, installs the half-written summary as
       // replacement history (#422).
-      const finishReason = candidates?.[0]?.finishReason as string | undefined;
+      const finishReason = candidate.finishReason as string | undefined;
       const stopReason = finishReason === "MAX_TOKENS"
         ? "max_tokens"
         : ["SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"].includes(finishReason ?? "")

@@ -12,7 +12,7 @@ const CLOSED_KEYS = new Set([
   "reasoning.supported", "reasoning.efforts", "reasoning.defaultEffort", "reasoning.effortMap", "reasoning.wireFormat",
   "reasoning.summaryMode", "reasoning.replayMode", "reasoning.splitMode", "reasoning.toggleMode", "reasoning.budgetMode",
   "tools.choiceRestrictions", "tools.parallel", "tools.hostedPreference", "tools.customFreeform", "tools.builtinNameEscaping",
-  "cache.forwarding", "cache.retention", "anthropic.eofPolicy",
+  "cache.forwarding", "cache.retention", "anthropic.eofPolicy", "openai-chat.eofPolicy",
   "google.mode", "google.projectFingerprint", "google.locationFingerprint",
   "openrouter.order", "openrouter.only", "openrouter.allowFallbacks",
   "sidecars.vision", "sidecars.webSearch",

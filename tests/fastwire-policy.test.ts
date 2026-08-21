@@ -256,25 +256,95 @@ describe("resolveFastPolicy matrix", () => {
     expect(fastPolicyForModel(provider, MODEL, "fixture").capability).toBe(false);
   });
 
-  test("captured xAI registry defaults keep OAuth and key transports separate", () => {
-    const oauthProvider = Object.freeze({
-      adapter: "openai-chat",
-      baseUrl: "https://api.x.ai/v1",
-      authMode: "oauth" as const,
-    });
-    const keyProvider = Object.freeze({
-      adapter: "openai-chat",
-      baseUrl: "https://api.x.ai/v1",
-      authMode: "key" as const,
-    });
+  test("locks the five-row xAI and DeepSeek wire/tier regression matrix", () => {
+    const rows = [
+      {
+        name: "xAI OAuth default",
+        providerName: "xai",
+        modelIds: ["grok-4.6", "grok-4.5"],
+        provider: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          authMode: "oauth" as const,
+        },
+        adapter: "openai-chat",
+        forwardCallerTier: false,
+        callerTier: undefined,
+        settledCallerTier: undefined,
+      },
+      {
+        name: "xAI OAuth Responses override",
+        providerName: "xai",
+        modelIds: ["grok-4.6", "grok-4.5"],
+        provider: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          authMode: "oauth" as const,
+          modelAdapters: { "grok-4.6": "openai-responses", "grok-4.5": "openai-responses" },
+        },
+        adapter: "openai-responses",
+        forwardCallerTier: false,
+        callerTier: "flex",
+        settledCallerTier: undefined,
+      },
+      {
+        name: "xAI API-key default",
+        providerName: "xai",
+        modelIds: ["grok-4.6", "grok-4.5"],
+        provider: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          authMode: "key" as const,
+        },
+        adapter: "openai-chat",
+        forwardCallerTier: false,
+        callerTier: undefined,
+        settledCallerTier: undefined,
+      },
+      {
+        name: "xAI API-key Responses override",
+        providerName: "xai",
+        modelIds: ["grok-4.6", "grok-4.5"],
+        provider: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          authMode: "key" as const,
+          modelAdapters: { "grok-4.6": "openai-responses", "grok-4.5": "openai-responses" },
+        },
+        adapter: "openai-responses",
+        forwardCallerTier: true,
+        callerTier: "flex",
+        settledCallerTier: "flex",
+      },
+      {
+        name: "DeepSeek V4 defaults",
+        providerName: "deepseek",
+        modelIds: ["deepseek-v4-flash", "deepseek-v4-pro"],
+        provider: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.deepseek.com",
+          authMode: "key" as const,
+        },
+        adapter: "openai-responses",
+        forwardCallerTier: false,
+        callerTier: undefined,
+        settledCallerTier: undefined,
+      },
+    ] as const;
 
-    expect(fastPolicyForModel(oauthProvider, "grok-4.6", "xai")).toMatchObject({
-      adapter: "openai-responses",
-      eligibility: "unclassified",
-      forwardCallerTier: false,
-    });
-    expect(fastPolicyForModel(keyProvider, "grok-4.6", "xai").adapter)
-      .toBe("openai-chat");
+    for (const row of rows) {
+      for (const modelId of row.modelIds) {
+        const policy = fastPolicyForModel(row.provider, modelId, row.providerName);
+        expect(policy.adapter).toBe(row.adapter);
+        expect(policy.forwardCallerTier).toBe(row.forwardCallerTier);
+        expect(tierValueAfterDecision(decideTier(policy, undefined, undefined), undefined))
+          .toBeUndefined();
+        if (row.callerTier !== undefined) {
+          expect(tierValueAfterDecision(decideTier(policy, undefined, row.callerTier), row.callerTier))
+            .toBe(row.settledCallerTier);
+        }
+      }
+    }
   });
 
   test("prototype-named providers and models use only own wire-policy rows", () => {
