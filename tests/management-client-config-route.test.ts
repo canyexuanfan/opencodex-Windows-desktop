@@ -326,6 +326,31 @@ describe("GET /api/client-config", () => {
     }
   }, 15_000);
 
+  test("a refused override wins over a failing catalog, and skips the catalog work", async () => {
+    // The refusal is a property of the request, not of the catalog. Validating
+    // it after the load let 503 answer first and hid the corrective message.
+    const config = baseConfig();
+    let providersRead = 0;
+    Object.defineProperty(config, "providers", {
+      get() { providersRead += 1; throw new Error("catalog offline"); },
+      configurable: true,
+    });
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = "relative";
+    try {
+      const response = await clientConfigApi(config, "?client=pi");
+      expect(response.status).toBe(400);
+      const body = await response.json() as { error: string };
+      expect(body.error).toContain("PI_CODING_AGENT_DIR");
+      expect(body.error).not.toContain("catalog offline");
+      // Nothing enumerated the catalog for input that was going to be rejected.
+      expect(providersRead).toBe(0);
+    } finally {
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+    }
+  }, 15_000);
+
   test("cross-origin admission is unchanged from every other /api route", async () => {
     const url = new URL("http://127.0.0.1:10100/api/client-config?client=opencode");
     const response = await handleManagementAPI(

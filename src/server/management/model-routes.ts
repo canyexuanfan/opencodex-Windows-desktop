@@ -205,6 +205,27 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
       );
     }
     const spec = EXPORT_CLIENTS[requested];
+    // Resolved before the catalog load on purpose. A refused override is a
+    // property of the request, not of the catalog: validating it afterwards
+    // let a busy or failing catalog answer 503 first, so a user with a
+    // relative override never saw the message that says how to fix it — and
+    // the route did the enumeration work anyway for input it was going to
+    // reject.
+    let destination: string;
+    try {
+      destination = spec.destination(process.env);
+    } catch (error) {
+      // A client's own environment override can name a path the resolver
+      // refuses — a relative value, which this process and the client would
+      // resolve against different working directories. That is a
+      // user-correctable configuration error, not a server fault, so it leaves
+      // this boundary as a bounded 400 instead of escaping handleManagementAPI
+      // as a generic 500 and stripping the message that says how to fix it.
+      // `integrations/state.ts` and `integrations/writer.ts` already catch the
+      // same error on their paths; this route was the one that did not.
+      if (!(error instanceof ClientPathError)) throw error;
+      return jsonResponse({ error: error.message }, 400, req, config);
+    }
     let models: ExportModel[];
     try {
       // The ONE loader every export surface uses. It carries the visibility
@@ -229,21 +250,6 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
       config,
     });
     const document = built.document;
-    let destination: string;
-    try {
-      destination = spec.destination(process.env);
-    } catch (error) {
-      // A client's own environment override can name a path the resolver
-      // refuses — a relative value, which this process and the client would
-      // resolve against different working directories. That is a
-      // user-correctable configuration error, not a server fault, so it leaves
-      // this boundary as a bounded 400 instead of escaping handleManagementAPI
-      // as a generic 500 and stripping the message that says how to fix it.
-      // `integrations/state.ts` and `integrations/writer.ts` already catch the
-      // same error on their paths; this route was the one that did not.
-      if (!(error instanceof ClientPathError)) throw error;
-      return jsonResponse({ error: error.message }, 400, req, config);
-    }
     return jsonResponse({
       client: spec.id,
       filename: spec.filename,
