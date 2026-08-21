@@ -25,6 +25,7 @@ import { providerConfigSeed } from "../providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { openRouterRoutingConfigError } from "../providers/openrouter-routing";
 import { googleVertexLocationConfigError } from "../providers/google-vertex-location";
+import { xaiResponsesOptInState } from "../providers/xai-responses-opt-in";
 
 let _corsOrigin = "http://localhost:10100";
 export function setCorsOrigin(port: number): void { _corsOrigin = `http://localhost:${port}`; }
@@ -688,6 +689,9 @@ export function safeConfigDTO(config: OcxConfig): unknown {
       hasApiKey: !!provider.apiKey,
       hasHeaders: !!provider.headers && Object.keys(provider.headers).length > 0,
     };
+    if (name === "xai") {
+      dto.xaiResponsesOptInState = xaiResponsesOptInState(provider);
+    }
     for (const key of [
       "defaultModel",
       "disabled",

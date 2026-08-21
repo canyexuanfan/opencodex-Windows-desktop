@@ -16,6 +16,7 @@ export interface ProvidersConfig {
     disabled?: boolean;
     note?: string;
     codexAccountMode?: "direct" | "pool";
+    xaiResponsesOptInState?: boolean | "mixed";
   }>;
 }
 
