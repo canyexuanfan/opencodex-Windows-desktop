@@ -1,3 +1,4 @@
+import { createHmac, randomBytes } from "node:crypto";
 import {
   CodexCredentialGenerationConflictError,
   CodexCredentialRefreshLockTimeoutError,
@@ -38,6 +39,35 @@ import { getAccountQuota } from "./quota";
 import type { CodexAccountMode, OcxConfig, OcxProviderConfig } from "../types";
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
 import { captureConfigGeneration } from "../lib/state-store-sweeper";
+import { retainedUtf8Bytes } from "../lib/admission";
+
+const CODEX_AFFINITY_COMPONENT_MAX_BYTES = 512;
+const CODEX_APP_AFFINITY_KEY = randomBytes(32);
+
+/**
+ * Preserve Codex's parent-thread affinity when present. Desktop App requests can omit that
+ * header while retaining a stable session/thread pair, so derive an opaque process-local key
+ * only from the complete bounded pair. Raw identifiers and durable hashes never enter Pool state.
+ */
+function codexPoolAffinityKey(headers: Headers): string | undefined {
+  const parentThreadId = headers.get("x-codex-parent-thread-id");
+  if (parentThreadId) return parentThreadId;
+
+  const sessionId = headers.get("session-id")?.trim();
+  const threadId = headers.get("thread-id")?.trim();
+  if (!sessionId || !threadId) return undefined;
+  if (
+    retainedUtf8Bytes(sessionId) > CODEX_AFFINITY_COMPONENT_MAX_BYTES
+    || retainedUtf8Bytes(threadId) > CODEX_AFFINITY_COMPONENT_MAX_BYTES
+  ) return undefined;
+
+  return `app:${createHmac("sha256", CODEX_APP_AFFINITY_KEY)
+    .update("opencodex-app-pool-affinity-v1\0")
+    .update(sessionId)
+    .update("\0")
+    .update(threadId)
+    .digest("base64url")}`;
+}
 
 export type CodexAuthContext =
   | { kind: "main"; accountId: null }
@@ -50,6 +80,8 @@ export type CodexAuthContext =
       chatgptAccountId: string;
       /** Bypass Pool selection and suppress quota/transient failover for an exact selector. */
       fixedAccount?: boolean;
+      /** Pool binding key; the Desktop fallback is an opaque process-local HMAC. */
+      affinityKey?: string;
       /**
        * Set when this request was admitted through an active quota cooldown as
        * the account's single probe. Must be echoed into the upstream outcome so
@@ -71,6 +103,8 @@ export type CodexAuthContext =
       chatgptAccountId: string;
       /** Bypass Pool selection and suppress quota/transient failover for an exact selector. */
       fixedAccount?: boolean;
+      /** See `pool.affinityKey`. */
+      affinityKey?: string;
       /** See `pool.probeLeaseId`. */
       probeLeaseId?: string;
       quotaScope?: CodexQuotaScope;
@@ -343,6 +377,7 @@ export async function resolveCodexAuthContext(
     }
     return { kind: "main", accountId: null };
   }
+  const affinityKey = fixedAccountId === undefined ? codexPoolAffinityKey(headers) : undefined;
   const entitlementSnapshot = options.modelId && ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(options.modelId)
     ? await (options.resolveCodexModelEntitlements ?? resolveCodexModelEntitlements)(config)
     : undefined;
@@ -369,7 +404,6 @@ export async function resolveCodexAuthContext(
     // routing inspect it. Selectors arriving after the fence skip reconciliation
     // and may still route to non-main pool accounts without touching switch state.
     if (!nativeMainReadsForbidden) reconcileMainCodexAccountRuntimeState();
-    const threadId = headers.get("x-codex-parent-thread-id");
     const resolution = fixedAccountId !== undefined
       ? { status: "selected" as const, accountId: fixedAccountId }
       : options.excludeAccountId
@@ -385,7 +419,7 @@ export async function resolveCodexAuthContext(
             ? { status: "selected" as const, accountId: selected }
             : { status: "none" as const };
         })()
-      : resolveCodexAccountForThreadDetailed(threadId, config, Date.now(), quotaScope, selectionOptions);
+      : resolveCodexAccountForThreadDetailed(affinityKey ?? null, config, Date.now(), quotaScope, selectionOptions);
     if (resolution.status === "expired") throw new CodexThreadAffinityExpiredError(resolution.accountId);
     const selected = resolution.status === "selected" ? resolution.accountId : null;
     if (!selected) {
@@ -500,6 +534,7 @@ export async function resolveCodexAuthContext(
       accessToken: token.accessToken,
       chatgptAccountId: token.chatgptAccountId,
       ...(fixedAccountId !== undefined ? { fixedAccount: true } : {}),
+      ...(affinityKey ? { affinityKey } : {}),
       ...(quotaScope ? { quotaScope } : {}),
       ...(probeLeaseId ? { probeLeaseId } : {}),
       ...(probeQuotaScope ? { probeQuotaScope } : {}),
@@ -516,6 +551,7 @@ export async function resolveCodexAuthContext(
       accessToken: token.accessToken,
       chatgptAccountId: token.chatgptAccountId,
       ...(fixedAccountId !== undefined ? { fixedAccount: true } : {}),
+      ...(affinityKey ? { affinityKey } : {}),
       ...(quotaScope ? { quotaScope } : {}),
       ...(probeLeaseId ? { probeLeaseId } : {}),
       ...(probeQuotaScope ? { probeQuotaScope } : {}),

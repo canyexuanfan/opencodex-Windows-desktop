@@ -328,11 +328,10 @@ export function adapterNeedsForcedContinuation(name: string): boolean {
 export function sidecarOutcomeRecorder(
   config: OcxConfig,
   authCtx: CodexAuthContext,
-  threadId?: string | null,
 ): ((outcome: CodexUpstreamOutcome) => void) | undefined {
   return authCtx.kind === "pool" || authCtx.kind === "main-pool"
     ? outcome => recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
-      threadId,
+      threadId: authCtx.affinityKey,
       fixedAccount: authCtx.fixedAccount,
       probeLeaseId: authCtx.probeLeaseId,
       probeQuotaScope: authCtx.probeQuotaScope,
@@ -946,7 +945,7 @@ async function retryCodexPoolOnAlternateAccount(
   const recordFirstOutcome = (): void => {
     recordCodexUpstreamOutcome(config, firstAuthCtx.accountId, outcomeStatus, {
       ...quotaMeta,
-      threadId: req.headers.get("x-codex-parent-thread-id"),
+      threadId: firstAuthCtx.affinityKey,
       modelId: route.modelId,
       probeLeaseId: codexProbeLeaseId(firstAuthCtx),
       probeQuotaScope: codexProbeQuotaScope(firstAuthCtx),
@@ -1081,7 +1080,6 @@ export function codexForwardTerminalOutcomeRecorder(
   provider: OcxProviderConfig,
   modelId?: string,
   logCtx?: RequestLogContext,
-  threadId?: string | null,
 ): ((status: ResponsesTerminalStatus, httpStatusOverride?: number) => void) | undefined {
   if (!usesCodexForwardPoolAuth(authCtx, provider)) return undefined;
   return (status, httpStatusOverride) => {
@@ -1090,7 +1088,7 @@ export function codexForwardTerminalOutcomeRecorder(
       // request. Don't penalize account health; record success to clear any
       // prior soft-avoid so a healthy account isn't stuck avoided.
       recordCodexUpstreamOutcome(config, authCtx.accountId, 200, {
-        threadId,
+        threadId: authCtx.affinityKey,
         fixedAccount: authCtx.fixedAccount,
         modelId,
         probeLeaseId: codexProbeLeaseId(authCtx),
@@ -1112,7 +1110,7 @@ export function codexForwardTerminalOutcomeRecorder(
       ? 200
       : (httpStatusOverride ?? logCtx?.terminalHttpStatus ?? 502);
     recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
-      threadId,
+      threadId: authCtx.affinityKey,
       fixedAccount: authCtx.fixedAccount,
       modelId,
       probeLeaseId: codexProbeLeaseId(authCtx),
@@ -3022,7 +3020,7 @@ async function handleResponsesInner(
       }
       if (usesCodexForwardPoolAuth(authCtx, route.provider)) {
         recordCodexUpstreamOutcome(config, authCtx.accountId, outcome, {
-          threadId: req.headers.get("x-codex-parent-thread-id"),
+          threadId: authCtx.affinityKey,
           fixedAccount: authCtx.fixedAccount,
           modelId: route.modelId,
           probeLeaseId: codexProbeLeaseId(authCtx),
@@ -3405,7 +3403,6 @@ async function handleResponsesInner(
       route.provider,
       route.modelId,
       logCtx,
-      req.headers.get("x-codex-parent-thread-id"),
     );
     const terminalBodyWillRecord = !!terminalRecorder && upstreamResponse.ok && isEventStream;
     // Capture quota from upstream response for multi-account tracking
@@ -3446,7 +3443,7 @@ async function handleResponsesInner(
       )) {
         recordCodexUpstreamOutcome(config, authCtx.accountId, upstreamResponse.status, {
           ...quotaMeta,
-          threadId: req.headers.get("x-codex-parent-thread-id"),
+          threadId: authCtx.affinityKey,
           fixedAccount: authCtx.fixedAccount,
           modelId: route.modelId,
           probeLeaseId: codexProbeLeaseId(authCtx),
