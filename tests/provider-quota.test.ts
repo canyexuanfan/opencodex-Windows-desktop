@@ -1081,6 +1081,56 @@ describe("fetchProviderQuotaReports", () => {
     expect(result.reports).toEqual([]);
   });
 
+  test("Z.AI quota renders a real v2 coding-plan response (monthly MCP TIME_LIMIT)", async () => {
+    // Sanitized live response captured from the /api/monitor/usage/quota/limit probe
+    // (level=max, v2 protocol): the TIME_LIMIT row is the 30-day MCP tool budget
+    // (search-prime / web-reader / zread), independent of the token windows.
+    const v2Response = {
+      limits: [
+        { type: "TIME_LIMIT", unit: 5, number: 1, usage: 4000, currentValue: 0, remaining: 4000, percentage: 0, nextResetTime: 1788073095998,
+          usageDetails: [{ modelCode: "search-prime", usage: 0 }, { modelCode: "web-reader", usage: 0 }, { modelCode: "zread", usage: 0 }] },
+        { type: "TOKENS_LIMIT", unit: 3, number: 5, percentage: 100, nextResetTime: 1787056863927 },
+        { type: "TOKENS_LIMIT", unit: 6, number: 1, percentage: 20, nextResetTime: 1787641095989 },
+      ],
+      level: "max",
+    };
+    globalThis.fetch = (async () => new Response(JSON.stringify({ success: true, data: v2Response }), { status: 200 })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("zai", "https://api.z.ai/api/coding/paas/v4"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.quota).toMatchObject({
+      fiveHourPercent: 100,
+      fiveHourResetAt: 1787056863927,
+      weeklyPercent: 20,
+      weeklyResetAt: 1787641095989,
+      monthlyPercent: 0,
+      monthlyResetAt: 1788073095998,
+    });
+  });
+
+  test("Z.AI quota renders a real new-protocol response without the monthly MCP row", async () => {
+    // Sanitized live response (level=pro, newer protocol): CREDIT_LIMIT rows only,
+    // no TIME_LIMIT row — the monthly MCP bar must not render.
+    const newProtocolResponse = {
+      limits: [
+        { type: "CREDIT_LIMIT", unit: 3, number: 5, usage: 12000, currentValue: 0, remaining: 12000, percentage: 0 },
+        { type: "CREDIT_LIMIT", unit: 6, number: 1, usage: 60000, currentValue: 0, remaining: 60000, percentage: 0, nextResetTime: 1787649214999 },
+      ],
+      level: "pro",
+    };
+    globalThis.fetch = (async () => new Response(JSON.stringify({ success: true, data: newProtocolResponse }), { status: 200 })) as typeof fetch;
+
+    const result = await fetchProviderQuotaReports(keyQuotaConfig("zai", "https://api.z.ai/api/coding/paas/v4"), true);
+
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0]?.quota).toMatchObject({
+      fiveHourPercent: 0,
+      weeklyPercent: 0,
+    });
+    expect(result.reports[0]?.quota.monthlyPercent).toBeUndefined();
+  });
+
   test("MiniMax quota drops the row when the API omits the plan total after having it", async () => {
     // A valid row (with total) exists; a later valid response omitting the
     // total is a DELIBERATE contract change — the stale row must be dropped
