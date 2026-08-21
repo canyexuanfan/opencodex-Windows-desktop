@@ -1159,6 +1159,7 @@ select.input { appearance: none; }
   -webkit-appearance: none;
 }
 .switch.on { background: var(--toggle-on-bg); border-color: var(--toggle-on-bg); }
+.switch.mixed { background: var(--amber-soft); border-color: var(--amber); }
 .switch:disabled { opacity: 0.6; cursor: default; }
 .switch .knob {
   width: 14px;
@@ -1179,6 +1180,7 @@ select.input { appearance: none; }
   background: var(--toggle-dot-color);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
 }
+.switch.mixed .knob { transform: translateX(7px); }
 
 /* ---- misc ---- */
 .muted { color: var(--muted); }

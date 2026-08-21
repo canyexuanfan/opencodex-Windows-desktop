@@ -157,6 +157,11 @@ when an override selects Responses, and native Responses OAuth 401 replay remain
 explicit opt-ins. API-key requests, translated Chat/Anthropic callers, and other Grok models retain
 their existing wire and tier policy.
 
+The dashboard's xAI Responses opt-in switch is the GUI surface of this same `modelAdapters` lane,
+not a separate tier policy. One write sets or clears the Grok 4.5 and 4.6 entries together while
+preserving unrelated overrides; a pre-existing one-entry state is reported as mixed until the next
+switch write normalizes both.
+
 OpenCode Go documents `gpt-5.6-luna` on `/zen/go/v1/responses` while sibling models use its Chat or
 Anthropic endpoints. The built-in preset therefore selects `openai-responses` only for Luna and
 keeps the provider-wide `openai-chat` default for other non-pinned models. This endpoint correction

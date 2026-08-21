@@ -39,6 +39,8 @@ import * as destinationPolicy from "../src/lib/destination-policy";
 import { catalogConvergenceFactory } from "./helpers/catalog-convergence";
 import { LOCAL_PROVIDER_RELOAD_NAME_HEADER, LOCAL_PROVIDER_RELOAD_PATH } from "../src/lib/local-provider-reload-contract";
 import { getAccountSet, saveCredential } from "../src/oauth/store";
+import { fastPolicyForModel } from "../src/providers/service-tier";
+import { resolveWireProtocolOverride } from "../src/server/adapter-resolve";
 
 // Full-suite Windows load: startServer + multi-step provider PATCH/GET flows exceed the
 // default 5s per-test budget (same flake class as 810fa115 / claude-management-api).
@@ -2530,6 +2532,102 @@ describe("provider management validation", () => {
       catalogRefreshes: 0,
       primes: ["mode-change"],
     });
+  });
+
+  test("xAI Responses opt-in reports mixed state and atomically normalizes both model adapters", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    const liveConfig: OcxConfig = {
+      port: 0,
+      hostname: "127.0.0.1",
+      defaultProvider: "xai",
+      providers: {
+        xai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          authMode: "oauth",
+          modelAdapters: {
+            "grok-4.6": "openai-responses",
+            "other-model": "openai-chat",
+          },
+        },
+        extra: {
+          adapter: "openai-chat",
+          baseUrl: "https://extra.example.test/v1",
+        },
+      },
+    };
+    saveConfig(liveConfig);
+    const destinationProbe = spyOn(destinationPolicy, "providerDestinationResolvedError")
+      .mockResolvedValue(null);
+    const request = async (name: string, body: unknown) => {
+      const req = new Request(`http://127.0.0.1/api/providers?name=${name}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return handleManagementAPI(req, new URL(req.url), liveConfig, {
+        createManagementConvergeCodex: catalogConvergenceFactory(),
+      });
+    };
+
+    try {
+      const listedRequest = new Request("http://127.0.0.1/api/providers");
+      const listedResponse = await handleManagementAPI(
+        listedRequest,
+        new URL(listedRequest.url),
+        liveConfig,
+        { createManagementConvergeCodex: catalogConvergenceFactory() },
+      );
+      const listed = await listedResponse!.json() as Array<Record<string, unknown>>;
+      expect(listed.find(row => row.name === "xai")?.xaiResponsesOptInState).toBe("mixed");
+      expect(listed.find(row => row.name === "extra")).not.toHaveProperty("xaiResponsesOptInState");
+      const configDto = safeConfigDTO(liveConfig) as {
+        providers: Record<string, { xaiResponsesOptInState?: boolean | "mixed" }>;
+      };
+      expect(configDto.providers.xai?.xaiResponsesOptInState).toBe("mixed");
+
+      const wrongProvider = await request("extra", { xaiResponsesOptIn: true });
+      expect(wrongProvider?.status).toBe(400);
+      expect(await wrongProvider?.json()).toEqual({
+        error: "xaiResponsesOptIn is valid only for provider xai",
+      });
+      expect((await request("xai", { xaiResponsesOptIn: "true" }))?.status).toBe(400);
+
+      const enabled = await request("xai", { xaiResponsesOptIn: true });
+      expect(enabled?.status).toBe(200);
+      expect(await enabled?.json()).toMatchObject({
+        success: true,
+        name: "xai",
+        xaiResponsesOptInState: true,
+      });
+      expect(liveConfig.providers.xai?.modelAdapters).toEqual({
+        "grok-4.6": "openai-responses",
+        "grok-4.5": "openai-responses",
+        "other-model": "openai-chat",
+      });
+      expect(loadConfig().providers.xai?.modelAdapters).toEqual(liveConfig.providers.xai?.modelAdapters);
+
+      for (const model of ["grok-4.6", "grok-4.5"]) {
+        expect(fastPolicyForModel(liveConfig.providers.xai!, model, "xai").adapter)
+          .toBe("openai-responses");
+        expect(resolveWireProtocolOverride("xai", model, liveConfig.providers.xai!).adapter)
+          .toBe("openai-responses");
+      }
+
+      const cleared = await request("xai", { xaiResponsesOptIn: false });
+      expect(cleared?.status).toBe(200);
+      expect(await cleared?.json()).toMatchObject({
+        success: true,
+        name: "xai",
+        xaiResponsesOptInState: false,
+      });
+      expect(liveConfig.providers.xai?.modelAdapters).toEqual({ "other-model": "openai-chat" });
+      expect(loadConfig().providers.xai?.modelAdapters).toEqual({ "other-model": "openai-chat" });
+    } finally {
+      destinationProbe.mockRestore();
+    }
   });
 
   test("provider PATCH field-mask edits non-reserved providers and rejects unsafe fields (WP040)", async () => {
