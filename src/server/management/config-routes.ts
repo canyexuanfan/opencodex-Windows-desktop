@@ -113,8 +113,14 @@ async function sidecarVisionResponseSettings(config: OcxConfig): Promise<{
   // Match the runtime's one selected Anthropic executor for both backend fallback
   // and catalog reachability; resolving it once prevents the two projections drifting.
   const anthropicSidecar = findAnthropicVisionProvider(config);
-  const backend = resolveVisionBackend(vs.backend, anthropicSidecar);
-  const model = resolveEffectiveVisionModel(config, backend);
+  // The routed backend reports its own namespaced model verbatim: it is the
+  // dispatched value, and collapsing it through the legacy resolver would
+  // display a describer the runtime is not using (roadmap 190).
+  const routedActive = vs.backend === "routed" && !!vs.model && vs.model.includes("/");
+  const backend = routedActive ? "routed" as const : resolveVisionBackend(vs.backend, anthropicSidecar);
+  const model = routedActive && vs.model
+    ? vs.model
+    : resolveEffectiveVisionModel(config, backend === "routed" ? resolveVisionBackend(undefined, anthropicSidecar) : backend);
   const reasoning = normalizeVisionReasoningForModel(model, vs.reasoning) ?? "low";
   const models = await visionModelOptionsFor(config, anthropicSidecar);
   // Display-only grandfather: a persisted id stays selectable, but the write gate
