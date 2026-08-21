@@ -3274,6 +3274,7 @@ export async function serviceStatusReport(
 }
 
 export function normalizeServiceSubcommand(sub?: string): string {
+  if (sub === "restart") return "repair";
   return sub ?? "install";
 }
 
@@ -3281,6 +3282,21 @@ export interface ParsedServiceArgs {
   sub: string;
   backend: ServiceBackend | null;
   invalid: string[];
+}
+
+/**
+ * A bare invocation is an idempotent "make the installed service current"
+ * operation. First-time setup still installs, but an existing registration must
+ * use the repair path so Windows does not re-run the elevated `schtasks /create`.
+ * Backend flags remain an explicit install request because they select which
+ * registration mechanism to create.
+ */
+export function selectServiceSubcommand(
+  parsed: ParsedServiceArgs,
+  options: { hasExplicitSubcommand: boolean; installed: boolean },
+): string {
+  if (!options.hasExplicitSubcommand && parsed.backend === null && options.installed) return "repair";
+  return parsed.sub;
 }
 
 /**
@@ -3308,8 +3324,13 @@ export function parseServiceArgs(args: string[]): ParsedServiceArgs {
 }
 
 export async function serviceCommand(...args: (string | undefined)[]): Promise<void> {
-  const parsed = parseServiceArgs(args.filter((a): a is string => Boolean(a)));
-  const command = parsed.sub;
+  const filteredArgs = args.filter((a): a is string => Boolean(a));
+  const parsed = parseServiceArgs(filteredArgs);
+  const hasExplicitSubcommand = filteredArgs.some(arg => !arg.startsWith("--"));
+  const command = selectServiceSubcommand(parsed, {
+    hasExplicitSubcommand,
+    installed: !hasExplicitSubcommand && parsed.backend === null && isServiceInstalled(),
+  });
   if (parsed.invalid.length > 0) {
     console.error(`Unknown service option: ${parsed.invalid.join(" ")}`);
     process.exit(1);
@@ -3458,9 +3479,10 @@ export async function serviceCommand(...args: (string | undefined)[]): Promise<v
       console.log("✅ service uninstalled.");
       break;
     default:
-      console.error("Usage: ocx service [install|repair|start|stop|status|uninstall|remove] [--native|--scheduler]");
-      console.error("       With no subcommand, installs/updates and starts the background service.");
+      console.error("Usage: ocx service [install|repair|restart|start|stop|status|uninstall|remove] [--native|--scheduler]");
+      console.error("       With no subcommand, installs when absent or repairs/restarts an existing service.");
       console.error("       repair: refresh assets and restart an already-installed service (no admin re-prompt).");
+      console.error("       restart: alias of repair.");
       console.error("       --native (Windows only): register a real SCM service via WinSW instead of Task Scheduler.");
       process.exit(1);
   }

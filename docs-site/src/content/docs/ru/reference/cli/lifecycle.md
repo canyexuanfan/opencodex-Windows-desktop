@@ -209,7 +209,7 @@ opencodex. Предупреждение о stale-`app-server` и optional `--res
 
 ## Фоновая служба
 
-### `ocx service [install|repair|start|stop|status|uninstall|remove]`
+### `ocx service [install|repair|restart|start|stop|status|uninstall|remove]`
 
 Запустить opencodex как login-managed background service (macOS **launchd**, Linux **systemd user
 unit**, Windows **Task Scheduler**), которая автоматически стартует при логине и сама
@@ -218,9 +218,10 @@ unit**, Windows **Task Scheduler**), которая автоматически �
 
 | Подкоманда | Действие |
 | --- | --- |
-| none | Создать/обновить и запустить службу. |
+| none | Установить и запустить службу, если её нет; иначе обновить и перезапустить существующую службу без повторной регистрации. |
 | `install` | Создать и запустить службу. |
 | `repair` | Обновить установленную службу на месте и перезапустить её без повторной регистрации. |
+| `restart` | Псевдоним команды `repair`. |
 | `start` | Запустить уже установленную службу. |
 | `stop` | Остановить службу и восстановить native Codex. |
 | `status` | Показать диагностику службы и прокси, а также пути к логам. |
@@ -231,6 +232,7 @@ unit**, Windows **Task Scheduler**), которая автоматически �
 ocx service
 ocx service install
 ocx service repair
+ocx service restart
 ocx service status
 ocx service uninstall
 ```

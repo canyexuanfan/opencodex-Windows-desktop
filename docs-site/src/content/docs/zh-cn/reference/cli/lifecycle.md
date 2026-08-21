@@ -147,15 +147,16 @@ ocx status --json
 
 ## 后台服务
 
-### `ocx service [install|repair|start|stop|status|uninstall|remove]`
+### `ocx service [install|repair|restart|start|stop|status|uninstall|remove]`
 
 将 opencodex 作为登录管理的后台服务运行（macOS **launchd**、Linux **systemd user unit**、Windows **Task Scheduler**），在登录时自动启动，在崩溃时自动重启。服务运行会设置 `OCX_SERVICE=1`，因此重启时不会反复改动 Codex 配置。
 
 | 子命令 | 操作 |
 | --- | --- |
-| none | 创建/更新并启动服务。 |
+| none | 服务不存在时安装并启动；已存在时不重新注册，直接刷新并重启。 |
 | `install` | 创建并启动服务。 |
 | `repair` | 就地刷新已安装的服务并重启，不重新注册。 |
+| `restart` | `repair` 的别名。 |
 | `start` | 启动已安装的服务。 |
 | `stop` | 停止服务并恢复原生 Codex。 |
 | `status` | 报告服务和代理诊断信息及日志路径。 |
@@ -166,6 +167,7 @@ ocx status --json
 ocx service
 ocx service install
 ocx service repair
+ocx service restart
 ocx service status
 ocx service uninstall
 ```

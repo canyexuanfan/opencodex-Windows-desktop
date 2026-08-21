@@ -150,15 +150,16 @@ Codex のローカル モデル ピッカー キャッシュを無効にし、�
 
 ## バックグラウンドサービス
 
-### `ocx service [install|repair|start|stop|status|uninstall|remove]`
+### `ocx service [install|repair|restart|start|stop|status|uninstall|remove]`
 
 opencodex を、ログイン時に自動起動し、クラッシュ時に自動再起動するログイン管理バックグラウンド サービス (macOS **launchd**、Linux **systemd ユーザー ユニット**、Windows **タスク スケジューラ**) として実行します。サービスは `OCX_SERVICE=1` を設定して実行されるため、再起動によって Codex 設定が変更されることはありません。
 
 |サブコマンド |アクション |
 | --- | --- |
-|なし |サービスを作成/更新して開始します。 |
+|なし |未インストールなら作成して開始し、既存なら再登録せずに更新して再起動します。 |
 | `install` |サービスを作成して開始します。 |
 | `repair` | 既存のサービスを再登録せずに更新して再起動します。 |
+| `restart` | `repair` の別名です。 |
 | `start` |インストールされているサービスを開始します。 |
 | `stop` |サービスを停止し、ネイティブ Codex を復元します。 |
 | `status` |サービスとプロキシの診断とログ パスをレポートします。 |
@@ -169,6 +170,7 @@ opencodex を、ログイン時に自動起動し、クラッシュ時に自動�
 ocx service
 ocx service install
 ocx service repair
+ocx service restart
 ocx service status
 ocx service uninstall
 ```

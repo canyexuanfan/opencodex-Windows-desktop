@@ -61,10 +61,11 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
   },
   {
     name: "service",
-    usage: "ocx service [install|start|stop|status|uninstall|remove]",
+    usage: "ocx service [install|repair|restart|start|stop|status|uninstall|remove]",
     summary: "Run as a background service.",
     details: [
-      "With no subcommand, installs/updates and starts the background service.",
+      "With no subcommand, installs when absent or repairs/restarts an existing service.",
+      "`restart` is an alias of `repair` and does not re-register an installed service.",
       "Use `ocx service status` to see diagnostics and log paths.",
     ],
   },
