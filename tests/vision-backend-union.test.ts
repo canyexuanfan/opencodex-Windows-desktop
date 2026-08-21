@@ -137,6 +137,18 @@ describe("management routes: routed union + coherence", () => {
     const cfg = config();
     expect((await putVision(cfg, { backend: "routed", model: "xai/grok-4" })).status).toBe(400);
   });
+  test("GET reports a routed backend's namespaced model verbatim (live-found regression)", async () => {
+    const cfg = config({ visionSidecar: { backend: "routed", model: "xai/grok-4.6" } });
+    const url = new URL("http://localhost/api/sidecar-settings");
+    const response = await handleManagementAPI(new Request(url, { method: "GET" }), url, cfg);
+    if (!response) throw new Error("route did not handle GET");
+    const body = await response.json() as { vision: { model: string; backend?: string }; visionModels: Array<{ value: string; backend: string }> };
+    expect(body.vision.backend).toBe("routed");
+    expect(body.vision.model).toBe("xai/grok-4.6");
+    // display grandfather: the persisted pair stays selectable even when no
+    // matching option row exists in this fixture.
+    expect(body.visionModels.some(option => option.value === "xai/grok-4.6" && option.backend === "routed")).toBe(true);
+  });
 
   test("claude-code vision override admits routed with coherence", async () => {
     const cfg = config();
