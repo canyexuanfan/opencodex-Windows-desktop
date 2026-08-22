@@ -760,6 +760,22 @@ class LiveCursorTransport implements CursorTransport {
     }
   }
 
+  /**
+   * A clean Connect END_STREAM owns the turn terminal even when Cursor keeps the
+   * HTTP body open or tears it down with an abort/reset immediately afterward.
+   * Stop client-side liveness work and classify that later transport close as
+   * expected without actively sending an RST_STREAM back to Cursor.
+   */
+  private markProtocolComplete(): void {
+    this.expectedClose = true;
+    this.clearPendingFinalize();
+    if (this.heartbeat) {
+      clearInterval(this.heartbeat);
+      this.heartbeat = undefined;
+    }
+    this.clearFirstFrameTimer();
+  }
+
   private startShellCleanup(): Promise<BackgroundShellTerminationReport> {
     return this.shellCleanup ??= terminateBackgroundShellsForSession(this.shellOwnerId);
   }
@@ -1043,7 +1059,38 @@ class LiveCursorTransport implements CursorTransport {
           framesReceived: this.framesReceived,
           elapsedMs: Date.now() - this.turnStartedAt,
         } : { framesReceived: this.framesReceived, elapsedMs: Date.now() - this.turnStartedAt });
-        if (endError) failAndClear(endError);
+        if (endError) {
+          failAndClear(endError);
+          return;
+        }
+        // Connect's clean END_STREAM envelope is the protocol terminal. Cursor's RunSSE body can
+        // remain open after this frame (or close through an AbortError), so waiting for HTTP EOF
+        // strands an otherwise completed turn until the outer bridge stall watchdog fires.
+        //
+        // Earlier frames in this serialized frameWork chain have already run. Preserve their real
+        // turnEnded terminal when present; otherwise finalize the clean protocol end once so open
+        // tool calls still fail closed, a text-only turn receives its normal done event, and a
+        // drained client-tool turn does not lose the pending terminal when protocol cleanup clears
+        // its grace timer.
+        const hasPendingClientToolFinalization = this.pendingFinalize !== undefined;
+        if (
+          !this.expectedClose
+          && !state.terminated
+          && !this.emittedTerminal
+          && (
+            state.openToolCalls.size > 0
+            || this.sawAssistantText
+            || hasPendingClientToolFinalization
+          )
+        ) {
+          const terminal = hasPendingClientToolFinalization && state.openToolCalls.size === 0
+            ? finalizeAfterDrain(state)
+            : finalizeTurnEvents(state);
+          for (const event of terminal) push(event);
+        }
+        this.markProtocolComplete();
+        releaseBacklogLease();
+        settler.settleFinish();
         return;
       }
       await this.handleServerMessage(fromBinary(AgentServerMessageSchema, frame.payload), state, push);
