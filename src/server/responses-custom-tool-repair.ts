@@ -88,7 +88,7 @@ export function createRoutedCustomToolRestoreBlockRewrite(
   budget?: TranslatorBudget,
   repairNames: ReadonlySet<string> = new Set(),
 ): SseBlockRewrite {
-  const itemNames = new Map<string, string>();
+  const itemNames = new Map<string, { name: string; namespace?: string }>();
   const repairItemNames = new Map<string, string>();
   const ordinaryItemIds = new Set<string>();
   const openCalls = new Map<string, OpenCustomCall>();
@@ -207,7 +207,10 @@ export function createRoutedCustomToolRestoreBlockRewrite(
       const routed = wireName !== undefined && names.has(wireName);
       if (upstreamItemId) {
         if (routed) {
-          itemNames.set(upstreamItemId, parsed.item.name);
+          itemNames.set(upstreamItemId, {
+            name: parsed.item.name,
+            ...(typeof parsed.item.namespace === "string" ? { namespace: parsed.item.namespace } : {}),
+          });
           ordinaryItemIds.delete(upstreamItemId);
         } else {
           ordinaryItemIds.add(upstreamItemId);
@@ -293,11 +296,12 @@ export function createRoutedCustomToolRestoreBlockRewrite(
         ? parsed.arguments
         : openCalls.get(upstreamItemId)?.argumentsText ?? "";
       const { arguments: _arguments, ...rest } = parsed;
+      const itemName = itemNames.get(upstreamItemId);
       const next = {
         ...rest,
         type: nextType,
         item_id: customToolItemId(upstreamItemId),
-        input: unwrapRoutedCustomToolArguments(source, itemNames.get(upstreamItemId) ?? ""),
+        input: unwrapRoutedCustomToolArguments(source, itemName?.name ?? "", itemName?.namespace),
       };
       return [replaceSseDataPayload(replaceSseEventName(block, nextType), JSON.stringify(next))];
     }

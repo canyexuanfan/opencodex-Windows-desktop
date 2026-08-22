@@ -198,6 +198,72 @@ describe("routed Responses custom-tool compatibility", () => {
     rewrite.dispose?.();
   });
 
+  test("preserves a converted non-functions namespaced apply_patch payload", () => {
+    const rewritten = rewriteRoutedCustomToolsForUpstream({
+      tools: [{
+        type: "namespace",
+        name: "mcp",
+        tools: [{ type: "custom", name: "apply_patch", description: "Remote patch grammar" }],
+      }],
+    }, false);
+    expect(rewritten.names).toEqual(new Set(["mcp__apply_patch"]));
+
+    const upstream = JSON.stringify({
+      id: "resp_remote_patch",
+      output: [{
+        type: "function_call",
+        id: "fc_remote_patch",
+        call_id: "call_remote_patch",
+        namespace: "mcp",
+        name: "apply_patch",
+        arguments: WRAPPED_DECORATED_PATCH,
+        status: "completed",
+      }],
+    });
+    const restored = JSON.parse(restoreRoutedCustomCallsInJson(
+      upstream,
+      rewritten.names,
+      rewritten.repairNames,
+    )) as { output: Record<string, unknown>[] };
+    expect(restored.output[0]).toMatchObject({
+      type: "custom_tool_call",
+      namespace: "mcp",
+      name: "apply_patch",
+      input: DECORATED_PATCH,
+    });
+
+    const rewrite = createRoutedCustomToolRestoreBlockRewrite(
+      rewritten.names,
+      undefined,
+      rewritten.repairNames,
+    );
+    const added = rewrite(frame("response.output_item.added", {
+      output_index: 0,
+      item: {
+        type: "function_call",
+        id: "fc_remote_patch",
+        call_id: "call_remote_patch",
+        namespace: "mcp",
+        name: "apply_patch",
+        arguments: "",
+        status: "in_progress",
+      },
+    }));
+    expect(dataPayload(added[0]!).item).toMatchObject({
+      type: "custom_tool_call",
+      namespace: "mcp",
+      name: "apply_patch",
+      input: "",
+    });
+    const inputDone = rewrite(frame("response.function_call_arguments.done", {
+      item_id: "fc_remote_patch",
+      output_index: 0,
+      arguments: WRAPPED_DECORATED_PATCH,
+    }));
+    expect(dataPayload(inputDone[0]!).input).toBe(DECORATED_PATCH);
+    rewrite.dispose?.();
+  });
+
   test("repairs native apply_patch item and input-done events in an SSE lifecycle", () => {
     const rewrite = createRoutedCustomToolRestoreBlockRewrite(
       new Set(),

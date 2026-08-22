@@ -697,6 +697,34 @@ describe("Responses bridge reasoning and usage parity", () => {
     expect(output[0].input).not.toContain("*** Begin Patch ***");
   });
 
+  test("preserves namespaced apply_patch payloads across streaming and buffered bridges", async () => {
+    const decorated = `*** Begin Patch ***
+*** Update File: README.md
+@@
+-old
++new
+*** End Patch ***`;
+    const events: AdapterEvent[] = [
+      { type: "tool_call_start", id: "c1", name: "mcp__apply_patch" },
+      { type: "tool_call_delta", arguments: JSON.stringify({ input: decorated }) },
+      { type: "tool_call_end" },
+      { type: "done" },
+    ];
+    const toolNsMap = new Map([
+      ["mcp__apply_patch", { namespace: "mcp", name: "apply_patch", freeform: true as const }],
+    ]);
+
+    const json = buildResponseJSON(events, "model", { toolNsMap });
+    const output = json.output as Record<string, unknown>[];
+    expect(output[0]).toMatchObject({ type: "custom_tool_call", name: "apply_patch", input: decorated });
+
+    const frames = await collectSse(bridgeToResponsesSSE(replay(events), "model", toolNsMap));
+    const inputDone = frames.find(frame => frame.event === "response.custom_tool_call_input.done")?.data;
+    expect(inputDone?.input).toBe(decorated);
+    const itemDone = frames.find(frame => frame.event === "response.output_item.done")?.data.item as Record<string, unknown>;
+    expect(itemDone).toMatchObject({ type: "custom_tool_call", name: "apply_patch", input: decorated });
+  });
+
   test("non-streaming error produces failed status", () => {
     const json = buildResponseJSON([
       {

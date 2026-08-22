@@ -266,7 +266,11 @@ export function restoreRoutedCustomCalls(
         ...item,
         type: "custom_tool_call",
         id: customToolItemId(item.id),
-        input: repairFreeformToolInput(item.arguments, item.name),
+        input: repairFreeformToolInput(
+          item.arguments,
+          item.name,
+          typeof item.namespace === "string" ? item.namespace : undefined,
+        ),
       };
       delete restored.arguments;
       return { value: restored, changed: true };
@@ -345,6 +349,12 @@ export function restoreRoutedCustomCallsInJson(
   return restored.changed ? JSON.stringify(restored.value) : text;
 }
 
-export function unwrapRoutedCustomToolArguments(argumentsText: unknown, toolName = ""): string {
-  return toolName ? repairFreeformToolInput(argumentsText, toolName) : unwrapFreeformToolInput(argumentsText);
+export function unwrapRoutedCustomToolArguments(
+  argumentsText: unknown,
+  toolName = "",
+  namespace?: string,
+): string {
+  return toolName
+    ? repairFreeformToolInput(argumentsText, toolName, namespace)
+    : unwrapFreeformToolInput(argumentsText);
 }

@@ -34,6 +34,12 @@ describe("apply_patch envelope repair", () => {
     expect(repairFreeformToolInput(JSON.stringify({ input: DECORATED_PATCH }), "apply_patch")).toBe(CANONICAL_PATCH);
   });
 
+  test("repairs only bare and reserved-functions apply_patch grammars", () => {
+    const wrapped = JSON.stringify({ input: DECORATED_PATCH });
+    expect(repairFreeformToolInput(wrapped, "apply_patch", "functions")).toBe(CANONICAL_PATCH);
+    expect(repairFreeformToolInput(wrapped, "apply_patch", "mcp")).toBe(DECORATED_PATCH);
+  });
+
   test("keeps exec JavaScript strings, comments, templates, and regexes byte-identical", () => {
     const cases = [
       'const sample = "tools.apply_patch({ input: patchText })";',

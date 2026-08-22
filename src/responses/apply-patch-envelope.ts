@@ -46,10 +46,18 @@ export function normalizeApplyPatchDelimiters(text: string): string {
 /**
  * Repair freeform input before Codex sees it.
  *
- * Only a top-level `apply_patch` payload may receive delimiter repair. `exec`
- * JavaScript and every other freeform body are unwrapped and left byte-exact.
+ * Only a bare or reserved-`functions` `apply_patch` payload may receive delimiter
+ * repair. Remote namespaces own their grammar; those bodies and every other
+ * freeform input are unwrapped and left byte-exact.
  */
-export function repairFreeformToolInput(argumentsText: unknown, toolName = ""): string {
+export function repairFreeformToolInput(
+  argumentsText: unknown,
+  toolName = "",
+  namespace?: string,
+): string {
   const unwrapped = unwrapFreeformToolInput(argumentsText);
-  return toolName === "apply_patch" ? normalizeApplyPatchDelimiters(unwrapped) : unwrapped;
+  const ownsApplyPatchGrammar = namespace === undefined || namespace === "functions";
+  return ownsApplyPatchGrammar && toolName === "apply_patch"
+    ? normalizeApplyPatchDelimiters(unwrapped)
+    : unwrapped;
 }
