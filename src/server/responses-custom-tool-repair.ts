@@ -1,4 +1,5 @@
 import type { TranslatorBudget } from "../lib/translator-budget";
+import { normalizeApplyPatchDelimiters } from "../responses/apply-patch-envelope";
 import {
   customToolItemId,
   restoreRoutedCustomCalls,
@@ -241,10 +242,7 @@ export function createRoutedCustomToolRestoreBlockRewrite(
       && repairItemNames.has(upstreamItemId)
       && typeof parsed.input === "string"
     ) {
-      const input = unwrapRoutedCustomToolArguments(
-        parsed.input,
-        repairItemNames.get(upstreamItemId) ?? "",
-      );
+      const input = normalizeApplyPatchDelimiters(parsed.input);
       if (input !== parsed.input) {
         return [replaceSseDataPayload(block, JSON.stringify({ ...parsed, input }))];
       }

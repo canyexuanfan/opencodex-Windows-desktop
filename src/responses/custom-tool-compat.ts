@@ -1,5 +1,9 @@
 import { namespacedToolName } from "../types";
-import { repairFreeformToolInput, unwrapFreeformToolInput } from "./apply-patch-envelope";
+import {
+  normalizeApplyPatchDelimiters,
+  repairFreeformToolInput,
+  unwrapFreeformToolInput,
+} from "./apply-patch-envelope";
 import { collectResponsesToolGroups } from "./tool-groups";
 
 const ROUTED_CUSTOM_TOOL_PASSTHROUGH = new Set(["apply_patch"]);
@@ -273,7 +277,7 @@ export function restoreRoutedCustomCalls(
       && repairNames.has(wireName)
       && typeof item.input === "string"
     ) {
-      const input = repairFreeformToolInput(item.input, item.name);
+      const input = normalizeApplyPatchDelimiters(item.input);
       if (input !== item.input) return { value: { ...item, input }, changed: true };
     }
     return { value: item, changed: false };

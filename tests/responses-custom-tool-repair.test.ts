@@ -21,6 +21,7 @@ function frame(event: string, payload: Record<string, unknown>): string {
 
 const DECORATED_PATCH = "*** Begin Patch ***\n*** Update File: README.md\n@@\n-old\n+new\n*** End Patch ***";
 const CANONICAL_PATCH = "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** End Patch";
+const WRAPPED_DECORATED_PATCH = JSON.stringify({ input: DECORATED_PATCH });
 
 describe("routed Responses custom-tool compatibility", () => {
   test("rewrites exec definitions and paired history without touching apply_patch", () => {
@@ -143,6 +144,21 @@ describe("routed Responses custom-tool compatibility", () => {
       new Set(["apply_patch"]),
     )).toBe(metadataOnly);
 
+    const wrappedNative = JSON.stringify({
+      id: "resp_wrapped_patch",
+      output: [{
+        type: "custom_tool_call",
+        id: "ctc_wrapped_patch",
+        name: "apply_patch",
+        input: WRAPPED_DECORATED_PATCH,
+      }],
+    });
+    expect(restoreRoutedCustomCallsInJson(
+      wrappedNative,
+      new Set(),
+      new Set(["apply_patch"]),
+    )).toBe(wrappedNative);
+
     expect(restoreRoutedCustomCallsInJson(upstream, new Set())).toBe(upstream);
   });
 
@@ -174,6 +190,22 @@ describe("routed Responses custom-tool compatibility", () => {
       type: "response.custom_tool_call_input.done",
       input: CANONICAL_PATCH,
     });
+
+    rewrite(frame("response.output_item.added", {
+      output_index: 1,
+      item: {
+        type: "custom_tool_call",
+        id: "ctc_wrapped_patch",
+        name: "apply_patch",
+        input: "",
+      },
+    }));
+    const wrappedInputDone = rewrite(frame("response.custom_tool_call_input.done", {
+      output_index: 1,
+      item_id: "ctc_wrapped_patch",
+      input: WRAPPED_DECORATED_PATCH,
+    }));
+    expect(dataPayload(wrappedInputDone[0]!)).toMatchObject({ input: WRAPPED_DECORATED_PATCH });
 
     const itemDone = rewrite(frame("response.output_item.done", {
       output_index: 0,
