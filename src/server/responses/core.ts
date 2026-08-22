@@ -309,8 +309,11 @@ import {
   type RoutedNamespaceToolAliases,
 } from "../../responses/namespace-tool-compat";
 import {
+  collectDeclaredNamelessClientCallTypes,
   collectDeclaredWireToolNames,
   createUndeclaredToolCallGuardBlockRewrite,
+  currentTurnWireToolCatalogBody,
+  hasExplicitWireToolCatalog,
   undeclaredToolCallMessage,
   undeclaredToolCallName,
   undeclaredToolCallNameInResponse,
@@ -2923,6 +2926,18 @@ async function handleResponsesInner(
         + `(model ${parsed.modelId}); forwarding without it — earlier turns may be missing from this request`,
       );
     }
+    // Preserve the caller's readable catalog boundary before provider-specific normalization can
+    // remove an unsupported final entry (for example xAI cached-only web search).
+    const replayedInputPrefixLength = parsed._replayPrefixLen ?? 0;
+    const clientToolAuthorizationBody = currentTurnWireToolCatalogBody(
+      parsed._rawBody,
+      replayedInputPrefixLength,
+    );
+    const clientExplicitWireToolCatalog = hasExplicitWireToolCatalog(clientToolAuthorizationBody);
+    const clientDeclaredWireToolNames = collectDeclaredWireToolNames(clientToolAuthorizationBody);
+    const clientDeclaredNamelessCallTypes = collectDeclaredNamelessClientCallTypes(
+      clientToolAuthorizationBody,
+    );
     let request: Awaited<ReturnType<typeof adapter.buildRequest>>;
     try {
       request = await adapter.buildRequest(parsed, { headers: selectedForwardHeaders, translatorBudget });
@@ -2965,13 +2980,13 @@ async function handleResponsesInner(
     // call it cannot execute, and the turn showed a bare `aborted` with the file untouched.
     // Forward auth is the canonical ChatGPT backend speaking Codex's own protocol rather than a
     // routed provider, so it keeps passing through unguarded, as it does for the rewrites above.
-    // The guard needs a catalog to compare against, so it stands down when the request carries
-    // none. That is not the same claim as "no tools means no tool may be called": a passthrough
-    // request can legitimately omit `tools` entirely and still receive a tool call the client
-    // understands — `tests/github-copilot-stream-contract.test.ts` sends `{model, input, stream}`
-    // with no tools and Copilot answers with a `custom_tool_call` for `apply_patch`. Policing an
-    // empty catalog truncates that turn. An unreadable body lands here too, since it yields no
-    // names either.
+    // The guard needs a catalog to compare against, so it stands down when the request omits one.
+    // An explicit empty catalog is still authoritative: it declares that no client tools may be
+    // called. A passthrough request can legitimately omit `tools` entirely and still receive a call
+    // the client understands — `tests/github-copilot-stream-contract.test.ts` sends
+    // `{model, input, stream}` with no tools and Copilot answers with a `custom_tool_call` for
+    // `apply_patch`. Policing an absent catalog truncates that turn. An unreadable body lands there
+    // too because the proxy cannot establish the caller's declared authorization boundary.
     const parseOutboundRequestBody = (bodyText: string): Record<string, unknown> | undefined => {
       try {
         const body = JSON.parse(bodyText) as unknown;
@@ -2982,16 +2997,46 @@ async function handleResponsesInner(
         return undefined;
       }
     };
-    let outboundRequestBody = parseOutboundRequestBody(request.body);
-    const declaredWireToolNames = collectDeclaredWireToolNames(outboundRequestBody);
-    // Union with the caller's own catalog, because the outbound body is not always a complete
-    // record of it: hosted-tool preference REPLACES a client tool with its hosted form, so a
-    // request declaring `image_gen.generate` ships `{type:"image_generation"}` upstream and gets
-    // the client's name back. Widening only ever makes the guard fire less; a name declared in
-    // neither place — #1700's `apply_patch` — is still refused.
-    for (const name of toolBridgeMaps.declaredToolNames) declaredWireToolNames.add(name);
-    const undeclaredToolGuardActive = declaredWireToolNames.size > 0
-      && route.provider.authMode !== "forward";
+    let outboundRequestBody: Record<string, unknown> | undefined;
+    const declaredWireToolNames = new Set<string>();
+    const declaredNamelessClientCallTypes = new Set<string>();
+    let undeclaredToolGuardActive = false;
+    const refreshUndeclaredToolGuard = (builtRequest: AdapterRequest): void => {
+      outboundRequestBody = parseOutboundRequestBody(builtRequest.body);
+      declaredWireToolNames.clear();
+      // With no replay prefix the full outbound body belongs to this turn and its normalized
+      // aliases are authoritative. A continuation's outbound body still contains historical
+      // catalogs (and may promote historical tool-search definitions), so it can never widen the
+      // current caller snapshot captured above.
+      if (replayedInputPrefixLength === 0) {
+        for (const name of collectDeclaredWireToolNames(outboundRequestBody)) {
+          declaredWireToolNames.add(name);
+        }
+      }
+      for (const name of clientDeclaredWireToolNames) declaredWireToolNames.add(name);
+      declaredNamelessClientCallTypes.clear();
+      if (replayedInputPrefixLength === 0) {
+        for (const callType of collectDeclaredNamelessClientCallTypes(outboundRequestBody)) {
+          declaredNamelessClientCallTypes.add(callType);
+        }
+      }
+      for (const callType of clientDeclaredNamelessCallTypes) {
+        declaredNamelessClientCallTypes.add(callType);
+      }
+      // On an ordinary request these maps capture caller-catalog identities that normalization may
+      // replace on the outbound wire (for example a client image tool becoming hosted). On replay,
+      // however, the parsed maps also contain historical catalog entries, so only the bounded
+      // current-turn wire snapshot above may authorize a call.
+      if (replayedInputPrefixLength === 0) {
+        for (const name of toolBridgeMaps.declaredToolNames) declaredWireToolNames.add(name);
+      }
+      undeclaredToolGuardActive = (
+        declaredWireToolNames.size > 0
+        || clientDeclaredNamelessCallTypes.size > 0
+        || clientExplicitWireToolCatalog
+      ) && route.provider.authMode !== "forward";
+    };
+    refreshUndeclaredToolGuard(request);
     // A refused turn must not seed `previous_response_id` replay. The inspection branch reads the
     // untouched upstream stream, so it can still observe a `response.completed` the client never
     // received; checking the payload itself rather than a flag shared with the client relay keeps
@@ -3008,7 +3053,11 @@ async function handleResponsesInner(
       // provider) every name looks undeclared, and flipping this would stop recording continuation
       // state for exactly the passthrough traffic the guard deliberately stands down for.
       if (!undeclaredToolGuardActive || inspectionSawUndeclaredTool) return;
-      if (undeclaredToolCallName(payload, declaredWireToolNames) !== undefined) {
+      if (undeclaredToolCallName(
+        payload,
+        declaredWireToolNames,
+        declaredNamelessClientCallTypes,
+      ) !== undefined) {
         inspectionSawUndeclaredTool = true;
       }
     };
@@ -3017,7 +3066,11 @@ async function handleResponsesInner(
         if (inspectionSawUndeclaredTool) return;
         if (
           undeclaredToolGuardActive
-          && undeclaredToolCallNameInResponse(response, declaredWireToolNames) !== undefined
+          && undeclaredToolCallNameInResponse(
+            response,
+            declaredWireToolNames,
+            declaredNamelessClientCallTypes,
+          ) !== undefined
         ) {
           return;
         }
@@ -3184,7 +3237,7 @@ async function handleResponsesInner(
         ? request.usageLog.inputTokens
         : undefined;
       if (passthroughEstimate !== undefined) logCtx.usageLogInputTokens = passthroughEstimate;
-      outboundRequestBody = parseOutboundRequestBody(request.body);
+      refreshUndeclaredToolGuard(request);
       logCtx.providerAdapter = retryAdapter.name;
       sealRequestAttemptIdentity(
         logCtx.activeAttempt,
@@ -3294,6 +3347,7 @@ async function handleResponsesInner(
         const msg = err instanceof Error ? err.message : String(err);
         return formatErrorResponse(400, "invalid_request_error", redactSecretString(msg));
       }
+      refreshUndeclaredToolGuard(request);
       try {
         upstreamResponse = await fetchWithTransientRetry(
           recovery => {
@@ -3445,6 +3499,7 @@ async function handleResponsesInner(
           authCtx = retry.authCtx;
           request = retry.request;
           refreshRoutedNamespaceToolAliases(request);
+          refreshUndeclaredToolGuard(request);
           upstreamResponse = retry.upstreamResponse;
           selectedForwardHeaders = retry.selectedForwardHeaders;
           // Keep subagent quota-failure health keyed to the account that actually served.
@@ -3655,7 +3710,10 @@ async function handleResponsesInner(
         // Last: every rewrite above can still rename or reshape a call item, so the guard must
         // compare the names the client will actually receive against the declared catalog.
         undeclaredToolGuardActive
-          ? createUndeclaredToolCallGuardBlockRewrite(declaredWireToolNames)
+          ? createUndeclaredToolCallGuardBlockRewrite(
+            declaredWireToolNames,
+            declaredNamelessClientCallTypes,
+          )
           : undefined,
       ].filter((rewrite): rewrite is NonNullable<typeof rewrite> => rewrite !== undefined);
       const clientBlockRewrite = blockRewrites.length > 0
@@ -3872,7 +3930,11 @@ async function handleResponsesInner(
       if (undeclaredToolGuardActive) {
         const undeclared = (() => {
           try {
-            return undeclaredToolCallNameInResponse(JSON.parse(clientJson), declaredWireToolNames);
+            return undeclaredToolCallNameInResponse(
+              JSON.parse(clientJson),
+              declaredWireToolNames,
+              declaredNamelessClientCallTypes,
+            );
           } catch {
             return undefined;
           }
