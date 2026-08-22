@@ -108,4 +108,18 @@ describe("Claude Code Anthropic inbound reasoning-replay scope", () => {
     const parsed = await drive({});
     expect(parsed._reasoningReplayScope).toBeUndefined();
   });
+
+  test("an overlong prompt_cache_key is hashed, not stored raw", async () => {
+    const overlong = "k".repeat(200);
+    const parsed = await drive({ promptCacheKey: overlong, promptCacheKeyIsSharedCohort: false });
+    const scope = parsed._reasoningReplayScope?.clientThreadId;
+    expect(scope).toBeDefined();
+    expect(scope).not.toBe(overlong);
+    expect(scope!.length).toBeLessThanOrEqual(128);
+  });
+
+  test("a whitespace-only prompt_cache_key does not create a scope", async () => {
+    const parsed = await drive({ promptCacheKey: "   ", promptCacheKeyIsSharedCohort: false });
+    expect(parsed._reasoningReplayScope).toBeUndefined();
+  });
 });

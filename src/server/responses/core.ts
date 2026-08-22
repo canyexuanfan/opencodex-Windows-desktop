@@ -2197,7 +2197,16 @@ async function handleResponsesInner(
       // thread identity so Gemini thought signatures are remembered by call_id for
       // Anthropic Messages clients too (#1735/#1926). Keep `_clientThreadId` unset so
       // existing provider session-id derivation (first-user-text fallback) is unchanged.
-      parsed._reasoningReplayScope = { clientThreadId: parsed.options.promptCacheKey };
+      // Normalize through anthropicSessionKeyFromParts so overlong keys are hashed and
+      // trimming matches the affinity/session-key path exactly (no raw >128-char ids).
+      const normalizedCacheKey = anthropicSessionKeyFromParts({
+        promptCacheKey: parsed.options.promptCacheKey,
+        // The enclosing branch already proves this is not the shared cohort.
+        promptCacheKeyIsSharedCohort: false,
+      });
+      if (normalizedCacheKey) {
+        parsed._reasoningReplayScope = { clientThreadId: normalizedCacheKey };
+      }
     }
   } catch (err) {
     if (isTranslatorBudgetExceededError(err)) {
