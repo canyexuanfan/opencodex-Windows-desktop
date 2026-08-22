@@ -80,18 +80,33 @@ function installBodyAbortFetch(): { getSignal: () => AbortSignal; getBody: () =>
 function installPreReaderAbortFetch(
   turn: AbortController,
   reason: Error,
-): { getSignal: () => AbortSignal; wasBodyLockedAtAbort: () => boolean } {
+  status = 200,
+): { getSignal: () => AbortSignal; wasBodyLockedAtAbort: () => boolean; wasBodyCanceled: () => boolean } {
   let seenSignal: AbortSignal | undefined;
   let bodyLockedAtAbort: boolean | undefined;
+  let bodyCanceled = false;
+  let fallback: ReturnType<typeof setTimeout> | undefined;
   globalThis.fetch = ((_, init) => {
     seenSignal = init?.signal as AbortSignal | undefined;
-    const body = new ReadableStream<Uint8Array>();
+    let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        bodyController = controller;
+      },
+      cancel() {
+        bodyCanceled = true;
+        if (fallback !== undefined) clearTimeout(fallback);
+      },
+    });
     queueMicrotask(() => {
       bodyLockedAtAbort = body.locked;
       turn.abort(reason);
+      fallback = setTimeout(() => {
+        if (!bodyCanceled) bodyController?.close();
+      }, 25);
     });
     return Promise.resolve(new Response(body, {
-      status: 200,
+      status,
       headers: { "Content-Type": "text/event-stream" },
     }));
   }) as typeof fetch;
@@ -104,6 +119,7 @@ function installPreReaderAbortFetch(
       if (bodyLockedAtAbort === undefined) throw new Error("abort did not run");
       return bodyLockedAtAbort;
     },
+    wasBodyCanceled: () => bodyCanceled,
   };
 }
 
@@ -371,6 +387,7 @@ describe("sidecar abort propagation", () => {
       value => webRecorded.push(value),
     );
     expect(webFetch.wasBodyLockedAtAbort()).toBe(false);
+    expect(webFetch.wasBodyCanceled()).toBe(true);
     expect(webFetch.getSignal().reason).toBe(webReason);
     expect(webOutcome.error).toBe("web aborted before reader attach");
     expect(webRecorded).toEqual(["connect_neutral"]);
@@ -390,9 +407,32 @@ describe("sidecar abort propagation", () => {
       value => visionRecorded.push(value),
     );
     expect(visionFetch.wasBodyLockedAtAbort()).toBe(false);
+    expect(visionFetch.wasBodyCanceled()).toBe(true);
     expect(visionFetch.getSignal().reason).toBe(visionReason);
     expect(visionOutcome.error).toBe("vision aborted before reader attach");
     expect(visionRecorded).toEqual(["connect_neutral"]);
+  });
+
+  test("vision guards an HTTP-error body before a pre-reader caller abort", async () => {
+    const turn = new AbortController();
+    const reason = new Error("vision HTTP body aborted before reader attach");
+    const fetchState = installPreReaderAbortFetch(turn, reason, 403);
+    const recorded: unknown[] = [];
+    const outcome = await describeImage(
+      "data:image/png;base64,iVBORw0KGgo=",
+      "high",
+      "inspect screenshot",
+      forwardProvider,
+      new Headers({ authorization: "Bearer token" }),
+      { model: "gpt-5.4-mini", timeoutMs: 30_000 },
+      turn.signal,
+      value => recorded.push(value),
+    );
+    expect(fetchState.wasBodyLockedAtAbort()).toBe(false);
+    expect(fetchState.wasBodyCanceled()).toBe(true);
+    expect(fetchState.getSignal().reason).toBe(reason);
+    expect(outcome.error).toBe("vision sidecar HTTP 403: ");
+    expect(recorded).toEqual([403]);
   });
 
   test("successful SSE bodies record HTTP success once for both sidecars", async () => {
