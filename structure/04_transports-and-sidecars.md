@@ -44,7 +44,7 @@ Responses-compatible streaming output.
 - 기존 구현 및 제약 조건: The request catalog already controlled custom-tool restoration and the non-OpenAI prompt nudge, but an undeclared upstream name still fell through as an ordinary `function_call`; Codex then reduced the mismatch to a bare `aborted` result.
 - 검토한 주요 대안: Rely only on prompt guidance; automatically translate undeclared `apply_patch` into Code Mode; validate returned names against the request-visible catalog at the final bridge.
 - 선택한 방식: Retain the allowed wire-name set with the existing bridge maps and fail the turn with an explicit compatibility error before emitting any undeclared tool item.
-- 보완된 경계: Key-auth Responses passthrough restores a routed custom call only when the adapter actually lowered that name after request normalization and the caller's `tool_choice` still authorizes it. Native `apply_patch` and tools replaced by hosted-provider policy stay in their upstream function-call form.
+- 보완된 경계: Key-auth Responses passthrough restores a routed custom call only when the adapter actually lowered that name after request normalization and the caller's `tool_choice` still authorizes it. Native `apply_patch` stays in its upstream function-call form unless the destination explicitly denies Responses custom tools; tools replaced by hosted-provider policy also stay in their upstream function-call form.
 - 다른 대안 대신 이 방식을 선택한 이유: Model guidance is not an enforcement boundary, while automatic translation would invent executable caller intent and arguments after generation.
 - 장점, 단점 및 영향: Streaming and non-streaming routed responses now fail closed with an actionable provider-contract error; providers that emit aliases they never advertised must correct their adapter mapping instead of relying on client abort behavior.
 
@@ -69,10 +69,11 @@ Two coordinates that lower to the same wire name are treated as one tool when th
 a `functions` child of the same name are the duplicate the parser already tolerates — and the one
 `promoteClientLoadedTools` produces. The declaration is emitted once instead of failing the request.
 
-Replayed call items are lowered whether or not this turn declares the group they name. A routed
-compaction turn strips the whole tool surface before the boundary runs, and a catalog can change
-mid-session, but the client is still replaying items this layer's own response restoration stamped
-with a private `namespace`. Only `tool_choice` resolves a bare name through the catalog: a history
+Replayed call items are lowered whether or not this turn declares the group they name. A catalog can
+be absent or change mid-session, but the client is still replaying items this layer's own response
+restoration stamped with a private `namespace`. Routed compaction runs this boundary before removing
+the tool surface so request-local aliases remain available for response restoration. Only
+`tool_choice` resolves a bare name through the catalog: a history
 item records which tool actually ran, so re-pointing it at a same-named namespace child would
 rewrite that record on a coincidence rather than translate it.
 
