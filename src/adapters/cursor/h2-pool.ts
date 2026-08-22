@@ -1,4 +1,5 @@
 import http2 from "node:http2";
+import { registerOptionalShutdownHook } from "../../lib/optional-shutdown-hooks";
 
 const DEFAULT_MAX_SESSIONS = 8;
 const SESSION_CLOSE_TIMEOUT_MS = 2_000;
@@ -10,9 +11,12 @@ interface PoolEntry {
 }
 
 /**
- * HTTP/2 connection pool for Cursor Connect unary/stream calls.
- * Sessions are keyed by origin (scheme+host+port) and reused across
- * GetUsableModels / Run requests to avoid fresh TCP+TLS per call.
+ * HTTP/2 connection pool for Cursor Connect DISCOVERY calls (GetUsableModels).
+ * Sessions are keyed by origin (scheme+host+port) and reused to avoid fresh
+ * TCP+TLS per call. The Run path deliberately dials its own session: Run
+ * streams are long-lived bidi whose lifecycle/EOF semantics are owned by
+ * live-transport (see devlog 260822_senpi_cursor_transfer/190 — Run-path
+ * pooling is a separate, deliberate unit if ever taken).
  */
 export class CursorH2SessionPool {
   private readonly entries = new Map<string, PoolEntry>();
@@ -20,11 +24,23 @@ export class CursorH2SessionPool {
 
   constructor(private readonly maxSessions = DEFAULT_MAX_SESSIONS) {}
 
+  /**
+   * Lazily registered on first use so a process that never talks to Cursor registers
+   * nothing (optional-subsystem doctrine). The seam is synchronous and best-effort;
+   * shutdown() is fire-and-forget there because lifecycle's drainAndShutdown runs
+   * under its own absolute deadline.
+   */
+  private armShutdownHook: (() => void) | undefined = () => {
+    this.armShutdownHook = undefined;
+    registerOptionalShutdownHook("cursor-h2-pool", () => { void this.shutdown(); });
+  };
+
   request(
     url: string,
     headers: http2.OutgoingHttpHeaders,
   ): http2.ClientHttp2Stream {
     if (this.closed) throw new Error("Cursor H2 session pool is closed");
+    this.armShutdownHook?.();
     const origin = new URL(url).origin;
     const entry = this.usableEntry(origin) ?? this.createEntry(origin);
     try {
