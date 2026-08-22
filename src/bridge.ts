@@ -637,6 +637,7 @@ export function bridgeToResponsesSSE(
         if (currentToolCall.freeform) {
           emit("response.custom_tool_call_input.done", {
             item_id: currentToolCall.itemId, output_index: currentToolCall.outputIndex,
+            ...(currentToolCall.namespace ? { namespace: currentToolCall.namespace } : {}),
             input: freeformInput(currentToolCall.args, currentToolCall.name, currentToolCall.namespace),
           });
         }
@@ -653,6 +654,7 @@ export function bridgeToResponsesSSE(
           ? {
               type: "custom_tool_call", id: currentToolCall.itemId,
               call_id: currentToolCall.callId, name: currentToolCall.name,
+              ...(currentToolCall.namespace ? { namespace: currentToolCall.namespace } : {}),
               input: freeformInput(currentToolCall.args, currentToolCall.name, currentToolCall.namespace), status: "completed",
             }
           : {
@@ -692,6 +694,7 @@ export function bridgeToResponsesSSE(
           ? {
               type: "custom_tool_call", id: currentToolCall.itemId,
               call_id: currentToolCall.callId, name: currentToolCall.name,
+              ...(currentToolCall.namespace ? { namespace: currentToolCall.namespace } : {}),
               input: freeformInput(currentToolCall.args, currentToolCall.name, currentToolCall.namespace), status: "incomplete",
             }
           : {
@@ -1065,7 +1068,7 @@ export function bridgeToResponsesSSE(
               const item = toolSearch
                 ? { type: "tool_search_call", id: itemId, call_id: event.id, execution: "client", arguments: {}, status: "in_progress" }
                 : freeform
-                ? { type: "custom_tool_call", id: itemId, call_id: event.id, name: realName, input: "", status: "in_progress" }
+                ? { type: "custom_tool_call", id: itemId, call_id: event.id, name: realName, ...(ns ? { namespace: ns } : {}), input: "", status: "in_progress" }
                 : { type: "function_call", id: itemId, call_id: event.id, name: realName, arguments: "", status: "in_progress", ...(ns ? { namespace: ns } : {}) };
               emit("response.output_item.added", { output_index: outputIndex, item });
               currentToolCall = { itemId, outputIndex, callId: event.id, name: realName, args: "", argsBytes: 0, namespace: ns, freeform, toolSearch, providerMetadata: event.providerMetadata };
@@ -1670,6 +1673,7 @@ function buildResponseJSONWithBudget(
       pushOutput({
         type: "custom_tool_call", id: `ctc_${uuid()}`,
         call_id: currentToolCallId, name: realName,
+        ...(ns ? { namespace: ns } : {}),
         input: freeformInput(currentToolCallArgs, realName, ns), status,
       });
     } else {

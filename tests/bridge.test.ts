@@ -716,13 +716,61 @@ describe("Responses bridge reasoning and usage parity", () => {
 
     const json = buildResponseJSON(events, "model", { toolNsMap });
     const output = json.output as Record<string, unknown>[];
-    expect(output[0]).toMatchObject({ type: "custom_tool_call", name: "apply_patch", input: decorated });
+    expect(output[0]).toMatchObject({
+      type: "custom_tool_call",
+      namespace: "mcp",
+      name: "apply_patch",
+      input: decorated,
+    });
 
     const frames = await collectSse(bridgeToResponsesSSE(replay(events), "model", toolNsMap));
+    const itemAdded = frames.find(frame => frame.event === "response.output_item.added")?.data.item as Record<string, unknown>;
+    expect(itemAdded).toMatchObject({ type: "custom_tool_call", namespace: "mcp", name: "apply_patch" });
     const inputDone = frames.find(frame => frame.event === "response.custom_tool_call_input.done")?.data;
-    expect(inputDone?.input).toBe(decorated);
+    expect(inputDone).toMatchObject({ namespace: "mcp", input: decorated });
     const itemDone = frames.find(frame => frame.event === "response.output_item.done")?.data.item as Record<string, unknown>;
-    expect(itemDone).toMatchObject({ type: "custom_tool_call", name: "apply_patch", input: decorated });
+    expect(itemDone).toMatchObject({
+      type: "custom_tool_call",
+      namespace: "mcp",
+      name: "apply_patch",
+      input: decorated,
+    });
+    const completed = frames.find(frame => frame.event === "response.completed")?.data.response as Record<string, unknown>;
+    expect((completed.output as Record<string, unknown>[])[0]).toMatchObject({
+      type: "custom_tool_call",
+      namespace: "mcp",
+      name: "apply_patch",
+      input: decorated,
+    });
+
+    const incompleteEvents: AdapterEvent[] = [
+      { type: "tool_call_start", id: "c2", name: "mcp__apply_patch" },
+      { type: "tool_call_delta", arguments: JSON.stringify({ input: decorated }) },
+      { type: "incomplete", reason: "upstream_truncated", retryable: true },
+    ];
+    const incompleteJson = buildResponseJSON(incompleteEvents, "model", { toolNsMap });
+    expect((incompleteJson.output as Record<string, unknown>[])[0]).toMatchObject({
+      type: "custom_tool_call",
+      namespace: "mcp",
+      name: "apply_patch",
+      status: "incomplete",
+    });
+
+    const incompleteFrames = await collectSse(bridgeToResponsesSSE(replay(incompleteEvents), "model", toolNsMap));
+    const incompleteItem = incompleteFrames.find(frame => frame.event === "response.output_item.done")?.data.item;
+    expect(incompleteItem).toMatchObject({
+      type: "custom_tool_call",
+      namespace: "mcp",
+      name: "apply_patch",
+      status: "incomplete",
+    });
+    const incompleteResponse = incompleteFrames.find(frame => frame.event === "response.incomplete")?.data.response as Record<string, unknown>;
+    expect((incompleteResponse.output as Record<string, unknown>[])[0]).toMatchObject({
+      type: "custom_tool_call",
+      namespace: "mcp",
+      name: "apply_patch",
+      status: "incomplete",
+    });
   });
 
   test("non-streaming error produces failed status", () => {
