@@ -2186,6 +2186,27 @@ async function handleResponsesInner(
     if (inboundClientThreadId) {
       parsed._clientThreadId = inboundClientThreadId;
       parsed._reasoningReplayScope = { clientThreadId: inboundClientThreadId };
+    } else if (
+      options.inboundWire === "anthropic"
+      && options.promptCacheKeyIsSharedCohort !== true
+      && typeof parsed.options.promptCacheKey === "string"
+      && parsed.options.promptCacheKey.trim().length > 0
+    ) {
+      // Claude Code has no Codex parent-thread header, but its metadata.user_id is
+      // translated into a stable per-session prompt_cache_key. Use it as the replay
+      // thread identity so Gemini thought signatures are remembered by call_id for
+      // Anthropic Messages clients too (#1735/#1926). Keep `_clientThreadId` unset so
+      // existing provider session-id derivation (first-user-text fallback) is unchanged.
+      // Normalize through anthropicSessionKeyFromParts so overlong keys are hashed and
+      // trimming matches the affinity/session-key path exactly (no raw >128-char ids).
+      const normalizedCacheKey = anthropicSessionKeyFromParts({
+        promptCacheKey: parsed.options.promptCacheKey,
+        // The enclosing branch already proves this is not the shared cohort.
+        promptCacheKeyIsSharedCohort: false,
+      });
+      if (normalizedCacheKey) {
+        parsed._reasoningReplayScope = { clientThreadId: normalizedCacheKey };
+      }
     }
   } catch (err) {
     if (isTranslatorBudgetExceededError(err)) {
