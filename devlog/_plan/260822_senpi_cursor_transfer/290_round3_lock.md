@@ -29,3 +29,12 @@ vision, bounded memory, T04 watchdog with senpi-matching thresholds, typed
 exec errors, EOF fail-closed tests). Verdict: at parity or ahead on every
 row that is provable on this plan tier; the two rows senpi still leads
 require entitlement or a reproduction neither project can show today.
+
+## Post-landing status (locked after implementation)
+
+- 230 landed: PR #2341 (896cb5720), closes #2305 — 4 regression tests.
+- 260 landed: PR #2342 (8f3ac5fe9) — size prior with 5 regression tests;
+  strictly narrowing (unknown context keeps the #2320 overflow mapping).
+- Final gate: Cross-platform CI on the resulting dev head (see PR checks);
+  the verdict above stands as written — no remaining provable senpi-ahead
+  row on this plan tier.
