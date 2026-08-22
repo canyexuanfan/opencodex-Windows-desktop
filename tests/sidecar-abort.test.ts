@@ -77,6 +77,36 @@ function installBodyAbortFetch(): { getSignal: () => AbortSignal; getBody: () =>
   };
 }
 
+function installPreReaderAbortFetch(
+  turn: AbortController,
+  reason: Error,
+): { getSignal: () => AbortSignal; wasBodyLockedAtAbort: () => boolean } {
+  let seenSignal: AbortSignal | undefined;
+  let bodyLockedAtAbort: boolean | undefined;
+  globalThis.fetch = ((_, init) => {
+    seenSignal = init?.signal as AbortSignal | undefined;
+    const body = new ReadableStream<Uint8Array>();
+    queueMicrotask(() => {
+      bodyLockedAtAbort = body.locked;
+      turn.abort(reason);
+    });
+    return Promise.resolve(new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }));
+  }) as typeof fetch;
+  return {
+    getSignal: () => {
+      if (!seenSignal) throw new Error("fetch was not called");
+      return seenSignal;
+    },
+    wasBodyLockedAtAbort: () => {
+      if (bodyLockedAtAbort === undefined) throw new Error("abort did not run");
+      return bodyLockedAtAbort;
+    },
+  };
+}
+
 async function waitForBodyReader(body: ReadableStream<Uint8Array>, turn: AbortController): Promise<void> {
   for (let attempt = 0; attempt < 200 && !body.locked; attempt += 1) {
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -301,7 +331,7 @@ describe("sidecar abort propagation", () => {
     webTurn.abort(webReason);
     expect(webSignal.reason).toBe(webReason);
     expect((await webOutcome).error).toBe("web body aborted by turn");
-    expect(webRecorded).toEqual([200, "connect_neutral"]);
+    expect(webRecorded).toEqual(["connect_neutral"]);
 
     const visionFetch = installBodyAbortFetch();
     const visionTurn = new AbortController();
@@ -323,7 +353,77 @@ describe("sidecar abort propagation", () => {
     visionTurn.abort(visionReason);
     expect(visionSignal.reason).toBe(visionReason);
     expect((await visionOutcome).error).toBe("vision body aborted by turn");
-    expect(visionRecorded).toEqual([200, "connect_neutral"]);
+    expect(visionRecorded).toEqual(["connect_neutral"]);
+  });
+
+  test("pre-reader caller aborts stay account-neutral for both sidecars", async () => {
+    const webTurn = new AbortController();
+    const webReason = new Error("web aborted before reader attach");
+    const webFetch = installPreReaderAbortFetch(webTurn, webReason);
+    const webRecorded: unknown[] = [];
+    const webOutcome = await runWebSearch(
+      "current docs",
+      { type: "web_search" },
+      forwardProvider,
+      new Headers({ authorization: "Bearer token" }),
+      { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      webTurn.signal,
+      value => webRecorded.push(value),
+    );
+    expect(webFetch.wasBodyLockedAtAbort()).toBe(false);
+    expect(webFetch.getSignal().reason).toBe(webReason);
+    expect(webOutcome.error).toBe("web aborted before reader attach");
+    expect(webRecorded).toEqual(["connect_neutral"]);
+
+    const visionTurn = new AbortController();
+    const visionReason = new Error("vision aborted before reader attach");
+    const visionFetch = installPreReaderAbortFetch(visionTurn, visionReason);
+    const visionRecorded: unknown[] = [];
+    const visionOutcome = await describeImage(
+      "data:image/png;base64,iVBORw0KGgo=",
+      "high",
+      "inspect screenshot",
+      forwardProvider,
+      new Headers({ authorization: "Bearer token" }),
+      { model: "gpt-5.4-mini", timeoutMs: 30_000 },
+      visionTurn.signal,
+      value => visionRecorded.push(value),
+    );
+    expect(visionFetch.wasBodyLockedAtAbort()).toBe(false);
+    expect(visionFetch.getSignal().reason).toBe(visionReason);
+    expect(visionOutcome.error).toBe("vision aborted before reader attach");
+    expect(visionRecorded).toEqual(["connect_neutral"]);
+  });
+
+  test("successful SSE bodies record HTTP success once for both sidecars", async () => {
+    const webRecorded: unknown[] = [];
+    globalThis.fetch = (() => Promise.resolve(sseText("done"))) as typeof fetch;
+    const webOutcome = await runWebSearch(
+      "current docs",
+      { type: "web_search" },
+      forwardProvider,
+      new Headers({ authorization: "Bearer token" }),
+      { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      undefined,
+      value => webRecorded.push(value),
+    );
+    expect(webOutcome.text).toBe("done");
+    expect(webRecorded).toEqual([200]);
+
+    const visionRecorded: unknown[] = [];
+    globalThis.fetch = (() => Promise.resolve(sseText("image description"))) as typeof fetch;
+    const visionOutcome = await describeImage(
+      "data:image/png;base64,iVBORw0KGgo=",
+      "high",
+      "inspect screenshot",
+      forwardProvider,
+      new Headers({ authorization: "Bearer token" }),
+      { model: "gpt-5.4-mini", timeoutMs: 30_000 },
+      undefined,
+      value => visionRecorded.push(value),
+    );
+    expect(visionOutcome.text).toBe("image description");
+    expect(visionRecorded).toEqual([200]);
   });
 
   test("vision sidecar records HTTP and connect outcomes", async () => {

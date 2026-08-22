@@ -102,8 +102,8 @@ export async function describeImage(
       }),
       { abortSignal: linkedSignal.signal, label: "vision-sidecar" },
     );
-    recordOutcome?.(res.status);
     if (!res.ok) {
+      recordOutcome?.(res.status);
       const t = await res.text().catch(() => "");
       console.warn(`[vision] sidecar HTTP ${res.status} (${Date.now() - t0}ms)`);
       return { text: "", error: `vision sidecar HTTP ${res.status}: ${redactSecretString(t.slice(0, 200))}` };
@@ -115,6 +115,8 @@ export async function describeImage(
     } finally {
       detachBodyGuard();
     }
+    if (linkedSignal.signal.aborted) throw linkedSignal.signal.reason;
+    recordOutcome?.(res.status);
     // The backend can return HTTP 200 then stream a `response.failed`/`error` event with no text;
     // surface that as a describe error instead of an empty (silently-blank) description.
     if (!parsed.text.trim() && parsed.error) return { text: "", error: parsed.error };

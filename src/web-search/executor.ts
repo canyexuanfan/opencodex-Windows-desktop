@@ -85,19 +85,22 @@ export async function runWebSearch(
       }),
       { abortSignal: linkedSignal.signal, label: "web-search-sidecar" },
     );
-    recordOutcome?.(res.status);
     // Attach the body guard before ANY branch reads it. The success path guarded itself below,
     // but the failure branch's `res.text()` runs first, so a cancel landing between fetch
     // resolution and reader attach orphaned the internal rejection (found investigating #1419).
     const detachBodyGuard = cancelBodyOnAbort(res.body, linkedSignal.signal);
     if (!res.ok) {
+      recordOutcome?.(res.status);
       const t = await res.text().catch(() => "");
       detachBodyGuard();
       console.warn(`[web-search] sidecar HTTP ${res.status} for query "${query.slice(0, 80)}" (${Date.now() - t0}ms)`);
       return { text: "", sources: [], error: `sidecar HTTP ${res.status}: ${redactSecretString(t.slice(0, 200))}` };
     }
     try {
-      return await parseSidecarSSE(res);
+      const parsed = await parseSidecarSSE(res);
+      if (linkedSignal.signal.aborted) throw linkedSignal.signal.reason;
+      recordOutcome?.(res.status);
+      return parsed;
     } finally {
       detachBodyGuard();
     }
