@@ -235,9 +235,14 @@ describe("#1735 thought signature survives history replay", () => {
     const adapter = createGoogleAdapter(aiStudioProvider);
     await adapter.buildRequest(firstTurn());
     const frames = [
-      `data: ${JSON.stringify(googleBody([
-        { text: "thinking...", thought: true, thought_signature: SIGNATURE },
-      ]))}\n\n`,
+      `data: ${JSON.stringify({
+        candidates: [{
+          content: {
+            role: "model",
+            parts: [{ text: "thinking...", thought: true, thought_signature: SIGNATURE }],
+          },
+        }],
+      })}\n\n`,
       `data: ${JSON.stringify(googleBody([
         { functionCall: { name: "shell_command", args: { command: "pwd" } } },
       ]))}\n\n`,
