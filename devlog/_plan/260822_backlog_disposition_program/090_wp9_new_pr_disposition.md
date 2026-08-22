@@ -120,3 +120,63 @@ problems. Closing them would discard that over fixable gaps. Each gets its block
 restated on the PR with the exact evidence, so the author can finish the work — which is
 the outcome the repository actually wants.
 
+
+---
+
+# AMENDMENT — #2362's reviewer returned late, and it found more than the main agent did
+
+The `xai/grok-4.6` lane for #2362 was retired under DISPATCH-RETIRE-01 after three
+silent wait cycles, and the main agent reviewed the PR directly instead. **The lane then
+returned**, with a stronger result than the direct review produced. This is recorded
+rather than discarded, because the honest comparison is the useful part.
+
+## What the direct review found
+
+One structural gap: three new operator-facing config keys added to
+`src/types/provider.ts` with neither `src/config.ts` nor `src/server/auth-cors.ts` in the
+diff, benchmarked against `modelAdapters`, which is validated at both
+`config.ts:1463` and `auth-cors.ts:615`. That finding stands.
+
+## What the retired lane found on top
+
+Three defects in the resolver itself, all **reproduced by the main agent** in a
+throwaway worktree at the PR head before being accepted:
+
+```
+B2 canonical-openai:      {"graceMs":500}
+B4 invalid-falls-through: {"graceMs":750}
+B3 My-Model: {"graceMs":500}  my-model: {"graceMs":1500}  MY-MODEL: {"graceMs":1500}
+```
+
+1. **The canonical ChatGPT forward provider can opt into repair.** `authMode: "forward"`
+   plus `responsesTerminalRepair` wraps the canonical SSE in the DeepSeek repair
+   machine, which #1809 rules out. `providerConfigSchema` is `.passthrough()`, so a
+   hand-edited `config.json` loads it even though management POST would reject it.
+   `isCanonicalOpenAiForwardProvider` already exists and is not consulted.
+2. **An invalid per-model grace re-enables repair through the provider default.**
+   `{ foo: 0 }` reads as "disable this model" and instead falls through to
+   `responsesTerminalRepair: 750`.
+3. **Duplicate case-folded keys resolve by request casing.** One model, two grace
+   windows, decided by how the caller spelled it.
+
+Plus: the effective-wire check reimplements a looser lookup than
+`resolveWireProtocolOverride` actually uses; `graceMs` is uncapped
+(`Number.MAX_SAFE_INTEGER` accepted); and two of the new "fail-closed" tests are
+tautological — they assert `undefined`, which the old code already returned, so they
+survive a revert of the source change.
+
+## The lesson worth keeping
+
+DISPATCH-RETIRE-01 exists so a silent lane cannot stall a loop, and retiring it was
+correct — the phase would otherwise still be waiting. But **retirement is not a verdict**.
+The main agent's fallback review was thinner than the lane's, and had the late result
+been dropped on the grounds that the lane was already retired, three reproduced defects
+in a config surface would have gone unrecorded.
+
+Practical rule for later phases: when a retired lane returns after its replacement work
+is done, re-read it against what was already concluded. Cheap to check, and here it
+changed the evidence on the PR.
+
+Findings posted to #2362 as comment `5379825296`. Disposition is unchanged —
+**LEAVE OPEN** — but the blocker list is now materially longer and measured.
+
