@@ -35,6 +35,7 @@ function toolChoiceAllowsRoutedCustomTool(
 
   const selectorAllows = (selector: unknown): boolean => {
     if (!isPlainObject(selector) || typeof selector.name !== "string") return false;
+    if (selector.type !== "custom") return false;
     if (typeof selector.namespace === "string") {
       return customToolWireName(selector.namespace, selector.name) === wireName;
     }
@@ -245,51 +246,81 @@ export function restoreRoutedCustomCalls(
   names: ReadonlySet<string>,
   repairNames: ReadonlySet<string> = new Set(),
 ): { value: unknown; changed: boolean } {
-  if (Array.isArray(value)) {
+  if (!isPlainObject(value)) return { value, changed: false };
+
+  const restoreItem = (item: unknown): { value: unknown; changed: boolean } => {
+    if (!isPlainObject(item)) return { value: item, changed: false };
+    const wireName = routedCustomToolWireName(item);
+    if (
+      item.type === "function_call"
+      && typeof item.name === "string"
+      && wireName !== undefined
+      && names.has(wireName)
+    ) {
+      const restored: Record<string, unknown> = {
+        ...item,
+        type: "custom_tool_call",
+        id: customToolItemId(item.id),
+        input: repairFreeformToolInput(item.arguments, item.name),
+      };
+      delete restored.arguments;
+      return { value: restored, changed: true };
+    }
+    if (
+      item.type === "custom_tool_call"
+      && typeof item.name === "string"
+      && wireName !== undefined
+      && repairNames.has(wireName)
+      && typeof item.input === "string"
+    ) {
+      const input = repairFreeformToolInput(item.input, item.name);
+      if (input !== item.input) return { value: { ...item, input }, changed: true };
+    }
+    return { value: item, changed: false };
+  };
+
+  const restoreOutput = (output: unknown): { value: unknown; changed: boolean } => {
+    if (!Array.isArray(output)) return { value: output, changed: false };
     let changed = false;
-    const restored = value.map(entry => {
-      const result = restoreRoutedCustomCalls(entry, names, repairNames);
+    const restored = output.map(item => {
+      const result = restoreItem(item);
       changed ||= result.changed;
       return result.value;
     });
-    return changed ? { value: restored, changed: true } : { value, changed: false };
-  }
-  if (!isPlainObject(value)) return { value, changed: false };
+    return changed ? { value: restored, changed: true } : { value: output, changed: false };
+  };
 
   let changed = false;
-  const restored: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value)) {
-    const result = restoreRoutedCustomCalls(entry, names, repairNames);
-    restored[key] = result.value;
-    changed ||= result.changed;
-  }
-
-  const wireName = routedCustomToolWireName(value);
-  if (
-    value.type === "function_call"
-    && typeof value.name === "string"
-    && wireName !== undefined
-    && names.has(wireName)
-  ) {
-    restored.type = "custom_tool_call";
-    restored.id = customToolItemId(value.id);
-    restored.input = repairFreeformToolInput(value.arguments, value.name);
-    delete restored.arguments;
+  const restored: Record<string, unknown> = { ...value };
+  const output = restoreOutput(value.output);
+  if (output.changed) {
+    restored.output = output.value;
     changed = true;
   }
+
   if (
-    value.type === "custom_tool_call"
-    && typeof value.name === "string"
-    && wireName !== undefined
-    && repairNames.has(wireName)
-    && typeof value.input === "string"
+    (value.type === "response.output_item.added" || value.type === "response.output_item.done")
+    && isPlainObject(value.item)
   ) {
-    const input = repairFreeformToolInput(value.input, value.name);
-    if (input !== value.input) {
-      restored.input = input;
+    const item = restoreItem(value.item);
+    if (item.changed) {
+      restored.item = item.value;
       changed = true;
     }
   }
+
+  if (
+    typeof value.type === "string"
+    && value.type.startsWith("response.")
+    && isPlainObject(value.response)
+  ) {
+    const response = restoreRoutedCustomCalls(value.response, names, repairNames);
+    if (response.changed) {
+      restored.response = response.value;
+      changed = true;
+    }
+  }
+
   return changed ? { value: restored, changed: true } : { value, changed: false };
 }
 

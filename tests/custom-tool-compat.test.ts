@@ -38,10 +38,16 @@ describe("routed custom-tool compatibility", () => {
   test.each([
     ["none", "none"],
     ["a forced other tool", { type: "function", name: "ordinary" }],
+    ["a same-name function selector", { type: "function", name: "apply_patch" }],
     ["an allowlist exclusion", {
       type: "allowed_tools",
       mode: "required",
       tools: [{ type: "function", name: "ordinary" }],
+    }],
+    ["a same-name function allowlist", {
+      type: "allowed_tools",
+      mode: "required",
+      tools: [{ type: "function", name: "apply_patch" }],
     }],
   ] as const)("does not arm apply_patch repair under %s", (_label, toolChoice) => {
     const rewritten = rewriteRoutedCustomToolsForUpstream({

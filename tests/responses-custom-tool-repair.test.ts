@@ -126,6 +126,23 @@ describe("routed Responses custom-tool compatibility", () => {
       new Set(["apply_patch"]),
     )).toBe(unnamed);
 
+    const metadataOnly = JSON.stringify({
+      id: "resp_metadata",
+      output: [],
+      metadata: {
+        shadow: {
+          type: "custom_tool_call",
+          name: "apply_patch",
+          input: DECORATED_PATCH,
+        },
+      },
+    });
+    expect(restoreRoutedCustomCallsInJson(
+      metadataOnly,
+      new Set(),
+      new Set(["apply_patch"]),
+    )).toBe(metadataOnly);
+
     expect(restoreRoutedCustomCallsInJson(upstream, new Set())).toBe(upstream);
   });
 
@@ -160,6 +177,13 @@ describe("routed Responses custom-tool compatibility", () => {
 
     const itemDone = rewrite(frame("response.output_item.done", {
       output_index: 0,
+      metadata: {
+        shadow: {
+          type: "custom_tool_call",
+          name: "apply_patch",
+          input: DECORATED_PATCH,
+        },
+      },
       item: {
         type: "custom_tool_call",
         id: "ctc_patch",
@@ -169,7 +193,15 @@ describe("routed Responses custom-tool compatibility", () => {
         status: "completed",
       },
     }));
-    expect(dataPayload(itemDone[0]!).item).toMatchObject({ input: CANONICAL_PATCH });
+    const itemDonePayload = dataPayload(itemDone[0]!);
+    expect(itemDonePayload.item).toMatchObject({ input: CANONICAL_PATCH });
+    expect(itemDonePayload.metadata).toEqual({
+      shadow: {
+        type: "custom_tool_call",
+        name: "apply_patch",
+        input: DECORATED_PATCH,
+      },
+    });
     rewrite.dispose?.();
   });
 
