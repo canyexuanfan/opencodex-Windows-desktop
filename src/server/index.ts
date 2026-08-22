@@ -50,7 +50,6 @@ import { runOpenAiTierStartupMigration } from "../providers/openai-tier-startup"
 import { runAlibabaRegionStartupMigration } from "../providers/alibaba-region-startup";
 import { runModelRenameStartupMigration } from "../providers/model-rename-startup";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../providers/openai-tiers";
-import { providerContextCap } from "../providers/context-cap";
 import { providerCodexAccountMode } from "../providers/registry";
 import type { StorageCleanupPolicy } from "../types";
 import { MAX_DECOMPRESSED_BODY_BYTES } from "./request-decompress";
@@ -59,6 +58,12 @@ import {
   cooldownErrorMessage,
 } from "../codex/auth-context";
 import { codexAccountNamespaceForModel } from "../codex/account-namespace-match";
+import { codexAccountNamespaceEntries, isMainCodexAccountTarget } from "../codex/account-namespaces";
+import { MAIN_CODEX_ACCOUNT_ID } from "../codex/main-account";
+import {
+  availableAccountGatedNativeModels,
+  resolveCodexModelEntitlements,
+} from "../codex/model-entitlements";
 export {
   clearThreadAccountMap,
   formatCodexProviderForLog,
@@ -708,6 +713,11 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
       ? startNativeMainStartupLifecycle(deps.nativeMainStartup)
       : blockNativeMainStartupForUnownedServiceHome(
         nativeOwnership.ownership === "foreign" ? "foreign-ownership" : "ownership-unknown",
+        // #2108: an `unknown` verdict means the probe could not answer, not that this host
+        // is unownable. Hand the fence a way to re-ask so a host that becomes answerable
+        // after boot reopens on its own instead of needing `ocx restart`. A `foreign`
+        // verdict ignores this by design — that one is a fact, not a question.
+        { reprobe: () => inspectStartupOwnership(deps).ownership },
       )
     : {
       homeId: null,
@@ -901,8 +911,12 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           return withCors(formatErrorResponse(403, "origin_rejected", "cross-origin data-plane request blocked"), req, policy);
         }
         let goModels;
+        let modelEntitlements;
         try {
-          goModels = await fetchAllModels(config);
+          [goModels, modelEntitlements] = await Promise.all([
+            fetchAllModels(config),
+            resolveCodexModelEntitlements(config),
+          ]);
         } catch (error) {
           if (error instanceof CatalogGatherBusyError) {
             return withCors(new Response(JSON.stringify({ error: { type: "server_error", code: "catalog_busy", message: error.message } }), {
@@ -912,25 +926,58 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           }
           throw error;
         }
-        const { accountBoundNativeOpenAiSlugsBySelector, applyNativeVisibility, buildCatalogEntries, configuredNativeAliasSlugs, desktopAllowlistSuppressedNativeSlugs, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, NATIVE_OPENAI_MODELS, nativeOpenAiSlugs, nativeReasoningEfforts, nativeDefaultReasoningEffort, orderForSubagents, filterCatalogVisibleModels, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, uniqueCatalogModelsForRawPublicList, visibleCodexAccountSelectors, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
+        const { accountBoundNativeOpenAiSlugsBySelector, applyNativeVisibility, buildCatalogEntries, configuredNativeAliasSlugs, desktopAllowlistSuppressedNativeSlugs, disabledNativeSlugs, exactComboCatalogSlugs, loadCatalogTemplate, NATIVE_OPENAI_MODELS, nativeContextLimits, nativeOpenAiSlugs, nativeReasoningEfforts, nativeDefaultReasoningEffort, orderForSubagents, filterCatalogVisibleModels, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, uniqueCatalogModelsForRawPublicList, visibleCodexAccountSelectors, visibleNativeSlugs, desktopVisibleNativeSlugs } = await import("../codex/catalog");
+        const { ACCOUNT_GATED_NATIVE_OPENAI_MODELS } = await import("../codex/catalog/native-models");
         const includeNativeOpenAi = shouldIncludeNativeOpenAi(config);
         const includeAccountBoundNativeOpenAi = shouldIncludeAccountBoundNativeOpenAi(config);
+        const bareEligibleAccountIds = providerCodexAccountMode(
+          OPENAI_CODEX_PROVIDER_ID,
+          config.providers[OPENAI_CODEX_PROVIDER_ID],
+        ) === "direct" ? new Set([MAIN_CODEX_ACCOUNT_ID]) : undefined;
+        const availableBareGatedNativeSlugs = availableAccountGatedNativeModels(
+          modelEntitlements,
+          bareEligibleAccountIds,
+        );
+        const availableAccountGatedNativeSlugs = availableAccountGatedNativeModels(modelEntitlements);
+        const availableBareNativeSlugs = NATIVE_OPENAI_MODELS.filter(slug => (
+          !ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(slug) || availableBareGatedNativeSlugs.has(slug)
+        ));
+        const availableAccountNativeSlugs = NATIVE_OPENAI_MODELS.filter(slug => (
+          !ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(slug) || availableAccountGatedNativeSlugs.has(slug)
+        ));
         const nativeSlugs = includeNativeOpenAi
-          ? nativeOpenAiSlugs()
+          ? nativeOpenAiSlugs().filter(slug => (
+              !ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(slug) || availableBareGatedNativeSlugs.has(slug)
+            ))
           : [];
         const disabledNatives = disabledNativeSlugs(config);
         const disabledModels = new Set(config.disabledModels ?? []);
         const shadowedNativeSlugs = configuredNativeAliasSlugs(config);
-        const suppressedBareNativeSlugs = desktopAllowlistSuppressedNativeSlugs(config);
+        const suppressedBareNativeSlugs = new Set([
+          ...desktopAllowlistSuppressedNativeSlugs(config),
+          ...[...ACCOUNT_GATED_NATIVE_OPENAI_MODELS].filter(slug => !availableBareGatedNativeSlugs.has(slug)),
+        ]);
         const accountSelectors = includeAccountBoundNativeOpenAi
           ? visibleCodexAccountSelectors(config)
           : [];
+        const accountTargets = new Map(codexAccountNamespaceEntries(config));
         const accountNativeSlugsBySelector = includeAccountBoundNativeOpenAi
-          ? accountBoundNativeOpenAiSlugsBySelector(config)
+          ? new Map([...accountBoundNativeOpenAiSlugsBySelector(config)].map(([selector, slugs]) => {
+            const target = accountTargets.get(selector);
+            const accountId = target && isMainCodexAccountTarget(target) ? MAIN_CODEX_ACCOUNT_ID : target;
+            const entitled = accountId ? modelEntitlements.modelsByAccount.get(accountId) : undefined;
+            const confirmed = accountId ? modelEntitlements.confirmedAccountIds.has(accountId) : false;
+            return [selector, slugs.filter(slug => (
+              !ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(slug) || (confirmed && entitled?.has(slug) === true)
+            ))] as const;
+          }))
           : new Map<string, readonly string[]>();
         const accountNativeSlugs = [...new Set(
           [...accountNativeSlugsBySelector.values()].flatMap(slugs => [...slugs]),
         )];
+        const desktopNativeSlugs = desktopVisibleNativeSlugs(config).filter(slug => (
+          !ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(slug) || availableBareGatedNativeSlugs.has(slug)
+        ));
         const goEnabled = filterCatalogVisibleModels(goModels, config);
         const goOrdered = orderForSubagents(goEnabled, config.subagentModels);
         // Claude Code / Claude Desktop gateway model discovery (GET /v1/models with
@@ -947,7 +994,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           if (config.claudeCode?.enabled === false) return jsonResponse({ data: [] }, 200, req, policy);
           // Build Desktop 3P registry so inbound alias resolution works for subsequent requests.
           buildDesktop3pRegistry(
-            [...desktopVisibleNativeSlugs(config)],
+            desktopNativeSlugs,
             goOrdered.map(m => ({ provider: m.provider, id: m.id, contextWindow: m.contextWindow })),
             config.claudeCode?.desktopProfile,
           );
@@ -964,7 +1011,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             : idsParam === "desktop"
               ? "desktop3p" as const
               : (/^claude-code\//i.test(req.headers.get("user-agent") ?? "") ? "readable" as const : "desktop3p" as const);
-          const data = buildAnthropicModelInfos([...desktopVisibleNativeSlugs(config)], goOrdered, resolveAutoContext(config.claudeCode), idStyle, activeDesktop3pAlias);
+          const data = buildAnthropicModelInfos(desktopNativeSlugs, goOrdered, resolveAutoContext(config.claudeCode), idStyle, activeDesktop3pAlias, nativeContextLimits(config));
           return jsonResponse({ data }, 200, req, policy);
         }
         if (url.searchParams.has("client_version")) {
@@ -978,7 +1025,10 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           // newly re-enabled native reappear under each selector before the next sync, while the
           // no-selector path keeps nativeOpenAiSlugs()'s existing visibility-sensitive behavior.
           const catalogNativeSlugs = accountSelectors.length > 0
-            ? [...new Set([...NATIVE_OPENAI_MODELS, ...accountNativeSlugs])]
+            ? [...new Set([
+              ...availableAccountNativeSlugs,
+              ...accountNativeSlugs,
+            ])]
             : nativeSlugs;
           const entries = buildCatalogEntries(
             loadCatalogTemplate(),
@@ -991,7 +1041,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             accountSelectors,
             suppressedBareNativeSlugs,
             new Set(),
-            providerContextCap(config, OPENAI_CODEX_PROVIDER_ID),
+            nativeContextLimits(config),
             accountNativeSlugs,
             accountNativeSlugsBySelector,
             config.keepNativeChatGptOnV1 === true,
@@ -1045,7 +1095,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         // for both bare and qualified rows. Without selectors, the live catalog continues to own
         // bare availability.
         const selectorNativeSlugs = accountSelectors.length > 0
-          ? NATIVE_OPENAI_MODELS.filter(slug => !disabledNatives.has(slug))
+          ? availableBareNativeSlugs.filter(slug => !disabledNatives.has(slug))
           : [];
         const bareSelectorNativeSlugs = accountSelectors.length > 0
           ? selectorNativeSlugs
@@ -1098,7 +1148,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => {
           let response: Response;
           try {
-            response = await handleResponsesCompact(req, config, logCtx, turnAdmissionLease);
+            response = await handleResponsesCompact(req, config, logCtx, turnAdmissionLease, admission);
           } catch {
             response = formatErrorResponse(500, "server_error", "Unexpected compact request failure");
           }
@@ -1208,6 +1258,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           ...admissionFields(admission),
           inboundProtocol: "responses",
         };
+        if (req.headers.get("x-opencodex-grok") === "1") logCtx.surface = "grok";
         let logged = false;
         const finalizeNativePassthroughLog = (
           status: number,
@@ -1220,6 +1271,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => {
           const response = await handleResponses(req, config, logCtx, {
             turnAdmissionLease,
+            admission,
             onRequestBodyRead: () => disableResponsesRequestTimeout(req, requestServer),
             abortSignal: req.signal,
             onFirstOutput: () => recordFirstOutput(logCtx, start),
@@ -1308,7 +1360,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           inboundProtocol: "chat",
         };
         return runAdmittedHttpTurn(req, policy, async turnAdmissionLease => withCors(
-          await handleChatCompletions(req, config, logCtx, { requestId, start, turnAdmissionLease }),
+          await handleChatCompletions(req, config, logCtx, { requestId, start, turnAdmissionLease, admission }),
           req,
           config,
         ));
@@ -1575,6 +1627,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           try {
             let terminalRecorder: ((status: ResponsesTerminalStatus, httpStatusOverride?: number) => void) | undefined;
             const response = await handleResponses(req, config, logCtx, {
+              ...(wsAdmission ? { admission: wsAdmission } : {}),
               forceEmptyResponseId: true,
               inboundTransport: "websocket",
               abortSignal: turnAbort.signal,
@@ -1733,7 +1786,15 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
     && isCanonicalOpenAiForwardProvider(openAiProvider)
     && providerCodexAccountMode("openai", openAiProvider) === "pool"
   ) {
-    import("../codex/auth-api")
+    import("../codex/plan-from-token")
+      .then(({ reconcileCodexPlansFromTokens }) => {
+        try {
+          reconcileCodexPlansFromTokens(config);
+        } catch {
+          // Derived plan metadata must not block WHAM priming.
+        }
+        return import("../codex/auth-api");
+      })
       .then(({ primeCodexPoolQuotas }) => primeCodexPoolQuotas(config, "startup"))
       .catch(() => {});
   }

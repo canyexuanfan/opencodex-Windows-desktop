@@ -10,9 +10,10 @@
  * catches the pathological case and stays out of the way otherwise. Every uncertainty
  * resolves toward admitting.
  */
-import { nativeOpenAiContextWindow } from "../../codex/catalog/metadata";
+import { nativeOpenAiContextWindow, nativeOpenAiMaxInputTokens, type NativeContextLimitsInput } from "../../codex/catalog/metadata";
 import { estimateTokens } from "../../lib/token-estimate";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
+import { modelRecordValue } from "../../reasoning-effort";
 import type { OcxContentPart, OcxParsedRequest, OcxProviderConfig } from "../../types";
 
 /**
@@ -129,26 +130,40 @@ export function resolveInputCeiling(
   provider: OcxProviderConfig,
   providerName: string,
   modelId: string,
+  // Operator cap for the canonical native provider. Passed in rather than read from a
+  // config here so this stays pure: no filesystem, no catalog, no registry scan.
+  nativeContextCap?: NativeContextLimitsInput,
 ): number | null {
-  const configured = positive(provider.modelContextWindows?.[modelId]) ?? positive(provider.contextWindow);
+  // `modelRecordValue`, not a bare lookup: the catalog resolves these same two maps that
+  // way, so a `gpt-oss` entry covers `gpt-oss:120b`. Reading raw here made the gate fall
+  // back to the provider-wide window and refuse turns the model can plainly hold.
+  const configured = positive(modelRecordValue(provider.modelContextWindows, modelId))
+    ?? positive(provider.contextWindow);
 
   // The canonical `openai` registry entry declares no context fields, so without this the
   // gate would be inert on the default Codex route. All three clauses are load-bearing: a
   // transport-mismatched custom provider named "openai" is preserved verbatim by routing
   // and must not inherit built-in native limits, and a routed `provider/model` id is not a
   // native slug. Static maps only — no catalog read.
-  const native = configured === null
-    && providerName === OPENAI_CODEX_PROVIDER_ID
+  const canonicalNativeBare = providerName === OPENAI_CODEX_PROVIDER_ID
     && isCanonicalOpenAiForwardProvider(provider)
-    && !modelId.includes("/")
-    ? positive(nativeOpenAiContextWindow(modelId))
+    && !modelId.includes("/");
+  const nativeLimits = canonicalNativeBare && configured !== null
+    ? {
+        ...(typeof nativeContextCap === "number" ? { cap: nativeContextCap } : (nativeContextCap ?? {})),
+        modelWindows: { [modelId]: configured },
+      }
+    : nativeContextCap;
+  const native = canonicalNativeBare
+    ? positive(nativeOpenAiContextWindow(modelId, nativeLimits))
     : null;
+  const nativeMaxInput = canonicalNativeBare ? positive(nativeOpenAiMaxInputTokens(modelId, nativeLimits)) : null;
 
-  const window = configured ?? native;
+  const window = canonicalNativeBare ? native : configured;
   // modelMaxInputTokens is an input-only cap, so it can only tighten the window.
-  const maxInput = positive(provider.modelMaxInputTokens?.[modelId]);
-  if (window === null) return maxInput;
-  return maxInput === null ? window : Math.min(window, maxInput);
+  const configuredMaxInput = positive(modelRecordValue(provider.modelMaxInputTokens, modelId));
+  const limits = [window, configuredMaxInput, nativeMaxInput].filter((v): v is number => v !== null);
+  return limits.length === 0 ? null : Math.min(...limits);
 }
 
 /**
@@ -161,8 +176,9 @@ export function checkInputAdmission(
   provider: OcxProviderConfig,
   providerName: string,
   modelId: string,
+  nativeContextCap?: NativeContextLimitsInput,
 ): InputAdmissionResult {
-  const ceiling = resolveInputCeiling(provider, providerName, modelId);
+  const ceiling = resolveInputCeiling(provider, providerName, modelId, nativeContextCap);
   if (ceiling === null) return { admitted: true, estimatedTokens: 0, ceiling: null };
   const estimatedTokens = estimateInputTokens(parsed, modelId);
   return { admitted: estimatedTokens <= ceiling * ADMISSION_TOLERANCE, estimatedTokens, ceiling };

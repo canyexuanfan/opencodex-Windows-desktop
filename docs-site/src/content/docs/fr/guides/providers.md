@@ -115,7 +115,7 @@ ocx logout <provider>
 
 | Fournisseur | Adaptateur | URL de base | Remarques |
 | --- | --- | --- | --- |
-| `xai` | `openai-chat` | `https://api.x.ai/v1` | Catalogue Grok découvert en direct en priorité ; `grok-4.5` est le modèle de repli par défaut. |
+| `xai` | `openai-chat` | `https://cli-chat-proxy.grok.com/v1` | OAuth utilise la passerelle d'abonnement Grok CLI distincte. Le remplacement par clé API utilise `https://api.x.ai/v1` et peut injecter Priority Processing. Catalogue Grok découvert en direct en priorité ; `grok-4.5` est le modèle de repli par défaut. |
 | `anthropic` | `anthropic` | `https://api.anthropic.com` | Modèles Claude ; liste des modèles récupérée en direct depuis `/v1/models`. |
 | `kimi` | `openai-chat` | `https://api.kimi.com/coding/v1` | Modèles de programmation Kimi K2.7/K2.6/K2.5. |
 | `nous` | `openai-chat` | `https://inference-api.nousresearch.com/v1` | Passerelle d'abonnement Nous Research (le même service en amont que celui utilisé par Hermes Agent). Connexion par autorisation d'appareil auprès de `portal.nousresearch.com` ; le jeton d'accès est le JWT d'inférence envoyé avec chaque requête. Le catalogue mixte de modèles payants et `:free` (`tencent/hy3:free`, `stepfun/step-3.7-flash:free`, ...) est découvert en direct pour le compte connecté. Les jetons d'actualisation sont à usage unique et renouvelés à chaque actualisation. |
@@ -391,7 +391,9 @@ fixe de l'API Provider, préserve les identifiants natifs du fournisseur et limi
 256 lignes brutes. `ocx login command-code` prend en charge OAuth par connexion dans le navigateur, avec
 importation facultative des identifiants locaux depuis `~/.commandcode/auth.json` pour les utilisateurs de la
 CLI Command Code. Le catalogue, propre au compte, provient du point de terminaison de découverte authentifié
-après la connexion. Les requêtes de chat utilisent la clé Bearer configurée. Créez des clés dans
+après la connexion. Les requêtes de chat du préréglage Provider-API `commandcode` utilisent la clé Bearer active
+configurée ; le préréglage OAuth `command-code` utilise le jeton Bearer du compte enregistré pour la découverte
+authentifiée et les requêtes de chat. Créez des clés Provider-API dans
 [Command Code Studio](https://commandcode.ai/studio/).
 
 **Quota Command Code.** Le tableau de bord et `ocx account refresh` sondent les fenêtres
@@ -607,4 +609,4 @@ au fournisseur.
 
 Les fournisseurs qui disposent d'une sonde en direct sont OpenAI/Codex, Anthropic, xAI, Cursor, Kimi,
 Google Antigravity, OpenRouter, DeepSeek, ClinePass, Z.AI, MiniMax, Moonshot, Venice, Synthetic, DeepInfra,
-Neuralwatt, ainsi que tout fournisseur personnalisé reposant sur a6api.
+Neuralwatt, Command Code, ainsi que tout fournisseur personnalisé reposant sur a6api.

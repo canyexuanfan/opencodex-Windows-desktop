@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { create, fromBinary } from "@bufbuild/protobuf";
+import { toBinary } from "@bufbuild/protobuf";
 import {
   createCursorBlobRequestScope,
   cursorBlobMetrics,
@@ -17,12 +18,21 @@ import {
   type CursorBlobRequestScopeToken,
 } from "../src/adapters/cursor/native-exec";
 import {
+  clearCursorCheckpointsForTests,
+  commitCursorCheckpoint,
+  CURSOR_CHECKPOINT_TTL_MS,
+  cursorCheckpointStoreMetricsForTests,
+  installCursorCheckpointClockForTests,
+  invalidateCursorCheckpoint,
+} from "../src/adapters/cursor/checkpoint-store";
+import {
   configureAppOwnedMemoryBudget,
   registerRetainedStore,
   resetAppOwnedMemoryForTests,
 } from "../src/lib/app-owned-memory";
 import {
   CURSOR_EXTERNAL_ROOT_BYTE_LIMIT,
+  CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT,
   CURSOR_EXTERNAL_ROOT_BLOB_LIMIT,
   CURSOR_ROUTING_LEVEL_PARAMETER_ID,
   encodeCursorRunRequest,
@@ -33,9 +43,11 @@ import {
   AgentClientMessageSchema,
   ConversationStepSchema,
   ConversationTurnStructureSchema,
+  ConversationStateStructureSchema,
   GetBlobArgsSchema,
   KvServerMessageSchema,
   SetBlobArgsSchema,
+  UserMessageSchema,
 } from "../src/adapters/cursor/gen/agent_pb";
 
 beforeEach(() => {
@@ -114,6 +126,35 @@ function actionText(bytes: Uint8Array): string | undefined {
   return action?.case === "userMessageAction" ? action.value.userMessage?.text : undefined;
 }
 
+/** Minimal valid 1×1 PNG for SelectedImage fixtures (not signature-only). */
+const PNG_1X1 = Uint8Array.from(
+  Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  ),
+);
+
+function activeUserMessage(bytes: Uint8Array) {
+  const msg = fromBinary(AgentClientMessageSchema, bytes);
+  const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+  const action = run?.action?.action;
+  return action?.case === "userMessageAction" ? action.value.userMessage : undefined;
+}
+
+function activeSelectedImages(bytes: Uint8Array) {
+  return activeUserMessage(bytes)?.selectedContext?.selectedImages;
+}
+
+function nativeTurnUserMessages(bytes: Uint8Array) {
+  const msg = fromBinary(AgentClientMessageSchema, bytes);
+  const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+  return (run?.conversationState?.turns ?? []).map(turnId => {
+    const turn = fromBinary(ConversationTurnStructureSchema, blobData(turnId));
+    if (turn.turn.case !== "agentConversationTurn") return undefined;
+    return fromBinary(UserMessageSchema, blobData(turn.turn.value.userMessage));
+  }).filter((message): message is NonNullable<typeof message> => message !== undefined);
+}
+
 /** The `toolName`s advertised in the top-level AgentRunRequest.mcp_tools channel (undefined when unset). */
 function mcpToolNames(bytes: Uint8Array): string[] | undefined {
   const msg = fromBinary(AgentClientMessageSchema, bytes);
@@ -127,6 +168,221 @@ describe("Cursor blob handshake", () => {
     const id = storeCursorBlob(data);
     expect(id.length).toBe(32);
     expect(Array.from(id)).toEqual(Array.from(sha256(data)));
+  });
+
+  test("encodeCursorRunRequest attaches selectedContext with blobIdWithData image refs on the active user turn", () => {
+    const imageBytes = PNG_1X1;
+    const expectedBlobId = sha256(imageBytes);
+    const bytes = encodeCursorRunRequest({
+      modelId: "claude-4.6-opus-high",
+      conversationId: "c1",
+      system: [],
+      messages: [{ role: "user", content: "see this" }],
+      selectedImages: [{
+        data: imageBytes,
+        mimeType: "image/png",
+        uuid: "img-uuid-1",
+      }],
+    });
+
+    expect(actionText(bytes)).toBe("see this");
+    const userMessage = activeUserMessage(bytes);
+    expect(userMessage?.mode).toBe(1);
+    expect(userMessage?.selectedContext).toBeDefined();
+    const images = activeSelectedImages(bytes);
+    expect(images?.length).toBe(1);
+    expect(images?.[0]?.uuid).toBe("img-uuid-1");
+    expect(images?.[0]?.mimeType).toBe("image/png");
+    expect(images?.[0]?.path).toBe("attachment-img-uuid-1.png");
+    expect(images?.[0]?.dataOrBlobId.case).toBe("blobIdWithData");
+    const withData = images?.[0]?.dataOrBlobId.value as { blobId: Uint8Array; data: Uint8Array };
+    expect(Array.from(withData.blobId)).toEqual(Array.from(expectedBlobId));
+    expect(Array.from(withData.data)).toEqual(Array.from(imageBytes));
+    expect(Array.from(blobData(expectedBlobId))).toEqual(Array.from(imageBytes));
+  });
+
+  test("encodeCursorRunRequest always sends empty selectedContext and mode=1 on text-only turns", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "claude-4.6-opus-high",
+      conversationId: "c1",
+      system: [],
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    const userMessage = activeUserMessage(bytes);
+    expect(userMessage?.text).toBe("hi");
+    expect(userMessage?.mode).toBe(1);
+    expect(userMessage?.selectedContext).toBeDefined();
+    expect(userMessage?.selectedContext?.selectedImages.length).toBe(0);
+  });
+
+  test("encodeCursorRunRequest keeps selectedContext only on the active user turn", () => {
+    const activeImageBytes = PNG_1X1;
+    const bytes = encodeCursorRunRequest({
+      modelId: "composer-2.5",
+      conversationId: "c1",
+      system: ["You are helpful."],
+      messages: [{ role: "user", content: "active turn" }],
+      rawMessages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "old turn" },
+            { type: "image", imageUrl: "data:image/png;base64,old", detail: "auto" },
+          ],
+          timestamp: 1,
+        },
+        {
+          role: "assistant",
+          model: "cursor/composer-2.5",
+          content: [{ type: "text", text: "ack" }],
+          timestamp: 2,
+        },
+        { role: "user", content: "active turn", timestamp: 3 },
+      ],
+      selectedImages: [{
+        data: activeImageBytes,
+        mimeType: "image/png",
+        uuid: "active-img",
+      }],
+    });
+
+    const roots = decodeRootMessages(bytes) as Array<{ role?: string; selectedContext?: unknown }>;
+    expect(roots.some(root => root.selectedContext !== undefined)).toBe(false);
+
+    const historicalUser = nativeTurnUserMessages(bytes)[0];
+    expect(historicalUser?.text).toBe("old turn\n[image attached]");
+    expect(historicalUser?.mode).toBe(1);
+    expect(historicalUser?.selectedContext).toBeDefined();
+    expect(historicalUser?.selectedContext?.selectedImages.length).toBe(0);
+
+    const activeMessage = activeUserMessage(bytes);
+    expect(activeMessage?.mode).toBe(1);
+    const images = activeSelectedImages(bytes);
+    expect(images?.length).toBe(1);
+    expect(images?.[0]?.uuid).toBe("active-img");
+  });
+
+  test("historical image-only turns replay a short text marker, not empty text", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "composer-2.5",
+      conversationId: "c1",
+      system: [],
+      messages: [{ role: "user", content: "follow-up" }],
+      rawMessages: [
+        {
+          role: "user",
+          content: [{ type: "image", imageUrl: "data:image/png;base64,abc", detail: "auto" }],
+          timestamp: 1,
+        },
+        {
+          role: "assistant",
+          model: "cursor/composer-2.5",
+          content: [{ type: "text", text: "ack" }],
+          timestamp: 2,
+        },
+        { role: "user", content: "follow-up", timestamp: 3 },
+      ],
+    });
+    const historicalUser = nativeTurnUserMessages(bytes)[0];
+    expect(historicalUser?.text).toBe("[image attached]");
+    expect(historicalUser?.selectedContext?.selectedImages.length).toBe(0);
+  });
+
+  test("external root-prompt replay keeps image-only history as the text marker", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "grok-4.5",
+      conversationId: "c1",
+      system: [],
+      messages: [{ role: "user", content: "follow-up" }],
+      rawMessages: [
+        {
+          role: "user",
+          content: [{ type: "image", imageUrl: "data:image/png;base64,abc", detail: "auto" }],
+          timestamp: 1,
+        },
+        {
+          role: "assistant",
+          model: "cursor/grok-4.5",
+          content: [{ type: "text", text: "ack" }],
+          timestamp: 2,
+        },
+        { role: "user", content: "follow-up", timestamp: 3 },
+      ],
+    });
+    const roots = decodeRootMessages(bytes) as Array<{
+      role?: string;
+      content?: Array<{ type?: string; text?: string }>;
+    }>;
+    const rootsJson = JSON.stringify(roots);
+    expect(rootsJson).toContain("[image attached]");
+    expect(rootsJson).not.toContain("data:image/png;base64,");
+    expect(rootsJson).not.toContain("abc");
+    expect(roots).toContainEqual({
+      role: "user",
+      content: [{ type: "text", text: "[image attached]" }],
+    });
+  });
+
+  test("encodeCursorRunRequest uses userMessageAction for image-only turns with selectedImages", () => {
+    const imageBytes = PNG_1X1;
+    const bytes = encodeCursorRunRequest({
+      modelId: "claude-4.6-opus-high",
+      conversationId: "c1",
+      system: [],
+      messages: [{ role: "user", content: "" }],
+      rawMessages: [{
+        role: "user",
+        content: [{ type: "image", imageUrl: "data:image/png;base64,abc", detail: "auto" }],
+        timestamp: 1,
+      }],
+      selectedImages: [{
+        data: imageBytes,
+        mimeType: "image/png",
+        uuid: "image-only",
+      }],
+    });
+
+    expect(activeUserMessage(bytes)).toBeDefined();
+    expect(actionText(bytes)).toBe("");
+    expect(activeSelectedImages(bytes)?.length).toBe(1);
+  });
+
+  test("encodeCursorRunRequest uses userMessageAction for image-only turns after assistant reply", () => {
+    const imageBytes = PNG_1X1;
+    const bytes = encodeCursorRunRequest({
+      modelId: "composer-2.5",
+      conversationId: "c1",
+      system: [],
+      messages: [
+        { role: "user", content: "first" },
+        { role: "assistant", content: "ack" },
+        { role: "user", content: "" },
+      ],
+      rawMessages: [
+        { role: "user", content: "first", timestamp: 1 },
+        {
+          role: "assistant",
+          model: "cursor/composer-2.5",
+          content: [{ type: "text", text: "ack" }],
+          timestamp: 2,
+        },
+        {
+          role: "user",
+          content: [{ type: "image", imageUrl: "data:image/png;base64,abc", detail: "auto" }],
+          timestamp: 3,
+        },
+      ],
+      selectedImages: [{
+        data: imageBytes,
+        mimeType: "image/png",
+        uuid: "follow-up-image",
+      }],
+    });
+
+    expect(activeUserMessage(bytes)).toBeDefined();
+    expect(actionText(bytes)).toBe("");
+    expect(activeSelectedImages(bytes)?.length).toBe(1);
   });
 
   test("encodeCursorRunRequest sends rootPromptMessagesJson as blob IDs, not inline JSON", () => {
@@ -246,7 +502,7 @@ describe("Cursor blob handshake", () => {
     const rootBytes = (run?.conversationState?.rootPromptMessagesJson ?? [])
       .reduce((sum, id) => sum + blobData(id).byteLength, 0);
 
-    expect(run?.action?.action.case).toBe("resumeAction");
+    expect(run?.action?.action.case).toBe("userMessageAction");
     expect(rootBytes).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BYTE_LIMIT);
     expect(JSON.stringify(roots)).toContain("[Tool Result]");
     expect(JSON.stringify(roots)).toContain("truncated for Cursor external replay budget");
@@ -560,7 +816,44 @@ describe("Cursor blob handshake", () => {
         if (content?.case === "text") expect(content.value.text).toBe("contents");
       }
     }
-    expect(run?.action?.action.case).toBe("resumeAction");
+    expect(run?.action?.action.case).toBe("userMessageAction");
+    const value = run?.action?.action.case === "userMessageAction" ? run.action.action.value : undefined;
+    expect(value?.userMessage?.text).toBe(CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT);
+  });
+
+  test("composer-2.5 ordinary turns keep native replay semantics", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "composer-2.5",
+      conversationId: "c-native-turn",
+      system: ["You are helpful."],
+      messages: [{ role: "user", content: "follow up" }],
+      rawMessages: [
+        { role: "user", content: "read a file", timestamp: 1 },
+        {
+          role: "assistant",
+          model: "cursor/composer-2.5",
+          timestamp: 2,
+          content: [
+            { type: "thinking", thinking: "hidden reasoning" },
+            { type: "text", text: "I'll read it" },
+          ],
+        },
+        { role: "user", content: "follow up", timestamp: 3 },
+      ],
+    });
+    const msg = fromBinary(AgentClientMessageSchema, bytes);
+    const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+    const turn = fromBinary(ConversationTurnStructureSchema, blobData(run?.conversationState?.turns[0] ?? new Uint8Array()));
+    expect(turn.turn.case).toBe("agentConversationTurn");
+    const steps = turn.turn.case === "agentConversationTurn" ? turn.turn.value.steps : [];
+    expect(steps).toHaveLength(2);
+    const firstStep = fromBinary(ConversationStepSchema, blobData(steps[0]!));
+    const secondStep = fromBinary(ConversationStepSchema, blobData(steps[1]!));
+    expect(firstStep.message.case).toBe("thinkingMessage");
+    expect(secondStep.message.case).toBe("assistantMessage");
+    expect(run?.action?.action.case).toBe("userMessageAction");
+    const roots = decodeRootMessages(bytes) as Array<{ role?: string; content?: unknown }>;
+    expect(JSON.stringify(roots)).toContain("hidden reasoning");
   });
 
   test("external Cursor replay uses text history instead of native tool/thinking structures", () => {
@@ -592,15 +885,81 @@ describe("Cursor blob handshake", () => {
     const roots = decodeRootMessages(bytes) as Array<{ role?: string; content?: unknown }>;
     const historicalUser = roots.find(root => root.role === "user");
     expect(historicalUser?.content).toEqual([{ type: "text", text: "read a file" }]);
-    expect(run?.action?.action.case).toBe("resumeAction");
+    const toolResultRoot = roots.find(root => JSON.stringify(root).includes("[Tool Result]"));
+    expect(toolResultRoot?.role).toBe("assistant");
+    expect(run?.action?.action.case).toBe("userMessageAction");
     expect(JSON.stringify(roots)).toContain("contents");
     expect(JSON.stringify(roots)).not.toContain("hidden reasoning");
   });
 
   test("keeps ResumeAction for native-model tool-result continuations", () => {
     const bytes = encodeCursorRunRequest({
-      modelId: "composer-2.5",
+      modelId: "composer-2.5-fast",
       conversationId: "c1",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "[tool_result]\ncall_id: call_1\nname: read_file\nis_error: false\noutput:\ncontents" }],
+      rawMessages: [
+        { role: "user", content: "read a file", timestamp: 1 },
+        {
+          role: "assistant",
+          model: "cursor/composer-2.5-fast",
+          timestamp: 2,
+          content: [{ type: "toolCall", id: "call_1", name: "read_file", arguments: { path: "a.txt" } }],
+        },
+        { role: "toolResult", toolCallId: "call_1", toolName: "read_file", content: "contents", isError: false, timestamp: 3 },
+      ],
+    });
+    const msg = fromBinary(AgentClientMessageSchema, bytes);
+    const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+
+    expect(run?.action?.action.case).toBe("resumeAction");
+    const roots = decodeRootMessages(bytes) as Array<{ role?: string; content?: unknown }>;
+    const serialized = JSON.stringify(roots);
+    expect(serialized).toContain("read a file");
+    expect(serialized).not.toContain("[Tool Result]");
+    expect(serialized).not.toContain("[tool_result]");
+  });
+
+  test("native Auto Intelligence omits assistant-role [Tool Result] root replay", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "auto-intelligence",
+      conversationId: "c-auto-intel",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "[tool_result]\ncall_id: call_1\nname: read_file\nis_error: false\noutput:\ncontents" }],
+      rawMessages: [
+        { role: "user", content: "read a file", timestamp: 1 },
+        {
+          role: "assistant",
+          model: "cursor/auto-intelligence",
+          timestamp: 2,
+          content: [{ type: "toolCall", id: "call_1", name: "read_file", arguments: { path: "a.txt" } }],
+        },
+        { role: "toolResult", toolCallId: "call_1", toolName: "read_file", content: "contents", isError: false, timestamp: 3 },
+      ],
+    });
+    const msg = fromBinary(AgentClientMessageSchema, bytes);
+    const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+    expect(run?.action?.action.case).toBe("resumeAction");
+    const roots = decodeRootMessages(bytes) as Array<{ role?: string; content?: unknown }>;
+    const serialized = JSON.stringify(roots);
+    expect(roots.some(root => root.role === "assistant")).toBe(false);
+    expect(serialized).not.toContain("[Tool Result]");
+    expect(serialized).not.toContain("[tool_result]");
+    expect(serialized).toContain("read a file");
+    const turnIds = run?.conversationState?.turns ?? [];
+    expect(turnIds).toHaveLength(1);
+    const turn = fromBinary(ConversationTurnStructureSchema, blobData(turnIds[0]!));
+    expect(turn.turn.case).toBe("agentConversationTurn");
+    const steps = turn.turn.case === "agentConversationTurn" ? turn.turn.value.steps : [];
+    expect(steps).toHaveLength(1);
+    const step = fromBinary(ConversationStepSchema, blobData(steps[0]!));
+    expect(step.message.case).toBe("toolCall");
+  });
+
+  test("drives composer-2.5 tool-result continuations as userMessageAction", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "composer-2.5",
+      conversationId: "c-composer-cont",
       system: ["You are helpful."],
       messages: [{ role: "tool", content: "[tool_result]\ncall_id: call_1\nname: read_file\nis_error: false\noutput:\ncontents" }],
       rawMessages: [
@@ -617,7 +976,41 @@ describe("Cursor blob handshake", () => {
     const msg = fromBinary(AgentClientMessageSchema, bytes);
     const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
 
-    expect(run?.action?.action.case).toBe("resumeAction");
+    expect(run?.action?.action.case).toBe("userMessageAction");
+    const value = run?.action?.action.case === "userMessageAction" ? run.action.action.value : undefined;
+    expect(value?.userMessage?.text).toBe(CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT);
+    const roots = decodeRootMessages(bytes) as Array<{ role?: string }>;
+    expect(JSON.stringify(roots)).toContain("contents");
+  });
+
+  test("drives external-model tool-result continuations as userMessageAction", () => {
+    // External wire models encode tool-result hops as userMessageAction. Native
+    // composer-2.5 uses the same path; other native composer ids keep resumeAction.
+    const bytes = encodeCursorRunRequest({
+      modelId: "claude-fable-5",
+      conversationId: "c-ext-cont",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "[tool_result]\ncall_id: call_1\nname: read_file\nis_error: false\noutput:\ncontents" }],
+      rawMessages: [
+        { role: "user", content: "read a file", timestamp: 1 },
+        {
+          role: "assistant",
+          model: "cursor/claude-fable-5",
+          timestamp: 2,
+          content: [{ type: "toolCall", id: "call_1", name: "read_file", arguments: { path: "a.txt" } }],
+        },
+        { role: "toolResult", toolCallId: "call_1", toolName: "read_file", content: "contents", isError: false, timestamp: 3 },
+      ],
+    });
+    const msg = fromBinary(AgentClientMessageSchema, bytes);
+    const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+
+    expect(run?.action?.action.case).toBe("userMessageAction");
+    const value = run?.action?.action.case === "userMessageAction" ? run.action.action.value : undefined;
+    expect(value?.userMessage?.text).toBe(CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT);
+    // Tool results are still replayed via history blobs.
+    const roots = decodeRootMessages(bytes) as Array<{ role?: string }>;
+    expect(JSON.stringify(roots)).toContain("contents");
   });
 });
 
@@ -1356,5 +1749,241 @@ describe("Cursor blob ID key channel bounds", () => {
     expect(snapshot.pinnedBytes).toBe(0);
     expect(evictOldestCursorBlobForBudget()).toBe(66);
     expect(cursorBlobRetainedStoreSnapshot().bytes).toBe(0);
+  });
+});
+
+describe("Cursor checkpoint request construction", () => {
+  test("uses decoded ConversationStateStructure and skips historical root replay", () => {
+    const checkpoint = create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: [new Uint8Array(32).fill(7)],
+      turns: [new Uint8Array(32).fill(8)],
+    });
+    const prepared = prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: "cursor_ckpt",
+      system: ["You are helpful."],
+      messages: [
+        { role: "user", content: "old user" },
+        { role: "assistant", content: "old assistant" },
+        { role: "user", content: "new user" },
+      ],
+      rawMessages: [
+        { role: "user", content: "old user", timestamp: 1 },
+        { role: "assistant", content: [{ type: "text", text: "old assistant" }], timestamp: 2 },
+        { role: "user", content: "new user", timestamp: 3 },
+      ],
+      checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+      continuationMode: "checkpoint",
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    expect(Array.from(run?.conversationState?.rootPromptMessagesJson[0] ?? [])).toEqual(Array.from({ length: 32 }, () => 7));
+    expect(Array.from(run?.conversationState?.turns[0] ?? [])).toEqual(Array.from({ length: 32 }, () => 8));
+    expect(run?.action?.action.case).toBe("userMessageAction");
+  });
+
+  test("invalid checkpoint bytes fall back to full replay", () => {
+    const prepared = prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: "cursor_ckpt",
+      system: ["You are helpful."],
+      messages: [{ role: "user", content: "hello" }],
+      rawMessages: [{ role: "user", content: "hello", timestamp: 1 }],
+      checkpointBytes: new Uint8Array([1, 2, 3, 4]),
+    });
+    const roots = decodeRootMessages(prepared.bytes);
+    const fullReplay = decodeRootMessages(prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: "cursor_ckpt",
+      system: ["You are helpful."],
+      messages: [{ role: "user", content: "hello" }],
+      rawMessages: [{ role: "user", content: "hello", timestamp: 1 }],
+    }).bytes);
+    expect(roots).toEqual(fullReplay);
+  });
+
+  test("checkpoint suffix replay appends only uncovered history", () => {
+    const checkpoint = create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: [new Uint8Array(32).fill(7)],
+      turns: [new Uint8Array(32).fill(8)],
+    });
+    const prepared = prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: "cursor_ckpt",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "result" }],
+      rawMessages: [
+        { role: "user", content: "old user", timestamp: 1 },
+        { role: "assistant", content: [{ type: "text", text: "old assistant" }], timestamp: 2 },
+        { role: "user", content: "please read", timestamp: 3 },
+        {
+          role: "toolResult",
+          toolCallId: "call_1",
+          toolName: "read_file",
+          content: "FILE CONTENTS HERE",
+          isError: false,
+          timestamp: 4,
+        },
+      ],
+      checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+      continuationMode: "checkpoint",
+      checkpointSuffixStart: 2,
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    expect(Array.from(roots[0] ?? [])).toEqual(Array.from({ length: 32 }, () => 7));
+    expect(roots.length).toBeGreaterThan(1);
+    const suffix = roots.slice(1).map(id => JSON.parse(new TextDecoder().decode(blobData(id))) as { content?: unknown });
+    const serialized = JSON.stringify(suffix);
+    expect(serialized).toContain("FILE CONTENTS HERE");
+    expect(serialized).not.toContain("old user");
+  });
+
+  test("active checkpoint lease keeps referenced blobs after request pin release", () => {
+    clearCursorCheckpointsForTests();
+    const data = new TextEncoder().encode('{"role":"system","content":"lease-me"}');
+    const scope = createCursorBlobRequestScope();
+    const blobId = storeCursorBlob(data, scope);
+    sealCursorBlobRequestScope(scope);
+    const checkpointBytes = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: [blobId],
+    }));
+    const ref = commitCursorCheckpoint({
+      conversationId: "cursor_lease",
+      identityScope: "acct",
+      modelId: "grok-4.6",
+      checkpointBytes,
+    });
+    expect(ref).toBeDefined();
+    releaseCursorBlobRequestScope(scope);
+    expect(cursorBlobRetainedStoreSnapshot().pinnedBytes).toBeGreaterThan(0);
+    expect(evictOldestCursorBlobForBudget()).toBe(0);
+    expectBlobHit(blobId, data);
+    invalidateCursorCheckpoint(ref);
+    expect(evictOldestCursorBlobForBudget()).toBeGreaterThan(0);
+    clearCursorCheckpointsForTests();
+  });
+
+  test("missing checkpoint blobs fail closed instead of committing a lease", () => {
+    clearCursorCheckpointsForTests();
+    const missingId = new Uint8Array(32).fill(11);
+    const checkpointBytes = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: [missingId],
+    }));
+    const ref = commitCursorCheckpoint({
+      conversationId: "cursor_missing_blob",
+      identityScope: "acct",
+      modelId: "grok-4.6",
+      checkpointBytes,
+    });
+    expect(ref).toBeUndefined();
+    expect(cursorBlobRetainedStoreSnapshot().pinnedBytes).toBe(0);
+    clearCursorCheckpointsForTests();
+  });
+
+  test("getBlob hydration does not release an active checkpoint lease", () => {
+    clearCursorCheckpointsForTests();
+    const data = new TextEncoder().encode('{"role":"system","content":"keep-me"}');
+    const requestScope = createCursorBlobRequestScope();
+    const blobId = storeCursorBlob(data, requestScope);
+    sealCursorBlobRequestScope(requestScope);
+    const checkpointBytes = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: [blobId],
+    }));
+    const ref = commitCursorCheckpoint({
+      conversationId: "cursor_hydrate",
+      identityScope: "acct",
+      modelId: "grok-4.6",
+      checkpointBytes,
+    });
+    expect(ref).toBeDefined();
+    releaseCursorBlobRequestScope(requestScope);
+    const hydrateScope = createCursorBlobRequestScope();
+    expectBlobHit(blobId, data, hydrateScope);
+    releaseCursorBlobRequestScope(hydrateScope);
+    expect(cursorBlobRetainedStoreSnapshot().pinnedBytes).toBeGreaterThan(0);
+    expect(evictOldestCursorBlobForBudget()).toBe(0);
+    invalidateCursorCheckpoint(ref);
+    clearCursorCheckpointsForTests();
+  });
+
+  test("checkpoint suffix replay does not re-append the system prompt", () => {
+    const checkpoint = create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: [new Uint8Array(32).fill(7)],
+      turns: [new Uint8Array(32).fill(8)],
+    });
+    const prepared = prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: "cursor_ckpt",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "result" }],
+      rawMessages: [
+        { role: "user", content: "old user", timestamp: 1 },
+        { role: "assistant", content: [{ type: "text", text: "old assistant" }], timestamp: 2 },
+        { role: "user", content: "please read", timestamp: 3 },
+        {
+          role: "toolResult",
+          toolCallId: "call_1",
+          toolName: "read_file",
+          content: "FILE CONTENTS HERE",
+          isError: false,
+          timestamp: 4,
+        },
+      ],
+      checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+      continuationMode: "checkpoint",
+      checkpointSuffixStart: 2,
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    const suffix = roots.slice(1).map(id => JSON.parse(new TextDecoder().decode(blobData(id))) as { content?: unknown });
+    const serialized = JSON.stringify(suffix);
+    expect(serialized).not.toContain("You are helpful.");
+    expect(serialized).toContain("FILE CONTENTS HERE");
+  });
+});
+
+describe("Cursor checkpoint idle TTL", () => {
+  afterEach(() => {
+    clearCursorCheckpointsForTests();
+    resetCursorBlobStateForTests();
+  });
+
+  test("releases expired checkpoint leases without another request", () => {
+    let now = 1_000;
+    let scheduled: (() => void) | undefined;
+    installCursorCheckpointClockForTests({
+      now: () => now,
+      schedule: fn => {
+        scheduled = fn;
+        return 1 as unknown as ReturnType<typeof setTimeout>;
+      },
+      clear: () => {
+        scheduled = undefined;
+      },
+    });
+    const requestScope = createCursorBlobRequestScope();
+    const data = new TextEncoder().encode('{"role":"system","content":"ttl-lease"}');
+    const blobId = storeCursorBlob(data, requestScope);
+    sealCursorBlobRequestScope(requestScope);
+    const checkpointBytes = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: [blobId],
+    }));
+    expect(commitCursorCheckpoint({
+      conversationId: "cursor_ttl",
+      identityScope: "acct-1",
+      modelId: "grok-4.6",
+      checkpointBytes,
+    })).toBeDefined();
+    releaseCursorBlobRequestScope(requestScope);
+    expect(cursorCheckpointStoreMetricsForTests().count).toBe(1);
+    expect(cursorBlobRetainedStoreSnapshot().pinnedBytes).toBeGreaterThan(0);
+    expect(scheduled).toBeTypeOf("function");
+    now += CURSOR_CHECKPOINT_TTL_MS + 1;
+    scheduled?.();
+    expect(cursorCheckpointStoreMetricsForTests().count).toBe(0);
+    expect(cursorBlobRetainedStoreSnapshot().pinnedBytes).toBe(0);
   });
 });

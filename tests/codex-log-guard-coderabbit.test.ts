@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -86,11 +86,21 @@ describe("CodeRabbit protection regressions", () => {
     const root = mkdtempSync(join(tmpdir(), "ocx-log-guard-cr-symlink-"));
     roots.push(root);
     const codexHome = join(root, "codex-home");
-    mkdirSync(codexHome);
-    writeFileSync(join(codexHome, "config.toml"), "");
-    const target = join(root, "real-logs.sqlite");
-    createCurrentLogsDb(target);
-    symlinkSync(target, join(codexHome, "logs_2.sqlite"));
+    if (process.platform === "win32") {
+      const realCodexHome = join(root, "real-codex-home");
+      mkdirSync(realCodexHome);
+      writeFileSync(join(realCodexHome, "config.toml"), "");
+      createCurrentLogsDb(join(realCodexHome, "logs_2.sqlite"));
+      // Unelevated Windows can create a junction but not a file symlink. The
+      // ancestor redirection exercises the same concrete unsafe-path refusal.
+      symlinkSync(realCodexHome, codexHome, "junction");
+    } else {
+      mkdirSync(codexHome);
+      writeFileSync(join(codexHome, "config.toml"), "");
+      const target = join(root, "real-logs.sqlite");
+      createCurrentLogsDb(target);
+      symlinkSync(target, join(codexHome, "logs_2.sqlite"));
+    }
 
     const status = getCodexLogGuardProtectionStatus(deps(codexHome));
     expect(status.schema.state).toBe("compatible");
@@ -193,5 +203,53 @@ describe("CodeRabbit protection regressions", () => {
 
     expect(result).toEqual({ ok: false, error: "config_write_failed" });
     expect(reservedTriggers(databasePath)).toEqual(before);
+  });
+});
+
+/*
+ * Windows CI reported 22 Log Guard failures as `unsafe_path`, on a feature (#1729) that is
+ * new in this release range and has therefore never shipped.
+ *
+ * `realpathSync.native` on Windows expands 8.3 short components — the `RUNNER~1` form that
+ * appears throughout %TEMP% — so the canonical realpath and the requested path disagree as
+ * strings while naming the same file. The safety check read that as an ancestor-symlink
+ * redirection and refused every mutation. macOS had the same class of problem with /var and
+ * /tmp and was given an explicit alias normalizer; Windows was not.
+ */
+describe("log guard path identity survives OS canonicalization", () => {
+  test("a path that only differs by the OS's own canonical spelling is the same file", () => {
+    const root = mkdtempSync(join(tmpdir(), "ocx-log-guard-identity-"));
+    roots.push(root);
+    const path = join(root, "logs_2.sqlite");
+    writeFileSync(path, "");
+
+    // realpathSync.native is exactly what databasePathIsSafe compares against.
+    expect(sameLogGuardPathIdentity(realpathSync.native(path), path)).toBe(true);
+  });
+
+  // The guard this widening must not weaken: a redirection resolves somewhere else, and
+  // "somewhere else" is still refused.
+  test("a symlinked database is still refused", () => {
+    const root = mkdtempSync(join(tmpdir(), "ocx-log-guard-identity-"));
+    roots.push(root);
+    const real = join(root, "real.sqlite");
+    const link = join(root, "logs_2.sqlite");
+    writeFileSync(real, "");
+    try {
+      symlinkSync(real, link);
+    } catch {
+      return; // unprivileged Windows cannot create symlinks; the POSIX legs cover this
+    }
+
+    expect(sameLogGuardPathIdentity(realpathSync.native(link), link)).toBe(false);
+  });
+
+  test("an unrelated sibling path is refused", () => {
+    const root = mkdtempSync(join(tmpdir(), "ocx-log-guard-identity-"));
+    roots.push(root);
+    const path = join(root, "logs_2.sqlite");
+    writeFileSync(path, "");
+
+    expect(sameLogGuardPathIdentity(join(root, "elsewhere.sqlite"), path)).toBe(false);
   });
 });

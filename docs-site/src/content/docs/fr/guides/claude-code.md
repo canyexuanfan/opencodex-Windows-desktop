@@ -47,7 +47,7 @@ ocx claude
 | `ANTHROPIC_BASE_URL` | `http://127.0.0.1:<port>` |
 | `ANTHROPIC_AUTH_TOKEN` | Uniquement lorsque le proxy exige une clé API ; sinon, elle n'est PAS définie, afin que votre connexion claude.ai (abonnement et connecteurs) reste active |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | `1` (découverte du sélecteur `/model` natif) |
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | Seuil de compactage du contexte automatique (par défaut `350000`) ; injecté uniquement lorsque le contexte automatique est activé |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | Seuil de compactage du contexte automatique (par défaut `829800`) ; injecté uniquement lorsque le contexte automatique est activé |
 | `ANTHROPIC_MODEL` | `claudeCode.model` (facultatif) |
 | `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `claudeCode.tierModels.haiku ?? claudeCode.smallFastModel` (facultatif ; ancien `ANTHROPIC_SMALL_FAST_MODEL` également) |
 | `ANTHROPIC_DEFAULT_{OPUS,SONNET,FABLE}_MODEL` | `claudeCode.tierModels.*` (facultatif) |
@@ -142,7 +142,10 @@ par le proxy sans nécessiter le wrapper `ocx claude`. Les shells déjà ouverts
 
 `ocx stop` et l'arrêt du proxy **suppriment les variables injectées** (ils ne restaurent pas les valeurs précédentes —
 seules les clés injectées par opencodex sont supprimées). Le proxy écrit également `~/.opencodex/claude-env.sh` ;
-`ocx start` installe un hook source `.zshrc` qui le charge automatiquement.
+`ocx start` installe le hook source `.zshrc` uniquement lorsqu’un exécutable Claude Code CLI est
+présent dans le `PATH`. Au démarrage et avec `ocx ensure`, le hook appartenant à OpenCodex est supprimé
+si aucun exécutable du CLI Claude Code n’est trouvé dans le `PATH` ou si l’intégration de l’environnement
+système est inactive. Claude Desktop utilise son propre profil et ne déclenche pas l’installation du hook shell.
 
 Désactivez cette intégration avec `claudeCode.systemEnv: false` dans la configuration ou avec le commutateur de l'interface.
 La fonctionnalité est réservée à macOS ; sur les autres plateformes, utilisez `ocx claude`.
@@ -233,7 +236,7 @@ par défaut, corrige ce comportement :
 
 1. Les modèles dont la fenêtre réelle dépasse 200k **et** atteint au moins le seuil de compactage automatique obtiennent le
    marqueur `[1m]` dans les lignes du sélecteur et les variables d'environnement qui les désignent.
-2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (`350000` par défaut, plage `100000`–`1000000`) est injecté afin
+2. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (`829800` par défaut, plage `100000`–`1000000`) est injecté afin
    que la conversation soit automatiquement résumée à ce seuil.
 
 Trois états de configuration :
@@ -247,7 +250,7 @@ rend ce modèle inutilisable : les tours échouent avant que le résumé puisse
 
 Les modèles Anthropic natifs dont le contexte est inférieur à 1M ne sont jamais marqués automatiquement. Les valeurs que vous exportez vous-même
 restent prioritaires ; le proxy s'appuie sur votre valeur pour déterminer les modèles qui peuvent recevoir le marqueur sans risque.
-Les valeurs de configuration invalides définies manuellement reviennent à 350k.
+Les valeurs de configuration invalides définies manuellement reviennent à 829,800.
 
 ### Environnement effectif des modèles
 

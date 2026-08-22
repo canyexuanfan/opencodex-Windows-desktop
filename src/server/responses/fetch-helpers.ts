@@ -103,7 +103,9 @@ import {
 import { hasResponsesItemIdRepair, relaySseWithResponsesItemIdRepair } from "../responses-item-id-repair";
 import type { EffectiveSubagentRoster, SpawnAgentSurface } from "../../codex/catalog";
 import { waitForProviderRequestSlot } from "../../providers/request-pacing";
+import { withUpstreamHttpVersion } from "../../lib/upstream-http-version";
 
+export { withUpstreamHttpVersion } from "../../lib/upstream-http-version";
 
 export function disableResponsesRequestTimeout(req: Request, server: Pick<Server<WsData>, "timeout"> | undefined): boolean {
   if (!server) return false;
@@ -147,6 +149,8 @@ export type ProviderFetch = typeof globalThis.fetch & PaceAwareFetch;
 export interface ProviderFetchOptions {
   providerName?: string;
   modelId?: string;
+  /** One pacing slot was acquired immediately before this fetch wrapper was created. */
+  pacingSlotAcquired?: boolean;
 }
 
 export function providerFetch(
@@ -162,11 +166,18 @@ export function providerFetch(
     if (typeof input === "string" && init && shouldUseCodexWsUpstream(input, init, runtime)) {
       return codexWsUpstreamFetch(input, init, base, runtime);
     }
-    return base(input, init);
+    return base(input, withUpstreamHttpVersion(input, init, provider));
   };
-  const waitForPacing = (signal?: AbortSignal) => options.providerName
-    ? waitForProviderRequestSlot(options.providerName, provider, options.modelId, signal)
-    : Promise.resolve();
+  let pacingSlotAcquired = options.pacingSlotAcquired === true;
+  const waitForPacing = (signal?: AbortSignal) => {
+    if (pacingSlotAcquired) {
+      pacingSlotAcquired = false;
+      return Promise.resolve();
+    }
+    return options.providerName
+      ? waitForProviderRequestSlot(options.providerName, provider, options.modelId, signal)
+      : Promise.resolve();
+  };
   const wrapped = async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
     await waitForPacing(init?.signal ?? undefined);
     return unpaced(input, init);

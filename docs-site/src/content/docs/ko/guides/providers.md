@@ -14,7 +14,7 @@ description: opencodex가 LLM 프로바이더를 인증하고 통신하는 모�
 | `openai-apikey` | OpenAI API | 설정된 API key/key pool만 사용하며 Codex 계정을 읽지 않습니다. |
 
 bare `gpt-5.6-sol`은 Providers 페이지의 Pool/Direct 옵션을 따르고,
-`openai-apikey/gpt-5.6-sol`은 API를 선택합니다. 자격증명 경로 간 fallback은 없습니다. API는 context 1,050,000 /
+`openai-apikey/gpt-5.6-sol`은 API를 선택합니다. 자격증명 경로 간 fallback은 없습니다. API는 context 922,000 /
 max input 922,000이며 `*-pro` virtual id는 공개 상태에 유지되고 wire에서 base 모델과
 `reasoning.mode: "pro"`로 바뀝니다.
 
@@ -104,7 +104,7 @@ ocx logout <provider>
 
 | 프로바이더 | 어댑터 | 베이스 URL | 비고 |
 | --- | --- | --- | --- |
-| `xai` | `openai-chat` | `https://api.x.ai/v1` | 실시간 목록을 우선 사용하며, 폴백 기본 모델은 `grok-4.5`입니다. |
+| `xai` | `openai-chat` | `https://cli-chat-proxy.grok.com/v1` | OAuth는 별도의 Grok CLI 구독 게이트웨이를 사용합니다. API 키 오버라이드는 `https://api.x.ai/v1`을 사용하며 Priority Processing을 주입할 수 있습니다. 실시간 목록을 우선 사용하며, 폴백 기본 모델은 `grok-4.5`입니다. |
 | `anthropic` | `anthropic` | `https://api.anthropic.com` | Claude 모델; 실시간 모델 목록은 `/v1/models`에서 가져옵니다. |
 | `kimi` | `openai-chat` | `https://api.kimi.com/coding/v1` | Kimi K2.7/K2.6/K2.5 코딩 모델. |
 | `nous` | `openai-chat` | `https://inference-api.nousresearch.com/v1` | Nous Research 구독 게이트웨이(Hermes Agent와 동일한 백엔드). `portal.nousresearch.com`에 대한 디바이스 그랜트 로그인; access 토큰은 요청별 inference JWT. 유료 + `:free` 모델 혼합 카탈로그(`tencent/hy3:free`, `stepfun/step-3.7-flash:free` 등)는 로그인한 계정에서 실시간으로 발견됩니다. Refresh 토큰은 단회 사용이며, 갱신할 때마다 회전됩니다. |
@@ -349,9 +349,9 @@ Sol/Terra/Luna를 폴백 목록에 넣어 둡니다.
 
 | Codex 경로 | 미리 등록된 모델 id | Codex에 표시되는 컨텍스트 |
 | --- | --- | --- |
-| Codex 로그인(Pool 또는 Direct) | `gpt-5.6-*` | 372,000 |
-| OpenAI (API key) | `openai-apikey/gpt-5.6-*`와 `*-pro` | 1,050,000 (max input 922,000) |
-| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 1,050,000 |
+| Codex 로그인(Pool 또는 Direct) | `gpt-5.6-*` | 922,000 |
+| OpenAI (API key) | `openai-apikey/gpt-5.6-*`와 `*-pro` | 922,000 (max input 922,000) |
+| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 922,000 |
 | Cursor | `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, `cursor/gpt-5.6-luna` | 1,000,000 |
 
 네이티브 GPT-5.6 항목은 고정된 업스트림 reasoning 단계를 그대로 따릅니다. 예를 들어 Luna에는

@@ -9,11 +9,17 @@ import type {
 import { coerceIntegerToolArguments } from "./lib/tool-argument-integers";
 import { adapterFailureFromMessage, classifyError, CYBER_POLICY_ERROR_CODE, isCyberPolicyCode, type OcxErrorPayload } from "./lib/errors";
 import { encodeCompactionSummary } from "./responses/compaction";
+import { isTruncatedStopReason, truncationReasonFor } from "./responses/truncated-stop-reason";
 import { encodeReasoningEnvelope, type ReasoningEnvelope } from "./responses/reasoning-envelope";
 import { rememberReasoningForCall } from "./responses/reasoning-replay-cache";
-import { responsesExtraContentFromProviderMetadata } from "./responses/provider-opaque-metadata";
+import {
+  rememberAndSerializeExtraContent,
+  rememberExtraContentForReplay,
+  awaitThoughtSignatureDurability,
+} from "./responses/thought-signature-replay";
 import { resolveStallTimeoutSec } from "./stall-timeout";
 import { usageDisplayTotalTokens } from "./usage/totals";
+import { appendSafeWebSearchSource, safeWebSearchSources } from "./web-search/sources";
 import {
   isTranslatorBudgetExceededError,
   releaseTranslatedEvent,
@@ -162,7 +168,7 @@ export type ResponsesTerminalStatus = "completed" | "failed" | "incomplete";
 export function bridgeToResponsesSSE(
   events: AsyncIterable<AdapterEvent>,
   modelId: string,
-  toolNsMap?: Map<string, { namespace: string; name: string }>,
+  toolNsMap?: Map<string, { namespace: string; name: string; freeform?: true }>,
   freeformToolNames?: Set<string>,
   toolSearchToolNames?: Set<string>,
   onCancel?: () => void,
@@ -194,6 +200,16 @@ export function bridgeToResponsesSSE(
     declaredToolNames?: ReadonlySet<string>;
     /** Declared parameter schema per tool name; repairs integral-float integer args (#1611). */
     toolParameterSchemas?: ReadonlyMap<string, Record<string, unknown>>;
+    /**
+     * Wire keep-alive shape. Codex-rs parses at the EVENT level (timeout(idle_timeout,
+     * stream.next()) over an eventsource_stream), so an SSE comment line dispatches no event
+     * and does NOT re-arm its idle timer — the keep-alive must be a typed frame the parser
+     * ignores via its catch-all (110 RCA, 30_patch-direction.md). grok-build's strict
+     * async-openai fork is the opposite: it dies on the unknown `response.heartbeat`
+     * variant but, being eventsource-based at the byte level, its idle handling tolerates
+     * comment lines. Default stays the typed frame; the grok surface opts into comments.
+     */
+    heartbeatStyle?: "typed" | "comment";
     translatorBudget?: TranslatorBudget;
     /**
      * Conversation identity for the reasoning replay cache (issue #950).
@@ -322,10 +338,13 @@ export function bridgeToResponsesSSE(
     clearOwnedWatchdog();
   };
   // RC3 keep-alive: Codex's idle timer is timeout(idle_timeout, stream.next()) over an
-  // eventsource_stream; ANY received event re-arms it, while an unknown type is ignored
-  // (responses.rs `_ => Ok(None)`). Emit a parser-ignored `response.heartbeat` whenever the
-  // *wire* has been silent, even if invisible adapter heartbeats are still flowing (web-search
-  // buffering + raw-byte progress). Upstream activity only resets the stall watchdog.
+  // eventsource_stream, which parses at the EVENT level — a comment-only frame dispatches no
+  // event, so it does NOT re-arm the timer (110 RCA). The default keep-alive is therefore a
+  // typed `response.heartbeat` frame the codex-rs parser ignores via `_ => Ok(None)`. The
+  // grok surface (strict async-openai decoder that dies on unknown variants) opts into SSE
+  // comment lines instead via options.heartbeatStyle. Emit whenever the *wire* has been
+  // silent, even if invisible adapter heartbeats are still flowing (web-search buffering +
+  // raw-byte progress). Upstream activity only resets the stall watchdog.
   let upstreamActivity = false;
   let wireActivity = false;
   let beat: unknown;
@@ -392,7 +411,9 @@ export function bridgeToResponsesSSE(
         ...(endTurn !== undefined ? { end_turn: endTurn } : {}),
       });
 
-      const heartbeatFrame = encoder.encode('event: response.heartbeat\ndata: {"type":"response.heartbeat"}\n\n');
+      const heartbeatFrame = options?.heartbeatStyle === "comment"
+        ? encoder.encode(': opencodex heartbeat\n\n')
+        : encoder.encode('event: response.heartbeat\ndata: {"type":"response.heartbeat"}\n\n');
       let stallTicks = 0;
       const stallSec = resolveStallTimeoutSec(options?.stallTimeoutSec);
       const maxStallTicks = Math.ceil((stallSec * 1000) / heartbeatMs);
@@ -506,17 +527,22 @@ export function bridgeToResponsesSSE(
       // url_citation annotations on that message (the desktop app's Sources chip), then cleared so
       // they bind to exactly one message. Deduped by URL across multiple searches in the turn.
       let pendingWebSources: { url: string; title?: string }[] = [];
+      let pendingWebSourceBytes = 0;
+      const releasePendingWebSources = () => {
+        if (pendingWebSources.length === 0) return;
+        pendingWebSources = [];
+        budget?.releaseRetained(pendingWebSourceBytes, { kind: "tool_search_sources" });
+        pendingWebSourceBytes = 0;
+      };
       const takeWebAnnotations = (): { type: string; url: string; title?: string; start_index: number; end_index: number }[] => {
         if (pendingWebSources.length === 0) return [];
         const anns = pendingWebSources.map(s => ({
           type: "url_citation", url: s.url, ...(s.title ? { title: s.title } : {}), start_index: 0, end_index: 0,
         }));
-        const sourceBytes = pendingWebSources.reduce((sum, source) => sum + bytesOf(JSON.stringify(source)), 0);
         const annotationBytes = bytesOf(JSON.stringify(anns));
         const reservation = budget?.reserveTransient(annotationBytes, { kind: "retained_collectors" });
-        pendingWebSources = [];
         reservation?.commitRetained();
-        budget?.releaseRetained(sourceBytes, { kind: "tool_search_sources" });
+        releasePendingWebSources();
         return anns;
       };
 
@@ -572,9 +598,16 @@ export function bridgeToResponsesSSE(
       const closeCurrentRawReasoning = () => {
         if (!currentRawReasoning) return;
         rawReasoningForNextToolCall = currentRawReasoning.text;
+        emit("response.reasoning_summary_text.done", {
+          item_id: currentRawReasoning.itemId, output_index: currentRawReasoning.outputIndex, summary_index: 0, text: currentRawReasoning.text,
+        });
+        emit("response.reasoning_summary_part.done", {
+          item_id: currentRawReasoning.itemId, output_index: currentRawReasoning.outputIndex, summary_index: 0,
+          part: { type: "summary_text", text: currentRawReasoning.text },
+        });
         const item = {
-          type: "reasoning", id: currentRawReasoning.itemId, summary: [],
-          content: [{ type: "reasoning_text", text: currentRawReasoning.text }],
+          type: "reasoning", id: currentRawReasoning.itemId,
+          summary: [{ type: "summary_text", text: currentRawReasoning.text }],
         };
         emit("response.output_item.done", { output_index: currentRawReasoning.outputIndex, item });
         retainFinishedItem(item as OutputItem, currentRawReasoning.textBytes, "reasoning");
@@ -606,6 +639,9 @@ export function bridgeToResponsesSSE(
             input: freeformInput(currentToolCall.args),
           });
         }
+        // Freeform tools serialize as custom_tool_call without extra_content; remember the
+        // signature server-side regardless so the replayed call can be re-signed (#1735).
+        void rememberExtraContentForReplay(currentToolCall.callId, currentToolCall.providerMetadata, replayCacheScope);
         const item = currentToolCall.toolSearch
           ? {
               type: "tool_search_call", id: currentToolCall.itemId,
@@ -624,8 +660,9 @@ export function bridgeToResponsesSSE(
               arguments: argsStr, status: "completed",
               ...(currentToolCall.namespace ? { namespace: currentToolCall.namespace } : {}),
               // Provider-opaque metadata (issue #1735) rides the item so a client that replays
-              // this history can hand the signature back on the part it belongs to.
-              ...(responsesExtraContentFromProviderMetadata(currentToolCall.providerMetadata) ?? {}),
+              // this history can hand the signature back on the part it belongs to. The proxy
+              // also remembers it server-side for clients that never echo extra_content.
+              ...(rememberAndSerializeExtraContent(currentToolCall.callId, currentToolCall.providerMetadata, replayCacheScope).extra ?? {}),
             };
         emit("response.output_item.done", { output_index: currentToolCall.outputIndex, item });
         retainFinishedItem(item as OutputItem);
@@ -643,6 +680,7 @@ export function bridgeToResponsesSSE(
       const failCurrentToolCall = () => {
         if (!currentToolCall) return;
         const argsStr = currentToolCall.args || "{}";
+        void rememberExtraContentForReplay(currentToolCall.callId, currentToolCall.providerMetadata, replayCacheScope);
         const item = currentToolCall.toolSearch
           ? {
               type: "tool_search_call", id: currentToolCall.itemId,
@@ -663,7 +701,7 @@ export function bridgeToResponsesSSE(
               // An incomplete call can still be persisted and replayed (max_output_tokens), so it
               // carries the same metadata as the completed item — otherwise SSE and buffered JSON
               // would disagree about whether the signature survives.
-              ...(responsesExtraContentFromProviderMetadata(currentToolCall.providerMetadata) ?? {}),
+              ...(rememberAndSerializeExtraContent(currentToolCall.callId, currentToolCall.providerMetadata, replayCacheScope).extra ?? {}),
             };
         emit("response.output_item.done", { output_index: currentToolCall.outputIndex, item });
         retainFinishedItem(item as OutputItem);
@@ -760,6 +798,7 @@ export function bridgeToResponsesSSE(
         handlingTranslatorOverflow = true;
         abortCurrentToolCallForTranslatorOverflow();
         currentWebSearch = null;
+        releasePendingWebSources();
         const failure = adapterFailureFromEvent({
           type: "error",
           status: 502,
@@ -968,8 +1007,12 @@ export function bridgeToResponsesSSE(
               if (currentToolCall) closeCurrentToolCall();
               if (!currentRawReasoning) {
                 const itemId = `rs_${uuid()}`;
-                const item = { type: "reasoning", id: itemId, summary: [] as never[], content: [] as { type: string; text: string }[] };
+                const item = { type: "reasoning", id: itemId, summary: [] as { type: string; text: string }[] };
                 emit("response.output_item.added", { output_index: outputIndex, item });
+                emit("response.reasoning_summary_part.added", {
+                  item_id: itemId, output_index: outputIndex, summary_index: 0,
+                  part: { type: "summary_text", text: "" },
+                });
                 currentRawReasoning = { itemId, outputIndex, text: "", textBytes: 0 };
               }
               ({ value: currentRawReasoning.text, bytes: currentRawReasoning.textBytes } = appendString(
@@ -978,9 +1021,9 @@ export function bridgeToResponsesSSE(
                 event.text,
                 "reasoning",
               ));
-              emit("response.reasoning_text.delta", {
+              emit("response.reasoning_summary_text.delta", {
                 item_id: currentRawReasoning.itemId, output_index: currentRawReasoning.outputIndex,
-                content_index: 0, delta: event.text,
+                summary_index: 0, delta: event.text,
               });
               break;
             }
@@ -1014,7 +1057,9 @@ export function bridgeToResponsesSSE(
               }
               const ns = mapped?.namespace;
               const toolSearch = toolSearchToolNames?.has(realName) ?? false;
-              const freeform = !toolSearch && (freeformToolNames?.has(realName) ?? false);
+              const freeform = !toolSearch && (mapped
+                ? mapped.freeform === true
+                : (freeformToolNames?.has(realName) ?? false));
               const itemId = `${toolSearch ? "tsc" : freeform ? "ctc" : "fc"}_${uuid()}`;
               const item = toolSearch
                 ? { type: "tool_search_call", id: itemId, call_id: event.id, execution: "client", arguments: {}, status: "in_progress" }
@@ -1119,15 +1164,13 @@ export function bridgeToResponsesSSE(
                 });
                 currentWebSearch = { itemId: wsItemId2, eventId: event.id, outputIndex };
               }
-              closeCurrentWebSearch(event.status ?? "completed", event.queries, event.sources);
+              const safeSources = safeWebSearchSources(event.sources);
+              closeCurrentWebSearch(event.status ?? "completed", event.queries, safeSources);
               // Queue this search's sources for the next assistant message (dedup by URL).
-              if (event.sources) {
-                const seen = new Set(pendingWebSources.map(s => s.url));
-                for (const s of event.sources) {
-                  if (!seen.has(s.url)) {
-                    seen.add(s.url);
-                    chargeValue(s, "tool_search_sources");
-                    pendingWebSources.push(s);
+              if (safeSources.length > 0) {
+                for (const source of safeSources) {
+                  if (appendSafeWebSearchSource(pendingWebSources, source)) {
+                    pendingWebSourceBytes += chargeValue(source, "tool_search_sources");
                   }
                 }
               }
@@ -1140,13 +1183,18 @@ export function bridgeToResponsesSSE(
               flushHiddenRawReasoning();
               if (currentToolCall) closeCurrentToolCall();
               if (currentWebSearch) closeCurrentWebSearch("completed", []);
+              releasePendingWebSources();
               // Redacted-only turns (or hidden thinking without a trailing signature event) still
               // need their envelope-only reasoning item so the blocks replay next turn.
               flushHiddenReasoningEnvelope();
               // After every close above, so the blob lands AFTER the assistant message it belongs
               // to and the parser's backwards pairing finds it.
               flushKiroRedactedReasoning();
-              if (options?.compaction) {
+              // Truncated turns must never install replacement history (#422). The buffered path
+              // has always checked this; streaming emitted the item BEFORE reading stopReason, so
+              // a max_tokens/content_filter turn shipped a half-written summary and then declared
+              // itself incomplete — the same hazard, one branch over.
+              if (options?.compaction && !isTruncatedStopReason(event.stopReason)) {
                 // Exactly one compaction item per turn; codex-rs takes the first and fatals on 0.
                 const item = {
                   type: "compaction", id: `cmp_${uuid()}`,
@@ -1156,14 +1204,21 @@ export function bridgeToResponsesSSE(
                 retainFinishedItem(item as OutputItem, compactionTextBytes);
                 outputIndex++;
               }
-              if (event.stopReason === "max_tokens" || event.stopReason === "content_filter") {
+              // Recognize every adapter's truncation vocabulary, not just the canonical pair.
+              // Suppression and terminal status must agree: withholding the compaction item while
+              // still reporting success hands codex-rs a completed response with zero compaction
+              // items, which it treats as fatal.
+              if (truncationReasonFor(event.stopReason)) {
                 // Upstream stopped before a normal completion. Surface as incomplete so the
                 // client can distinguish a truncated/filtered turn from a finished one.
+                // #1926 gap 2: bound the window in which a handed-out thought signature is
+                // not yet durable before the turn becomes externally terminal.
+                await awaitThoughtSignatureDurability();
                 const response = {
                   ...responseSnapshot("incomplete", finishedItems, event.endTurn),
                   usage: responsesUsage(event.usage),
                   incomplete_details: {
-                    reason: event.stopReason === "max_tokens" ? "max_output_tokens" : "content_filter",
+                    reason: truncationReasonFor(event.stopReason) ?? "content_filter",
                   },
                 };
                 // Cache max-output partials so previous_response_id replay can continue them;
@@ -1173,6 +1228,7 @@ export function bridgeToResponsesSSE(
                 emit("response.incomplete", { response });
                 reportTerminal("incomplete");
               } else {
+                await awaitThoughtSignatureDurability();
                 const response = { ...responseSnapshot("completed", finishedItems, event.endTurn), usage: responsesUsage(event.usage) };
                 options?.onCompletedResponse?.(response, event.providerState);
                 options?.onUsage?.(event.usage);
@@ -1191,8 +1247,10 @@ export function bridgeToResponsesSSE(
               flushHiddenRawReasoning();
               if (currentToolCall) failCurrentToolCall();
               if (currentWebSearch) closeCurrentWebSearch("failed", []);
+              releasePendingWebSources();
               flushHiddenReasoningEnvelope();
               options?.onUsage?.(event.usage);
+              await awaitThoughtSignatureDurability();
               emit("response.incomplete", {
                 response: {
                   ...responseSnapshot("incomplete", finishedItems, event.endTurn),
@@ -1219,8 +1277,10 @@ export function bridgeToResponsesSSE(
               flushHiddenRawReasoning();
               if (currentToolCall) failCurrentToolCall();
               if (currentWebSearch) closeCurrentWebSearch("failed", []);
+              releasePendingWebSources();
               const failure = adapterFailureFromEvent(event);
               if (event.usage) options?.onUsage?.(event.usage);
+              await awaitThoughtSignatureDurability();
               emit("response.failed", {
                 response: {
                   ...responseSnapshot("failed", finishedItems),
@@ -1252,6 +1312,7 @@ export function bridgeToResponsesSSE(
           flushHiddenRawReasoning();
           if (currentToolCall) failCurrentToolCall();
           if (currentWebSearch) closeCurrentWebSearch("failed", []);
+          releasePendingWebSources();
           emit("response.failed", {
             response: {
               ...responseSnapshot("failed", finishedItems),
@@ -1281,7 +1342,9 @@ export function bridgeToResponsesSSE(
         flushHiddenRawReasoning();
         if (currentToolCall) failCurrentToolCall();
         if (currentWebSearch) closeCurrentWebSearch("failed", []);
+        releasePendingWebSources();
         options?.onUsage?.(undefined);
+        await awaitThoughtSignatureDurability();
         emit("response.incomplete", {
           response: {
             ...responseSnapshot("incomplete", finishedItems),
@@ -1322,6 +1385,11 @@ export function bridgeToResponsesSSE(
             flushHiddenRawReasoning();
             if (currentToolCall) failCurrentToolCall();
             if (currentWebSearch) closeCurrentWebSearch("failed", []);
+            releasePendingWebSources();
+            // #1926 gap 2 residual: this beat callback is synchronous, so the durability
+            // barrier is not awaited on the stall-timeout kill path. The in-memory store is
+            // already updated; only a crash between here and the queued write loses it,
+            // which is the pre-#1926 status quo for an already-abnormal termination.
             emit("response.incomplete", {
               response: {
                 ...responseSnapshot("incomplete", finishedItems),
@@ -1370,6 +1438,7 @@ export function bridgeToResponsesSSE(
         clearOwnedWatchdog();
         if (beat !== undefined) clearBeatInterval(beat);
         cancelUpstreamOnce();
+        releasePendingWebSources();
         disposeOwnedBudget();
       },
     });
@@ -1396,7 +1465,7 @@ function buildResponseJSONWithBudget(
   modelId: string,
   options?: {
     hideThinkingSummary?: boolean;
-    toolNsMap?: Map<string, { namespace: string; name: string }>;
+    toolNsMap?: Map<string, { namespace: string; name: string; freeform?: true }>;
     /** Request-visible tool names. When present, an upstream call outside this set fails closed. */
     declaredToolNames?: ReadonlySet<string>;
     /** Declared parameter schema per tool name; repairs integral-float integer args (#1611). */
@@ -1459,7 +1528,15 @@ function buildResponseJSONWithBudget(
   let incompleteEvent: Extract<AdapterEvent, { type: "incomplete" }> | undefined;
   let endTurn: boolean | undefined;
   let stopReason: string | undefined;
+  // The adapter's stop reason exactly as it arrived. `stopReason` above is deliberately narrowed
+  // to the two reasons that map onto a Responses `incomplete_details`; the raw value is what the
+  // truncation guard needs, because adapters disagree on vocabulary (`length`, `refusal`, ...).
+  let rawStopReason: string | undefined;
   let cleanDone = false;
+  // Whether the adapter emitted ANY terminal (done/error/incomplete). Distinct from `cleanDone`,
+  // which is only true for a `done` without a stop reason. A buffered turn whose adapter simply
+  // stopped emitting has no terminal at all, and must not be reported as a success.
+  let sawTerminal = false;
   let compactionText = "";
   let compactionTextBytes = 0;
 
@@ -1501,6 +1578,7 @@ function buildResponseJSONWithBudget(
   const flushText = (inferredPhase?: OcxMessagePhase) => {
     if (!currentText) return;
     const phase = currentTextPhase ?? inferredPhase;
+    const sourceBytes = pendingWebSources.reduce((sum, source) => sum + bytesOf(JSON.stringify(source)), 0);
     const annotations = pendingWebSources.map(s => ({
       type: "url_citation", url: s.url, ...(s.title ? { title: s.title } : {}), start_index: 0, end_index: 0,
     }));
@@ -1511,6 +1589,7 @@ function buildResponseJSONWithBudget(
       ...(phase ? { phase } : {}),
     } as OutputItem;
     pushOutput(item, currentTextBytes);
+    budget?.releaseRetained(sourceBytes, { kind: "tool_search_sources" });
     currentText = "";
     currentTextBytes = 0;
     currentTextPhase = undefined;
@@ -1557,8 +1636,8 @@ function buildResponseJSONWithBudget(
       return;
     }
     pushOutput({
-      type: "reasoning", id: `rs_${uuid()}`, summary: [],
-      content: [{ type: "reasoning_text", text: currentRawReasoning }],
+      type: "reasoning", id: `rs_${uuid()}`,
+      summary: [{ type: "summary_text", text: currentRawReasoning }],
     }, currentRawReasoningBytes, "reasoning");
     currentRawReasoning = "";
     currentRawReasoningBytes = 0;
@@ -1569,13 +1648,18 @@ function buildResponseJSONWithBudget(
     const realName = mapped?.name ?? currentToolCallName;
     const ns = mapped?.namespace;
     const toolSearch = options?.toolSearchToolNames?.has(realName) ?? false;
-    const freeform = !toolSearch && (options?.freeformToolNames?.has(realName) ?? false);
+    const freeform = !toolSearch && (mapped
+      ? mapped.freeform === true
+      : (options?.freeformToolNames?.has(realName) ?? false));
     // #1611: same integral-float repair as the streaming path. Keyed by the wire name
     // the request declared, which is the pre-namespace-mapping `currentToolCallName`.
     const coercedArgs = coerceIntegerToolArguments(
       currentToolCallArgs,
       options?.toolParameterSchemas?.get(currentToolCallName),
     );
+    // Freeform tools serialize as custom_tool_call without extra_content; remember the
+    // signature server-side regardless so the replayed call can be re-signed (#1735).
+    void rememberExtraContentForReplay(currentToolCallId, currentToolCallProviderMetadata, replayCacheScope);
     if (toolSearch) {
       pushOutput({
         type: "tool_search_call", id: `tsc_${uuid()}`,
@@ -1594,7 +1678,7 @@ function buildResponseJSONWithBudget(
         call_id: currentToolCallId, name: realName,
         arguments: coercedArgs || "{}", status,
         ...(ns ? { namespace: ns } : {}),
-        ...(responsesExtraContentFromProviderMetadata(currentToolCallProviderMetadata) ?? {}),
+        ...(rememberAndSerializeExtraContent(currentToolCallId, currentToolCallProviderMetadata, replayCacheScope).extra ?? {}),
       });
     }
     budget?.closeCall(currentToolCallId);
@@ -1730,7 +1814,9 @@ function buildResponseJSONWithBudget(
           const mapped = options?.toolNsMap?.get(currentToolCallName);
           const realName = mapped?.name ?? currentToolCallName;
           const toolSearch = options?.toolSearchToolNames?.has(realName) ?? false;
-          const freeform = !toolSearch && (options?.freeformToolNames?.has(realName) ?? false);
+          const freeform = !toolSearch && (mapped
+            ? mapped.freeform === true
+            : (options?.freeformToolNames?.has(realName) ?? false));
           if (!freeform && !toolSearch) {
             flushToolCall("incomplete");
             errorEvent = {
@@ -1748,52 +1834,69 @@ function buildResponseJSONWithBudget(
         // Batch/non-streaming output has no in_progress phase to animate — the search cell is a
         // single finalized item, emitted on `end`. Begin is a no-op here.
         break;
-      case "web_search_call_end":
+      case "web_search_call_end": {
         if (currentText) flushText("commentary");
         if (currentSummaryReasoning) flushSummaryReasoning();
         if (currentRawReasoning) flushRawReasoning();
         flushToolCall();
+        const safeSources = safeWebSearchSources(e.sources);
         pushOutput({
           type: "web_search_call", id: `ws_${uuid()}`, status: e.status ?? "completed",
           action: webSearchAction(e.queries),
-          ...(e.sources && e.sources.length > 0 ? { sources: e.sources } : {}),
+          ...(safeSources.length > 0 ? { sources: safeSources } : {}),
         });
-        if (e.sources) {
-          const seen = new Set(pendingWebSources.map(s => s.url));
-          for (const s of e.sources) {
-            if (!seen.has(s.url)) {
-              seen.add(s.url);
-              budget?.chargeRetained(bytesOf(JSON.stringify(s)), { kind: "tool_search_sources" });
-              pendingWebSources.push(s);
+        if (safeSources.length > 0) {
+          for (const source of safeSources) {
+            if (appendSafeWebSearchSource(pendingWebSources, source)) {
+              budget?.chargeRetained(bytesOf(JSON.stringify(source)), { kind: "tool_search_sources" });
             }
           }
         }
         break;
+      }
       case "error":
         errorEvent = e;
+        sawTerminal = true;
         usage = e.usage ?? usage;
         break;
       case "incomplete":
         incompleteEvent = e;
+        sawTerminal = true;
         endTurn = e.endTurn;
         if (e.providerState) options?.onProviderState?.(e.providerState);
         break;
       case "done":
         usage = e.usage;
+        sawTerminal = true;
         endTurn = e.endTurn;
         cleanDone = e.stopReason === undefined;
+        rawStopReason = e.stopReason;
         if (e.providerState) options?.onProviderState?.(e.providerState);
         // Match streaming: max_tokens and content_filter both terminate as incomplete.
-        if (e.stopReason === "max_tokens" || e.stopReason === "content_filter") stopReason = e.stopReason;
+        // Normalize every adapter's truncation vocabulary to the canonical pair, so a raw
+        // `length` or `refusal` reaches the status/incomplete_details logic below instead of
+        // silently reading as a clean stop.
+        {
+          const truncation = truncationReasonFor(e.stopReason);
+          if (truncation) stopReason = truncation === "max_output_tokens" ? "max_tokens" : "content_filter";
+        }
         break;
     }
     if (budget) releaseTranslatedEvent(e, budget);
   }
   flushText(cleanDone && !errorEvent && !incompleteEvent ? "final_answer" : undefined);
+  if (pendingWebSources.length > 0) {
+    const sourceBytes = pendingWebSources.reduce((sum, source) => sum + bytesOf(JSON.stringify(source)), 0);
+    pendingWebSources = [];
+    budget?.releaseRetained(sourceBytes, { kind: "tool_search_sources" });
+  }
   flushSummaryReasoning();
   flushRawReasoning();
-  // Open tool call on a failed/incomplete turn must not land as status:"completed".
-  if (currentToolCallId) flushToolCall(errorEvent || incompleteEvent ? "incomplete" : "completed");
+  // Open tool call on a failed/incomplete turn must not land as status:"completed" — and neither
+  // must one left open by a stream that stopped without any terminal at all. That case previously
+  // fell through to "completed", handing back a function_call whose arguments were half-written
+  // JSON, inside a turn also marked completed.
+  if (currentToolCallId) flushToolCall(errorEvent || incompleteEvent || !sawTerminal ? "incomplete" : "completed");
   if (batchKiroRedacted) {
     // pushOutput reserves the item itself and releases the retained raw blob it replaces.
     pushOutput({
@@ -1809,8 +1912,12 @@ function buildResponseJSONWithBudget(
     options?.compaction
     && !errorEvent
     && !incompleteEvent
-    && stopReason !== "max_tokens"
-    && stopReason !== "content_filter"
+    // A stream that stopped without any terminal did not complete either. The original guard
+    // could only see explicit failure events, so an adapter EOF slipped past it and installed a
+    // truncated summary as replacement history — the exact #422 hazard, reached by a route that
+    // did not exist when the guard was written.
+    && sawTerminal
+    && !isTruncatedStopReason(rawStopReason)
   ) {
     pushOutput({ type: "compaction", id: `cmp_${uuid()}`, encrypted_content: encodeCompactionSummary(compactionText) }, compactionTextBytes);
   }
@@ -1820,7 +1927,13 @@ function buildResponseJSONWithBudget(
     ? "failed"
     : incompleteEvent || stopReason === "max_tokens" || stopReason === "content_filter"
       ? "incomplete"
-      : "completed";
+      : sawTerminal
+        ? "completed"
+        // The adapter stopped emitting without any terminal, so the turn was cut short. Streaming
+        // already reports this as response.incomplete / adapter_eof (see the !terminated branch);
+        // defaulting the buffered path to "completed" handed callers a truncated turn — including
+        // one carrying a never-closed tool call with half-written JSON arguments — as a success.
+        : "incomplete";
   options?.onUsage?.(incompleteEvent?.usage ?? usage);
   return {
     id: responseId, object: "response",
@@ -1840,6 +1953,10 @@ function buildResponseJSONWithBudget(
       incomplete_details: { reason: "max_output_tokens" },
     } : stopReason === "content_filter" ? {
       incomplete_details: { reason: "content_filter" },
+    } : !sawTerminal ? {
+      // Same reason string the streaming path uses, so a caller sees one signal for one condition
+      // regardless of which surface it asked for.
+      incomplete_details: { reason: "adapter_eof" },
     } : {}),
     usage: responsesUsage(incompleteEvent?.usage ?? usage),
   };

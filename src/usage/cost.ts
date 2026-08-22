@@ -14,7 +14,7 @@ import {
   getModelMetadata,
   resolveMetadataProvider,
 } from "../generated/model-metadata";
-import type { OcxUsage } from "../types";
+import type { AttemptTierOutcome, OcxUsage } from "../types";
 import { baseProviderLabel, canonicalUsageProviderLabel } from "../providers/label";
 import type { PersistedUsageAttempt, UsageStatus } from "./log";
 import { canonicalAntigravityUsageModel } from "../providers/antigravity-models";
@@ -22,7 +22,8 @@ import { activeConfiguredProviders, activeUserCostOverlays, userCostOverlayVersi
 import {
   EXPECTED_PRICE_OVERLAYS,
   findExpectedPriceOverlay,
-  resolvePriorityMultiplier,
+  findVerifiedPriceOverride,
+  findPriorityPricingRule,
   findContextTier,
   isLongContext,
   type Cost4,
@@ -44,6 +45,7 @@ export interface ServiceTierContext {
   responseServiceTier?: string;
   requestedServiceTier?: string;
   configuredServiceTier?: string;
+  tierOutcome?: AttemptTierOutcome;
 }
 
 export interface CostTokens {
@@ -80,10 +82,12 @@ export interface AttemptCostEstimate {
   price: MatchedPrice;
   cost: CostBreakdown;
   estimated: boolean;
-  /** Applied OpenAI priority-tier multiplier (undefined or 1 = standard). */
+  /** Applied provider priority-tier multiplier (undefined or 1 = standard). */
   priorityMultiplier?: number;
   /** Set when the published long-context rate was applied (#908). */
   contextTier?: ContextTierName;
+  /** The numeric estimate is a known floor because the exact Priority price is unavailable. */
+  priorityLowerBound?: boolean;
 }
 
 export interface CostEstimate {
@@ -92,10 +96,12 @@ export interface CostEstimate {
   estimated: boolean;
   attempts?: AttemptCostEstimate[];
   price?: MatchedPrice;
-  /** Applied OpenAI priority-tier multiplier (undefined or 1 = standard). */
+  /** Applied provider priority-tier multiplier (undefined or 1 = standard). */
   priorityMultiplier?: number;
   /** Set when any priced attempt used the published long-context rate (#908). */
   contextTier?: ContextTierName;
+  /** The aggregate is a known floor because every priced attempt is a lower bound. */
+  priorityLowerBound?: boolean;
 }
 
 function finiteNonNegative(value: number): boolean {
@@ -231,7 +237,7 @@ function resolveMatchedPriceInner(
 
 /**
  * Exact provider/model price lookup: user-configured `modelCosts` first, then
- * the jawcode provider bundle, then the expected-price overlay, then the
+ * an exact official correction, the jawcode provider bundle, the expected-price overlay, then the
  * model-level vendor fallback. All-zero rows fall through ("not billable").
  */
 function resolveMatchedPriceExact(
@@ -244,6 +250,20 @@ function resolveMatchedPriceExact(
   // operator's explicit price is authoritative for the ~$ estimate.
   const userOverlay = userOverlayMatch(provider, modelId, userOverlays);
   if (userOverlay) return userOverlay;
+  const verifiedOverride = overlays === EXPECTED_PRICE_OVERLAYS
+    ? findVerifiedPriceOverride(provider, modelId)
+    : undefined;
+  if (verifiedOverride && validCost4(verifiedOverride.cost4) && hasNonZeroCost(verifiedOverride.cost4)) {
+    return {
+      provider,
+      modelId,
+      cost4: verifiedOverride.cost4,
+      source: "expected",
+      sourceRef: verifiedOverride.source,
+      verifiedAt: verifiedOverride.verifiedAt,
+      status: "verified",
+    };
+  }
   const metadataProvider = resolveMetadataProvider(provider);
   const bundled = metadataProvider
     ? getModelMetadata(metadataProvider, modelId)
@@ -316,13 +336,6 @@ function isEstimated(usage: OcxUsage, usageStatus: UsageStatus, priceStatus: Exp
 }
 
 /**
- * OpenAI provider ids eligible for service_tier "priority" price multipliers.
- * Only canonical OpenAI forward providers use the priority tier; routed providers
- * (OpenRouter, Cursor, etc.) may share model slugs but have independent pricing.
- */
-const OPENAI_TIER_PROVIDER_IDS = new Set(["openai", "openai-apikey"]);
-
-/**
  * Resolve the effective service tier from persisted log fields.
  * Priority: responseServiceTier (server-confirmed) > requestedServiceTier
  * (client-sent, pre-rewrite) > configuredServiceTier (config.fastMode injection).
@@ -349,11 +362,38 @@ export type ServiceTierInput = string | ServiceTierContext;
  * and long-context exclusivity depends on that distinction.
  */
 export function serviceTierContext(entry: ServiceTierContext): ServiceTierContext {
+  if (entry.tierOutcome) {
+    return { ...serviceTierContextFromOutcome(entry.tierOutcome), tierOutcome: entry.tierOutcome };
+  }
   return {
     responseServiceTier: entry.responseServiceTier,
     requestedServiceTier: entry.requestedServiceTier,
     configuredServiceTier: entry.configuredServiceTier,
   };
+}
+
+/** Convert one adapter-observed attempt outcome into the existing pricing provenance shape. */
+export function serviceTierContextFromOutcome(outcome: AttemptTierOutcome): ServiceTierContext {
+  if (outcome.canonical === "priority" && outcome.confirmation === "confirmed") {
+    return { responseServiceTier: "priority" };
+  }
+  if (outcome.responseServiceTier !== undefined) {
+    return { responseServiceTier: outcome.responseServiceTier };
+  }
+  if (outcome.canonical === "priority" && outcome.confirmation === "assumed") {
+    return { requestedServiceTier: "priority" };
+  }
+  // An unclassified route makes no canonical Fast claim, but its adapter can still prove that
+  // it serialized a caller tier. Preserve that wire evidence instead of discarding the legacy
+  // top-level pricing signal merely because B0 added an outcome row.
+  if (
+    outcome.fastOutcome === "unknown"
+    && outcome.wireKind === "service-tier"
+    && typeof outcome.wireValue === "string"
+  ) {
+    return { requestedServiceTier: outcome.wireValue };
+  }
+  return {};
 }
 
 function tierScalar(tier?: ServiceTierInput): string | undefined {
@@ -373,9 +413,9 @@ function isConfirmedFast(tier?: ServiceTierInput): boolean {
  * normalized billable input — normalization subtracts cache read/write, so a
  * cache-heavy long prompt would fall below the boundary and under-bill.
  *
- * Skipped entirely for a response-confirmed Fast request: OpenAI does not serve
- * long context in Fast mode, so the two are mutually exclusive regimes rather
- * than composable multipliers.
+ * A provider's declaration decides how a response-confirmed priority tier relates to this band.
+ * OpenAI declares the bands exclusive. xAI publishes neither a combined rate nor an exclusion,
+ * so its long-context rate remains the known lower bound instead of inventing a stacked multiplier.
  */
 function applyContextTier(
   cost4: Cost4,
@@ -383,25 +423,27 @@ function applyContextTier(
   modelId: string,
   rawInputTokens: number | undefined,
   tier?: ServiceTierInput,
-): [Cost4, ContextTierName | undefined] {
-  if (rawInputTokens === undefined) return [cost4, undefined];
-  if (isConfirmedFast(tier)) return [cost4, undefined];
+): [Cost4, ContextTierName | undefined, boolean] {
+  if (rawInputTokens === undefined) return [cost4, undefined, false];
   const rule = findContextTier(baseProviderLabel(provider), modelId);
-  if (!rule || !isLongContext(rule, rawInputTokens)) return [cost4, undefined];
+  if (!rule || !isLongContext(rule, rawInputTokens)) return [cost4, undefined, false];
+  const confirmedFast = isConfirmedFast(tier);
+  if (confirmedFast && rule.confirmedPriorityRelation === "exclusive") {
+    return [cost4, undefined, false];
+  }
   return [{
     input: cost4.input * rule.multiplier.input,
     output: cost4.output * rule.multiplier.output,
     cacheRead: cost4.cacheRead * rule.multiplier.cacheRead,
     cacheWrite: cost4.cacheWrite * rule.multiplier.cacheWrite,
-  }, "long"];
+  }, "long", confirmedFast && rule.confirmedPriorityRelation === "lower-bound"];
 }
 
 /**
- * Apply the OpenAI priority-tier multiplier to a Cost4 when applicable.
+ * Apply a declared provider/model priority-tier multiplier to a Cost4 when applicable.
  * Returns [effectiveCost4, multiplier]. Multiplier is 1 (no-op) when:
  * - serviceTier is not "priority"
- * - provider is not a canonical OpenAI forward provider
- * - model is not in PRIORITY_MULTIPLIERS
+ * - no exact provider/model rule exists
  */
 function applyPriorityMultiplier(
   cost4: Cost4,
@@ -411,8 +453,9 @@ function applyPriorityMultiplier(
 ): [Cost4, number] {
   if (tierScalar(serviceTier) !== "priority") return [cost4, 1];
   const base = baseProviderLabel(provider);
-  if (!OPENAI_TIER_PROVIDER_IDS.has(base)) return [cost4, 1];
-  const multiplier = resolvePriorityMultiplier(modelId);
+  const rule = findPriorityPricingRule(base, modelId);
+  if (rule?.requiresResponseConfirmation && !isConfirmedFast(serviceTier)) return [cost4, 1];
+  const multiplier = rule?.multiplier ?? 1;
   if (multiplier === 1) return [cost4, 1];
   return [{
     input: cost4.input * multiplier,
@@ -423,12 +466,34 @@ function applyPriorityMultiplier(
 }
 
 /**
+ * OpenRouter confirms the actual endpoint tier and documents priority as higher cost, but this
+ * branch does not bundle its provider-specific priority endpoint prices. A confirmed canonical
+ * priority result can therefore use the standard price only as a provable lower bound. Do not
+ * extend this to flex (cheaper) or to other providers without the same pricing contract.
+ *
+ * An ASSUMED priority attempt needs the same marker for a different reason. There the provider
+ * never echoed a tier at all, so the standard price is not merely a lower bound on a known
+ * premium — it is a floor under an outcome we did not observe. Returning it unmarked reports a
+ * definite standard cost for a request that may well have been billed as priority, which is the
+ * one thing a cost estimate must never do.
+ */
+function isOpenRouterPriorityLowerBound(
+  provider: string,
+  outcome: AttemptTierOutcome | undefined,
+): boolean {
+  return baseProviderLabel(provider) === "openrouter"
+    && outcome?.canonical === "priority"
+    && outcome.fastOutcome === "applied"
+    && (outcome.confirmation === "confirmed" || outcome.confirmation === "assumed");
+}
+
+/**
  * Per-attempt cost estimate: tokens normalized, price resolved (user overlay →
  * catalogs), priority/long-context tiers applied. Null when usage or price is
  * missing so combos can fail closed.
  */
 export function estimateAttemptCost(
-  attempt: Pick<PersistedUsageAttempt, "ordinal" | "provider" | "model" | "usage" | "usageStatus">,
+  attempt: Pick<PersistedUsageAttempt, "ordinal" | "provider" | "model" | "usage" | "usageStatus" | "tierOutcome">,
   overlays: readonly ExpectedPriceOverlay[] = EXPECTED_PRICE_OVERLAYS,
   serviceTier?: ServiceTierInput,
   userOverlays: readonly ExpectedPriceOverlay[] = activeUserCostOverlays(),
@@ -438,15 +503,20 @@ export function estimateAttemptCost(
   if (!tokens) return null;
   const price = resolveMatchedPrice(attempt.provider, attempt.model, overlays, userOverlays);
   if (!price) return null;
-  const [tieredCost4, contextTier] = applyContextTier(
-    price.cost4, attempt.provider, attempt.model, attempt.usage.inputTokens, serviceTier,
+  const attemptServiceTier = attempt.tierOutcome
+    ? serviceTierContextFromOutcome(attempt.tierOutcome)
+    : serviceTier;
+  const [tieredCost4, contextTier, contextPriorityLowerBound] = applyContextTier(
+    price.cost4, attempt.provider, attempt.model, attempt.usage.inputTokens, attemptServiceTier,
   );
-  // Exclusive both ways: if the long rate applied, the request was NOT served as
-  // Fast (Fast does not support long context), so the Fast multiplier must not
-  // also apply — otherwise a downgraded request bills at both rates.
+  // A published long-context row owns the numeric estimate. OpenAI declares that band
+  // exclusive with Fast; xAI's confirmed combination is deliberately left unmultiplied
+  // and marked as a lower bound because no combined price has been published.
   const [effectiveCost4, multiplier] = contextTier
     ? [tieredCost4, 1] as const
-    : applyPriorityMultiplier(tieredCost4, attempt.provider, attempt.model, serviceTier);
+    : applyPriorityMultiplier(tieredCost4, attempt.provider, attempt.model, attemptServiceTier);
+  const priorityLowerBound = contextPriorityLowerBound
+    || isOpenRouterPriorityLowerBound(attempt.provider, attempt.tierOutcome);
   return {
     ordinal: attempt.ordinal,
     provider: attempt.provider,
@@ -457,6 +527,7 @@ export function estimateAttemptCost(
     estimated: isEstimated(attempt.usage, attempt.usageStatus, price.status),
     ...(multiplier !== 1 ? { priorityMultiplier: multiplier } : {}),
     ...(contextTier ? { contextTier } : {}),
+    ...(priorityLowerBound ? { priorityLowerBound: true } : {}),
   };
 }
 
@@ -465,7 +536,7 @@ export function estimateAttemptCost(
  * attempt is unpriced or unnormalizable, return null rather than a partial sum.
  */
 export function estimateComboCost(
-  attempts: readonly Pick<PersistedUsageAttempt, "ordinal" | "provider" | "model" | "usage" | "usageStatus">[],
+  attempts: readonly Pick<PersistedUsageAttempt, "ordinal" | "provider" | "model" | "usage" | "usageStatus" | "tierOutcome">[],
   overlays: readonly ExpectedPriceOverlay[] = EXPECTED_PRICE_OVERLAYS,
   serviceTier?: ServiceTierInput,
   userOverlays: readonly ExpectedPriceOverlay[] = activeUserCostOverlays(),
@@ -499,6 +570,9 @@ export function estimateComboCost(
       ? { priorityMultiplier: estimates.find(est => est.priorityMultiplier)?.priorityMultiplier }
       : {}),
     ...(estimates.some(est => est.contextTier) ? { contextTier: "long" as const } : {}),
+    ...(estimates.every(est => est.priorityLowerBound === true)
+      ? { priorityLowerBound: true as const }
+      : {}),
   };
 }
 
@@ -519,12 +593,16 @@ export function estimateRequestCost(
   if (!tokens) return null;
   const price = resolveMatchedPrice(input.provider, input.model, overlays, userOverlays);
   if (!price) return null;
-  const [tieredCost4, contextTier] = applyContextTier(
+  const [tieredCost4, contextTier, contextPriorityLowerBound] = applyContextTier(
     price.cost4, input.provider, input.model, input.usage.inputTokens, input.serviceTier,
   );
   const [effectiveCost4, multiplier] = contextTier
     ? [tieredCost4, 1] as const
     : applyPriorityMultiplier(tieredCost4, input.provider, input.model, input.serviceTier);
+  const priorityLowerBound = contextPriorityLowerBound || isOpenRouterPriorityLowerBound(
+    input.provider,
+    typeof input.serviceTier === "object" ? input.serviceTier.tierOutcome : undefined,
+  );
   return {
     tokens,
     price,
@@ -532,6 +610,7 @@ export function estimateRequestCost(
     estimated: isEstimated(input.usage, input.usageStatus, price.status),
     ...(multiplier !== 1 ? { priorityMultiplier: multiplier } : {}),
     ...(contextTier ? { contextTier } : {}),
+    ...(priorityLowerBound ? { priorityLowerBound: true } : {}),
   };
 }
 

@@ -1,6 +1,8 @@
 import type { OcxUsage } from "../../types";
 import type { OcxMessage, OcxRequestOptions, OcxTool } from "../../types";
 import type { CursorRoutingLevel } from "./discovery";
+import type { CursorCheckpointInvalidationReason } from "./checkpoint-store";
+import type { ResolvedCursorImage } from "./images";
 
 export interface CursorRequestedModelParameter {
   id: string;
@@ -16,7 +18,13 @@ export interface CursorRunRequest {
   conversationId: string;
   system: string[];
   messages: CursorRequestMessage[];
-  rawMessages?: OcxMessage[];
+  rawMessages?: readonly OcxMessage[];
+  /**
+   * Images for the active user/developer turn. Encoded as SelectedImage blobIdWithData refs under
+   * UserMessage.selected_context (bytes live in the request-scoped KV store for getBlobArgs
+   * hydration). History stays text-only. data: URLs only in this slice.
+   */
+  selectedImages?: readonly ResolvedCursorImage[];
   tools?: OcxTool[];
   toolChoice?: OcxRequestOptions["toolChoice"];
   parallelToolCalls?: boolean;
@@ -31,6 +39,18 @@ export interface CursorRunRequest {
    * pre-compaction history being summarized and must not become the next turn's carry-forward total.
    */
   contextUsageStoreCheckpoints?: boolean;
+  /**
+   * Reuse a previously captured ConversationStateStructure instead of rebuilding historical
+   * root/turn blobs. Absent means the existing full-replay path.
+   */
+  checkpointBytes?: Uint8Array;
+  continuationMode?: "full-replay" | "checkpoint";
+  checkpointInvalidationReason?: CursorCheckpointInvalidationReason;
+  /**
+   * When set with checkpointBytes, only this suffix of rawMessages is replayed onto the
+   * decoded ConversationStateStructure. Used for tool-result continuations.
+   */
+  checkpointSuffixStart?: number;
 }
 
 export interface CursorRequestMessage {

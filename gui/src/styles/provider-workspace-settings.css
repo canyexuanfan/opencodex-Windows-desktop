@@ -26,6 +26,16 @@
 
 .pwi-auth-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
+.pwi-auth-optin-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: var(--radius-xs);
+  background: var(--raised);
+}
+.pwi-auth-optin-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.pwi-auth-optin-label { font-size: var(--text-control); font-weight: 600; color: var(--text); }
+.pwi-auth-optin-mixed { color: var(--amber); font-weight: 600; }
+.pwi-auth-optin-error { color: var(--red); font-size: var(--text-caption); }
+
 .pwi-auth-wait { display: flex; flex-direction: column; gap: 6px; }
 .pwi-auth-wait-title { font-size: var(--text-control); font-weight: 600; color: var(--text); }
 .pwi-auth-wait-copy  { font-size: var(--text-label); color: var(--muted); line-height: 1.45; }

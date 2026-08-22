@@ -430,18 +430,30 @@ async function generateGitHubNotes(
   ]);
 }
 
+const GIT_OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
 export function parseGitLog(raw: string): Array<Omit<ReleaseCommit, "pulls">> {
+  if (raw === "") return [];
+  if (!raw.endsWith("\0")) {
+    throw new Error("git log produced a malformed release commit record");
+  }
+
+  const fields = raw.split("\0");
+  fields.pop();
+  if (fields.length % 3 !== 0) {
+    throw new Error("git log produced a malformed release commit record");
+  }
+
   const commits: Array<Omit<ReleaseCommit, "pulls">> = [];
-  for (const record of raw.split("\x1e")) {
-    if (!record.trim()) continue;
-    const [sha, subject, ...bodyParts] = record.replace(/^\n+/, "").split("\x1f");
-    if (!sha?.trim() || !subject?.trim()) {
+  for (let index = 0; index < fields.length; index += 3) {
+    const [sha, subject, body] = fields.slice(index, index + 3);
+    if (!sha || !GIT_OBJECT_ID_PATTERN.test(sha) || !subject?.trim() || body === undefined) {
       throw new Error("git log produced a malformed release commit record");
     }
     commits.push({
-      sha: sha.trim(),
+      sha,
       subject: subject.trim(),
-      body: bodyParts.join("\x1f").trim(),
+      body: body.trim(),
     });
   }
   return commits;
@@ -464,7 +476,8 @@ async function releaseCommits(
     "log",
     "--first-parent",
     "--reverse",
-    "--format=%H%x1f%s%x1f%B%x1e",
+    "-z",
+    "--format=%H%x00%s%x00%B",
     range,
   ]);
   return parseGitLog(raw);

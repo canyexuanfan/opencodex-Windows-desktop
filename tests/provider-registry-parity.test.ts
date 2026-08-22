@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildCatalogEntries } from "../src/codex/catalog";
+import { CURSOR_NO_VISION_MODELS } from "../src/adapters/cursor/discovery";
 import { getModelMetadata, resolveMetadataProvider } from "../src/generated/model-metadata";
 import { buildInitProviders } from "../src/cli/init";
 import { OAUTH_PROVIDERS } from "../src/oauth";
@@ -67,6 +68,8 @@ describe("provider registry parity", () => {
       "qwen3.7-max",
     ]);
     expect(KEY_LOGIN_PROVIDERS["opencode-go"].noVisionModels).not.toContain("kimi-k2.7-code");
+    expect(KEY_LOGIN_PROVIDERS.mimo.noVisionModels).toEqual(["mimo-v2.5-pro"]);
+    expect(KEY_LOGIN_PROVIDERS.mimo.noVisionModels).not.toContain("mimo-v2.5");
     expect(KEY_LOGIN_PROVIDERS["opencode-go"]).toMatchObject({
       modelContextWindows: { "kimi-k3": 262_144 },
       modelInputModalities: { "kimi-k3": ["text", "image"] },
@@ -80,6 +83,7 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS["opencode-go"].noTopPModels).toContain("kimi-k3");
     expect(KEY_LOGIN_PROVIDERS["opencode-go"].noPenaltyModels).toContain("kimi-k3");
     expect(KEY_LOGIN_PROVIDERS["opencode-go"].preserveReasoningContentModels).toContain("kimi-k3");
+    expect(KEY_LOGIN_PROVIDERS["opencode-go"].openaiChatEofTolerance).toBe(true);
     expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-coder"]).toBe(262_144);
     expect(KEY_LOGIN_PROVIDERS.umans.modelContextWindows?.["umans-glm-5.2"]).toBe(405_504);
     expect(KEY_LOGIN_PROVIDERS.umans.modelInputModalities?.["umans-coder"]).toEqual(["text", "image"]);
@@ -561,7 +565,10 @@ describe("provider registry parity", () => {
   test("base URL override permission is registry-only and limited to opted-in providers", () => {
     const optedIn = PROVIDER_REGISTRY.filter(entry => entry.allowBaseUrlOverride);
 
-    expect(optedIn.map(entry => entry.id)).toEqual(["ollama", "vllm", "lm-studio", "moonshot", "qwen-cloud", "alibaba", "alibaba-token-plan-intl", "litellm"]);
+    // Registry order. Both OAuth entries (anthropic, google-antigravity) are gated by
+    // providerSecureTransportConfigError; the rest are key/local providers that never send a
+    // subscription bearer to the override.
+    expect(optedIn.map(entry => entry.id)).toEqual(["anthropic", "google-antigravity", "ollama", "vllm", "lm-studio", "moonshot", "qwen-cloud", "alibaba", "alibaba-token-plan-intl", "litellm"]);
     for (const entry of optedIn) {
       expect(providerConfigSeed(entry)).not.toHaveProperty("allowBaseUrlOverride");
     }
@@ -653,6 +660,13 @@ describe("provider registry parity", () => {
     expect(seed.modelContextWindows?.["gpt-5.6-luna"]).toBe(1_000_000);
     expect(seed.modelReasoningEfforts?.["gpt-5.5"]).toEqual(["low", "medium", "high"]);
     expect(seed.modelReasoningEfforts?.["gpt-5.6-sol"]).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(cursor?.noVisionModels).toEqual([...CURSOR_NO_VISION_MODELS]);
+    expect(seed.noVisionModels).toEqual([...CURSOR_NO_VISION_MODELS]);
+    expect(seed.noVisionModels).toContain("composer-2.5");
+    expect(seed.noVisionModels).toContain("glm-5.3");
+    expect(seed.noVisionModels).not.toContain("grok-4.5");
+    expect(seed.modelInputModalities?.auto).toEqual(["text", "image"]);
+    expect(seed.modelInputModalities?.["composer-2.5"]).toEqual(["text", "image"]);
 
     const savedCursor: OcxProviderConfig = { adapter: "cursor", baseUrl: "https://api2.cursor.sh" };
     enrichProviderFromCatalog("cursor", savedCursor);

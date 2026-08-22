@@ -26,7 +26,7 @@
 ### Task 1: Freeze review amendments and implementation authority
 
 **Files:**
-- Modify: `devlog/_plan/260807_compatibility_lab/010_cl10_public_evidence_export.md`
+- Modify: `devlog/_fin/260807_compatibility_lab/010_cl10_public_evidence_export.md`
 - Modify: `docs/superpowers/specs/2026-08-12-cl10-public-evidence-design.md`
 
 **Interfaces:**

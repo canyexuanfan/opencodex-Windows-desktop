@@ -13,6 +13,8 @@ import {
   type TranslatorBudget,
 } from "../../lib/translator-budget";
 import { activePromptText, prepareCursorRunRequest } from "./protobuf-request";
+import { prepareCursorRawMessages, resolveActiveCursorImages } from "./images";
+import { cursorRequestMessagesFromRaw } from "./request-builder";
 import {
   createCursorContextUsageTracker,
   createCursorProtobufEventState,
@@ -33,6 +35,7 @@ import {
   CreatePlanRequestResponseSchema,
   CreatePlanResultSchema,
   CreatePlanSuccessSchema,
+  ConversationStateStructureSchema,
   ExaFetchRequestResponseSchema,
   ExaFetchRequestResponse_ApprovedSchema,
   ExaSearchRequestResponseSchema,
@@ -48,7 +51,7 @@ import {
   type InteractionResponse,
 } from "./gen/agent_pb";
 import { debugProviderDiagnostic } from "../../lib/debug";
-import { classifyCursorError, isCursorBenignCancelError, safeCursorErrorMessage } from "./cursor-errors";
+import { classifyCursorError, CursorUnexpectedCancelError, isCursorAbortError, isCursorBenignCancelError, safeCursorErrorMessage } from "./cursor-errors";
 import { mcpArgsFromToolCall } from "./protobuf-events";
 import { OCX_RESPONSES_TOOL_PROVIDER } from "./tool-definitions";
 import {
@@ -81,11 +84,31 @@ import {
 } from "./native-exec-shell";
 import type { CursorClientMessage, CursorRunRequest, CursorServerMessage } from "./types";
 import type { CursorTransport, CursorTransportFactoryInput } from "./transport";
+import { CursorHttp1BidiConnection } from "./http1-bidi";
+import { isPinnedHttp1 } from "../../lib/upstream-http-version";
 
 const CURSOR_RUN_PATH = "/agent.v1.AgentService/Run";
 const CURSOR_CLIENT_VERSION = "cli-2026.07.08-0c04a8a";
 const HEARTBEAT_MS = 5_000;
 const CURSOR_FIRST_FRAME_TIMEOUT_MS = 30_000;
+/**
+ * T04 (senpi #1062 second half): after the first frame, a turn with NO inbound decoded
+ * frames for this long is failed instead of waiting for the 300s bridge stall watchdog
+ * (issue #2210). Reset on every decoded AgentServerMessage.
+ */
+const CURSOR_STREAM_SILENCE_FAIL_MS = 30_000;
+/**
+ * A stream that produces ONLY liveness frames (server heartbeat / conversationCheckpointUpdate)
+ * for this long is equally stuck — the server is alive but the turn is not progressing.
+ * Reset on every decoded frame that is not liveness-only.
+ */
+const CURSOR_STREAM_HEARTBEAT_ONLY_FAIL_MS = 90_000;
+/**
+ * After `turnEnded` is decoded, the application turn is complete. A server that keeps
+ * HTTP/2 open past this point cannot hold the turn hostage (senpi #1062): we close our side
+ * after a short grace so any trailing frames (late usage, checkpoint) still land.
+ */
+const TURN_ENDED_CLOSE_GRACE_MS = 500;
 const CURSOR_TIMEOUT_DESTROY_GRACE_MS = 1_000;
 const CLIENT_TOOL_FINALIZE_GRACE_MS = 50;
 const GENERIC_TOOL_COUNT_MIN_FINALIZE_GRACE_MS = 750;
@@ -406,10 +429,29 @@ export function clientToolFinalizeGraceMsForRequest(request: CursorRunRequest, b
 class LiveCursorTransport implements CursorTransport {
   private session?: http2.ClientHttp2Session;
   private stream?: http2.ClientHttp2Stream;
+  private http1Connection?: CursorHttp1BidiConnection;
   private heartbeat?: ReturnType<typeof setInterval>;
   private firstFrameTimer?: ReturnType<typeof setTimeout>;
+  private turnEndedCloseTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * T04 inbound stream-health watchdog. Armed after the request is on the wire, reset by
+   * every DECODED frame (raw chunks deliberately do not count — TLS keepalive noise must not
+   * defeat it), disarmed by any settle/expected-close path. One timer covers both thresholds:
+   * it always fires at min(lastInbound + silence, lastMeaningful + heartbeatOnly) and re-arms
+   * when neither deadline has actually elapsed.
+   */
+  private streamHealthTimer?: ReturnType<typeof setTimeout>;
+  private lastInboundFrameAt = 0;
+  private lastMeaningfulFrameAt = 0;
+  private streamHealthFail?: (error: Error) => void;
   private committed = false;
   private expectedClose = false;
+  /**
+   * True once a terminal (`done` or `error`) has been admitted to the outbound queue. Read only
+   * by the EOF branch below: after a mapper error the bridge has already failed the turn, so
+   * failing again on EOF would add a duplicate adapter error for no benefit.
+   */
+  private emittedTerminal = false;
   private pendingFinalize?: ReturnType<typeof setTimeout>;
   private readonly clientToolFinalizeGraceMs: number;
   private activeClientToolFinalizeGraceMs: number;
@@ -428,12 +470,17 @@ class LiveCursorTransport implements CursorTransport {
   // close; safe to read after a stream failure because open() owns the only writer before run().
   private turnStartedAt = 0;
   private framesReceived = 0;
+  private sawAssistantText = false;
  private firstFrameAt?: number;
- private firstFrameLogged = false;
+  private firstFrameLogged = false;
   /** Stable session identifier sent as x-session-id; mirrors IDE session semantics. */
-  private readonly sessionId = crypto.randomUUID();
+  private readonly sessionId: string;
+  /** Per-transport owner for native-exec / background shells. Must not share conversationId. */
+  private readonly shellOwnerId = crypto.randomUUID();
+  private capturedCheckpointBytes?: Uint8Array;
 
   constructor(private readonly input: CursorTransportFactoryInput) {
+    this.sessionId = input.sessionId?.trim() || crypto.randomUUID();
     this.translatorBudget = input.translatorBudget;
     this.token = resolveCursorToken(input.provider, input.headers);
     // Grace window before a drained client-tool turn is finalized. Small enough not to look like a
@@ -445,7 +492,7 @@ class LiveCursorTransport implements CursorTransport {
     this.desktopDeps = desktopDepsFromConfig(input.provider.desktopExecutor);
     this.execContext = {
       ...this.desktopDeps,
-      sessionId: this.sessionId,
+      sessionId: this.shellOwnerId,
       unsafeAllowNativeLocalExec: effectiveCursorNativeExecAllow(input.provider, input.requestDeclaresFullAccess === true),
     };
     const servers = resolveMcpServers(input.provider);
@@ -480,7 +527,7 @@ class LiveCursorTransport implements CursorTransport {
             ...this.desktopDeps,
             ...mcpDepsFromManager(this.mcpManager!),
             mcpToolDefs,
-            sessionId: this.sessionId,
+            sessionId: this.shellOwnerId,
             unsafeAllowNativeLocalExec: effectiveCursorNativeExecAllow(this.input.provider, this.input.requestDeclaresFullAccess === true),
           };
         } catch (err) {
@@ -522,6 +569,22 @@ class LiveCursorTransport implements CursorTransport {
       }
       return err;
     };
+    /**
+     * A cancel we did not request is a real transport failure, but as a raw `NGHTTP2_CANCEL` it
+     * gets swallowed twice over: the adapter re-decides "benign" from the error code alone
+     * (`cursor.ts:181`) and drops the turn, and any message that survives is re-matched
+     * downstream and labelled an intentional "Cursor stream suspended". Raising a typed error
+     * carries the provenance this class already holds.
+     *
+     * Suppressed once a terminal was emitted: the turn already ended, and a second terminal flips
+     * a completed buffered response to failed.
+     */
+    const classifyTurnFailure = (err: Error): Error => {
+      if (!this.expectedClose && !this.emittedTerminal && isCursorBenignCancelError(err)) {
+        return summarizeFailure(new CursorUnexpectedCancelError(err));
+      }
+      return summarizeFailure(err);
+    };
     const wake = () => {
       const fn = notify;
       notify = undefined;
@@ -531,16 +594,36 @@ class LiveCursorTransport implements CursorTransport {
     const push = (message: CursorServerMessage) => {
       const bytes = new TextEncoder().encode(JSON.stringify(message)).byteLength;
       this.reserveTransportBytes(bytes);
+      if (message.type === "done" || message.type === "error") this.emittedTerminal = true;
       queue.push({ message, bytes });
       wake();
     };
 
     // Advertise MCP tools before the stream opens — the server only calls tools it was told about.
     await this.prepareMcp();
-    const activeText = activePromptText(request);
-    this.activeClientToolFinalizeGraceMs = clientToolFinalizeGraceMsForRequest(request, this.clientToolFinalizeGraceMs);
-    const cursorVisibleTools = cursorToolsForActivePrompt(request.tools, activeText, request.toolChoice);
-    const clientToolDefs = buildCursorToolDefinitions(cursorVisibleTools, request.toolChoice);
+    // JPEG soft-cap rewrite for active-turn data: images before encode. Rebuild text
+    // messages from the prepared raw channel so omission markers replace stale
+    // pre-rewrite content that activePromptText and the tool filter would otherwise see.
+    const preparedRaw = await prepareCursorRawMessages(request.rawMessages, signal);
+    const preparedRawMessages = preparedRaw.messages;
+    const selectedImages = await resolveActiveCursorImages(
+      preparedRawMessages,
+      signal,
+      preparedRaw.images,
+    );
+    const preparedMessages = preparedRawMessages === request.rawMessages
+      ? request.messages
+      : cursorRequestMessagesFromRaw(preparedRawMessages);
+    const activeRequest: CursorRunRequest = {
+      ...request,
+      messages: preparedMessages,
+      rawMessages: preparedRawMessages,
+      selectedImages,
+    };
+    const activeText = activePromptText(activeRequest);
+    this.activeClientToolFinalizeGraceMs = clientToolFinalizeGraceMsForRequest(activeRequest, this.clientToolFinalizeGraceMs);
+    const cursorVisibleTools = cursorToolsForActivePrompt(activeRequest.tools, activeText, activeRequest.toolChoice);
+    const clientToolDefs = buildCursorToolDefinitions(cursorVisibleTools, activeRequest.toolChoice);
     // `request.tools` is the catalog already filtered and budgeted by request-builder. Derive
     // conversion provenance only from tagged synthetic tools that also survive this final prompt
     // filter; a client tool with the same wire name can never opt into conversion by collision.
@@ -576,7 +659,7 @@ class LiveCursorTransport implements CursorTransport {
     });
     // Build the payload once. The estimate is only worth deriving when there is no
     // carry-forward to fall back on — with a carry present it would never be used (#373).
-    const prepared = prepareCursorRunRequest(request, {
+    const prepared = prepareCursorRunRequest(activeRequest, {
       estimateInputTokens: contextUsage.carryForwardTokens === undefined,
     });
     this.blobRequestScope = prepared.blobRequestScope;
@@ -620,7 +703,19 @@ class LiveCursorTransport implements CursorTransport {
         // A CANCEL is benign only on the client-tool suspend path (expectedClose); an
         // unexpected server-side NGHTTP2_CANCEL must surface as a real transport error.
         if (this.expectedClose && isCursorBenignCancelError(failure)) return;
-        throw attachPartialUsage(summarizeFailure(failure), state);
+        // A teardown error arriving AFTER the turn's terminal frame describes the connection,
+        // not the turn: the answer is committed and every queued message has been yielded.
+        //
+        // Narrow on purpose. A benign cancel after a terminal is already swallowed one layer
+        // up (`cursor.ts:183`), so widening this to every post-terminal error would change
+        // what the adapter sees for genuine faults. What it does cover is the abort case
+        // from #1527: `signal.abort` fires `failAndClear(new Error("Cursor request was
+        // aborted"))`, which is NOT benign (`cursor-errors.ts:74`), so an ordinary completed
+        // turn that is then torn down still surfaced as `turn-failed` with
+        // `expectedClose:false`. Only `cancelCursorRun()` sets `expectedClose`, so a normal
+        // completion never qualified for the branch above.
+        if (this.emittedTerminal && isCursorAbortError(failure)) return;
+        throw attachPartialUsage(classifyTurnFailure(failure), state);
       }
       if (done) break;
       await new Promise<void>(resolve => {
@@ -629,7 +724,8 @@ class LiveCursorTransport implements CursorTransport {
     }
     if (failure) {
       if (this.expectedClose && isCursorBenignCancelError(failure)) return;
-      throw attachPartialUsage(summarizeFailure(failure), state);
+      if (this.emittedTerminal && isCursorAbortError(failure)) return;
+      throw attachPartialUsage(classifyTurnFailure(failure), state);
     }
   }
 
@@ -656,12 +752,24 @@ class LiveCursorTransport implements CursorTransport {
       || this.pendingTransportFrames >= CURSOR_MAX_PENDING_FRAMES
     ) {
       this.stream?.pause();
+      this.http1Connection?.pause();
       return;
     }
     if (
       this.transportBufferedBytes <= CURSOR_TRANSPORT_RESUME_BYTES
       && this.pendingTransportFrames <= CURSOR_PENDING_FRAMES_RESUME
-    ) this.stream?.resume();
+    ) {
+      this.stream?.resume();
+      this.http1Connection?.resume();
+    }
+  }
+
+  private writeConnectFrame(frame: Uint8Array): void {
+    if (this.http1Connection) {
+      this.http1Connection.write(frame);
+      return;
+    }
+    this.stream?.write(frame);
   }
 
   requestCommitted(): boolean {
@@ -675,16 +783,103 @@ class LiveCursorTransport implements CursorTransport {
     }
   }
 
+  private clearStreamHealthTimer(): void {
+    if (this.streamHealthTimer) {
+      clearTimeout(this.streamHealthTimer);
+      this.streamHealthTimer = undefined;
+    }
+    this.streamHealthFail = undefined;
+  }
+
+  /**
+   * T04: arm (or re-arm) the inbound stream-health watchdog. `fail` is the turn's
+   * failAndClear; the timer owns nothing else. Never armed before the first decoded
+   * frame (the first-frame timer covers dial + first response), and disarmed by
+   * every settle / expected-close path alongside the other timers.
+   */
+  private armStreamHealthTimer(fail: (error: Error) => void): void {
+    if (this.streamHealthTimer) clearTimeout(this.streamHealthTimer);
+    if (this.expectedClose) return;
+    this.streamHealthFail = fail;
+    const silenceMs = this.input.streamSilenceFailMs ?? CURSOR_STREAM_SILENCE_FAIL_MS;
+    const heartbeatOnlyMs = this.input.streamHeartbeatOnlyFailMs ?? CURSOR_STREAM_HEARTBEAT_ONLY_FAIL_MS;
+    const now = Date.now();
+    const deadline = Math.min(
+      this.lastInboundFrameAt + silenceMs,
+      this.lastMeaningfulFrameAt + heartbeatOnlyMs,
+    );
+    this.streamHealthTimer = setTimeout(() => {
+      this.streamHealthTimer = undefined;
+      const failFn = this.streamHealthFail;
+      if (!failFn || this.expectedClose) return;
+      const stalledFor = Date.now() - this.lastInboundFrameAt;
+      const meaningfulStalledFor = Date.now() - this.lastMeaningfulFrameAt;
+      if (stalledFor < silenceMs && meaningfulStalledFor < heartbeatOnlyMs) {
+        // A frame landed between arming and firing — re-arm for the fresh deadline.
+        this.armStreamHealthTimer(failFn);
+        return;
+      }
+      const heartbeatOnly = stalledFor < silenceMs;
+      debugProviderDiagnostic("cursor", "stream-health-timeout", {
+        stalledMs: stalledFor,
+        meaningfulStalledMs: meaningfulStalledFor,
+        heartbeatOnly,
+        framesReceived: this.framesReceived,
+        elapsedMs: Date.now() - this.turnStartedAt,
+      });
+      const reason = heartbeatOnly
+        ? `Cursor stream stalled: heartbeat-only traffic for ${Math.round(meaningfulStalledFor / 1000)}s without turn progress`
+        : `Cursor stream stalled: no inbound frames for ${Math.round(stalledFor / 1000)}s before turnEnded`;
+      failFn(new Error(reason));
+      try { this.stream?.close(); } catch { this.stream?.destroy(); }
+      this.session?.close();
+      this.http1Connection?.close();
+    }, Math.max(0, deadline - now));
+  }
+
+  /**
+   * T04: record a decoded inbound frame. Liveness-only frames (server heartbeat,
+   * conversationCheckpointUpdate) keep the silence clock fresh but not the progress
+   * clock — matching senpi's split so a server that only pings still fails at the
+   * heartbeat-only threshold.
+   */
+  private noteInboundFrame(livenessOnly: boolean): void {
+    const now = Date.now();
+    this.lastInboundFrameAt = now;
+    if (!livenessOnly) this.lastMeaningfulFrameAt = now;
+    if (this.streamHealthFail) this.armStreamHealthTimer(this.streamHealthFail);
+  }
+
+  /**
+   * A clean Connect END_STREAM owns the turn terminal even when Cursor keeps the
+   * HTTP body open or tears it down with an abort/reset immediately afterward.
+   * Stop client-side liveness work and classify that later transport close as
+   * expected without actively sending an RST_STREAM back to Cursor.
+   */
+  private markProtocolComplete(): void {
+    this.expectedClose = true;
+    this.clearPendingFinalize();
+    if (this.heartbeat) {
+      clearInterval(this.heartbeat);
+      this.heartbeat = undefined;
+    }
+    this.clearFirstFrameTimer();
+    this.clearStreamHealthTimer();
+  }
+
   private startShellCleanup(): Promise<BackgroundShellTerminationReport> {
-    return this.shellCleanup ??= terminateBackgroundShellsForSession(this.sessionId);
+    return this.shellCleanup ??= terminateBackgroundShellsForSession(this.shellOwnerId);
   }
 
   async close(): Promise<void> {
     if (this.heartbeat) clearInterval(this.heartbeat);
+    if (this.turnEndedCloseTimer) clearTimeout(this.turnEndedCloseTimer);
     this.clearPendingFinalize();
     this.clearFirstFrameTimer();
+    this.clearStreamHealthTimer();
     this.stream?.close();
     this.session?.close();
+    this.http1Connection?.close();
     this.releaseBlobRequestScope();
     this.releaseMcpObservation?.();
     this.releaseMcpObservation = undefined;
@@ -697,17 +892,62 @@ class LiveCursorTransport implements CursorTransport {
     this.clearPendingFinalize();
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.clearFirstFrameTimer();
-    try {
-      this.stream?.close(http2.constants.NGHTTP2_CANCEL);
-    } catch {
-      this.stream?.destroy();
+    this.clearStreamHealthTimer();
+    if (this.http1Connection) {
+      this.http1Connection.close();
+    } else {
+      try {
+        this.stream?.close(http2.constants.NGHTTP2_CANCEL);
+      } catch {
+        this.stream?.destroy();
+      }
+      this.session?.close();
     }
-    this.session?.close();
     this.releaseBlobRequestScope();
     this.releaseMcpObservation?.();
     this.releaseMcpObservation = undefined;
     void this.mcpManager?.dispose();
     void this.startShellCleanup().catch(() => { /* close() observes the same cleanup promise */ });
+  }
+
+  /**
+   * T03 (#1062): after the server sends `turnEnded`, the application turn is complete.
+   * A server that keeps the HTTP/2 stream open past this point cannot hold the turn
+   * hostage until a 300s bridge idle timeout. Close our side after a short grace so any
+   * trailing frames (late usage, checkpoint) still land before we release the socket.
+   */
+  private closeAfterTurnEnded(): void {
+    if (this.turnEndedCloseTimer) return;
+    // The application turn is over: the T03 grace timer owns the socket from here.
+    // The T04 watchdog must disarm NOW, not at the grace close — a watchdog shorter
+    // than the grace would otherwise fail a completed turn.
+    this.clearStreamHealthTimer();
+    this.turnEndedCloseTimer = setTimeout(() => {
+      this.turnEndedCloseTimer = undefined;
+      // Only expectedClose (client-tool suspend cancel) blocks the close.
+      // emittedTerminal is intentionally NOT checked here: finalizeTurnEvents sets it
+      // synchronously during turnEnded mapping, ~500ms before this timer fires, so
+      // checking it would make the close unreachable on every real path (the exact
+      // scenario this PR exists to fix — senpi #1062).
+      if (this.expectedClose) return;
+      debugProviderDiagnostic("cursor", "turn-ended-close", {
+        committed: this.committed,
+        framesReceived: this.framesReceived,
+      });
+      this.expectedClose = true;
+      this.clearFirstFrameTimer();
+      this.clearStreamHealthTimer();
+      if (this.heartbeat) clearInterval(this.heartbeat);
+      if (this.http1Connection) {
+        this.http1Connection.close();
+      } else {
+        try {
+          this.stream?.close();
+        } catch {
+          this.stream?.destroy();
+        }
+      }
+    }, TURN_ENDED_CLOSE_GRACE_MS);
   }
 
   private releaseBlobRequestScope(): void {
@@ -767,33 +1007,52 @@ class LiveCursorTransport implements CursorTransport {
     fail: (error: Error) => void,
     finish: () => void,
   ): void {
+    if (signal?.aborted) {
+      fail(signal.reason instanceof Error ? signal.reason : new Error("Cursor request was aborted"));
+      return;
+    }
     this.turnStartedAt = Date.now();
     this.framesReceived = 0;
+    this.sawAssistantText = false;
+    this.emittedTerminal = false;
     this.firstFrameAt = undefined;
     this.firstFrameLogged = false;
-    const dialHost = cursorHostLabel(this.input.provider.baseUrl || "https://api2.cursor.sh");
-    debugProviderDiagnostic("cursor", "dial", { host: dialHost });
-    this.session = http2.connect(this.input.provider.baseUrl || "https://api2.cursor.sh");
-    // The run request is buffered until the HTTP/2 session connects. Failures before `connect`
-    // (DNS, ECONNREFUSED, TLS, connect timeout) mean the server never received the request, so they
-    // are safe to retry. Once connected, bytes flush to the server and the turn must not be replayed.
-    this.session.on("connect", () => {
-      this.committed = true;
-      debugProviderDiagnostic("cursor", "connected", { connectMs: Date.now() - this.turnStartedAt });
-    });
-    this.stream = this.session.request({
-      ":method": "POST",
-      ":path": CURSOR_RUN_PATH,
-      "content-type": "application/connect+proto",
-      "connect-protocol-version": "1",
-      te: "trailers",
-      authorization: `Bearer ${this.token}`,
-      "x-ghost-mode": "true",
-      "x-cursor-client-version": CURSOR_CLIENT_VERSION,
-      "x-cursor-client-type": "cli",
-      "x-request-id": crypto.randomUUID(),
-      "x-session-id": this.sessionId,
-    });
+    const baseUrl = this.input.provider.baseUrl || "https://api2.cursor.sh";
+    const useHttp1 = isPinnedHttp1(this.input.provider.upstreamHttpVersion);
+    const requestId = crypto.randomUUID();
+    const dialHost = cursorHostLabel(baseUrl);
+    debugProviderDiagnostic("cursor", "dial", { host: dialHost, transport: useHttp1 ? "http1.1" : "http2" });
+
+    let session: http2.ClientHttp2Session | undefined;
+    let stream: http2.ClientHttp2Stream | undefined;
+    if (!useHttp1) {
+      session = http2.connect(baseUrl);
+      this.session = session;
+      // The run request is buffered until the HTTP/2 session connects. Failures before `connect`
+      // (DNS, ECONNREFUSED, TLS, connect timeout) mean the server never received the request, so they
+      // are safe to retry. Once connected, bytes flush to the server and the turn must not be replayed.
+      session.on("connect", () => {
+        this.committed = true;
+        debugProviderDiagnostic("cursor", "connected", {
+          transport: "http2",
+          connectMs: Date.now() - this.turnStartedAt,
+        });
+      });
+      stream = session.request({
+        ":method": "POST",
+        ":path": CURSOR_RUN_PATH,
+        "content-type": "application/connect+proto",
+        "connect-protocol-version": "1",
+        te: "trailers",
+        authorization: `Bearer ${this.token}`,
+        "x-ghost-mode": "true",
+        "x-cursor-client-version": CURSOR_CLIENT_VERSION,
+        "x-cursor-client-type": "cli",
+        "x-request-id": requestId,
+        "x-session-id": this.sessionId,
+      });
+      this.stream = stream;
+    }
 
     // Single-shot terminal owner for this turn (createTerminalSettler): stream error, session
     // error, trailers, end, abort, and the first-frame timeout all race into it, and only the
@@ -801,7 +1060,10 @@ class LiveCursorTransport implements CursorTransport {
     const settler = createTerminalSettler({
       fail,
       finish,
-      clearTimer: () => this.clearFirstFrameTimer(),
+      clearTimer: () => {
+        this.clearFirstFrameTimer();
+        this.clearStreamHealthTimer();
+      },
     });
     const failAndClear = (error: Error) => {
       releaseBacklogLease();
@@ -819,11 +1081,9 @@ class LiveCursorTransport implements CursorTransport {
       }
       settler.settleFail(error);
     };
-    const session = this.session;
-    const stream = this.stream;
     // Session-level errors (TLS/socket/GOAWAY) do not always propagate to the stream listener;
     // without this handler they could bypass orderly failure reporting entirely.
-    session.on("error", err => {
+    const onSessionError = (err: unknown) => {
       const realErr = err instanceof Error ? err : new Error(String(err));
       debugProviderDiagnostic("cursor", "session-error", {
         code: String((realErr as { code?: unknown }).code ?? ""),
@@ -831,15 +1091,18 @@ class LiveCursorTransport implements CursorTransport {
         elapsedMs: Date.now() - this.turnStartedAt,
       });
       failAndClear(realErr);
-    });
+    };
     this.firstFrameTimer = setTimeout(() => {
       this.firstFrameTimer = undefined;
       debugProviderDiagnostic("cursor", "first-frame-timeout", { timeoutMs: this.input.firstFrameTimeoutMs ?? CURSOR_FIRST_FRAME_TIMEOUT_MS });
-      try { stream.close(); } catch { /* already closing */ }
-      try { session.close(); } catch { /* already closing */ }
-      // close() waits for in-flight frames; a dead socket can ignore it — force-destroy shortly
-      // after so a stalled TLS session cannot linger past the timeout.
-      armTimeoutDestroyFallback(stream, session, this.input.timeoutDestroyGraceMs ?? CURSOR_TIMEOUT_DESTROY_GRACE_MS);
+      try { stream?.close(); } catch { /* already closing */ }
+      try { session?.close(); } catch { /* already closing */ }
+      this.http1Connection?.close();
+      if (stream && session) {
+        // close() waits for in-flight frames; a dead socket can ignore it — force-destroy shortly
+        // after so a stalled TLS session cannot linger past the timeout.
+        armTimeoutDestroyFallback(stream, session, this.input.timeoutDestroyGraceMs ?? CURSOR_TIMEOUT_DESTROY_GRACE_MS);
+      }
       releaseBacklogLease();
       settler.settleFail(new Error("Cursor transport timed out before first response"));
     }, this.input.firstFrameTimeoutMs ?? CURSOR_FIRST_FRAME_TIMEOUT_MS);
@@ -897,10 +1160,54 @@ class LiveCursorTransport implements CursorTransport {
           framesReceived: this.framesReceived,
           elapsedMs: Date.now() - this.turnStartedAt,
         } : { framesReceived: this.framesReceived, elapsedMs: Date.now() - this.turnStartedAt });
-        if (endError) failAndClear(endError);
+        if (endError) {
+          failAndClear(endError);
+          return;
+        }
+        // Connect's clean END_STREAM envelope is the protocol terminal. Cursor's RunSSE body can
+        // remain open after this frame (or close through an AbortError), so waiting for HTTP EOF
+        // strands an otherwise completed turn until the outer bridge stall watchdog fires.
+        //
+        // Earlier frames in this serialized frameWork chain have already run. Preserve their real
+        // turnEnded terminal when present; otherwise finalize the clean protocol end once so open
+        // tool calls still fail closed, a text-only turn receives its normal done event, and a
+        // drained client-tool turn does not lose the pending terminal when protocol cleanup clears
+        // its grace timer.
+        const hasPendingClientToolFinalization = this.pendingFinalize !== undefined;
+        if (
+          !this.expectedClose
+          && !state.terminated
+          && !this.emittedTerminal
+          && (
+            state.openToolCalls.size > 0
+            || this.sawAssistantText
+            || hasPendingClientToolFinalization
+          )
+        ) {
+          const terminal = hasPendingClientToolFinalization && state.openToolCalls.size === 0
+            ? finalizeAfterDrain(state)
+            : finalizeTurnEvents(state);
+          for (const event of terminal) push(event);
+        }
+        this.markProtocolComplete();
+        releaseBacklogLease();
+        settler.settleFinish();
         return;
       }
-      await this.handleServerMessage(fromBinary(AgentServerMessageSchema, frame.payload), state, push);
+      const decoded = fromBinary(AgentServerMessageSchema, frame.payload);
+      // T04: every decoded frame refreshes the silence clock; only non-liveness frames
+      // refresh the progress clock. First decoded frame arms the watchdog (the first-frame
+      // timer owned everything before this point).
+      const decodedUpdate = decoded.message.case === "interactionUpdate" ? decoded.message.value.message?.case : undefined;
+      const livenessOnly = decodedUpdate === "heartbeat" || decoded.message.case === "conversationCheckpointUpdate";
+      if (!this.streamHealthFail) {
+        const now = Date.now();
+        this.lastInboundFrameAt = now;
+        this.lastMeaningfulFrameAt = now;
+        this.streamHealthFail = failAndClear;
+      }
+      this.noteInboundFrame(livenessOnly);
+      await this.handleServerMessage(decoded, state, push);
     };
     const drainPendingFrames = () => {
       const availableSlots = CURSOR_MAX_PENDING_FRAMES - this.pendingTransportFrames;
@@ -937,7 +1244,7 @@ class LiveCursorTransport implements CursorTransport {
           });
       }
     };
-    this.stream.on("data", chunk => {
+    const onData = (chunk: string | Uint8Array) => {
       this.clearFirstFrameTimer();
       // Once the turn has settled, late network bytes must never be charged —
       // the backlog lease is already released and nobody would own these.
@@ -966,13 +1273,13 @@ class LiveCursorTransport implements CursorTransport {
         if (charged && !appended) this.releaseTransportBytes(bytes.byteLength);
         failAndClear(err instanceof Error ? err : new Error(String(err)));
       }
-    });
-    this.stream.on("trailers", trailers => {
+    };
+    const onTrailers = (trailers: http2.IncomingHttpHeaders) => {
       const status = trailers["grpc-status"];
       if (status !== undefined) debugProviderDiagnostic("cursor", "trailers", { grpcStatus: String(status) });
       if (status && status !== "0") failAndClear(new Error(`Cursor gRPC error ${status}`));
-    });
-    this.stream.on("error", err => {
+    };
+    const onStreamError = (err: unknown) => {
       const realErr = err instanceof Error ? err : new Error(String(err));
       if (this.expectedClose) {
         failAndClear(realErr);
@@ -990,8 +1297,8 @@ class LiveCursorTransport implements CursorTransport {
         elapsedMs: Date.now() - this.turnStartedAt,
       });
       failAndClear(realErr);
-    });
-    this.stream.on("end", () => {
+    };
+    const onStreamEnd = () => {
       this.clearFirstFrameTimer();
       debugProviderDiagnostic("cursor", "stream-end", {
         committed: this.committed,
@@ -1026,24 +1333,89 @@ class LiveCursorTransport implements CursorTransport {
           settler.settleFail(new Error("Cursor stream ended before any response frame (unexpected EOF)"));
           return;
         }
+        // `emittedTerminal` joins dev's two conditions so EOF finalization cannot append a
+        // second terminal after a mapper error already failed the turn (integration 010).
+        if (state.terminated || this.expectedClose || this.emittedTerminal) {
+          releaseBacklogLease();
+          settler.settleFinish();
+          return;
+        }
+        // Open tools fail-closed as a truncation *event* (finalizeTurnEvents), not a thrown
+        // transport error. settleFail here would hide that typed message as adapter_eof.
+        if (state.openToolCalls.size > 0) {
+          for (const event of finalizeTurnEvents(state)) push(event);
+          releaseBacklogLease();
+          settler.settleFinish();
+          return;
+        }
+        if (this.framesReceived > 0 && this.sawAssistantText) {
+          for (const event of finalizeTurnEvents(state)) push(event);
+          releaseBacklogLease();
+          settler.settleFinish();
+          return;
+        }
         releaseBacklogLease();
         settler.settleFinish();
-      }, (err) => {
+      }).catch((err) => {
         failAndClear(err instanceof Error ? err : new Error(String(err)));
       });
-    });
+    };
+
+    if (useHttp1) {
+      const providerFetch = this.input.fetch
+        ?? (this.input.provider as OcxProviderConfig & { fetch?: typeof globalThis.fetch }).fetch;
+      this.http1Connection = new CursorHttp1BidiConnection({
+        baseUrl,
+        token: this.token,
+        clientVersion: CURSOR_CLIENT_VERSION,
+        sessionId: this.sessionId,
+        requestId,
+        translatorBudget: this.translatorBudget,
+        callbacks: {
+          onCommitted: () => {
+            this.committed = true;
+            debugProviderDiagnostic("cursor", "connected", {
+              transport: "http1.1",
+              connectMs: Date.now() - this.turnStartedAt,
+            });
+          },
+          onData,
+          onEnd: onStreamEnd,
+          onError: onStreamError,
+        },
+        ...(providerFetch ? { fetch: providerFetch } : {}),
+      });
+      this.http1Connection.start();
+    } else {
+      session!.on("error", onSessionError);
+      stream!.on("data", onData);
+      stream!.on("trailers", onTrailers);
+      stream!.on("error", onStreamError);
+      stream!.on("end", onStreamEnd);
+    }
 
     signal?.addEventListener("abort", () => {
       this.close();
       failAndClear(new Error("Cursor request was aborted"));
     }, { once: true });
+    // Close the race between the preflight above and listener installation. No request payload is
+    // written until after this check.
+    if (signal?.aborted) {
+      this.close();
+      failAndClear(signal.reason instanceof Error ? signal.reason : new Error("Cursor request was aborted"));
+      return;
+    }
 
-    this.stream.write(encodeConnectFrame(encodedRequest));
+    this.writeConnectFrame(encodeConnectFrame(encodedRequest));
     this.heartbeat = setInterval(() => {
-      this.stream?.write(encodeClientMessage({
+      this.writeConnectFrame(encodeClientMessage({
         message: { case: "clientHeartbeat", value: create(ClientHeartbeatSchema, {}) },
       }));
     }, HEARTBEAT_MS);
+  }
+
+  capturedConversationCheckpoint(): Uint8Array | undefined {
+    return this.capturedCheckpointBytes;
   }
 
   private async handleServerMessage(
@@ -1051,10 +1423,17 @@ class LiveCursorTransport implements CursorTransport {
     state: ReturnType<typeof createCursorProtobufEventState>,
     push: (message: CursorServerMessage) => void,
   ): Promise<void> {
-    if (!this.stream) return;
+    if (!this.stream && !this.http1Connection) return;
     debugProviderDiagnostic("cursor", "frame", describeCursorServerFrame(message));
+    if (message.message.case === "conversationCheckpointUpdate") {
+      try {
+        this.capturedCheckpointBytes = toBinary(ConversationStateStructureSchema, message.message.value);
+      } catch {
+        this.capturedCheckpointBytes = undefined;
+      }
+    }
     if (message.message.case === "kvServerMessage") {
-      this.stream.write(encodeConnectFrame(handleCursorNativeKv(message.message.value, this.blobRequestScope)));
+      this.writeConnectFrame(encodeConnectFrame(handleCursorNativeKv(message.message.value, this.blobRequestScope)));
       return;
     }
     if (message.message.case === "execServerMessage") {
@@ -1075,7 +1454,7 @@ class LiveCursorTransport implements CursorTransport {
       // run the same local action twice.
       push({ type: "local_side_effect" });
       const replies = await handleCursorNativeExec(message.message.value, this.execContext);
-      for (const reply of replies) this.stream.write(encodeConnectFrame(reply));
+      for (const reply of replies) this.writeConnectFrame(encodeConnectFrame(reply));
       return;
     }
     if (message.message.case === "interactionQuery") {
@@ -1085,9 +1464,12 @@ class LiveCursorTransport implements CursorTransport {
       const query = message.message.value;
       const plan = planInteractionQueryReply(query);
       debugProviderDiagnostic("cursor", "interaction-query", { id: query.id, queryCase: query.query.case ?? "unknown", reply: plan.replyCase });
-      this.stream.write(encodeClientMessage({ message: { case: "interactionResponse", value: plan.response } }));
+      this.writeConnectFrame(encodeClientMessage({ message: { case: "interactionResponse", value: plan.response } }));
       if (!state.terminated) {
-        if (plan.planText) push({ type: "text", text: plan.planText });
+        if (plan.planText) {
+          this.sawAssistantText = true;
+          push({ type: "text", text: plan.planText });
+        }
         push({ type: "heartbeat" });
       }
       return;
@@ -1095,11 +1477,18 @@ class LiveCursorTransport implements CursorTransport {
     // A completion may carry only callId. Capture its ownership before mapping removes the open
     // call, because the embedded-tool classifier cannot identify that valid compact frame.
     const update = message.message.case === "interactionUpdate" ? message.message.value.message : undefined;
+    if (update?.case === "turnEnded") {
+      // T03: the application turn is complete. Close our side of HTTP/2 after a short
+      // grace so a held-open server response cannot pin the turn to the bridge's idle
+      // timeout (senpi #1062). finalizeTurnEvents already emitted done via the mapper.
+      this.closeAfterTurnEnded();
+    }
     const completesOpenClientTool = update?.case === "toolCallCompleted"
       && state.openToolCalls.has(update.value.callId);
     const awaitedNativeArgsBeforeMapping = update?.case === "toolCallCompleted"
       && state.openToolCalls.get(update.value.callId)?.awaitingNativeArgs === true;
     const mapped = mapCursorProtobufServerMessage(message, state);
+    if (mapped.some(event => event.type === "text")) this.sawAssistantText = true;
     const beganAwaitingNativeClientToolArgs = update?.case === "toolCallCompleted"
       && !awaitedNativeArgsBeforeMapping
       && state.openToolCalls.get(update.value.callId)?.awaitingNativeArgs === true;
@@ -1257,4 +1646,8 @@ function cursorConnectErrorCode(payload: Uint8Array): string | undefined {
 
 export function createLiveCursorTransport(input: CursorTransportFactoryInput): CursorTransport {
   return new LiveCursorTransport(input);
+}
+
+export function capturedCursorCheckpointBytes(transport: CursorTransport): Uint8Array | undefined {
+  return transport.capturedConversationCheckpoint?.();
 }

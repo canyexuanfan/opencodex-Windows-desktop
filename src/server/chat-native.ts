@@ -7,9 +7,11 @@ import {
   isChatCompletionsStreamError,
 } from "../chat/outbound";
 import { classifyError, CYBER_POLICY_ERROR_CODE, isCyberPolicyCode } from "../lib/errors";
+import type { AdmissionLease } from "../lib/admission";
 import { readBoundedResponseBody } from "../lib/bounded-body";
 import { redactSecretString } from "../lib/redact";
 import { resolveClientRetryAfter } from "../lib/retry-after";
+import { isModelTextOnly } from "../vision";
 import {
   applyUpstreamRecoveryInit,
   fetchWithResetRetry,
@@ -26,6 +28,7 @@ import {
   rateLimitRetryPolicyFor,
   rotateProviderTransportOn429,
 } from "../providers/key-failover";
+import { fastPolicyForModel } from "../providers/service-tier";
 import type { RouteResult } from "../router";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { fetchWithHeaderTimeout, providerFetch, safeHostLabel } from "./responses/fetch-helpers";
@@ -39,6 +42,7 @@ import {
   type RequestLogContext,
 } from "./request-log";
 import { jsonCompletionSse, nativeChatSse, structuredError, usageFromChat } from "./chat-native-sse";
+import { registerTurn, unregisterTurn } from "./lifecycle";
 
 type Rec = Record<string, unknown>;
 
@@ -58,6 +62,12 @@ export function isNativeChatRouteEligible(route: RouteResult, rawBody: Rec): boo
   if (rawBody.store === true || rawBody.background === true) return false;
   if (typeof rawBody.previous_response_id === "string" && rawBody.previous_response_id.length > 0) return false;
   if (rawBody.compaction_trigger !== undefined) return false;
+  // Vision sidecar coverage (roadmap 180): a text-only routed model with an
+  // image-bearing body must go through the Responses pipeline, whose plan
+  // site describes or strips the image. The native fast path has no vision
+  // handling, so letting it keep such a request forwards raw pixels to a
+  // model the operator declared blind.
+  if (isModelTextOnly(provider, route.modelId) && chatBodyCarriesImage(rawBody)) return false;
   if (Array.isArray(rawBody.tools)) {
     for (const tool of rawBody.tools) {
       if (!isRec(tool)) continue;
@@ -69,6 +79,19 @@ export function isNativeChatRouteEligible(route: RouteResult, rawBody: Rec): boo
   return true;
 }
 
+/** Any messages[].content[] part of type image_url. */
+function chatBodyCarriesImage(rawBody: Rec): boolean {
+  const messages = rawBody.messages;
+  if (!Array.isArray(messages)) return false;
+  for (const message of messages) {
+    if (!isRec(message) || !Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (isRec(part) && part.type === "image_url") return true;
+    }
+  }
+  return false;
+}
+
 function chatCompletionJson(value: unknown): Rec | null {
   if (!isRec(value) || !Array.isArray(value.choices) || value.choices.length === 0) return null;
   return value;
@@ -78,7 +101,7 @@ interface HandleNativeChatOptions {
   req: Request;
   config: OcxConfig;
   logCtx: RequestLogContext;
-  logIds?: { requestId: string; start: number };
+  logIds?: { requestId: string; start: number; turnAdmissionLease?: AdmissionLease };
   route: RouteResult;
   chatBody: Rec;
   requestedModel: string;
@@ -122,6 +145,21 @@ export async function handleNativeChatCompletions(options: HandleNativeChatOptio
 
   const upstream = new AbortController();
   const cleanupAbort = linkAbortSignal(upstream, req.signal);
+  // nativeChatSse already owns the translated stream's async pull/cancel path.
+  // Bind the lease to that same controller and its terminal callbacks instead
+  // of adding another trackStreamLifetime wrapper (unsafe on bundled Bun#32111).
+  let streamTurnRegistered = false;
+  const transferTurnToStream = () => {
+    const lease = logIds?.turnAdmissionLease;
+    if (!lease || typeof (lease as { bindAbortController?: unknown }).bindAbortController !== "function") return;
+    registerTurn(upstream, lease);
+    streamTurnRegistered = true;
+  };
+  const releaseStreamTurn = () => {
+    if (!streamTurnRegistered) return;
+    streamTurnRegistered = false;
+    unregisterTurn(upstream);
+  };
   const connectMs = config.connectTimeoutMs ?? 200_000;
   let activeProvider: OcxProviderConfig = route.provider;
   let activeAdapter: ProviderAdapter = createOpenAIChatAdapter(activeProvider);
@@ -137,8 +175,16 @@ export async function handleNativeChatCompletions(options: HandleNativeChatOptio
     translatorBudget.chargeRetained(bytes, { kind: "request_copies" });
     retainedRequestBytes = bytes;
   };
+  const buildActiveRequest = () => buildOpenAIChatPassthroughRequest(
+    activeProvider,
+    options.chatBody,
+    route.modelId,
+    requestedStream,
+    fastPolicyForModel(activeProvider, route.modelId, route.providerName, "chat"),
+    config.fastMode,
+  );
   try {
-    activeRequest = buildOpenAIChatPassthroughRequest(activeProvider, options.chatBody, route.modelId, requestedStream);
+    activeRequest = buildActiveRequest();
     retainRequest(activeRequest);
   } catch (error) {
     releaseRetainedRequest();
@@ -205,7 +251,7 @@ export async function handleNativeChatCompletions(options: HandleNativeChatOptio
       activeProvider = rotated;
       activeAdapter = createOpenAIChatAdapter(activeProvider);
       releaseRetainedRequest();
-      activeRequest = buildOpenAIChatPassthroughRequest(activeProvider, options.chatBody, route.modelId, requestedStream);
+      activeRequest = buildActiveRequest();
       retainRequest(activeRequest);
       response = await send(activeRequest, "key-429");
     }
@@ -276,6 +322,7 @@ export async function handleNativeChatCompletions(options: HandleNativeChatOptio
 
   const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
   if (contentType.includes("text/event-stream") && response.body) {
+    if (requestedStream) transferTurnToStream();
     const stream = nativeChatSse(response.body, {
       requestedModel,
       translatorBudget,
@@ -287,13 +334,21 @@ export async function handleNativeChatCompletions(options: HandleNativeChatOptio
       },
       ...(requestedStream ? {
         onTerminal: (status: number, message?: string) => {
-          cleanupAbort();
-          finishLog(status, message, "terminal");
+          try {
+            cleanupAbort();
+            finishLog(status, message, "terminal");
+          } finally {
+            releaseStreamTurn();
+          }
         },
         onCancel: () => {
-          cleanupAbort();
-          upstream.abort();
-          finishLog(499, undefined, "client_cancel");
+          try {
+            cleanupAbort();
+            upstream.abort();
+            finishLog(499, undefined, "client_cancel");
+          } finally {
+            releaseStreamTurn();
+          }
         },
       } : {}),
     });

@@ -67,12 +67,12 @@ ocx start                            # or `ocx service` to run it in the backgro
 ```
 
 <details>
-<summary>Install from source (latest dev, Bun canary)</summary>
+<summary>Install from source (latest dev)</summary>
 
 **macOS / Linux:**
 
 ```bash
-curl -fsSL https://bun.sh/install | bash && ~/.bun/bin/bun upgrade --canary
+curl -fsSL https://bun.sh/install | bash
 git clone https://github.com/lidge-jun/opencodex.git
 cd opencodex && ~/.bun/bin/bun install
 ~/.bun/bin/bun run src/cli/index.ts start
@@ -81,13 +81,13 @@ cd opencodex && ~/.bun/bin/bun install
 **Windows (PowerShell):**
 
 ```powershell
-irm bun.sh/install.ps1 | iex; bun upgrade --canary
+irm bun.sh/install.ps1 | iex
 git clone https://github.com/lidge-jun/opencodex.git
 cd opencodex; bun install
 bun run src/cli/index.ts start
 ```
 
-Source install runs the latest `dev` branch with Bun canary. Memory ownership
+Source install runs the latest `dev` branch. Memory ownership
 patches, runtime GC improvements, and unreleased fixes are available here before
 they reach the npm package.
 
@@ -138,8 +138,16 @@ see the [installation docs](https://opencodex.me/getting-started/installation/).
 
 - **Use any LLM with Codex, Claude Code, Claude Desktop, and Grok Build** — 40+ providers out of
   the box, each keeping its own native UI.
-- **Pool ChatGPT accounts safely** — thread affinity, quota-aware auto-switching, cooldown and
+- **Pool ChatGPT accounts** — thread affinity, quota-aware auto-switching, cooldown and
   fail-closed auth handling.
+
+  > **Provider-policy note:** Account pooling is for routing and operational resilience only; it does
+  > not guarantee protection from provider rate limits, enforcement, suspension, or other account
+  > actions. OpenCodex does not endorse using additional accounts to circumvent provider limits or
+  > sharing account credentials between people. You are responsible for complying with each
+  > provider's current terms. See the
+  > [Codex Auth account-pool guidance](https://opencodex.me/guides/web-dashboard/#codex-auth-and-account-pools)
+  > and [OpenAI's current Terms of Use](https://openai.com/policies/terms-of-use/).
 - **Combos** — one virtual model id with failover or weighted round-robin across providers. See
   the [combo guide](https://opencodex.me/guides/combos/).
 - **Sub-agents on any model** — feature routed models in Codex's sub-agent picker, with v1/v2
@@ -209,7 +217,7 @@ Qwen Cloud, SiliconFlow, and more. Full list: `ocx init` or the
 ocx init                       # interactive setup (writes config, wires Codex, offers the shim)
 ocx start [--port 10100]       # start the proxy in the foreground
 ocx stop                       # stop + restore native Codex
-ocx service [install|start|stop|status|uninstall|remove]  # background service
+ocx service [install|repair|restart|start|stop|status|uninstall|remove]  # background service
 ocx codex-shim install         # start the proxy on demand whenever `codex` launches
 ocx health [--json]            # check immediate proxy liveness
 ocx ready [--json] [--wait [--timeout <seconds>]]  # check post-sync readiness

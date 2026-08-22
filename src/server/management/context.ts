@@ -16,6 +16,8 @@ import type {
 } from "../../codex/app-server-restart-service";
 
 export interface ManagementApiDeps {
+  /** Platform seam for capability projections; does not alter host-level startup behavior. */
+  platform?: NodeJS.Platform;
   toggleCodexMultiAgentV2?: (enabled: boolean) => void;
   toggleDefaultModeRequestUserInput?: (enabled: boolean) => void;
   createManagementConvergeCodex?: (config: Readonly<OcxConfig>) => ConvergeCodex;
@@ -62,7 +64,7 @@ export interface ManagementApiDeps {
    * leaves this unset, so the route creates its normal NativeProfileManager.
    */
   /**
-   * Codex app-server restart seam (devlog/_plan/260815_gui_codex_restart).
+   * Codex app-server restart seam (devlog/_fin/260815_gui_codex_restart).
    * Grouped rather than three separate fields: the route is an adapter over one
    * service, and a route test that could not stub it would really terminate the
    * developer's own Codex app-servers.

@@ -30,12 +30,20 @@ import { providerDestinationResolvedError } from "../../lib/destination-policy";
 import { redactSecretString } from "../../lib/redact";
 import upstreamModelsSnapshot from "../data/upstream-models.json";
 import { OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
+import { providerCodexAccountMode } from "../../providers/registry";
 import { codexAccountNamespaceEntries, isMainCodexAccountTarget } from "../account-namespaces";
+import { MAIN_CODEX_ACCOUNT_ID } from "../main-account";
+import {
+  availableAccountGatedNativeModels,
+  isCodexModelEntitlementSnapshotCurrent,
+  resolveCodexModelEntitlements,
+  type CodexModelEntitlementSnapshot,
+} from "../model-entitlements";
 
 
 import { CODEX_CUSTOM_MODEL_CATALOG_KIND, CODEX_PROVIDER_MODEL_CATALOG_KIND, activeCodexModelsCachePath, applyCatalogMetadata, applyMultiAgentMode, applyNativeOpenAiContextOverride, applyRoutedCodexToolMode, catalogBackupPathFor, catalogHasRoutedEntries, catalogModelSlug, ensureStrictCatalogFields, findNativeTemplate, isDefaultCatalogPath, isRoutedModelCompatibilityExcluded, legacyCatalogBackupPath, normalizeRoutedCatalogEntry, normalizeServiceTiers, readCatalog, readCatalogBackup, readCodexCatalogPath, readNativeBaseline } from "./parsing";
 import type { CatalogModel, MultiAgentMode, RawCatalog, RawEntry } from "./parsing";
-import { accountBoundNativeOpenAiSlugs, accountBoundNativeOpenAiSlugsBySelector, applyNativeVisibility, CODEX_NATIVE_ALIAS_CATALOG_KIND, desktopAllowlistSuppressedNativeSlugs, disabledNativeSlugs, isNativeAliasCatalogEntry, isUnsupportedOpenAiNativeSlug, NATIVE_OPENAI_MODELS, observedAccountBoundNativeEntries, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, shouldUpgradeToUpstreamEntry, SUPPORTED_NATIVE_OPENAI_SLUGS, upstreamNativeEntry } from "./metadata";
+import { accountBoundNativeOpenAiSlugs, accountBoundNativeOpenAiSlugsBySelector, applyNativeVisibility, CODEX_NATIVE_ALIAS_CATALOG_KIND, desktopAllowlistSuppressedNativeSlugs, disabledNativeSlugs, isNativeAliasCatalogEntry, isUnsupportedOpenAiNativeSlug, NATIVE_OPENAI_MODELS, nativeContextLimits, observedAccountBoundNativeEntries, shouldIncludeAccountBoundNativeOpenAi, shouldIncludeNativeOpenAi, shouldUpgradeToUpstreamEntry, SUPPORTED_NATIVE_OPENAI_SLUGS, upstreamNativeEntry, type NativeContextLimitsInput } from "./metadata";
 import {
   bundledCatalogCacheState,
   loadBundledCodexCatalog,
@@ -64,6 +72,7 @@ import {
 } from "../internal/catalog-writer";
 import { codexRuntimeStatePath } from "../runtime";
 import { accountBoundNativeDisplayName, CODEX_ACCOUNT_BOUND_CATALOG_KIND, trustedAccountBoundNativeCatalogSlug, visibleCodexAccountSelectors } from "./account-models";
+import { ACCOUNT_GATED_NATIVE_OPENAI_MODELS } from "./native-models";
 
 export const MAX_SPAWN_AGENT_MODEL_OVERRIDES = 5;
 
@@ -90,21 +99,36 @@ export type SubagentRosterExclusionReason =
 /**
  * Whether a catalog entry may be offered as a V2 subagent model.
  *
- * Upstream (codex-rs 92938d880) requires `multi_agent_version === "v2"` exactly,
- * because upstream assumes a single backend serves every model. opencodex routes
- * many providers, so that equality would reject the cross-provider spawns this
- * proxy exists to enable.
+ * Upstream changed this rule in codex-rs `6d4d9442c` ("Support leaf models in
+ * multi-agent v2"). `model_supports_multi_agent_backend`
+ * (core/src/tools/handlers/multi_agents_common.rs:36-42) now admits EVERY model
+ * except one explicitly marked `disabled`; the older `== Some(V2)` equality that
+ * `92938d880` introduced is gone.
  *
- * Decision (option B, devlog 260730_codex_rs_upstream_v2_live_handoff/060): any
- * model opencodex actually routes is eligible. An entry pinned to a DIFFERENT
- * multi-agent backend (`v1`) stays excluded, because that pin is a real capability
- * statement rather than an absence of information. An unpinned entry (null or
- * absent) is a routed or unpinned-native model and is allowed. The three-way
- * distinction is the substance; do not flatten it into a truthiness check.
+ * The field no longer answers "may I be a delegation target". It answers "does the
+ * CHILD get collaboration tools": `collab_tools_enabled`
+ * (core/src/tools/spec_plan.rs:599-610) grants a child recursive tools only when its
+ * own catalog value is exactly `Some(V2)`. The three-way distinction survives, but it
+ * now means eligible-recursive / eligible-LEAF / excluded:
+ *
+ * - `"v2"`       -> eligible, and the child may itself delegate.
+ * - `"v1"`       -> eligible LEAF worker. This is upstream's pin for `gpt-5.6-luna`
+ *                   (models-manager/models.json); excluding it here is exactly what
+ *                   kept Luna out of opencodex's roster.
+ * - absent/null  -> eligible LEAF worker (routed or unpinned-native model).
+ * - `"disabled"` -> the sole capability-based exclusion.
+ *
+ * This is the roster filter only. Catalog STAMPING is a separate concern owned by
+ * `applyMultiAgentMode`, including the `keepNativeChatGptOnV1` policy (#1728) that
+ * keeps ChatGPT-native rows on `v1` so a native parent can still spawn a routed child
+ * despite backend-encrypted NEW_TASK bodies (#92). Recognizing those `v1` rows as
+ * eligible leaves here is what makes that policy usable, not a contradiction of it.
+ *
+ * Devlog: 260816_codexrs_multiagent_v2_and_history_perf/011 (C1), superseding the
+ * option-B decision in 260730_codex_rs_upstream_v2_live_handoff/060.
  */
 export function isEligibleV2SubagentEntry(entry: RawEntry): boolean {
-  const pinned = entry.multi_agent_version;
-  return pinned === "v2" || pinned === null || pinned === undefined;
+  return entry.multi_agent_version !== "disabled";
 }
 
 export interface EffectiveSubagentModel {
@@ -211,7 +235,7 @@ export function effectiveSubagentRoster(
   return { candidates, advertised, excluded };
 }
 
-export function finishUpstreamNativeEntry(clone: RawEntry, priority: number, contextCap?: number): RawEntry {
+export function finishUpstreamNativeEntry(clone: RawEntry, priority: number, contextCap?: NativeContextLimitsInput): RawEntry {
   if (priority !== 9) clone.priority = priority;
   applyNativeOpenAiContextOverride(clone, contextCap);
   // GPT-5.6 natives keep their exact upstream ladders (e.g. luna has max but no ultra).
@@ -264,7 +288,7 @@ export function deriveEntry(
   priority: number,
   model?: CatalogModel,
   exactComboSlugs: ReadonlySet<string> = new Set(),
-  contextCap?: number,
+  contextCap?: NativeContextLimitsInput,
 ): RawEntry {
   const preserveExact = isExactComboCatalogModel(model, exactComboSlugs);
   const codexForwardNativeCapabilityAlias = model?.codexForwardNativeCapabilityAlias === true
@@ -292,8 +316,8 @@ export function deriveEntry(
     if (isRouted) {
       // A routed model is NOT the native template: never inherit its context
       // window when /models omits context metadata (#992). Known metadata
-      // restores exact values below; otherwise the strict-fields fallback
-      // supplies the conservative 128k triple.
+      // restores exact values below; an enabled Context cap fills the gap;
+      // otherwise the strict-fields fallback supplies the 128k triple.
       if (!codexForwardNativeCapabilityAlias) {
         delete e.context_window;
         delete e.max_context_window;
@@ -316,7 +340,9 @@ export function deriveEntry(
       // This exact provider/model pair is the ChatGPT/Codex forward surface. Keep the pinned
       // native tool/search/responses-lite contract while preserving the routed slug and wire id.
       if (!codexForwardNativeCapabilityAlias) {
-        normalizeRoutedCatalogEntry(e, model?.parallelToolCalls === true);
+        normalizeRoutedCatalogEntry(e, model?.parallelToolCalls === true, model?.codexToolMode);
+      } else if (model?.codexToolMode !== undefined) {
+        applyRoutedCodexToolMode(e, model.codexToolMode);
       }
       if (model) applyCatalogMetadata(e, model.provider, model.id, model.contextCap);
       applyCatalogModelMetadata(e, model);
@@ -343,10 +369,9 @@ export function deriveEntry(
     });
   }
   // Fallback when no template is available (best-effort; strict parser may need more).
-  // Cursor fallback rows mirror normalizeRoutedCatalogEntry: no deferred discovery, no hosted
-  // web-search metadata (runTurn transport bypasses the sidecar). Non-Cursor routed fallbacks
-  // advertise deferred discovery — code mode keeps deferred MCP callable (devlog
-  // 260813_tool_catalog_deferral/010+020); search=false costs a measured 2.7x turn-1 payload.
+  // Routed fallbacks default to code-mode tool exposure (or shell mode when codexToolMode === "shell");
+  // otherwise the nested catalog expands into `exec.description` and can exceed Cursor's 120 KB serialized tool limit (#1830).
+  // Cursor still omits hosted web-search metadata because runTurn bypasses that separate sidecar.
   const isCursorFallback = isRouted && model?.provider === "cursor";
   const entry: RawEntry = {
     slug, display_name: routedDisplayName(slug), description: desc,
@@ -354,12 +379,12 @@ export function deriveEntry(
     priority, base_instructions: "You are a helpful coding assistant.",
     ...(isRouted
       ? isCursorFallback
-        ? { supports_search_tool: false }
+        ? { supports_search_tool: true }
         : { web_search_tool_type: "text_and_image", supports_search_tool: true }
       : {}),
   };
   if (isRouted) {
-    applyRoutedCodexToolMode(entry);
+    applyRoutedCodexToolMode(entry, model?.codexToolMode);
     applyReasoningLevels(entry, model?.reasoningEfforts, model?.defaultReasoningEffort, preserveExact);
   }
   else {
@@ -391,7 +416,7 @@ export interface ObservedCatalogEntryBuildInput {
   readonly disabledNativeAccountSlugs: ReadonlySet<string>;
   readonly multiAgentV2Enabled: boolean;
   readonly keepNativeChatGptOnV1?: boolean;
-  readonly openaiContextCap?: number;
+  readonly openaiContextCap?: NativeContextLimitsInput;
   /** Additional native ids to clone under account selectors, without creating bare rows. */
   readonly accountNativeSlugs?: readonly string[];
   /** Per-selector account ids; unknown observations must not be copied to unrelated accounts. */
@@ -410,7 +435,7 @@ export function buildCatalogEntries(
   accountSelectors: readonly string[] = [],
   suppressedBareNativeSlugs: ReadonlySet<string> = new Set(),
   disabledNativeAccountSlugs: ReadonlySet<string> = new Set(),
-  contextCap?: number,
+  contextCap?: NativeContextLimitsInput,
   accountNativeSlugs?: readonly string[],
   accountNativeSlugsBySelector?: ReadonlyMap<string, readonly string[]>,
   keepNativeChatGptOnV1 = false,
@@ -746,7 +771,7 @@ export interface ObservedCatalogMergeInput {
   readonly accountBoundEntries: readonly RawEntry[];
   readonly suppressedBareNativeSlugs?: ReadonlySet<string>;
   readonly policy: ObservedCatalogMergePolicy;
-  readonly openaiContextCap?: number;
+  readonly openaiContextCap?: NativeContextLimitsInput;
 }
 
 /**
@@ -1200,6 +1225,20 @@ interface RetainedCatalogSyncResult {
   skippedReason?: "desired_disabled";
 }
 
+/**
+ * Catalog/cache commit overrides.
+ *
+ * An explicit `ocx sync` is also the refresh path for side profiles that consume
+ * the OpenCodex catalog without injection (for example a custom `model_provider`
+ * that routes to the proxy). In that mode the Codex integration toggle only
+ * governs config/history injection; the catalog and models cache may still be
+ * refreshed, so `allowWhenDesiredDisabled` lets the commit path ignore the OFF
+ * gate that otherwise protects a fully native home.
+ */
+export interface CodexCatalogSyncOptions {
+  allowWhenDesiredDisabled?: boolean;
+}
+
 interface RetainedCatalogSyncWrite {
   readonly config: OcxConfig;
   readonly goModels: CatalogModel[];
@@ -1208,6 +1247,7 @@ interface RetainedCatalogSyncWrite {
   readonly read: RetainedCatalogSyncRead;
   readonly permit: CatalogWritePermit;
   readonly owningCodexHome: string;
+  readonly modelEntitlements: CodexModelEntitlementSnapshot;
 }
 
 function optionalFileBytes(path: string): string | null {
@@ -1371,6 +1411,7 @@ function writeRetainedCatalogSync({
   read,
   permit,
   owningCodexHome,
+  modelEntitlements,
 }: RetainedCatalogSyncWrite): RetainedCatalogSyncResult {
   const { catalogPath, catalog, onDiskCatalog } = read;
   const catalogModelsForMerge = catalogModelsForMergeWithNativeRecovery(
@@ -1406,11 +1447,34 @@ function writeRetainedCatalogSync({
   const modelPickerOrder = config.modelPickerOrder ?? [];
   const multiAgentMode: MultiAgentMode = config.multiAgentMode === "v1" || config.multiAgentMode === "v2" ? config.multiAgentMode : "default";
   const exactComboSlugs = exactComboCatalogSlugs(config);
-  const suppressedBareNativeSlugs = desktopAllowlistSuppressedNativeSlugs(config);
+  const bareEligibleAccountIds = providerCodexAccountMode(
+    OPENAI_CODEX_PROVIDER_ID,
+    config.providers[OPENAI_CODEX_PROVIDER_ID],
+  ) === "direct" ? new Set([MAIN_CODEX_ACCOUNT_ID]) : undefined;
+  const availableBareGatedNativeSlugs = availableAccountGatedNativeModels(
+    modelEntitlements,
+    bareEligibleAccountIds,
+  );
+  const availableAccountGatedNativeSlugs = availableAccountGatedNativeModels(modelEntitlements);
+  const availableBareNativeSlugs = NATIVE_OPENAI_MODELS.filter(slug => (
+    !ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(slug) || availableBareGatedNativeSlugs.has(slug)
+  ));
+  const availableAccountNativeSlugs = NATIVE_OPENAI_MODELS.filter(slug => (
+    !ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(slug) || availableAccountGatedNativeSlugs.has(slug)
+  ));
+  const unavailableGatedNativeSlugs = new Set([...ACCOUNT_GATED_NATIVE_OPENAI_MODELS].filter(slug => (
+    !availableBareGatedNativeSlugs.has(slug)
+  )));
+  const suppressedBareNativeSlugs = new Set([
+    ...desktopAllowlistSuppressedNativeSlugs(config),
+    ...unavailableGatedNativeSlugs,
+  ]);
   const hasPhysicalComboProvider = Object.hasOwn(config.providers, COMBO_NAMESPACE);
   const includeNativeOpenAi = shouldIncludeNativeOpenAi(config);
   const includeAccountBoundNativeOpenAi = shouldIncludeAccountBoundNativeOpenAi(config);
-  const openaiContextCap = providerContextCap(config, OPENAI_CODEX_PROVIDER_ID);
+  // Both user levers. Passing only the cap here is what let a per-model window the dashboard
+  // had accepted get written back at full width in the on-disk catalog.
+  const openaiContextCap = nativeContextLimits(config);
   const accountSelectors = includeAccountBoundNativeOpenAi
     ? visibleCodexAccountSelectors(config)
     : [];
@@ -1419,12 +1483,21 @@ function writeRetainedCatalogSync({
     ...(onDiskCatalog?.models ?? []).filter(entry =>
       trustedAccountBoundNativeCatalogSlug(entry) !== undefined),
   ];
-  const accountNativeSlugs = accountSelectors.length > 0
-    ? accountBoundNativeOpenAiSlugs(observedAccountNativeEntries)
-    : [];
+  const accountTargets = new Map(codexAccountNamespaceEntries(config));
   const accountNativeSlugsBySelector = accountSelectors.length > 0
-    ? accountBoundNativeOpenAiSlugsBySelector(config, observedAccountNativeEntries)
+    ? new Map([...accountBoundNativeOpenAiSlugsBySelector(config, observedAccountNativeEntries)].map(([selector, slugs]) => {
+      const target = accountTargets.get(selector);
+      const accountId = target && isMainCodexAccountTarget(target) ? MAIN_CODEX_ACCOUNT_ID : target;
+      const entitled = accountId ? modelEntitlements.modelsByAccount.get(accountId) : undefined;
+      const confirmed = accountId ? modelEntitlements.confirmedAccountIds.has(accountId) : false;
+      return [selector, slugs.filter(slug => (
+        !ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(slug) || (confirmed && entitled?.has(slug) === true)
+      ))] as const;
+    }))
     : new Map<string, readonly string[]>();
+  const accountNativeSlugs = accountSelectors.length > 0
+    ? [...new Set([...accountNativeSlugsBySelector.values()].flatMap(slugs => [...slugs]))]
+    : [];
   // Unknown account-native ids have no safe bare/global identity. They are only projected through
   // the selector map above; the no-selector catalog remains the static native/API-key surface.
   const observedNativeSlugs: string[] = [];
@@ -1478,7 +1551,7 @@ function writeRetainedCatalogSync({
   const accountBoundEntries = includeAccountBoundNativeOpenAi && accountSelectors.length > 0
     ? buildCatalogEntriesFromObservedState({
       template: template ? JSON.parse(JSON.stringify(template)) : null,
-      gptSlugs: NATIVE_OPENAI_MODELS,
+      gptSlugs: availableAccountNativeSlugs,
       goModels: [],
       featured,
       wsEnabled,
@@ -1518,7 +1591,7 @@ function writeRetainedCatalogSync({
     openaiContextCap,
     policy: {
       ...CANONICAL_NATIVE_CATALOG_CONTENT_POLICY,
-      nativeBackfillSlugs: [...NATIVE_OPENAI_MODELS, ...observedNativeSlugs],
+      nativeBackfillSlugs: [...availableBareNativeSlugs, ...observedNativeSlugs],
       warningPolicy: "emit",
     },
   });
@@ -1602,7 +1675,10 @@ function currentDisabledModelsForRestore(): Set<string> | null {
   }
 }
 
-export async function syncCatalogModels(config: OcxConfig): Promise<RetainedCatalogSyncResult> {
+export async function syncCatalogModels(
+  config: OcxConfig,
+  options?: CodexCatalogSyncOptions,
+): Promise<RetainedCatalogSyncResult> {
   const owningCodexHome = getCodexHome();
   const preflightRead = readRetainedCatalogSync(config);
   if (preflightRead === null) {
@@ -1629,17 +1705,22 @@ export async function syncCatalogModels(config: OcxConfig): Promise<RetainedCata
     evidence: retainedCatalogSyncEvidence(config, preflightRead.catalogPath, preflightRead.catalog),
     processEvidence: retainedCatalogProcessEvidence(),
   };
-  const goModels = await gatherRoutedModels(config, {
-    comboOmissions,
-    providerModelOutcomes,
-  });
+  const [goModels, modelEntitlements] = await Promise.all([
+    gatherRoutedModels(config, {
+      comboOmissions,
+      providerModelOutcomes,
+    }),
+    resolveCodexModelEntitlements(config),
+  ]);
   const committed = withCatalogWriteSerialization(owningCodexHome, permit => {
     // Desired state can flip OFF during the provider await above. The catalog
     // evidence revalidation below cannot see that — intent lives in our config,
     // not in the catalog files — so the policy is re-read here, under K, right
     // before the only write. A lost race becomes the discriminated skip instead
-    // of a routed catalog/cache surviving a completed disable.
-    if (!shouldSyncCodexOnStart(loadConfig())) {
+    // of a routed catalog/cache surviving a completed disable. An explicit
+    // catalog-only sync opts out of that gate: the user asked for a refresh even
+    // when injection is OFF, and the toggle only protects config/history writes.
+    if (!shouldSyncCodexOnStart(loadConfig()) && options?.allowWhenDesiredDisabled !== true) {
       return {
         added: 0,
         path: prepared.catalogPath,
@@ -1650,6 +1731,7 @@ export async function syncCatalogModels(config: OcxConfig): Promise<RetainedCata
     }
     const current = revalidateRetainedCatalogSync(config, prepared);
     if (current === null) return null;
+    if (!isCodexModelEntitlementSnapshotCurrent(modelEntitlements)) return null;
     return writeRetainedCatalogSync({
       config,
       goModels,
@@ -1658,6 +1740,7 @@ export async function syncCatalogModels(config: OcxConfig): Promise<RetainedCata
       read: current,
       permit,
       owningCodexHome,
+      modelEntitlements,
     });
   });
   if (committed.kind === "completed" && committed.value !== null) return committed.value;
@@ -1672,8 +1755,16 @@ export async function syncCatalogModels(config: OcxConfig): Promise<RetainedCata
 export function restoreCodexCatalogWithPermit(
   permit: CatalogWritePermit,
   owningCodexHome: string,
+  /**
+   * The catalog this injection actually wrote, when it is known (#1798).
+   *
+   * Re-resolving from the CURRENT config is wrong after a Codex app rewrite that dropped
+   * `model_catalog_json`: that sends restore to the default catalog while the routed file we
+   * really wrote is left untouched. The recorded path is the file whose routing is ours.
+   */
+  injectedCatalogPath?: string | null,
 ): { removed: number; kept: number; path: string } {
-  const catalogPath = readCodexCatalogPath();
+  const catalogPath = injectedCatalogPath ?? readCodexCatalogPath();
   const catalog = readCatalog(catalogPath);
   if (!catalog || !Array.isArray(catalog.models)) return { removed: 0, kept: 0, path: catalogPath };
   const disabledModels = currentDisabledModelsForRestore();
@@ -1731,13 +1822,16 @@ export function restoreCodexCatalog(): { removed: number; kept: number; path: st
 export function invalidateCodexModelsCacheWithPermit(
   permit: CatalogWritePermit,
   owningCodexHome: string,
+  options?: CodexCatalogSyncOptions,
 ): boolean {
   try {
     // This permit is a REACQUISITION: refreshCodexModelCatalog's commit released
     // K before this rewrite runs, so the commit-path desired-state check cannot
     // cover it. A disable landing in that gap must not be overwritten by a
     // routed cache write — re-read intent under this permit, same as the commit.
-    if (!shouldSyncCodexOnStart(loadConfig())) return false;
+    // The catalog-only sync override applies here too so an explicit refresh
+    // keeps the cache consistent with the catalog it just wrote.
+    if (!shouldSyncCodexOnStart(loadConfig()) && options?.allowWhenDesiredDisabled !== true) return false;
     const catalogPath = readCodexCatalogPath();
     if (!existsSync(catalogPath)) return false;
     const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
@@ -1779,11 +1873,11 @@ export function invalidateCodexModelsCacheWithPermit(
   }
 }
 
-export function invalidateCodexModelsCache(): boolean {
+export function invalidateCodexModelsCache(options?: CodexCatalogSyncOptions): boolean {
   const owningCodexHome = getCodexHome();
   const outcome = withCatalogWriteSerialization(
     owningCodexHome,
-    permit => invalidateCodexModelsCacheWithPermit(permit, owningCodexHome),
+    permit => invalidateCodexModelsCacheWithPermit(permit, owningCodexHome, options),
   );
   return outcome.kind === "completed" && outcome.value;
 }

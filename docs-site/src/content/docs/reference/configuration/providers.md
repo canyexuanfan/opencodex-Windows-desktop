@@ -67,10 +67,11 @@ differing backup and rewrites known legacy namespaced selected ids to bare ids.
 | `adapter` | `string` | One of `openai-chat`, `openai-responses`, `anthropic`, `google`, `kiro`, `cursor`, `azure-openai` (or alias `azure`). |
 | `baseUrl` | `string` | Upstream API base URL. Most built-in fixed endpoints ignore a mismatch; collision-safe key presets preserve an older same-named custom destination. |
 | `requestPacing?` | `{ enabled, requestsPerMinute?, minIntervalMs?, models? }` | Optional client-side outbound request-start pacing, separate from upstream usage, billing, and rate-limit indicators. RPM is converted to an even interval; `minIntervalMs` may impose a longer interval. Provider limits apply across all models, while `models` entries use exact upstream model IDs (for example `nvidia/llama-3.1-nemotron-ultra-253b-v1`) and can only add delay. Queue waits do not consume the upstream response-header timeout. HTTP, Responses WebSocket, and explicit adapter `fetchResponse`/`runTurn` dispatches are covered. |
+| `upstreamHttpVersion?` | `"auto" \| "http1.1" \| "h1" \| "http2" \| "h2"` | Pin the HTTP version used for upstream requests to this provider. Defaults to `auto`, which lets Bun negotiate. An explicit pin requires an HTTPS target and fails locally when it cannot be honored. Set `http1.1` when a provider's HTTP/2 SSE stream stalls instead of delivering events — the symptom is a long-running streaming request that produces nothing and eventually times out. For Cursor, `http1.1`/`h1` selects its `RunSSE` + `BidiAppend` compatibility transport for inference and also pins live model discovery. Management `POST`/`PATCH` accept `null` to clear it back to `auto`. |
 | `responsesPath?` | `string` | Relative resource path for key-auth `openai-responses` requests. It must start with `/` and contain no scheme, query, or fragment. |
-| `supportsServiceTier?` | `boolean` | Tri-state `service_tier` capability fallback. `true`: fast mode may inject and caller values are preserved. `false`: the field is stripped and never injected, and exact model declarations cannot reopen it. Absent: the provider is unclassified — caller-supplied values are preserved untouched and fast mode never injects unless an exact model is enabled. The registry classifies canonical OpenAI (`true`), DeepSeek, and Volcengine Ark (`false`); set it explicitly only for custom gateways that genuinely support tiers. Chat routes additionally need provider-wide or exact-model Chat authorization. |
-| `modelSupportsServiceTier?` | `Record<string, boolean>` | Exact upstream model capability overrides. Exact `true` authorizes that Chat model even without `chatServiceTier`; exact `false` narrows provider defaults and Chat authorization. An explicit provider-level `supportsServiceTier: false` remains fail-closed and cannot be reopened. Undeclared models fall back to provider-wide behavior. Management `PATCH /api/providers` merges entries and accepts `null` to clear one. |
-| `chatServiceTier?` | `boolean` | Provider-wide wire opt-in for serializing `service_tier` on `/chat/completions`. Exact models may instead opt in through `modelSupportsServiceTier`; undeclared models remain blocked when this flag is absent or false. |
+| `supportsServiceTier?` | `boolean` | Tri-state canonical Fast capability fallback. `true` publishes Fast in the catalog, satisfies service-tier routing requirements, contributes a supported fingerprint, and lets fast mode inject the provider's canonical wire value on a compatible final adapter. `false` strips the field and never injects, and exact model declarations cannot reopen it. Absent leaves the provider unclassified: fast mode does not inject or normalize a canonical caller value, and caller values obey the final wire's forwarding permission (`chatServiceTier` on Chat; passthrough on Responses). The registry classifies canonical OpenAI (`true`), DeepSeek, and Volcengine Ark (`false`); set it explicitly only for custom gateways that genuinely support tiers. |
+| `modelSupportsServiceTier?` | `Record<string, boolean>` | Exact upstream model capability overrides. Exact `true` enables canonical Fast for that model; exact `false` narrows provider defaults. An explicit provider-level `supportsServiceTier: false` remains fail-closed and cannot be reopened. Exact `true` does not authorize foreign caller-tier forwarding on Chat. Undeclared models fall back to provider-wide behavior. Management `PATCH /api/providers` merges entries and accepts `null` to clear one. |
+| `chatServiceTier?` | `boolean` | Provider-wide Chat-wire opt-in for forwarding caller `service_tier` values. On a classified route it governs foreign values such as `flex`, not proxy-owned canonical Fast after capability validation; on an unclassified route it governs every caller value because no Fast capability has been validated. Exact model capability does not authorize foreign forwarding. Responses routes retain their capability-based caller forwarding behavior. |
 | `preserveResponsesReasoningContent?` | `boolean` | Keep plaintext reasoning content on replayed Responses reasoning items instead of blanking it (blanking is the ChatGPT backend's rule). Enable for upstreams whose contract accepts reasoning replay, such as DeepSeek. Proxy-minted `ocxr1` envelopes are always stripped. |
 | `disabled?` | `boolean` | Keep the provider on disk but exclude it from routing and model/catalog listings. |
 | `apiKey?` | `string` | API key, or an `${ENV_VAR}` / `$ENV_VAR` reference resolved at request time. |
@@ -86,7 +87,7 @@ differing backup and rewrites known legacy namespaced selected ids to bare ids.
 | `modelMaxInputTokens?` | `Record<string, number>` | Positive per-model max input limits used for catalog auto-compaction hints. |
 | `defaultMaxOutputTokens?` | `number` | Provider-wide `openai-chat` fallback when the client omits `max_output_tokens`. |
 | `modelMaxOutputTokens?` | `Record<string, number>` | Positive per-model `openai-chat` fallback budgets; exact/pattern matches beat the provider default. |
-| `modelCosts?` | `Record<string, Cost4>` | Per-model display prices (USD per 1M tokens), keyed by that provider's exact upstream model id — not a provider identifier or a routed `provider/model` label, e.g. `{ "deepseek-v4-flash": { "input": 0.14, "output": 0.28, "cacheRead": 0.0028, "cacheWrite": 0 } }`. Any model id is a valid key — custom providers may target any OpenAI-compatible endpoint through the `openai-chat` adapter, and local or internal provider ids work even when they are absent from the built-in catalogs. User-configured prices win over the built-in catalogs in the Logs `~$` and Usage estimates; historical entries are repriced from the current overlay, so editing a price can move past totals. The fallback order is user `modelCosts` → jawcode catalog → expected-price overlay → model-level vendor fallback, and an all-zero entry falls through to the next source in that sequence. Each rate must be a non-negative finite number at most 1,000,000 (USD per 1M tokens); out-of-range rows are rejected by the management boundary and dropped on load. Display-time estimation only: overlays never affect routing, account selection, quotas, or billing. |
+| `modelCosts?` | `Record<string, Cost4>` | Per-model display prices (USD per 1M tokens), keyed by that provider's exact upstream model id — not a provider identifier or a routed `provider/model` label, e.g. `{ "deepseek-v4-flash": { "input": 0.14, "output": 0.28, "cacheRead": 0.0028, "cacheWrite": 0 } }`. Any model id is a valid key — custom providers may target any OpenAI-compatible endpoint through the `openai-chat` adapter, and local or internal provider ids work even when they are absent from the built-in catalogs. User-configured prices win over the built-in catalogs in the Logs `~$` and Usage estimates; historical entries are repriced from the current overlay, so editing a price can move past totals. The fallback order is user `modelCosts` → exact official correction → jawcode catalog → expected-price overlay → model-level vendor fallback, and an all-zero entry falls through to the next source in that sequence. Each rate must be a non-negative finite number at most 1,000,000 (USD per 1M tokens); out-of-range rows are rejected by the management boundary and dropped on load. Display-time estimation only: overlays never affect routing, account selection, quotas, or billing. |
 | `headers?` | `Record<string, string>` | Extra upstream headers. Authorization, cookies, API-key headers, embedded newlines, and invalid names are rejected. |
 | `openRouterRouting?` | `OpenRouterProviderRouting` | Default OpenRouter `order`, `only`, and `allowFallbacks` preferences; valid only for canonical OpenRouter with `openai-chat`. |
 | `modelOpenRouterRouting?` | `Record<string, OpenRouterProviderRouting>` | Exact model-id overrides that replace the provider-wide OpenRouter preference. |
@@ -98,6 +99,7 @@ differing backup and rewrites known legacy namespaced selected ids to bare ids.
 | `modelSupportsReasoningSummaries?` | `Record<string, boolean>` | Set a model to `false` to stop advertising summaries and strip summary-delivery fields. |
 | `modelReasoningSummaryDelivery?` | `Record<string, "sequential" \| "sequential_cutoff" \| "concurrent" \| "concurrent_cutoff">` | Per-model Responses delivery enum; rewrites an existing delivery field. |
 | `modelAdapters?` | `Record<string, string>` | Per-model `openai-chat` or `openai-responses` wire override for mixed-wire gateways. Explicit entries beat registry defaults. The OpenCode Go preset selects Responses for `gpt-5.6-luna` while leaving sibling models on their documented wires; DeepSeek can select native Responses for `deepseek-v4-flash`; and GitHub Copilot declares Responses-only defaults for its GPT-5 family (`gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`) because those models reject `/chat/completions` for agent traffic. Models without a built-in default (for example `gpt-5.4-nano`) can be opted in here. Single-wire upstream pins and canonical ChatGPT forward reject overrides. |
+| xAI Responses opt-in (dashboard) | switch | For `xai` only, atomically sets or clears the `grok-4.5` and `grok-4.6` `modelAdapters` entries. A hand-edited single entry appears as mixed until the next switch write normalizes both. Other overrides and tier behavior are unchanged. |
 | `modelPreferHostedTools?` | `Record<string,string[]>` | Exact-model opt-in for non-forward Responses gateways that reserve a hosted-tool namespace. Currently accepts only `["image_generation"]`; a matching model must use the `openai-responses` wire and support that hosted tool. It removes colliding client `image_gen` declarations and rewrites their selectors to preserve caller tool choice. For OpenAI API virtual `-pro` models, the selected public ID is matched first and the resolved base wire-model ID is a fallback. `modelAdapters` resolves the public ID first, then the base ID; the second resolution determines the final wire. Other models retain normal alias behavior. |
 | `reasoningEffortMap?` | `Record<string, string>` | Provider-wide wire aliases for reasoning labels. |
 | `modelReasoningEffortMap?` | `Record<string, Record<string, string>>` | Per-model wire aliases for reasoning labels. |
@@ -121,12 +123,82 @@ differing backup and rewrites known legacy namespaced selected ids to bare ids.
 | `escapeBuiltinToolNames?` | `boolean` | Escape built-in tool names for Anthropic-compatible gateways and restore them in returned calls. |
 | `anthropicEofTolerance?` | `boolean` | Let an Anthropic-compatible gateway complete a stream that ends before `message_stop`, only when visible text or a complete JSON-object tool input was received. Off by default. |
 | `googleMode?` | `"ai-studio" \| "vertex" \| "cloud-code-assist"` | Google transport/auth mode. Default `ai-studio`. |
+| `directGeminiWireRenames?` | `boolean` | Google only. Applies only to direct AI Studio requests. Omitted or `true` keeps the `-tiered` wire rename for Gemini Flash ids (`gemini-3.7-flash` -> `gemini-3.7-flash-tiered`); `false` sends the requested bare ids to the wire unchanged. Vertex preserves the requested model ID, and Cloud Code Assist routing is unchanged. Set `false` when the configured upstream still serves the bare ids. |
 | `project?` | `string` | Vertex or Antigravity Cloud Code Assist project id. |
 | `location?` | `string` | Vertex location; environment fallback is `GOOGLE_CLOUD_LOCATION`. |
 | `mcpServers?` | `Record<string, CursorMcpServerConfig>` | Cursor only: stdio or Streamable HTTP MCP servers. |
 | `desktopExecutor?` | `DesktopExecutorConfig` | Cursor only: external computer-use and record-screen commands. |
 | `unsafeAllowNativeLocalExec?` | `boolean` | Cursor legacy boolean, equivalent to `nativeLocalExec: "on"` only when the newer field is unset. |
 | `nativeLocalExec?` | `"off" \| "codex-sandbox" \| "on"` | Cursor local-exec policy. `off` is default; `codex-sandbox` currently fails closed like `off`. |
+
+### FastWire B1 capability migration
+
+Fast capability and arbitrary Chat caller-tier forwarding are independent after FastWire B1. The
+[provider-field definitions](#provider-entries-ocxproviderconfig) above remain the authoritative
+contract; existing configurations see these migration deltas:
+
+1. A Chat provider/model declared Fast-capable no longer needs `chatServiceTier: true` for canonical
+   Fast. Publication, routing eligibility, and injection still require an eligible policy and a
+   compatible FastWire mapping on the final adapter. On classified routes, `fastMode: false` still
+   removes canonical Fast. Set `supportsServiceTier: false` or an exact-model `false` when the route
+   is not Fast-capable.
+2. On an eligible classified route, caller spellings `fast` and `FAST` normalize through
+   `fastWire.canonicalToWire.priority`; caller `priority` remains canonical. Configure a verified
+   mapping to `fast` only when that is the upstream's canonical value. Unclassified routes retain
+   their existing forwarding behavior.
+3. Exact-model `true` no longer authorizes foreign Chat tiers such as `flex` or vendor-specific
+   values. Those still require `chatServiceTier: true`; otherwise they are removed and recorded as
+   dropped caller tiers.
+
+Explicit capability `false` and Responses caller-tier forwarding retain their existing contracts.
+
+### xAI Priority Processing
+
+The built-in `xai` preset advertises and injects Fast only when its effective transport uses
+`authMode: "key"`. API-key mode targets `https://api.x.ai/v1` through the `openai-chat` adapter and
+sends `service_tier: "priority"` through Chat Completions. `ocx login xai`
+instead stores OAuth credentials for the separate Grok CLI subscription-gateway flow, so OAuth
+remains unclassified: its catalog rows do not advertise Fast and the proxy does not inject a tier.
+
+xAI charges Priority Processing at 2× the standard token price for input, output, cached, and
+reasoning tokens; cache discounts are applied before the multiplier. Cost estimates use that premium
+only when xAI's response confirms `service_tier: "priority"`. A missing or unparsed response tier is
+not confirmation, and an echoed `default` is a downgrade; all three stay at the standard price.
+
+For `grok-4.6`, the standard rate per 1M tokens is $2.00 input, $0.50 cached input, and $6.00
+output. A prompt of at least 200,000 tokens reprices the whole request at $4.00 / $1.00 / $12.00.
+xAI has not published how that long-context band combines with Priority Processing. When a
+long-context response confirms `priority`, the dashboard therefore shows the published long-context
+cost with a `≥` marker and a lower-bound explanation; it never invents a stacked multiplier.
+
+### OpenRouter Fast
+
+The canonical `https://openrouter.ai/api/v1` preset advertises Fast only for these exact
+OpenAI-backed model slugs:
+
+- `openai/gpt-5.6-sol`
+- `openai/gpt-5.6-terra`
+- `openai/gpt-5.6-luna`
+
+`anthropic/claude-sonnet-5` and undeclared OpenRouter models remain unclassified. A provider-level
+`supportsServiceTier` default is intentionally absent, and a user-set `supportsServiceTier: false`
+still disables the exact-model declarations. The registry declarations apply only while the
+provider still targets the canonical OpenRouter base URL; a same-named custom destination is not
+assumed to share OpenRouter's contract.
+
+Fast sends `service_tier: "priority"`. It does not add or rewrite `provider.only`,
+`provider.order`, or `provider.allow_fallbacks`. OpenRouter documents priority endpoints as the
+first routing choice, followed by graceful fallback to other endpoints when priority capacity is
+unavailable. Billing follows the endpoint actually used, and the response reports the actual
+top-level `service_tier`. Pinning tier endpoints and disabling fallback would therefore reduce
+availability without improving billing safety.
+
+Request logs use that response echo as the authority. `priority` confirms Fast as applied;
+`default` records a downgrade and uses the standard-price estimate; a missing field leaves the
+attempt assumed rather than guessing a downgrade. OpenRouter's priority multiplier varies by
+upstream and is not bundled here. When priority is confirmed but no exact priority price is known,
+the dashboard keeps the standard-price estimate as a documented lower bound and prefixes it with
+`≥`; downgraded attempts have no lower-bound marker.
 
 API-key providers may hold a literal key or an environment reference. OAuth providers use the
 credential store populated by `ocx login`; subscription-backed Claude Code launch behavior is
@@ -271,6 +343,14 @@ so passthrough stays byte-for-byte identical.
 ## Cursor provider (`adapter: "cursor"`)
 
 The Cursor bridge is experimental. After `ocx login cursor`, add or edit `providers.cursor`.
+
+If a proxy cannot carry Cursor's default HTTP/2 stream, set `upstreamHttpVersion` to `"http1.1"`
+or its `"h1"` alias.
+This switches inference to Cursor's `RunSSE` + `BidiAppend` compatibility transport and uses
+HTTP/1.1 for `GetUsableModels` discovery as well. The value requires an HTTPS `baseUrl`. Leave it
+unset or use `"auto"` for the existing HTTP/2 behavior. In the dashboard choose
+**Providers → Cursor → Settings → Cursor transport**.
+
 Cursor Router's optimization ladder is exposed as separate Codex ids because the picker cannot render
 Cursor-specific model parameters:
 
@@ -283,6 +363,14 @@ Cursor-specific model parameters:
 
 Explicit variants send Cursor's `default` model with its `optimization` parameter, preserving the
 selection on every request. They remain available when live discovery omits `default`.
+
+### Vision
+
+Native Cursor vision uses `SelectedImage` (JPEG soft-cap + `blobIdWithData`) for models that can
+see images natively — Claude, Gemini, GPT, Kimi, and Grok among them — using active-turn `data:`
+images only. Earlier-turn images replay as `[image attached]` text markers; remote or undecodable
+images become omission markers. Auto, the Composer family, and GLM (`glm-5.2`, `glm-5.3`) stay on
+the curated `noVisionModels` list and use the vision describe sidecar instead.
 
 Cursor server-driven local tools are disabled by default. Codex continues using its own tools such as
 `apply_patch` and `exec_command` with its own approval and sandbox policy:
@@ -307,8 +395,8 @@ Cursor server-driven local tools are disabled by default. Codex continues using 
 }
 ```
 
-Set the field on `providers.cursor`, not at the top level. In the dashboard use **Providers → Cursor
-→ Edit JSON**, save, then restart. Legacy `unsafeAllowNativeLocalExec: true` equals
+Set `nativeLocalExec` on `providers.cursor`, not at the top level. In the dashboard use **Providers
+→ Cursor → Edit JSON**, save, then restart. Legacy `unsafeAllowNativeLocalExec: true` equals
 `nativeLocalExec: "on"` only when `nativeLocalExec` is unset. MCP, screen recording, and computer use
 are controlled separately by `mcpServers` and `desktopExecutor`.
 
@@ -372,9 +460,9 @@ Use `selectedModels` when discovery should still run but only selected ids shoul
 `/v1/models`. The dashboard retains the full discovered list for later allowlist changes.
 
 Preview GPT-5.6 fallback entries use the same mechanism. The OpenAI API-key preset seeds base and Pro
-ids with context `1050000` and max input `922000`; OpenRouter seeds `openai/gpt-5.6-sol`,
-`openai/gpt-5.6-terra`, and `openai/gpt-5.6-luna` with context `1050000`. Pool/Direct advertises
-`372000`; the synced catalog advertises `max` while keeping `xhigh` distinct.
+ids with context `922000` and max input `922000`; OpenRouter seeds `openai/gpt-5.6-sol`,
+`openai/gpt-5.6-terra`, and `openai/gpt-5.6-luna` with context `922000`. Pool/Direct advertises
+`922000`; the synced catalog advertises `max` while keeping `xhigh` distinct.
 
 ```json
 {
@@ -413,7 +501,7 @@ ids with context `1050000` and max input `922000`; OpenRouter seeds `openai/gpt-
       "baseUrl": "https://ollama.com/v1",
       "apiKey": "${OLLAMA_API_KEY}",
       "defaultModel": "glm-5.2",
-      "noVisionModels": ["glm-5.2", "gpt-oss", "qwen3-coder", "deepseek-v4-pro"]
+      "noVisionModels": ["glm-5.2", "glm-5.3", "gpt-oss", "qwen3-coder", "deepseek-v4-pro"]
     }
   },
   "subagentModels": ["anthropic/claude-opus-5", "ollama-cloud/glm-5.2"],

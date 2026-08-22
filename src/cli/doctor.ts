@@ -26,6 +26,16 @@ import { scanCodexAgentRolesWithTomlModelFallback } from "../codex/subagent-mode
 import { findCodexOnPath, isWindowsInteropDir } from "../codex/shim";
 import { countPendingOpencodexHistory } from "../codex/history-provider";
 import {
+  inspectCodexCoordinator,
+  recoverZeroByteCodexCoordinator,
+  type CodexCoordinatorDiagnostic,
+} from "../codex/coordinator-doctor";
+import {
+  inspectAbandonedResponseStateTemps,
+  reclaimAbandonedResponseStateTemps,
+  type ResponseStateTempRecoveryResult,
+} from "../responses/state";
+import {
   CodexUserIdentityRefusal,
   probeCodexCoordinatorNamespace,
   resolveEffectiveUserIdentity,
@@ -678,6 +688,112 @@ export async function fetchServiceMemory(
 
 const mb = (bytes: number): string => `${Math.round(bytes / (1024 * 1024))}MB`;
 
+export const RECLAIM_RESPONSE_TEMPS_FLAG = "--reclaim-response-temps";
+export const RECOVER_ZERO_BYTE_COORDINATOR_FLAG = "--recover-zero-byte-coordinator";
+/** Matches the dry run's entry bound so report and reclaim agree on a large backlog. */
+const RESPONSE_TEMP_RECLAIM_MAX_CLEANUPS = 4_096;
+/** Names the subsystem: other components mint temps with the same shape and are not covered. */
+const CLEAN_RESPONSE_TEMP_LINE = "  ok  No abandoned response-state temp files.";
+
+/**
+ * Render the abandoned-temp section (testable without console capture).
+ *
+ * Report is the DEFAULT and reclaim is opt-in: `doctor` is a diagnostic an operator runs
+ * to understand a machine, so deleting files as a side effect of asking a question is the
+ * wrong default even for cache files.
+ *
+ * Counts come from `eligible`/`eligibleBytes`, never `matched`: `matched` is incremented
+ * before the file-type, age, boot-floor, and liveness gates, so reporting it would tell an
+ * operator that live-pid temps and young temps are "abandoned".
+ */
+export function formatResponseTempLines(
+  result: ResponseStateTempRecoveryResult,
+  reclaimed: boolean,
+): string[] {
+  if (reclaimed) {
+    if (result.removed === 0 && result.failed === 0) return [CLEAN_RESPONSE_TEMP_LINE];
+    const lines = [`  ok  Reclaimed ${result.removed} abandoned response-state temp file(s), ${mb(result.bytesRemoved)} freed.`];
+    if (result.failed > 0) {
+      // Never "retried automatically": this command exists for the operator whose proxy will
+      // NOT start, and in that state nothing retries anything.
+      lines.push(`  !!  ${result.failed} file(s) could not be removed (in use or locked). Retried on the next reclaim — automatically while the proxy runs, otherwise re-run this command.`);
+    }
+    // `truncated`, not `eligible > removed + failed`: outside a dry run every eligible entry
+    // is unlinked or failed on the same iteration it is counted, so those two are always
+    // equal and the comparison never fired. An operator with a backlog past the budget was
+    // told the reclaim had finished.
+    if (result.truncated) {
+      lines.push("  !!  Cleanup budget reached; files remain. Run the command again to continue.");
+    }
+    return lines;
+  }
+  if (result.eligible === 0) return [CLEAN_RESPONSE_TEMP_LINE];
+  const lines = [
+    `  !!  ${result.eligible} abandoned response-state temp file(s), ${mb(result.eligibleBytes)} reclaimable.`,
+    "      These are interrupted snapshot writes (continuation cache only) and are safe to remove.",
+    "      Reclaim them with: ocx doctor --reclaim-response-temps",
+  ];
+  // The dry run skips the cleanup budget but is still bounded by the entry cap, so a large
+  // enough backlog makes this a floor rather than a total. Say so instead of letting an
+  // operator size the problem from a truncated count.
+  if (result.truncated) lines.push("      Scan stopped at its entry budget; the real total is higher.");
+  return lines;
+}
+
+export function formatCoordinatorDoctorLines(diagnostic: CodexCoordinatorDiagnostic): string[] {
+  const pathLine = diagnostic.path ? [`       path: ${diagnostic.path}`] : [];
+  const evidenceLines = "evidence" in diagnostic && diagnostic.evidence
+    ? [
+      `       size: ${diagnostic.evidence.sizeBytes} bytes; user_version: ${diagnostic.evidence.schemaVersion}`,
+      `       tables: ${diagnostic.evidence.tables.length === 0 ? "none" : diagnostic.evidence.tables.join(", ")}`,
+      `       transition rows: ${diagnostic.evidence.transitionRows ?? "not inspected"}; singleton=1 rows: ${diagnostic.evidence.singletonRows ?? "not inspected"}`,
+    ]
+    : [];
+  switch (diagnostic.kind) {
+    case "absent":
+      return ["  ok     native-write coordinator not created yet", ...pathLine];
+    case "ready":
+      return ["  ok     native-write coordinator has an authoritative transition row", ...pathLine, ...evidenceLines];
+    case "zero-byte":
+      return [
+        "  !!     native-write coordinator is a zero-byte remnant and has no authority",
+        ...pathLine,
+        ...evidenceLines,
+        `       Action: stop the OpenCodex proxy/service, then run ocx doctor ${RECOVER_ZERO_BYTE_COORDINATOR_FLAG} --yes`,
+      ];
+    case "unversioned-empty":
+      return [
+        "  !!     native-write coordinator is a non-empty unversioned database; automatic recovery is refused",
+        ...pathLine,
+        ...evidenceLines,
+      ];
+    case "rowless":
+      return [
+        "  !!     native-write coordinator has schema version 1 but no authoritative row; automatic recovery is refused",
+        ...pathLine,
+        ...evidenceLines,
+      ];
+    case "unversioned-nonempty":
+      return [
+        "  !!     native-write coordinator is unversioned and contains unknown tables; automatic recovery is refused",
+        ...pathLine,
+        ...evidenceLines,
+      ];
+    case "unsupported":
+      return [
+        `  !!     native-write coordinator schema version ${diagnostic.version} is unsupported; automatic recovery is refused`,
+        ...pathLine,
+        ...evidenceLines,
+      ];
+    case "changed":
+      return ["  --     native-write coordinator changed during diagnosis; re-run ocx doctor", ...pathLine];
+    case "unsafe":
+      return [`  !!     native-write coordinator path is unsafe: ${diagnostic.reason}`, ...pathLine];
+    case "unreadable":
+      return [`  !!     native-write coordinator is unreadable: ${diagnostic.reason}`, ...pathLine, ...evidenceLines];
+  }
+}
+
 /** Render the doctor "Memory / runtime" section lines (testable without console capture). */
 export function formatServiceMemoryLines(report: ServiceMemoryReport): string[] {
   const lines: string[] = [];
@@ -790,6 +906,33 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     return;
   }
 
+  if (args.includes(RECOVER_ZERO_BYTE_COORDINATOR_FLAG)) {
+    if (!args.includes("--yes")) {
+      console.log(`Recovery is explicit and creates a same-directory backup. Re-run: ocx doctor ${RECOVER_ZERO_BYTE_COORDINATOR_FLAG} --yes`);
+      process.exitCode = 1;
+      return;
+    }
+    const diagnostics = readConfigDiagnostics().config;
+    const live = await findLiveProxy({
+      configFn: () => ({ port: diagnostics.port, hostname: diagnostics.hostname }),
+    });
+    if (live) {
+      console.log(`Recovery refused: OpenCodex proxy pid ${live.pid} is still running. Stop the proxy/service and retry.`);
+      process.exitCode = 1;
+      return;
+    }
+    const recovered = recoverZeroByteCodexCoordinator();
+    if (!recovered.ok) {
+      console.log(`Recovery refused: ${recovered.reason}.`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`Moved the non-authoritative coordinator to ${recovered.backupPath}`);
+    console.log("Run `ocx sync` to retry Codex config injection. The backup was preserved and no Codex config/catalog file was changed by recovery.");
+    process.exitCode = 0;
+    return;
+  }
+
   console.log("opencodex doctor\n");
 
   // Ordering note: the memory/runtime section renders after "Running proxy
@@ -804,6 +947,26 @@ export async function runDoctor(args: string[] = []): Promise<void> {
       .filter(Boolean).join(", ");
     console.log(`  ${row.exists ? "ok " : "-- "} ${row.label}: ${row.path}${flags ? `  (${flags})` : ""}`);
   }
+
+  // Runs without the proxy on purpose: the worst accumulation happens when the proxy will
+  // not start, which is exactly when the in-process periodic reclaim never ticks.
+  const reclaimTemps = args.includes(RECLAIM_RESPONSE_TEMPS_FLAG);
+  console.log("\nResponse-state temp files");
+  // A typo must not silently degrade into "nothing to reclaim" — the operator would read the
+  // report as an answer to a question they never actually asked.
+  for (const arg of args) {
+    if (arg !== RECLAIM_RESPONSE_TEMPS_FLAG && /^--reclaim/.test(arg)) {
+      console.log(`  !!  Unrecognized flag ${arg}; did you mean ${RECLAIM_RESPONSE_TEMPS_FLAG}? Reporting only.`);
+    }
+  }
+  for (const line of formatResponseTempLines(
+    // The reclaim budget matches the report budget: a report bounded by entries and a removal
+    // bounded by a smaller cleanup cap would tell an operator 816 and then silently free 512.
+    reclaimTemps
+      ? reclaimAbandonedResponseStateTemps({ maxCleanups: RESPONSE_TEMP_RECLAIM_MAX_CLEANUPS })
+      : inspectAbandonedResponseStateTemps(),
+    reclaimTemps,
+  )) console.log(line);
 
   const orcaHome = collectOrcaCodexHomeDiagnostic();
   console.log("\nCodex app home targeting");
@@ -929,6 +1092,8 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     const reason = cause instanceof CodexUserIdentityRefusal ? cause.message : String(cause);
     console.log(`  --     history coordinator namespace refused: ${reason}`);
   }
+  console.log("\nCodex native-write coordinator");
+  for (const line of formatCoordinatorDoctorLines(inspectCodexCoordinator())) console.log(line);
   const pending = countPendingOpencodexHistory();
   if (pending.failed) {
     console.log("  --     state DB locked or unreadable (Codex app open?) — migration state unknown");

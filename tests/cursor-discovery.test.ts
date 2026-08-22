@@ -4,8 +4,10 @@ import {
   CURSOR_DEFAULT_CONTEXT_WINDOW,
   CURSOR_ROUTER_MODEL_IDS,
   CURSOR_ROUTING_LEVELS,
+  CURSOR_NO_VISION_MODELS,
   CURSOR_STATIC_MODELS,
   cursorCodexToWireModelId,
+  cursorCheckpointModelAffinityId,
   filterCursorConfiguredModelsByLiveDiscovery,
   isCursorModelAvailableForAccount,
   cursorModelContextWindows,
@@ -16,10 +18,28 @@ import {
   inferCursorContextWindow,
   isCursorExternalWireModel,
   isCursorNativeWireModel,
+  cursorNeedsExternalToolContinuation,
   normalizeCursorModels,
 } from "../src/adapters/cursor/discovery";
 
 describe("Cursor discovery metadata", () => {
+  test("no-vision list is a curated explicit subset of the static seed", () => {
+    const ids = new Set(cursorModelIds(CURSOR_STATIC_MODELS));
+    expect([...CURSOR_NO_VISION_MODELS]).toEqual([
+      ...CURSOR_ROUTER_MODEL_IDS,
+      "composer-1",
+      "composer-2.5",
+      "composer-2.5-fast",
+      "glm-5.2",
+      "glm-5.3",
+    ]);
+    for (const id of CURSOR_NO_VISION_MODELS) {
+      expect(ids.has(id), `${id} must be in the static Cursor seed`).toBe(true);
+    }
+    for (const id of ["grok-4.5", "grok-4.5-fast", "gpt-5.5", "claude-sonnet-5", "kimi-k3", "gemini-3-pro"]) {
+      expect(CURSOR_NO_VISION_MODELS as readonly string[]).not.toContain(id);
+    }
+  });
   test("static seed includes Cursor's public model families plus the safe auto model", () => {
     const ids = cursorModelIds(CURSOR_STATIC_MODELS);
 
@@ -186,5 +206,26 @@ describe("Cursor discovery metadata", () => {
     expect(isCursorExternalWireModel("gpt-5.6-sol-xhigh")).toBe(true);
     expect(isCursorExternalWireModel("claude-4.6-sonnet-high")).toBe(true);
     expect(isCursorExternalWireModel("cursor/gpt-5.6-sol")).toBe(true);
+  });
+
+  test("routes composer-2.5 tool continuations through the external userMessageAction path", () => {
+    expect(cursorNeedsExternalToolContinuation("composer-2.5")).toBe(true);
+    expect(cursorNeedsExternalToolContinuation("cursor/composer-2.5")).toBe(true);
+    expect(cursorNeedsExternalToolContinuation("composer-2.5-fast")).toBe(false);
+    expect(cursorNeedsExternalToolContinuation("cursor/composer-2.5-fast")).toBe(false);
+    expect(cursorNeedsExternalToolContinuation("auto")).toBe(false);
+    expect(cursorNeedsExternalToolContinuation("gpt-5.6-sol")).toBe(true);
+  });
+
+  test("normalizes Cursor checkpoint model affinity across prefix and effort", () => {
+    expect(cursorCheckpointModelAffinityId("cursor/grok-4.6")).toBe(
+      cursorCheckpointModelAffinityId("cursor-grok-4.6-low"),
+    );
+    expect(cursorCheckpointModelAffinityId("grok-4.6")).toBe(
+      cursorCheckpointModelAffinityId("cursor/grok-4.6"),
+    );
+    expect(cursorCheckpointModelAffinityId("cursor/gpt-5.6-sol")).not.toBe(
+      cursorCheckpointModelAffinityId("cursor/grok-4.6"),
+    );
   });
 });

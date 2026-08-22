@@ -12,16 +12,33 @@ export interface CursorTransport {
    * accepted is never replayed. Absent (undefined) is treated as "committed" — safe by default.
    */
   requestCommitted?(): boolean;
+  /**
+   * Last ConversationStateStructure captured from conversationCheckpointUpdate on this transport.
+   * Test and adapter seams use this instead of reaching into LiveCursorTransport.
+   */
+  capturedConversationCheckpoint?(): Uint8Array | undefined;
 }
 
 export interface CursorTransportFactoryInput {
   provider: OcxProviderConfig;
   translatorBudget: TranslatorBudget;
   headers?: Headers;
+  /** Router-prepared fetch that preserves provider overrides and per-request pacing. */
+  fetch?: typeof globalThis.fetch;
   /** Pre-first-frame deadline (dial + first server frame). Defaults to 30s when omitted. */
   firstFrameTimeoutMs?: number;
   /** Grace (ms) between close() and the force-destroy fallback after a first-frame timeout. Defaults to 1s. */
   timeoutDestroyGraceMs?: number;
+  /**
+   * T04 watchdog: maximum inbound decoded-frame silence (ms) after the first frame before the
+   * turn is failed. Defaults to 30s.
+   */
+  streamSilenceFailMs?: number;
+  /**
+   * T04 watchdog: maximum heartbeat/checkpoint-only traffic (ms) without turn progress before
+   * the turn is failed. Defaults to 90s.
+   */
+  streamHeartbeatOnlyFailMs?: number;
   /**
    * Grace window (ms) before a drained client-tool turn is finalized, so a sibling tool call
    * announced in a later receive chunk can revoke a premature finalize. Defaults to 50ms.
@@ -33,6 +50,11 @@ export interface CursorTransportFactoryInput {
    * native local exec authorization because the text is caller-controlled.
    */
   requestDeclaresFullAccess?: boolean;
+  /**
+   * Stable Cursor Connect `x-session-id` across transport rebuilds for the same
+   * client thread. Distinct from the per-transport native-exec/shell owner.
+   */
+  sessionId?: string;
 }
 
 export type CursorTransportFactory = (input: CursorTransportFactoryInput) => CursorTransport;
