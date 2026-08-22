@@ -102,7 +102,9 @@ describe("Responses buildRequest web_search capability", () => {
     enrichProviderFromRegistry("xai", provider);
 
     const body = buildWebSearchBody(provider);
-    expect(body.tools).toEqual([{ type: "web_search" }]);
+    // user_location is ACCEPTED by both xAI destinations (this file's own probe note above,
+    // re-confirmed 2026-08-22); only the two refused fields must be gone.
+    expect(body.tools).toEqual([{ type: "web_search", user_location: { type: "approximate" } }]);
   });
 
   test("non-xAI classified gateways use generic field stripping, not xAI cached-search policy", () => {
@@ -193,7 +195,9 @@ describe("routedProviderConfig web_search capability backfill", () => {
     });
 
     const body = buildWebSearchBody({ ...routed, adapter: "openai-responses" });
-    expect(body.tools).toEqual([{ type: "web_search" }]);
+    // user_location is ACCEPTED by both xAI destinations (this file's own probe note above,
+    // re-confirmed 2026-08-22); only the two refused fields must be gone.
+    expect(body.tools).toEqual([{ type: "web_search", user_location: { type: "approximate" } }]);
   });
 
   test("an explicit saved value still overrides the registry default", () => {
