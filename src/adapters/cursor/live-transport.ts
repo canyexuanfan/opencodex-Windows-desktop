@@ -92,6 +92,18 @@ const CURSOR_CLIENT_VERSION = "cli-2026.07.08-0c04a8a";
 const HEARTBEAT_MS = 5_000;
 const CURSOR_FIRST_FRAME_TIMEOUT_MS = 30_000;
 /**
+ * T04 (senpi #1062 second half): after the first frame, a turn with NO inbound decoded
+ * frames for this long is failed instead of waiting for the 300s bridge stall watchdog
+ * (issue #2210). Reset on every decoded AgentServerMessage.
+ */
+const CURSOR_STREAM_SILENCE_FAIL_MS = 30_000;
+/**
+ * A stream that produces ONLY liveness frames (server heartbeat / conversationCheckpointUpdate)
+ * for this long is equally stuck — the server is alive but the turn is not progressing.
+ * Reset on every decoded frame that is not liveness-only.
+ */
+const CURSOR_STREAM_HEARTBEAT_ONLY_FAIL_MS = 90_000;
+/**
  * After `turnEnded` is decoded, the application turn is complete. A server that keeps
  * HTTP/2 open past this point cannot hold the turn hostage (senpi #1062): we close our side
  * after a short grace so any trailing frames (late usage, checkpoint) still land.
@@ -421,6 +433,17 @@ class LiveCursorTransport implements CursorTransport {
   private heartbeat?: ReturnType<typeof setInterval>;
   private firstFrameTimer?: ReturnType<typeof setTimeout>;
   private turnEndedCloseTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * T04 inbound stream-health watchdog. Armed after the request is on the wire, reset by
+   * every DECODED frame (raw chunks deliberately do not count — TLS keepalive noise must not
+   * defeat it), disarmed by any settle/expected-close path. One timer covers both thresholds:
+   * it always fires at min(lastInbound + silence, lastMeaningful + heartbeatOnly) and re-arms
+   * when neither deadline has actually elapsed.
+   */
+  private streamHealthTimer?: ReturnType<typeof setTimeout>;
+  private lastInboundFrameAt = 0;
+  private lastMeaningfulFrameAt = 0;
+  private streamHealthFail?: (error: Error) => void;
   private committed = false;
   private expectedClose = false;
   /**
@@ -760,6 +783,73 @@ class LiveCursorTransport implements CursorTransport {
     }
   }
 
+  private clearStreamHealthTimer(): void {
+    if (this.streamHealthTimer) {
+      clearTimeout(this.streamHealthTimer);
+      this.streamHealthTimer = undefined;
+    }
+    this.streamHealthFail = undefined;
+  }
+
+  /**
+   * T04: arm (or re-arm) the inbound stream-health watchdog. `fail` is the turn's
+   * failAndClear; the timer owns nothing else. Never armed before the first decoded
+   * frame (the first-frame timer covers dial + first response), and disarmed by
+   * every settle / expected-close path alongside the other timers.
+   */
+  private armStreamHealthTimer(fail: (error: Error) => void): void {
+    if (this.streamHealthTimer) clearTimeout(this.streamHealthTimer);
+    if (this.expectedClose) return;
+    this.streamHealthFail = fail;
+    const silenceMs = this.input.streamSilenceFailMs ?? CURSOR_STREAM_SILENCE_FAIL_MS;
+    const heartbeatOnlyMs = this.input.streamHeartbeatOnlyFailMs ?? CURSOR_STREAM_HEARTBEAT_ONLY_FAIL_MS;
+    const now = Date.now();
+    const deadline = Math.min(
+      this.lastInboundFrameAt + silenceMs,
+      this.lastMeaningfulFrameAt + heartbeatOnlyMs,
+    );
+    this.streamHealthTimer = setTimeout(() => {
+      this.streamHealthTimer = undefined;
+      const failFn = this.streamHealthFail;
+      if (!failFn || this.expectedClose) return;
+      const stalledFor = Date.now() - this.lastInboundFrameAt;
+      const meaningfulStalledFor = Date.now() - this.lastMeaningfulFrameAt;
+      if (stalledFor < silenceMs && meaningfulStalledFor < heartbeatOnlyMs) {
+        // A frame landed between arming and firing — re-arm for the fresh deadline.
+        this.armStreamHealthTimer(failFn);
+        return;
+      }
+      const heartbeatOnly = stalledFor < silenceMs;
+      debugProviderDiagnostic("cursor", "stream-health-timeout", {
+        stalledMs: stalledFor,
+        meaningfulStalledMs: meaningfulStalledFor,
+        heartbeatOnly,
+        framesReceived: this.framesReceived,
+        elapsedMs: Date.now() - this.turnStartedAt,
+      });
+      const reason = heartbeatOnly
+        ? `Cursor stream stalled: heartbeat-only traffic for ${Math.round(meaningfulStalledFor / 1000)}s without turn progress`
+        : `Cursor stream stalled: no inbound frames for ${Math.round(stalledFor / 1000)}s before turnEnded`;
+      failFn(new Error(reason));
+      try { this.stream?.close(); } catch { this.stream?.destroy(); }
+      this.session?.close();
+      this.http1Connection?.close();
+    }, Math.max(0, deadline - now));
+  }
+
+  /**
+   * T04: record a decoded inbound frame. Liveness-only frames (server heartbeat,
+   * conversationCheckpointUpdate) keep the silence clock fresh but not the progress
+   * clock — matching senpi's split so a server that only pings still fails at the
+   * heartbeat-only threshold.
+   */
+  private noteInboundFrame(livenessOnly: boolean): void {
+    const now = Date.now();
+    this.lastInboundFrameAt = now;
+    if (!livenessOnly) this.lastMeaningfulFrameAt = now;
+    if (this.streamHealthFail) this.armStreamHealthTimer(this.streamHealthFail);
+  }
+
   /**
    * A clean Connect END_STREAM owns the turn terminal even when Cursor keeps the
    * HTTP body open or tears it down with an abort/reset immediately afterward.
@@ -774,6 +864,7 @@ class LiveCursorTransport implements CursorTransport {
       this.heartbeat = undefined;
     }
     this.clearFirstFrameTimer();
+    this.clearStreamHealthTimer();
   }
 
   private startShellCleanup(): Promise<BackgroundShellTerminationReport> {
@@ -785,6 +876,7 @@ class LiveCursorTransport implements CursorTransport {
     if (this.turnEndedCloseTimer) clearTimeout(this.turnEndedCloseTimer);
     this.clearPendingFinalize();
     this.clearFirstFrameTimer();
+    this.clearStreamHealthTimer();
     this.stream?.close();
     this.session?.close();
     this.http1Connection?.close();
@@ -800,6 +892,7 @@ class LiveCursorTransport implements CursorTransport {
     this.clearPendingFinalize();
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.clearFirstFrameTimer();
+    this.clearStreamHealthTimer();
     if (this.http1Connection) {
       this.http1Connection.close();
     } else {
@@ -825,6 +918,10 @@ class LiveCursorTransport implements CursorTransport {
    */
   private closeAfterTurnEnded(): void {
     if (this.turnEndedCloseTimer) return;
+    // The application turn is over: the T03 grace timer owns the socket from here.
+    // The T04 watchdog must disarm NOW, not at the grace close — a watchdog shorter
+    // than the grace would otherwise fail a completed turn.
+    this.clearStreamHealthTimer();
     this.turnEndedCloseTimer = setTimeout(() => {
       this.turnEndedCloseTimer = undefined;
       // Only expectedClose (client-tool suspend cancel) blocks the close.
@@ -839,6 +936,7 @@ class LiveCursorTransport implements CursorTransport {
       });
       this.expectedClose = true;
       this.clearFirstFrameTimer();
+      this.clearStreamHealthTimer();
       if (this.heartbeat) clearInterval(this.heartbeat);
       if (this.http1Connection) {
         this.http1Connection.close();
@@ -962,7 +1060,10 @@ class LiveCursorTransport implements CursorTransport {
     const settler = createTerminalSettler({
       fail,
       finish,
-      clearTimer: () => this.clearFirstFrameTimer(),
+      clearTimer: () => {
+        this.clearFirstFrameTimer();
+        this.clearStreamHealthTimer();
+      },
     });
     const failAndClear = (error: Error) => {
       releaseBacklogLease();
@@ -1093,7 +1194,20 @@ class LiveCursorTransport implements CursorTransport {
         settler.settleFinish();
         return;
       }
-      await this.handleServerMessage(fromBinary(AgentServerMessageSchema, frame.payload), state, push);
+      const decoded = fromBinary(AgentServerMessageSchema, frame.payload);
+      // T04: every decoded frame refreshes the silence clock; only non-liveness frames
+      // refresh the progress clock. First decoded frame arms the watchdog (the first-frame
+      // timer owned everything before this point).
+      const decodedUpdate = decoded.message.case === "interactionUpdate" ? decoded.message.value.message?.case : undefined;
+      const livenessOnly = decodedUpdate === "heartbeat" || decoded.message.case === "conversationCheckpointUpdate";
+      if (!this.streamHealthFail) {
+        const now = Date.now();
+        this.lastInboundFrameAt = now;
+        this.lastMeaningfulFrameAt = now;
+        this.streamHealthFail = failAndClear;
+      }
+      this.noteInboundFrame(livenessOnly);
+      await this.handleServerMessage(decoded, state, push);
     };
     const drainPendingFrames = () => {
       const availableSlots = CURSOR_MAX_PENDING_FRAMES - this.pendingTransportFrames;
