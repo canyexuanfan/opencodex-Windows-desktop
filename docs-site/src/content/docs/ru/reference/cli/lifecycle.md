@@ -237,6 +237,8 @@ ocx service status
 ocx service uninstall
 ```
 
+На Windows bare `ocx service` выполняет путь установки только после того, как отсутствие подтверждено и для Task Scheduler, и для WinSW. Если любой из запросов статуса не даёт определённого ответа, он отказывается что-либо регистрировать и предлагает выполнить `ocx service status`; явный `ocx service install` используйте только после подтверждения отсутствия.
+
 На Windows `ocx service status` отдельно показывает регистрацию в Task Scheduler и
 identity-проверенную достижимость прокси OpenCodex. Он не печатает локализованную таблицу
 `schtasks`, чтобы сводка оставалась читаемой на любых code page Windows.

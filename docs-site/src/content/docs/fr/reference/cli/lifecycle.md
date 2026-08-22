@@ -171,6 +171,8 @@ ocx service status
 ocx service uninstall
 ```
 
+Sous Windows, un `ocx service` nu n'exécute le chemin d'installation qu'après avoir prouvé l'absence à la fois du Task Scheduler et de WinSW. Si l'une des requêtes de statut est inconcluante, il refuse d'enregistrer quoi que ce soit et demande d'exécuter `ocx service status` ; n'utilisez un `ocx service install` explicite qu'après avoir confirmé l'absence.
+
 Avant de signaler une réussite, `install`, `start` et `repair` vérifient, sur les trois plateformes, qu’un proxy répond effectivement sur le port inscrit dans le service installé. Elles attendent jusqu’à 20 secondes, puis affichent le port utilisé :
 
 ```text

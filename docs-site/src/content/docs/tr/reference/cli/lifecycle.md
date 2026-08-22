@@ -261,6 +261,8 @@ ocx service status
 ocx service uninstall
 ```
 
+Windows'ta bare `ocx service`, yükleme yolunu ancak Task Scheduler ve WinSW'nin her ikisinin de yok olduğu kanıtlandıktan sonra çalıştırır. Durum sorgularından herhangi biri belirsizse hiçbir şey kaydetmeyi reddeder ve `ocx service status` çalıştırmanızı ister; yalnızca yokluk doğrulandıktan sonra açık `ocx service install` kullanın.
+
 `install`, `start` ve `repair`, başarı bildirmeden önce kurulu servise
 yerleştirilmiş portta bir proxy'nin gerçekten yanıt verdiğini onaylar — her üç
 platformda da. 20 saniyeye kadar beklerler ve ardından sunulan portu
@@ -437,4 +439,3 @@ ocx update --tag preview
 Yeni sürümler, [Sürüm iş
 akışı](https://github.com/lidge-jun/opencodex/actions/workflows/release.yml)
 bunları npm'de yayınladığında kullanılabilir hale gelir.
-

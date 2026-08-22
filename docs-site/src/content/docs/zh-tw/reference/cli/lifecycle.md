@@ -166,6 +166,8 @@ ocx service status
 ocx service uninstall
 ```
 
+在 Windows 上，bare `ocx service` 只有在 Task Scheduler 和 WinSW 兩者的缺失都得到證實後才會走安裝路徑。如果任一狀態查詢結果不確定，它會拒絕任何註冊並提示執行 `ocx service status`；只有在確認缺失之後才使用明確的 `ocx service install`。
+
 `install`、`start` 與 `repair` 會確認代理實際在已安裝服務內建的連接埠上回應，之後才回報成功——在三種平台上皆如此。它們等待最多 20 秒，然後印出伺服連接埠：
 
 ```

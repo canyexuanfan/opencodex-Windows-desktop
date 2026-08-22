@@ -172,6 +172,8 @@ ocx service status
 ocx service uninstall
 ```
 
+在 Windows 上，bare `ocx service` 只有在 Task Scheduler 和 WinSW 两者的缺失都得到证实后才会走安装路径。如果任一状态查询结果不确定，它会拒绝任何注册并提示运行 `ocx service status`；只有在确认缺失之后才使用显式的 `ocx service install`。
+
 在 Windows 上，`ocx service status` 会单独报告 Task Scheduler 注册状态和已身份验证的 OpenCodex 代理可达性。它不会打印本地化的 `schtasks` 表格，因此在不同 Windows 代码页下摘要仍然可读。
 
 在 Windows 上，创建 Task Scheduler 条目需要提升权限。识别到本地化的访问被拒绝文本时，会沿用现有的指导路径。如果该文本不可读，则回退要求命令形态为 `/create /tn opencodex-proxy /xml <non-empty-path> /f`，状态为 1，并且令牌明确为非提升权限；这时仪表盘的 Startup Safety 操作可以自动请求 UAC。如果该回退无法判断令牌状态，它会保留原始调度器错误。外部任务和操作绝不会发出自动提升标记。请批准仪表盘的 UAC 提示，或在提升权限的 PowerShell 窗口中重新运行 `ocx service install`。

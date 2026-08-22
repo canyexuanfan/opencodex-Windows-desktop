@@ -220,6 +220,10 @@ ocx service status
 ocx service uninstall
 ```
 
+Windows에서는 bare `ocx service`가 Task Scheduler와 WinSW 양쪽 모두 부재가 입증된 후에만 설치
+경로를 실행합니다. 상태 조회 중 하나라도 불확실하면 아무것도 등록하지 않고 `ocx service status`
+실행을 안내합니다. 부재를 확인한 뒤에만 명시적인 `ocx service install`을 사용하세요.
+
 Windows에서는 `ocx service status`가 Task Scheduler 등록 상태를 ID가 검증된 OpenCodex 프록시
 도달 가능성과 별도로 보고합니다. 로컬라이즈된 `schtasks` 표는 출력하지 않으므로, 요약은 Windows
 코드 페이지에서도 읽기 쉽습니다.
