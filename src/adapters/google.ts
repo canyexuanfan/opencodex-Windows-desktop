@@ -964,7 +964,9 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
         const replaySession = provider.googleMode === "cloud-code-assist" ? antigravitySession : vertexReplaySession;
         if ((provider.googleMode === "cloud-code-assist" || provider.googleMode === "vertex")
           && parts && replayModel && replaySession) {
-          pendingStreamThoughtSig = observeAntigravityReplay(
+          // Observation may scan the whole frame, so use it only for replay-cache side effects.
+          // The source-order loop below exclusively owns stream carry and cannot pair backwards.
+          observeAntigravityReplay(
             replayModel,
             replaySession,
             parts as unknown[],
