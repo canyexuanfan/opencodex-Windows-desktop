@@ -259,3 +259,107 @@ describe("bare-integer-for-string tool argument repair (#1938)", () => {
   });
 });
 
+
+/**
+ * The multi_agent wait shape from the #2316 report. Codex advertises `timeout_ms` as a
+ * JSON Schema `number` while its Rust runtime deserializes it as `u64`, so an integral
+ * float that is perfectly valid JSON is rejected before the tool runs.
+ */
+const MULTI_AGENT_WAIT_SCHEMA = {
+  type: "object",
+  properties: {
+    targets: { type: "array", items: { type: "string" } },
+    timeout_ms: { type: "number" },
+    temperature: { type: "number" },
+  },
+};
+
+describe("native u64 fields advertised as number (#2316)", () => {
+  test("repairs the exact wait_agent call from the report", () => {
+    expect(coerceIntegerToolArguments('{"targets":["a"],"timeout_ms":120000.0}', MULTI_AGENT_WAIT_SCHEMA))
+      .toBe('{"targets":["a"],"timeout_ms":120000}');
+    expect(coerceIntegerToolArguments('{"timeout_ms":60000.0}', MULTI_AGENT_WAIT_SCHEMA))
+      .toBe('{"timeout_ms":60000}');
+  });
+
+  test("a fractional timeout is a real disagreement and still fails upstream", () => {
+    const raw = '{"timeout_ms":1.5}';
+    expect(coerceIntegerToolArguments(raw, MULTI_AGENT_WAIT_SCHEMA)).toBe(raw);
+  });
+
+  test("an ordinary number field beside it is still never touched", () => {
+    const raw = '{"temperature":1.0}';
+    expect(coerceIntegerToolArguments(raw, MULTI_AGENT_WAIT_SCHEMA)).toBe(raw);
+  });
+
+  test("an already-integral payload keeps its original bytes", () => {
+    const clean = '{"targets":["a"],"timeout_ms":120000}';
+    expect(coerceIntegerToolArguments(clean, MULTI_AGENT_WAIT_SCHEMA)).toBe(clean);
+  });
+
+  test("the allowlist reaches a nested object, not just the top level", () => {
+    const nested = {
+      type: "object",
+      properties: { opts: { type: "object", properties: { timeout_ms: { type: "number" } } } },
+    };
+    expect(coerceIntegerToolArguments('{"opts":{"timeout_ms":120000.0}}', nested))
+      .toBe('{"opts":{"timeout_ms":120000}}');
+  });
+
+  test("an array named like the allowlist does not inherit it", () => {
+    // Array items have no property name of their own, so the element is judged by its
+    // own schema. A fractional element stays fractional rather than being rewritten.
+    const arrayed = {
+      type: "object",
+      properties: { timeout_ms: { type: "array", items: { type: "number" } } },
+    };
+    const raw = '{"timeout_ms":[1.5]}';
+    expect(coerceIntegerToolArguments(raw, arrayed)).toBe(raw);
+  });
+
+  test("an allowlisted name over a string field is a disagreement, not a repair", () => {
+    // `number` is what authorizes the repair. A string-typed timeout_ms carrying a bare
+    // integer falls to the #1938 rule instead, which stringifies it.
+    const stringy = { type: "object", properties: { timeout_ms: { type: "string" } } };
+    expect(coerceIntegerToolArguments('{"timeout_ms":120000}', stringy))
+      .toBe('{"timeout_ms":"120000"}');
+  });
+
+  test("a field NOT on the allowlist keeps its float even when integral", () => {
+    // Deliberate scope proof: only names with a captured u64 rejection are repaired.
+    const others = {
+      type: "object",
+      properties: { yield_time_ms: { type: "number" }, priority: { type: "number" } },
+    };
+    const raw = '{"yield_time_ms":60000.0,"priority":2.0}';
+    expect(coerceIntegerToolArguments(raw, others)).toBe(raw);
+  });
+
+  test("the namespaced wait_agent call is repaired through the real bridge", async () => {
+    const schemas = new Map<string, Record<string, unknown>>([
+      ["multi_agent_v1__wait_agent", MULTI_AGENT_WAIT_SCHEMA],
+    ]);
+    const frames = await collectSse(bridgeToResponsesSSE(
+      replay([
+        { type: "tool_call_start", id: "call_1", name: "multi_agent_v1__wait_agent" },
+        { type: "tool_call_delta", arguments: '{"timeout_ms":120000.0}' },
+        { type: "tool_call_end", id: "call_1" },
+        { type: "done" },
+      ]),
+      "grok-4.6", undefined, undefined, undefined, undefined, 2_000, { toolParameterSchemas: schemas },
+    ));
+    const done = frames.find(f => f.event === "response.function_call_arguments.done");
+    expect(done?.data.arguments).toBe('{"timeout_ms":120000}');
+
+    // The non-streaming path is the same contract; Codex parses the completed item.
+    const body = buildResponseJSON([
+      { type: "tool_call_start", id: "call_1", name: "multi_agent_v1__wait_agent" },
+      { type: "tool_call_delta", arguments: '{"timeout_ms":120000.0}' },
+      { type: "tool_call_end", id: "call_1" },
+      { type: "done" },
+    ], "grok-4.6", { toolParameterSchemas: schemas }) as Record<string, unknown>;
+    const call = (body.output as Record<string, unknown>[]).find(i => i.type === "function_call");
+    expect(call?.arguments).toBe('{"timeout_ms":120000}');
+  });
+});
+
