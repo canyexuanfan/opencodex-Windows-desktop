@@ -136,3 +136,34 @@ describe("isCursorInvalidArgumentError", () => {
     expect(isCursorInvalidArgumentError(new Error("Cursor connection failed"))).toBe(false);
   });
 });
+
+describe("bare resource_exhausted size prior (devlog 260)", () => {
+  const BARE = "Cursor Connect error resource_exhausted: Error";
+
+  test("a provably small request keeps the 429 class (plan-gated model, live probe 210)", () => {
+    expect(classifyCursorError(BARE, { estimatedInputTokens: 20, contextWindow: 200_000 }))
+      .toBe("Cursor rate limit exceeded");
+  });
+
+  test("a plausibly large request still classifies as context overflow", () => {
+    expect(classifyCursorError(BARE, { estimatedInputTokens: 150_000, contextWindow: 200_000 }))
+      .toBe("Cursor context limit exceeded");
+  });
+
+  test("unknown estimate or window keeps today's overflow mapping (prior only removes provable false overflows)", () => {
+    expect(classifyCursorError(BARE)).toBe("Cursor context limit exceeded");
+    expect(classifyCursorError(BARE, {})).toBe("Cursor context limit exceeded");
+    expect(classifyCursorError(BARE, { estimatedInputTokens: 20 })).toBe("Cursor context limit exceeded");
+    expect(classifyCursorError(BARE, { contextWindow: 200_000 })).toBe("Cursor context limit exceeded");
+  });
+
+  test("explicit quota cues stay 429 regardless of size context", () => {
+    expect(classifyCursorError("resource_exhausted: quota exhausted", { estimatedInputTokens: 150_000, contextWindow: 200_000 }))
+      .toBe("Cursor rate limit exceeded");
+  });
+
+  test("explicit size phrases stay resource-limit regardless of size context", () => {
+    expect(classifyCursorError("resource_exhausted: request body exceeds maximum allowed size", { estimatedInputTokens: 20, contextWindow: 200_000 }))
+      .toBe("Cursor resource limit exceeded");
+  });
+});

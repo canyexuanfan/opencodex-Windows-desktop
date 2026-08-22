@@ -123,6 +123,30 @@ const QUOTA_RATE_CUES = ["too many requests", "quota", "rate limit", "rate-limit
  */
 const BARE_RE_TAILS = new Set(["error", "", "resource_exhausted", "resource exhausted"]);
 
+/**
+ * Size prior for bare resource_exhausted classification (devlog 260, live probe 210):
+ * a plan-gated model returns the SAME bare RE shape on a ~20-token prompt that a real
+ * payload overflow produces, so the message alone cannot separate "compact and retry"
+ * from "this account cannot use this model". When the caller can supply how large the
+ * request actually was relative to the model's window, a small request keeps the
+ * 429-class mapping; only a plausibly-large one classifies as overflow. Unknown
+ * sizes keep today's overflow mapping so the prior only ever REMOVES false overflows
+ * it can prove.
+ */
+export interface CursorSizeContext {
+  estimatedInputTokens?: number;
+  contextWindow?: number;
+}
+
+const OVERFLOW_MIN_FRACTION = 0.5;
+
+function bareReLooksLikeOverflow(context?: CursorSizeContext): boolean {
+  if (!context) return true;
+  const { estimatedInputTokens, contextWindow } = context;
+  if (estimatedInputTokens === undefined || contextWindow === undefined || contextWindow <= 0) return true;
+  return estimatedInputTokens >= OVERFLOW_MIN_FRACTION * contextWindow;
+}
+
 export function isCursorZeroTokenResourceExhausted(lowerMessage: string): boolean {
   if (!lowerMessage.includes("resource_exhausted") && !lowerMessage.includes("resource exhausted")) return false;
   // Any explicit quota/rate cue wins: this is a real 429.
@@ -172,7 +196,7 @@ export function isCursorRequestTooLargeDetail(lowerMessage: string): boolean {
  * The returned prefix string is recognized by `src/lib/errors.ts` `classifyError` keywords,
  * so bridge-level error mapping produces the right Codex error type (rate_limit, auth, etc.).
  */
-export function classifyCursorError(message: string): string {
+export function classifyCursorError(message: string, sizeContext?: CursorSizeContext): string {
   const lower = message.toLowerCase();
 
   if (isCursorBenignCancelError(message)) return "Cursor stream suspended";
@@ -190,7 +214,11 @@ export function classifyCursorError(message: string): string {
     // A bare resource_exhausted with no quota cue and no size phrase is payload
     // overflow, not rate limiting. Classifying it as 429 makes Codex back off on a
     // failure that only compaction can fix (senpi #1009 / #1036; research unit T01).
-    if (isCursorZeroTokenResourceExhausted(lower)) return "Cursor context limit exceeded";
+    // Refinement (devlog 260): plan-gated models emit the same bare shape on tiny
+    // requests — when the caller proves the request was small, keep the 429 class.
+    if (isCursorZeroTokenResourceExhausted(lower)) {
+      return bareReLooksLikeOverflow(sizeContext) ? "Cursor context limit exceeded" : "Cursor rate limit exceeded";
+    }
     return "Cursor rate limit exceeded";
   }
 
@@ -251,8 +279,8 @@ export function classifyCursorError(message: string): string {
  * Produce a user-facing, secret-safe Cursor error message with an actionable category prefix.
  * Mirrors `safeKiroErrorMessage` / `safeKiroHttpErrorMessage` in kiro-errors.ts.
  */
-export function safeCursorErrorMessage(rawMessage: string): string {
-  const prefix = classifyCursorError(rawMessage);
+export function safeCursorErrorMessage(rawMessage: string, sizeContext?: CursorSizeContext): string {
+  const prefix = classifyCursorError(rawMessage, sizeContext);
   const detail = sanitize(rawMessage)
     .replace(/resource[_ ]exhausted/gi, "resource limit exceeded")
     .slice(0, 500);
