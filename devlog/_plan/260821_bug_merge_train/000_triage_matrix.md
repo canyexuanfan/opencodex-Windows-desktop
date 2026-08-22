@@ -11,7 +11,7 @@ adversarial xai/grok-4.6 subagent verdicts, and a final green dev CI gate.
 | #2294 | fix(release): reject credential-bearing SSH remotes | 71598fa45 + hardening 2cdfba24d (train-stacked) | 3 | yes | green | MERGED to train; grok blocker fixed; re-verdict PASS; landing on dev |
 | #2289 | fix(service): restart existing installs w/o re-register | 2df92a270 + locale sync 174f03b60 (train-stacked) | 2 | yes | green incl. Service lifecycle | MERGED to train; grok P2 fixed; re-verdict PASS; Closes #2287 |
 | #2295 | fix(codex): recover zero-byte coordinator remnants | 6d5f0cf2c (ingw/fix-zero-byte-coordinator-2291) | 0 | yes | green | MERGED to train 728ca1e8b; suite green; landing on dev |
-| #2270 | fix(responses): apply_patch on routed Responses | 398b7ade4 (fix/apply-patch-routed-lowering) | 48 | yes | Ingwannu: two CHANGES_REQUESTED resolved on this head; third review says no remaining technical blocker | Linux shards green |
+| #2270 | fix(responses): apply_patch on routed Responses | 398b7ade4 + pin ec32a8d52 (train-stacked) | merged into train | yes | MERGED to train; grok P2 fixed; re-verdict PASS | Linux shards green; lidge full suite green |
 | #2281 | fix: call_id thought-signature replay for Claude Code | b31f3dbed (fix/claude-code-thought-signature-replay) | 50 | no (review-ready + hygiene-blocked label) | BLOCKED state | CodeRabbit minor: normalize promptCacheKey via anthropicSessionKeyFromParts before storing as clientThreadId (core.ts ~1888-1896); lidge-jun review priority 63/80 confirms repro |
 | #2296 | fix(codex): bind Desktop reconnects to one pool account | e672b0fd0 + scope fix 698228e40 (train-stacked) | 2 | yes | green | MERGED to train; grok major fixed; re-verdict PASS; landing on dev |
 
