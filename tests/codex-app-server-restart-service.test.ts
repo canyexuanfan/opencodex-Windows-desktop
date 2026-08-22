@@ -5,7 +5,7 @@
  * an untestable version of this code would terminate the developer's own Codex
  * app-servers when the suite runs.
  *
- * Plan: devlog/_plan/260815_gui_codex_restart/010_phase1_backend_endpoint.md
+ * Plan: devlog/_fin/260815_gui_codex_restart/010_phase1_backend_endpoint.md
  */
 import { beforeEach, describe, expect, test } from "bun:test";
 import {

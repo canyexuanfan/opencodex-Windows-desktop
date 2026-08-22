@@ -13,7 +13,7 @@ import { getAccountCredential, getAccountSet, getCredential } from "../oauth/sto
 import { antigravityUserAgent } from "../adapters/client-fingerprint";
 import { apiKeyPoolEntryId } from "./api-keys";
 import { XAI_GROK_CLIENT_VERSION, XAI_GROK_COMPATIBILITY } from "./xai-transport";
-import { getProviderRegistryEntry, providerCodexAccountMode } from "./registry";
+import { getProviderRegistryEntry, providerCodexAccountMode, registryEntryForProviderDestination } from "./registry";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "./openai-tiers";
 import {
@@ -50,6 +50,7 @@ const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const CLINE_BASE_URL = "https://api.cline.bot";
 const ZAI_BASE_URL = "https://api.z.ai";
+const ZAI_CN_BASE_URL = "https://open.bigmodel.cn";
 const MINIMAX_REMAINS_URL = "https://www.minimax.io/v1/token_plan/remains";
 const MOONSHOT_BASE_URL = "https://api.moonshot.ai/v1";
 const VENICE_BASE_URL = "https://api.venice.ai/api/v1";
@@ -237,19 +238,25 @@ function providerLabel(providerId: string): string {
 }
 
 function normalizeResetAt(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) return value > 10_000_000_000 ? value : value * 1000;
+  if (typeof value === "number" && Number.isFinite(value)) return epochMillis(value);
   if (typeof value === "string" && value.trim()) {
     const trimmed = value.trim();
     // Cursor Connect RPC returns billingCycleEnd as a unix-ms decimal string ("1771077734000").
     // Date.parse treats that as invalid; numeric epoch strings must be handled explicitly.
-    if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    if (/^[+-]?\d+(\.\d+)?$/.test(trimmed)) {
       const numeric = Number(trimmed);
-      if (Number.isFinite(numeric)) return numeric > 10_000_000_000 ? numeric : numeric * 1000;
+      return epochMillis(numeric);
     }
     const parsed = Date.parse(trimmed);
-    return Number.isFinite(parsed) ? parsed : undefined;
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
   }
   return undefined;
+}
+
+/** Unix 0 / negative values are sentinels, not reset clocks (Command Code fiveHour.resetAt: 0). */
+function epochMillis(value: number): number | undefined {
+  if (!Number.isFinite(value) || value <= 0) return undefined;
+  return value > 10_000_000_000 ? value : value * 1000;
 }
 
 function toFiniteNumber(value: unknown): number | undefined {
@@ -337,7 +344,12 @@ function isCanonicalClineBaseUrl(baseUrl: string): boolean {
 
 function isCanonicalZaiBaseUrl(baseUrl: string): boolean {
   const normalized = normalizedBaseUrl(baseUrl);
-  return normalized === ZAI_BASE_URL || normalized === `${ZAI_BASE_URL}/api/coding/paas/v4`;
+  return normalized === ZAI_BASE_URL
+    || normalized === `${ZAI_BASE_URL}/api/coding/paas/v4`
+    || normalized === ZAI_CN_BASE_URL
+    || normalized === `${ZAI_CN_BASE_URL}/api/coding/paas/v4`
+    // BigModel serves the same GLM Coding Plan on the OpenAI Responses wire at /api/v1.
+    || normalized === `${ZAI_CN_BASE_URL}/api/v1`;
 }
 
 function isCanonicalMinimaxBaseUrl(baseUrl: string): boolean {
@@ -663,34 +675,67 @@ async function fetchClineQuota(provider: string, config: OcxProviderConfig): Pro
 
 /**
  * Z.AI GLM Coding Plan `GET /api/monitor/usage/quota/limit` — the coding-plan
- * subscription's 5-hour token cycle, weekly quota, and monthly MCP usage.
- * Authenticates with the API key as a Bearer token per Z.AI's API reference.
+ * limits arrive as a `limits` array of `TOKENS_LIMIT` (newer plans call the
+ * same rows `CREDIT_LIMIT`) and `TIME_LIMIT` rows. `TOKENS_LIMIT`/`CREDIT_LIMIT`
+ * rows carry the window length as `unit`/`number`: unit 3 is hours (number 5 →
+ * the rolling five-hour window), unit 6 is weeks (number 1 → the weekly
+ * window). `TIME_LIMIT` rows are the monthly MCP tool budget (Web Search / Web
+ * Reader / Zread). Every row's `percentage` is the consumed share (falling
+ * back to `currentValue`/`usage` when absent) and `nextResetTime` (unix ms)
+ * the window reset.
  */
-async function fetchZaiQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaProbeResult> {
-  if (!isCanonicalZaiBaseUrl(config.baseUrl)) return null;
-  const apiKey = resolveEnvValue(config.apiKey)?.trim();
-  if (!apiKey) return null;
-  const response = await fetch(`${ZAI_BASE_URL}/api/monitor/usage/quota/limit`, {
-    headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
-    redirect: "error",
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-  if (!response.ok) {
-    return response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429
-      ? TERMINAL_QUOTA_FAILURE
-      : null;
+export function parseZaiQuotaLimits(data: Record<string, unknown> | null): ProviderQuota | null {
+  const limits = Array.isArray(data?.limits) ? data.limits as unknown[] : null;
+  if (!limits) return null;
+  const quota: ProviderQuota = { updatedAt: Date.now() };
+  let windows = 0;
+  for (const raw of limits) {
+    const row = asRecord(raw);
+    if (!row) continue;
+    const resetAt = normalizeResetAt(row.nextResetTime);
+    let percent = normalizePercent(row.percentage);
+    if (percent === undefined) {
+      const used = toFiniteNumber(row.currentValue);
+      const total = toFiniteNumber(row.usage);
+      if (used !== undefined && total !== undefined && total > 0) {
+        percent = normalizePercent((used / total) * 100);
+      }
+    }
+    if (percent === undefined) continue;
+    if (row.type === "TOKENS_LIMIT" || row.type === "CREDIT_LIMIT") {
+      const unit = toFiniteNumber(row.unit);
+      const number = toFiniteNumber(row.number);
+      if (unit === 3 && number === 5) {
+        quota.fiveHourPercent = percent;
+        if (resetAt !== undefined) quota.fiveHourResetAt = resetAt;
+        windows += 1;
+      } else if (unit === 6 && number === 1) {
+        quota.weeklyPercent = percent;
+        if (resetAt !== undefined) quota.weeklyResetAt = resetAt;
+        windows += 1;
+      }
+    } else if (row.type === "TIME_LIMIT") {
+      quota.monthlyPercent = percent;
+      if (resetAt !== undefined) quota.monthlyResetAt = resetAt;
+      windows += 1;
+    }
   }
-  const body = asRecord(await readQuotaJson(response));
-  if (!body || body.success === false) return null;
-  const data = asRecord(body.data) ?? body;
-  // The plugin renders a 5h token window, a weekly window, and a monthly MCP
-  // window. Look for percent fields with window identifiers.
+  return windows > 0 ? quota : null;
+}
+
+/**
+ * Legacy Z.AI payload shape: percent fields with window identifiers directly on
+ * the data object (optionally nested under `quota`). Kept as a fallback so
+ * older responses keep rendering when the `limits` array is absent.
+ */
+function parseZaiQuotaLegacyFields(data: Record<string, unknown> | null): ProviderQuota | null {
+  if (!data) return null;
   const quota: ProviderQuota = { updatedAt: Date.now() };
   let windows = 0;
   const percentAt = (key: string): number | undefined => {
-    const value = normalizePercent(data?.[key]);
+    const value = normalizePercent(data[key]);
     if (value !== undefined) return value;
-    const nested = asRecord(data?.quota);
+    const nested = asRecord(data.quota);
     return nested ? normalizePercent(nested[key]) : undefined;
   };
   const fiveHour = percentAt("fiveHourPercent") ?? percentAt("fiveHourUsage") ?? percentAt("fiveHourUsed");
@@ -708,7 +753,40 @@ async function fetchZaiQuota(provider: string, config: OcxProviderConfig): Promi
     quota.monthlyPercent = monthly;
     windows += 1;
   }
-  return windows > 0 ? report(provider, "zai:quota-limit", quota) : null;
+  return windows > 0 ? quota : null;
+}
+
+/**
+ * Fetches the Z.AI GLM Coding Plan quota — on whichever region the provider
+ * points at (api.z.ai or open.bigmodel.cn). Authenticates with the API key as
+ * a Bearer token per Z.AI's API reference. The `limits` array shape is
+ * preferred; older field-name payloads fall back to the legacy parser.
+ */
+async function fetchZaiQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaProbeResult> {
+  if (!isCanonicalZaiBaseUrl(config.baseUrl)) return null;
+  const apiKey = resolveEnvValue(config.apiKey)?.trim();
+  if (!apiKey) return null;
+  const normalized = normalizedBaseUrl(config.baseUrl);
+  const monitorHost = normalized === ZAI_BASE_URL || normalized === `${ZAI_BASE_URL}/api/coding/paas/v4`
+    ? ZAI_BASE_URL
+    : ZAI_CN_BASE_URL;
+  const response = await fetch(`${monitorHost}/api/monitor/usage/quota/limit`, {
+    headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
+    redirect: "error",
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    return response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429
+      ? TERMINAL_QUOTA_FAILURE
+      : null;
+  }
+  const body = asRecord(await readQuotaJson(response));
+  if (!body || body.success === false) return null;
+  const data = asRecord(body.data) ?? body;
+  const quota = Array.isArray(data?.limits)
+    ? parseZaiQuotaLimits(data)
+    : parseZaiQuotaLegacyFields(data);
+  return quota ? report(provider, "zai:quota-limit", quota) : null;
 }
 
 /**
@@ -2078,7 +2156,14 @@ async function maybeFetchProviderQuota(
       && isCanonicalCommandCodeBaseUrl(provider.baseUrl)) {
       return fetchCommandCodeQuota(name, provider);
     }
-    if ((provider.authMode ?? "key") === "key" && name === "opencode-go") {
+    // Identify OpenCode Go by where it routes, not by what the row is called. Multi-account
+    // setups keep the same destination under names like `opencode-go-2` (#1924), and those rows
+    // silently had no quota panel and no `ocx provider quota --json` report while the literal
+    // name was the gate. `registryEntryForProviderDestination` is the existing predicate for
+    // exactly this question: normalized endpoint + adapter + key auth, so a canonical URL behind
+    // a different adapter is still not OpenCode Go. The defensive URL check inside
+    // `fetchOpenCodeGoQuota` stays — sending a key anywhere must not depend on this gate.
+    if ((provider.authMode ?? "key") === "key" && registryEntryForProviderDestination(provider)?.id === "opencode-go") {
       return fetchOpenCodeGoQuota(name, provider);
     }
     if ((provider.authMode ?? "key") === "key" && isCanonicalA6apiBaseUrl(provider.baseUrl)) {
@@ -2093,7 +2178,8 @@ async function maybeFetchProviderQuota(
     if ((provider.authMode ?? "key") === "key" && name === "cline-pass") {
       return fetchClineQuota(name, provider);
     }
-    if ((provider.authMode ?? "key") === "key" && name === "zai") {
+    if ((provider.authMode ?? "key") === "key"
+      && (name === "zai" || name === "glm" || name === "glm-cn" || name === "zhipu-bigmodel-coding")) {
       return fetchZaiQuota(name, provider);
     }
     if ((provider.authMode ?? "key") === "key" && (name === "minimax" || name === "minimax-cn")) {

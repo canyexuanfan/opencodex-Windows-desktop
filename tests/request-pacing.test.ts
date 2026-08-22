@@ -107,6 +107,35 @@ describe("provider request pacing queue", () => {
     expect(status.lastModelId).toBe("model-a");
   });
 
+  test("a runTurn fetch consumes its pre-acquired slot once, then paces internal requests", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
+    const starts: number[] = [];
+    const fetchImpl = Object.assign(async () => {
+      starts.push(clock.now());
+      return new Response("ok");
+    }, { preconnect() {} }) as typeof globalThis.fetch;
+    const configured = {
+      ...provider({ enabled: true, minIntervalMs: 100 }),
+      fetch: fetchImpl,
+    } as OcxProviderConfig & { fetch: typeof globalThis.fetch };
+
+    await waitForProviderRequestSlot("cursor", configured, "model-a");
+    const send = providerFetch(configured, undefined, {
+      providerName: "cursor",
+      modelId: "model-a",
+      pacingSlotAcquired: true,
+    });
+    await send("https://example.test/run-sse");
+    const append = send("https://example.test/bidi-append");
+
+    expect(starts).toHaveLength(1);
+    expect(providerRequestPacingStatus("cursor", configured).queued).toBe(1);
+    clock.advanceBy(100);
+    await append;
+    expect(starts).toEqual([0, 100]);
+  });
+
   test("aborted queued requests leave immediately and never consume a start", async () => {
     const configured = provider({ enabled: true, minIntervalMs: 1_000 });
     await waitForProviderRequestSlot("demo", configured, "first");
@@ -258,5 +287,25 @@ describe("provider request pacing queue", () => {
     await fetchWithHeaderTimeout("https://example.test/v1/chat/completions", {}, new AbortController().signal, 50, false, executor);
     const second = await fetchWithHeaderTimeout("https://example.test/v1/chat/completions", {}, new AbortController().signal, 50, false, executor);
     expect(second.status).toBe(200);
+  });
+
+  test("Google AI Studio providerFetch paces each attempt through waitForPacing", async () => {
+    let pacingWaited = 0;
+    const configured: OcxProviderConfig = {
+      adapter: "google",
+      baseUrl: "https://generativelanguage.googleapis.com",
+      apiKey: "key",
+      requestPacing: { enabled: true, minIntervalMs: 50 },
+      fetch: (async () => new Response("ok")) as typeof fetch,
+    };
+    const executor = providerFetch(configured, undefined, { providerName: "google-direct", modelId: "gemini-2.5-flash" });
+    const originalWaitForPacing = executor.waitForPacing;
+    executor.waitForPacing = async (signal) => {
+      pacingWaited++;
+      await originalWaitForPacing?.(signal);
+    };
+    const res = await fetchWithHeaderTimeout("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent", {}, new AbortController().signal, 500, false, executor);
+    expect(res.status).toBe(200);
+    expect(pacingWaited).toBe(1);
   });
 });

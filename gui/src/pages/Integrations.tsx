@@ -38,6 +38,8 @@ const TABS: readonly TabDefinition[] = [
   { id: "gajae", hash: "integrations/gajae", labelKey: "integrations.tab.gajae" },
   { id: "dsh", hash: "integrations/dsh", labelKey: "integrations.tab.dsh" },
   { id: "mcode", hash: "integrations/mcode", labelKey: "integrations.tab.mcode" },
+  { id: "zcode", hash: "integrations/zcode", labelKey: "integrations.tab.zcode" },
+  { id: "prime", hash: "integrations/prime", labelKey: "integrations.tab.prime" },
 ] as const;
 
 const FILE_CLIENTS = new Set<FileIntegrationClientId>([
@@ -50,6 +52,8 @@ const FILE_CLIENTS = new Set<FileIntegrationClientId>([
   "gajae",
   "dsh",
   "mcode",
+  "zcode",
+  "prime",
 ]);
 
 function readIntegrationTab(hash = window.location.hash): IntegrationTab {

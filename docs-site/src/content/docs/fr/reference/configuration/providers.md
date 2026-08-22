@@ -98,6 +98,7 @@ sauvegarde dont le contenu diffère, puis réécrit en identifiants sans préfix
 | `modelSupportsReasoningSummaries?` | `Record<string, boolean>` | Définissez un modèle sur `false` pour arrêter la publicité des résumés et supprimer les champs de livraison du résumé. |
 | `modelReasoningSummaryDelivery?` | `Record<string, "sequential" \| "sequential_cutoff" \| "concurrent" \| "concurrent_cutoff">` | Énumération de livraison des réponses par modèle ; réécrit un champ de livraison existant. |
 | `modelAdapters?` | `Record<string, string>` | Remplacement du protocole `openai-chat` ou `openai-responses` par modèle pour les passerelles multiprotocoles. Les entrées explicites priment sur les valeurs par défaut du registre. Le préréglage OpenCode Go sélectionne Responses pour `gpt-5.6-luna` tout en laissant les modèles apparentés sur leurs protocoles documentés ; DeepSeek peut sélectionner Responses natif pour `deepseek-v4-flash` ; GitHub Copilot déclare des valeurs par défaut limitées à Responses pour sa famille GPT-5 (`gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`), car ces modèles rejettent `/chat/completions` pour le trafic des agents. Les modèles sans valeur intégrée par défaut, comme `gpt-5.4-nano`, peuvent être activés ici. Les services en amont à protocole unique et le transfert canonique ChatGPT rejettent ces remplacements. |
+| Activation Responses xAI (tableau de bord) | interrupteur | Pour `xai` uniquement, définit ou efface atomiquement les entrées `modelAdapters` de `grok-4.5` et `grok-4.6`. Une seule entrée apparaît comme un état mixte jusqu’à la prochaine écriture. Les autres remplacements et le comportement des tiers restent inchangés. |
 | `modelPreferHostedTools?` | `Record<string,string[]>` | Activation explicite par modèle exact pour les passerelles Responses hors transfert qui réservent un espace de noms aux outils hébergés. Seul `["image_generation"]` est actuellement accepté ; le modèle correspondant doit utiliser le protocole `openai-responses` et prendre en charge cet outil hébergé. Le proxy supprime les déclarations clientes `image_gen` en conflit et réécrit leurs sélecteurs afin de préserver le choix d'outil de l'appelant. Pour les modèles virtuels `-pro` de l'API OpenAI, l'identifiant public sélectionné est comparé en premier et l'identifiant résolu du modèle de base sur le protocole sert de repli. `modelAdapters` résout d'abord l'identifiant public, puis celui de base ; la seconde résolution détermine le protocole final. Les autres modèles conservent le comportement normal des alias. |
 | `reasoningEffortMap?` | `Record<string, string>` | Alias ​​de fil à l’échelle du fournisseur pour les étiquettes de raisonnement. |
 | `modelReasoningEffortMap?` | `Record<string, Record<string, string>>` | Alias ​​de fil par modèle pour les étiquettes de raisonnement. |
@@ -283,6 +284,15 @@ les paramètres de modèle propres à Cursor :
 Les variantes explicites envoient le modèle `default` de Cursor avec son paramètre `optimization`, ce qui préserve la
 sélection à chaque requête. Elles restent disponibles lorsque la découverte en direct omet `default`.
 
+### Vision
+
+La vision native Cursor utilise `SelectedImage` (plafond JPEG souple + `blobIdWithData`) pour les modèles
+qui voient les images nativement — Claude, Gemini, GPT, Kimi et Grok notamment — à partir des images
+`data:` du tour actif uniquement. Les images des tours précédents rejouent comme marqueurs texte
+`[image attached]` ; les images distantes ou indécodables deviennent des marqueurs d’omission.
+Auto, la famille Composer et GLM (`glm-5.2`, `glm-5.3`) restent
+sur la liste curatée `noVisionModels` et passent par le sidecar de description d'images.
+
 Les outils locaux pilotés par le serveur Cursor sont désactivés par défaut. Codex continue d'utiliser ses propres outils tels que
 `apply_patch` et `exec_command` avec sa propre politique d'approbation et de bac à sable :
 
@@ -371,9 +381,9 @@ Utilisez `selectedModels` lorsque la découverte doit toujours s'exécuter mais 
 `/v1/models`. Le tableau de bord conserve la liste complète découverte pour les modifications ultérieures de la liste autorisée.
 
 Les entrées de repli de l'aperçu GPT-5.6 utilisent le même mécanisme. Le préréglage à clé API OpenAI initialise les identifiants de base et Pro
-avec un contexte de `1050000` et une entrée maximale de `922000` ; OpenRouter initialise `openai/gpt-5.6-sol`,
-`openai/gpt-5.6-terra` et `openai/gpt-5.6-luna` avec le contexte `1050000`. Les modes pool et direct annoncent
-`372000` ; le catalogue synchronisé annonce `max` tout en gardant `xhigh` distinct.
+avec un contexte de `922000` et une entrée maximale de `922000` ; OpenRouter initialise `openai/gpt-5.6-sol`,
+`openai/gpt-5.6-terra` et `openai/gpt-5.6-luna` avec le contexte `922000`. Les modes pool et direct annoncent
+`922000` ; le catalogue synchronisé annonce `max` tout en gardant `xhigh` distinct.
 
 ```json
 {
@@ -412,7 +422,7 @@ avec un contexte de `1050000` et une entrée maximale de `922000` ; OpenRouter 
       "baseUrl": "https://ollama.com/v1",
       "apiKey": "${OLLAMA_API_KEY}",
       "defaultModel": "glm-5.2",
-      "noVisionModels": ["glm-5.2", "gpt-oss", "qwen3-coder", "deepseek-v4-pro"]
+      "noVisionModels": ["glm-5.2", "glm-5.3", "gpt-oss", "qwen3-coder", "deepseek-v4-pro"]
     }
   },
   "subagentModels": ["anthropic/claude-opus-5", "ollama-cloud/glm-5.2"],

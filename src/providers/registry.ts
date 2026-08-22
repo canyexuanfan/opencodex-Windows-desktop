@@ -1,4 +1,5 @@
-import type { CodexAccountMode, OcxProviderConfig } from "../types";
+import type { CodexAccountMode, FastWire, OcxProviderConfig } from "../types";
+import { fastWireDeclarationError } from "./fastwire";
 import { KIRO_MODELS, KIRO_MODEL_CONTEXT_WINDOWS, KIRO_MODEL_REASONING_EFFORTS } from "./kiro-models";
 import { ANTIGRAVITY_MODELS, ANTIGRAVITY_MODEL_CONTEXT_WINDOWS, ANTIGRAVITY_MODEL_EFFORTS, ANTIGRAVITY_MODEL_INPUT_MODALITIES } from "./antigravity-models";
 import type { ProviderBaseUrlChoice } from "./base-url-choices";
@@ -9,6 +10,7 @@ import {
   MOONSHOT_BASE_URL_CHOICES, MOONSHOT_INTL_BASE_URL,
 } from "./base-url-choices";
 import {
+  CURSOR_NO_VISION_MODELS,
   CURSOR_STATIC_MODELS,
   cursorModelContextWindows,
   cursorModelIds,
@@ -16,6 +18,7 @@ import {
   cursorModelReasoningEfforts,
 } from "../adapters/cursor/discovery";
 import { COMMAND_CODE_MODEL_REASONING_EFFORTS } from "./command-code-efforts";
+import { isCanonicalOpenRouterTarget } from "./openrouter-routing";
 
 export type ProviderAuthKind = "forward" | "oauth" | "key" | "local";
 export type MetadataModelIdNormalize = "case-insensitive";
@@ -29,9 +32,15 @@ export type InboundWire = "responses" | "chat" | "anthropic";
 
 /**
  * A per-model wire default: a bare string applies to every inbound, while the object
- * form applies only to the listed inbound protocols.
+ * form may scope the default to listed inbound protocols and authentication modes.
  */
-export type ModelWireDefault = string | { wire: string; inbound: readonly InboundWire[] };
+export type ModelWireDefault = string | {
+  wire: string;
+  inbound: readonly InboundWire[];
+  authModes?: readonly ProviderAuthKind[];
+  /** Whether this registry-selected route may relay a caller-owned service_tier. */
+  forwardCallerServiceTier?: boolean;
+};
 
 export interface ResponsesTerminalRepairPolicy {
   /** Quiet time after a structurally complete output graph before synthesizing completion. */
@@ -165,6 +174,8 @@ export interface ProviderRegistryEntry {
    * of paying a translation hop.
    */
   modelWireDefaults?: Record<string, ModelWireDefault>;
+  /** Explicit Fast wire declaration; absence derives from the final model adapter. */
+  fastWire?: FastWire | null;
   /**
    * Registry-only per-model override for the upstream request shape used behind a
    * Codex Responses WebSocket turn. `false` keeps the client-facing WebSocket but
@@ -212,8 +223,29 @@ export interface ProviderRegistryEntry {
    * (and the canonical openai seed comparison keeps its exact key set).
    */
   supportsServiceTier?: boolean;
+  /** Registry default for OpenAI extended hosted web_search field support. */
+  supportsOpenAiWebSearchToolFields?: boolean;
+  /** Registry default for native Responses custom-tool support. */
+  supportsResponsesCustomTools?: boolean;
   /** Registry default for exact model service-tier capability; explicit config keys win. */
   modelSupportsServiceTier?: Record<string, boolean>;
+  /**
+   * Registry-only service-tier defaults for an OAuth preset's explicit API-key transport.
+   * Applied only when `allowKeyAuthOverride` is true and the captured effective auth transport
+   * is key-based. Explicit provider config still wins field-by-field, including `false`.
+   */
+  keyAuthServiceTier?: {
+    supportsServiceTier?: boolean;
+    modelSupportsServiceTier?: Record<string, boolean>;
+    chatServiceTier?: boolean;
+  };
+  /** Provider-specific copy for the Codex catalog's Fast tier. */
+  fastTierDescription?: string;
+  /**
+   * Registry-only destination guard for `modelSupportsServiceTier`. This scopes vendor evidence
+   * without changing provider ownership, routing, authentication, or config validation.
+   */
+  modelServiceTierCapabilityBaseUrlGuard?: (baseUrl: string) => boolean;
   /** Registry default for plaintext reasoning replay; see `OcxProviderConfig.preserveResponsesReasoningContent`. Registry-only like `supportsServiceTier`. */
   preserveResponsesReasoningContent?: boolean;
   /** Registry defaults for per-model Codex reasoning propagation; explicit user keys win during enrichment. */
@@ -251,6 +283,8 @@ export interface ProviderRegistryEntry {
    * `supportsServiceTier`, which governs the Responses wire.
    */
   chatServiceTier?: boolean;
+  /** OpenAI Chat EOF policy for gateways that omit terminal frames after complete tool calls. */
+  openaiChatEofTolerance?: boolean;
   autoToolChoiceOnlyModels?: string[];
   preserveReasoningContentModels?: string[];
   requiresReasoningPlaceholderModels?: string[];
@@ -276,7 +310,7 @@ export type ProviderConfigSeed = Pick<
   | "modelMaxInputTokens" | "defaultMaxOutputTokens" | "modelMaxOutputTokens"
   | "reasoningEfforts" | "modelReasoningEfforts" | "modelDefaultReasoningEfforts" | "reasoningEffortMap" | "modelReasoningEffortMap" | "reasoningWireFormat"
   | "noVisionModels" | "noReasoningModels" | "noTemperatureModels" | "noTopPModels" | "noPenaltyModels"
-  | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "requiresReasoningPlaceholderModels" | "reasoningSplitModels" | "thinkingToggleModels" | "thinkingBudgetModels" | "escapeBuiltinToolNames"
+  | "autoToolChoiceOnlyModels" | "preserveReasoningContentModels" | "requiresReasoningPlaceholderModels" | "reasoningSplitModels" | "thinkingToggleModels" | "thinkingBudgetModels" | "escapeBuiltinToolNames" | "openaiChatEofTolerance"
   | "googleMode" | "project" | "location" | "headers"
 >;
 
@@ -433,7 +467,23 @@ const THINKING_BUDGET_MODELS = [
 ];
 const OPENCODE_GO_THINKING_BUDGET_MODELS = ["qwen3.5-plus", "qwen3.6-plus", "qwen3.7-max", "qwen3.7-plus"];
 const DEEPSEEK_THINKING_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"];
+/*
+ * DeepSeek's experimental vision preview (released 2026-08-21, api-docs.deepseek.com):
+ * text+image input on the V4 Flash base. DeepSeek positions it as a preview id;
+ * the expectation is that vision merges into `deepseek-v4-flash` proper later,
+ * at which point this id retires the same way deepseek-chat/reasoner did.
+ */
+const DEEPSEEK_VISION_PREVIEW_MODEL = "deepseek-v4-flash-vision-exp";
 const OPENCODE_FREE_DEEPSEEK_MODELS = ["deepseek-v4-flash-free"];
+/*
+ * OpenCode Zen's free slug for the OpenRouter stealth model "Ox Alpha"
+ * (openrouter.ai/stealth/ox-alpha): 1,048,576-token context, multimodal
+ * (text+image+video upstream; Zen serves text+image), mandatory reasoning,
+ * free during the stealth window. Zen displays it as "Ox Alpha Free" under
+ * this exact id (opencode.ai/docs/zen, verified 2026-08-21).
+ */
+const OPENCODE_OX_ALPHA_FREE_MODEL = "x-preview-f-free";
+const OX_ALPHA_CONTEXT_WINDOW = 1_048_576;
 /*
  * Zen free models that reject `image_url` upstream (#1043, and the reproducible
  * half of #1024).
@@ -452,7 +502,7 @@ const OPENCODE_FREE_DEEPSEEK_MODELS = ["deepseek-v4-flash-free"];
  *
  * Zen's roster is discovered live while this list is static, so it is a dated
  * exception list, not a capability model. Re-probe before extending it.
- * Evidence: devlog/_plan/260805_bug_fix_stack/002_zen_modality_probe.md
+ * Evidence: devlog/_fin/260805_bug_fix_stack/002_zen_modality_probe.md
  */
 const OPENCODE_ZEN_TEXT_ONLY_MODELS = [
   "big-pickle",
@@ -975,11 +1025,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // no-effort fallback to `kimi-k3-max` would never be reached. Mirrors the other K3
     // routes (kimi, kimi-code, opencode-go).
     modelDefaultReasoningEfforts: { "kimi-k3": "max" },
-    // Cursor's wire protocol never forwards image parts (request-builder emits an unsupported-
-    // content marker), so the vision sidecar covers ALL cursor models regardless of what the
-    // upstream model could natively do. Live-discovered models outside the static list fall back
-    // to the same marker until they appear here.
-    noVisionModels: cursorModelIds(CURSOR_STATIC_MODELS),
+    // Blind Cursor models (Auto routers, Composer, GLM-5.2, GLM-5.3) go through the vision sidecar;
+    // multimodal hosts (Claude/Gemini/GPT/Kimi/Grok) take native SelectedImage. The catalog
+    // still advertises image for noVision members so Codex can attach (sidecar option B).
+    noVisionModels: [...CURSOR_NO_VISION_MODELS],
   },
   {
     id: "xai",
@@ -988,9 +1037,21 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     baseUrl: "https://api.x.ai/v1",
     authKind: "oauth",
     allowKeyAuthOverride: true,
+    // Priority Processing is documented for xAI's public API-key Chat Completions and
+    // Responses endpoints. OAuth is a separate Grok CLI subscription gateway and remains
+    // unclassified; do not turn this into a provider-wide supportsServiceTier declaration.
+    keyAuthServiceTier: {
+      supportsServiceTier: true,
+      chatServiceTier: true,
+    },
+    fastTierDescription: "Priority processing, 2x token price",
     featured: true,
     oauthId: "xai",
     jawcodeBundle: "xai",
+    supportsOpenAiWebSearchToolFields: false,
+    // Live A/B on 2026-08-20: xAI rejects native custom/custom_tool_call shapes while accepting
+    // the otherwise-identical request after the custom tool is lowered to a function.
+    supportsResponsesCustomTools: false,
     note: "Log in with your Grok account",
     // Parallel tool calls: officially supported and default-on per docs.x.ai function-calling
     // (verified 260709, devlog/_plan/260709_parallel_tool_calls). Streamed calls arrive whole
@@ -1008,6 +1069,23 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // grok-4.5; the reasoning ladder does not — 4.6 adds the documented xhigh rung.
     models: ["grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-build-0.1", "grok-composer-2.5-fast"],
     defaultModel: "grok-4.5",
+    // Keep Codex Responses callers on the compatibility Chat wire until xAI can replay
+    // opaque reasoning continuation and compaction state across later turns. The scoped
+    // declaration also keeps caller-owned service tiers off the OAuth subscription route.
+    modelWireDefaults: {
+      "grok-4.6": {
+        wire: "openai-chat",
+        inbound: ["responses"],
+        authModes: ["oauth"],
+        forwardCallerServiceTier: false,
+      },
+      "grok-4.5": {
+        wire: "openai-chat",
+        inbound: ["responses"],
+        authModes: ["oauth"],
+        forwardCallerServiceTier: false,
+      },
+    },
     // Vision lineup per docs.x.ai model-capabilities/images/understanding: the grok-4.x chat
     // models accept image input (JPEG/PNG, URL or base64). Without this the catalog leaves
     // inputModalities undefined, and deriveComboCatalogModel defaults an undefined member to
@@ -1064,6 +1142,17 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // Unknown/new live models deliberately do not advertise a reasoning picker.
     reasoningEfforts: [],
     modelReasoningEfforts: COMMAND_CODE_MODEL_REASONING_EFFORTS,
+    // Ox Alpha (stealth preview, changelog v1.31.0): free 1M multimodal reasoning
+    // model on every plan. DeepSeek vision preview id is preemptive metadata —
+    // it is expected to merge into deepseek-v4-flash later.
+    modelContextWindows: {
+      "stealth/ox-alpha": OX_ALPHA_CONTEXT_WINDOW,
+      [`deepseek/${DEEPSEEK_VISION_PREVIEW_MODEL}`]: 1_048_576,
+    },
+    modelInputModalities: {
+      "stealth/ox-alpha": ["text", "image"],
+      [`deepseek/${DEEPSEEK_VISION_PREVIEW_MODEL}`]: ["text", "image"],
+    },
     defaultMaxOutputTokens: 64_000,
     // The proprietary generate wire has no verified per-request serialization flag.
     parallelToolCalls: false,
@@ -1074,6 +1163,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     adapter: "anthropic",
     baseUrl: "https://api.anthropic.com",
     authKind: "oauth",
+    allowBaseUrlOverride: true,
     featured: true,
     oauthId: "anthropic",
     jawcodeBundle: "anthropic",
@@ -1242,6 +1332,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     id: "opencode-go", label: "opencode go", adapter: "openai-chat", baseUrl: "https://opencode.ai/zen/go/v1",
     authKind: "key", featured: true, dashboardUrl: "https://opencode.ai/auth", defaultModel: "kimi-k2.7-code",
     jawcodeBundle: "opencode-go", note: "GLM, DeepSeek, Kimi, Qwen, MiMo…",
+    // Zen Go can close a Chat stream after a fully assembled function call without sending
+    // finish_reason or [DONE] (#2260). The adapter still rejects incomplete argument JSON.
+    openaiChatEofTolerance: true,
     /* [Decision Log]
     - 목적과 의도: Route GPT 5.6 Luna to the Responses endpoint that OpenCode Go documents for that exact model.
     - 기존 구현 및 제약 조건: The provider is mixed-wire but its provider-wide `openai-chat` adapter sent Luna to `/chat/completions`; explicit user `modelAdapters` entries must remain authoritative.
@@ -1251,8 +1344,20 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     - 장점, 단점 및 영향: Luna reaches `/responses` from every inbound surface without changing siblings; a future upstream endpoint change requires an evidence-backed registry update.
     */
     modelWireDefaults: { "gpt-5.6-luna": "openai-responses" },
-    modelContextWindows: { "kimi-k3": KIMI_K3_STANDARD_CONTEXT_WINDOW },
-    modelInputModalities: { "kimi-k3": ["text", "image"] },
+    modelContextWindows: {
+      "kimi-k3": KIMI_K3_STANDARD_CONTEXT_WINDOW,
+      // Ox Alpha (stealth 1M multimodal) and the DeepSeek vision preview are
+      // metadata-only here: the Go roster is discovered live, so these apply
+      // the moment the gateway starts serving the ids.
+      [OPENCODE_OX_ALPHA_FREE_MODEL]: OX_ALPHA_CONTEXT_WINDOW,
+      [DEEPSEEK_VISION_PREVIEW_MODEL]: 1_048_576,
+    },
+    modelInputModalities: {
+      "kimi-k3": ["text", "image"],
+      [OPENCODE_OX_ALPHA_FREE_MODEL]: ["text", "image"],
+      // Experimental DeepSeek vision preview — expected to merge into deepseek-v4-flash later.
+      [DEEPSEEK_VISION_PREVIEW_MODEL]: ["text", "image"],
+    },
     modelReasoningEfforts: {
       "glm-5.3": ZAI_GLM_53_REASONING_EFFORTS,
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
@@ -1346,7 +1451,38 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     autoToolChoiceOnlyModels: ["kimi-k2.7-code"],
     preserveReasoningContentModels: NEURALWATT_REASONING_HISTORY_MODELS,
   },
-  { id: "openrouter", label: "OpenRouter", adapter: "openai-chat", baseUrl: "https://openrouter.ai/api/v1", authKind: "key", featured: true, dashboardUrl: "https://openrouter.ai/keys", jawcodeBundle: "openrouter", models: ["anthropic/claude-sonnet-5", ...OPENROUTER_GPT56_MODELS], modelContextWindows: { "anthropic/claude-sonnet-5": 1_000_000, ...OPENROUTER_GPT56_CONTEXT_WINDOWS } },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    adapter: "openai-chat",
+    baseUrl: "https://openrouter.ai/api/v1",
+    authKind: "key",
+    featured: true,
+    dashboardUrl: "https://openrouter.ai/keys",
+    jawcodeBundle: "openrouter",
+    // stealth/ox-alpha: free stealth-window frontier model (launched 2026-08-20).
+    // /api/v1/models reports 1,048,576 context, 131,072 max output, text+image+video
+    // input, $0 pricing, mandatory reasoning. Single provider slug: `stealth`.
+    models: ["anthropic/claude-sonnet-5", "stealth/ox-alpha", ...OPENROUTER_GPT56_MODELS],
+    modelContextWindows: {
+      "anthropic/claude-sonnet-5": 1_000_000,
+      "stealth/ox-alpha": OX_ALPHA_CONTEXT_WINDOW,
+      ...OPENROUTER_GPT56_CONTEXT_WINDOWS,
+    },
+    modelInputModalities: { "stealth/ox-alpha": ["text", "image"] },
+    // OpenRouter documents priority support for OpenAI endpoints, but not Anthropic. Keep the
+    // provider unclassified and opt in only the exact OpenAI-backed slugs we ship. These facts
+    // belong only to the canonical destination; a same-named custom gateway is unknown to us.
+    modelServiceTierCapabilityBaseUrlGuard: isCanonicalOpenRouterTarget,
+    modelSupportsServiceTier: {
+      "openai/gpt-5.6-sol": true,
+      "openai/gpt-5.6-terra": true,
+      "openai/gpt-5.6-luna": true,
+    },
+    // Deliberately no OpenRouter route pin: it bills the endpoint actually used and reports the
+    // actual service_tier. B0 confirmation therefore owns downgrade safety. Forcing `only` plus
+    // `allow_fallbacks:false` would turn a graceful priority-capacity fallback into a hard failure.
+  },
   {
     // Primary sources checked 2026-08-02:
     // - docs.cline.bot/getting-started/clinepass publishes this exact catalog and explicitly
@@ -1461,7 +1597,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   // 2026-07-10: defaultModel is frozen pending Vertex-specific Tier-2 evidence; Gemini API
   // evidence from ai.google.dev does not establish Vertex publisher availability.
   { id: "google-vertex", label: "Google Vertex AI", adapter: "google", baseUrl: "https://aiplatform.googleapis.com", authKind: "key", dashboardUrl: "https://console.cloud.google.com/vertex-ai", defaultModel: "gemini-3-pro", googleMode: "vertex", jawcodeBundle: "google", extraMetadataAliases: ["gemini-vertex"] },
-  { id: "google-antigravity", label: "Google Antigravity", adapter: "google", baseUrl: "https://daily-cloudcode-pa.googleapis.com", authKind: "oauth", dashboardUrl: "https://antigravity.google", models: ANTIGRAVITY_MODELS, liveModels: true, defaultModel: "gemini-3.7-flash", modelContextWindows: ANTIGRAVITY_MODEL_CONTEXT_WINDOWS, modelInputModalities: ANTIGRAVITY_MODEL_INPUT_MODALITIES, modelReasoningEfforts: ANTIGRAVITY_MODEL_EFFORTS, googleMode: "cloud-code-assist", jawcodeBundle: "google", extraMetadataAliases: ["antigravity", "gemini-antigravity"] },
+  { id: "google-antigravity", label: "Google Antigravity", adapter: "google", baseUrl: "https://daily-cloudcode-pa.googleapis.com", authKind: "oauth", allowBaseUrlOverride: true, dashboardUrl: "https://antigravity.google", models: ANTIGRAVITY_MODELS, liveModels: true, defaultModel: "gemini-3.7-flash", modelContextWindows: ANTIGRAVITY_MODEL_CONTEXT_WINDOWS, modelInputModalities: ANTIGRAVITY_MODEL_INPUT_MODALITIES, modelReasoningEfforts: ANTIGRAVITY_MODEL_EFFORTS, googleMode: "cloud-code-assist", jawcodeBundle: "google", extraMetadataAliases: ["antigravity", "gemini-antigravity"] },
   { id: "azure-openai", label: "Azure OpenAI", adapter: "azure-openai", baseUrl: "https://{resource}.openai.azure.com/openai", authKind: "key", featured: true, dashboardUrl: "https://portal.azure.com" },
   { id: "ollama", label: "Ollama (local)", adapter: "openai-chat", baseUrl: "http://localhost:11434/v1", authKind: "local", allowPrivateNetworkByDefault: true, allowBaseUrlOverride: true, featured: true, note: "Local — key usually blank" },
   { id: "vllm", label: "vLLM (local)", adapter: "openai-chat", baseUrl: "http://localhost:8000/v1", authKind: "local", allowPrivateNetworkByDefault: true, allowBaseUrlOverride: true, featured: true, note: "Local — key usually blank" },
@@ -1484,11 +1620,14 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // keep validating and routing (they previously mapped to v4-flash; devlog
     // _fin/260710_provider_hardening/002_research_cn.md). The current offerings are
     // the V4 ids — defaultModel and the model-specific wiring above use them.
-    models: ["deepseek-chat", "deepseek-reasoner", ...DEEPSEEK_THINKING_MODELS],
+    // deepseek-v4-flash-vision-exp: experimental vision preview (2026-08-21) —
+    // expected to merge into deepseek-v4-flash later; see DEEPSEEK_VISION_PREVIEW_MODEL.
+    models: ["deepseek-chat", "deepseek-reasoner", ...DEEPSEEK_THINKING_MODELS, DEEPSEEK_VISION_PREVIEW_MODEL],
     defaultModel: "deepseek-v4-flash",
     // Official DeepSeek Codex setup (codex-deepseek-setup.sh) advertises 1,048,576
     // for both V4 models; the older 1,000,000 figure was a rounded approximation.
-    modelContextWindows: { "deepseek-v4-flash": 1_048_576, "deepseek-v4-pro": 1_048_576 },
+    modelContextWindows: { "deepseek-v4-flash": 1_048_576, "deepseek-v4-pro": 1_048_576, [DEEPSEEK_VISION_PREVIEW_MODEL]: 1_048_576 },
+    modelInputModalities: { [DEEPSEEK_VISION_PREVIEW_MODEL]: ["text", "image"] },
     // DeepSeek documents both V4 models as native Responses API models adapted for Codex
     // (model table marks Responses API ✓ for flash and pro; the /responses reference lists
     // both ids as accepted `model` values — verified 2026-08-13 with the V4 Pro GA,
@@ -1513,7 +1652,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // finished (28-46 s of silence on long turns). The registry knob itself remains
     // for providers that need it — re-adding one line here restores the old policy.
     // Evidence: https://api-docs.deepseek.com/guides/responses_api/ +
-    // devlog/_plan/260807_deepseek_responses_streaming/000_plan.md.
+    // devlog/_fin/260807_deepseek_responses_streaming/000_plan.md.
     // Current official streams normally carry a real terminal; retain a narrow grace
     // repair for the historical shape that closes after a complete graph without one.
     modelResponsesTerminalRepair: { "deepseek-v4-flash": { graceMs: 5_000 }, "deepseek-v4-pro": { graceMs: 5_000 } },
@@ -1735,6 +1874,23 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     apiKeyValidation: "unknown",
     // The public catalog reports ids/context windows only; no trustworthy reasoning contract.
     reasoningEfforts: [],
+    // Official Command Code model-profile reasoning facts (shared with the OAuth
+    // `command-code` entry). Without them the API-key preset never advertises a
+    // reasoning picker, and the router's known-ids decode source misses the native
+    // slash ids — so a Codex-facing slug like `commandcode/deepseek-deepseek-v4-pro`
+    // is sent upstream verbatim and rejected with `unsupported_model`.
+    modelReasoningEfforts: COMMAND_CODE_MODEL_REASONING_EFFORTS,
+    // Ox Alpha (stealth preview, Command Code changelog v1.31.0) ships with a
+    // 1.05M-token multimodal context; the DeepSeek vision preview id is
+    // preemptive for when the catalog serves it (merges into v4-flash later).
+    modelContextWindows: {
+      "stealth/ox-alpha": OX_ALPHA_CONTEXT_WINDOW,
+      [`deepseek/${DEEPSEEK_VISION_PREVIEW_MODEL}`]: 1_048_576,
+    },
+    modelInputModalities: {
+      "stealth/ox-alpha": ["text", "image"],
+      [`deepseek/${DEEPSEEK_VISION_PREVIEW_MODEL}`]: ["text", "image"],
+    },
     modelDiscovery: {
       path: "models",
       maxResponseBytes: 256 * 1024,
@@ -2379,6 +2535,16 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       [...DEEPSEEK_THINKING_MODELS, ...OPENCODE_FREE_DEEPSEEK_MODELS].map(id => [id, deepseekReasoningMapFor(id)]),
     ),
     preserveReasoningContentModels: [...DEEPSEEK_THINKING_MODELS, ...OPENCODE_FREE_DEEPSEEK_MODELS],
+    // Same Zen gateway as opencode-free: Ox Alpha Free (1M multimodal stealth model)
+    // and the DeepSeek vision preview (merges into deepseek-v4-flash later).
+    modelContextWindows: {
+      [OPENCODE_OX_ALPHA_FREE_MODEL]: OX_ALPHA_CONTEXT_WINDOW,
+      [DEEPSEEK_VISION_PREVIEW_MODEL]: 1_048_576,
+    },
+    modelInputModalities: {
+      [OPENCODE_OX_ALPHA_FREE_MODEL]: ["text", "image"],
+      [DEEPSEEK_VISION_PREVIEW_MODEL]: ["text", "image"],
+    },
     noVisionModels: [...OPENCODE_ZEN_TEXT_ONLY_MODELS, ...DEEPSEEK_THINKING_MODELS],
   },
   { id: "vercel-ai-gateway", label: "Vercel AI Gateway", baseUrl: "https://ai-gateway.vercel.sh/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://vercel.com/dashboard" },
@@ -2394,11 +2560,33 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     note: "No key needed — public desktop tier. OpenCode currently advertises about 200 Big Pickle/free-model requests per 5 hours. The same Zen gateway can also short-window rate-limit free models at roughly 15-20 requests/minute, and may return generic 429s without Retry-After (opencodex synthesizes backoff only when that header is omitted). Free models are discovered live from Zen. Data use: per OpenCode's Zen docs (https://opencode.ai/docs/zen/), prompts sent to free models may be retained and used for training/improvement — do not send confidential material through this provider.",
     dashboardUrl: "https://opencode.ai",
     staticHeaders: {
+      // Zen answers a bare runtime User-Agent (Bun/x.y.z) more aggressively than a client
+      // that identifies itself, which is what the 429 in #2067 traced to. The value is
+      // deliberately unversioned: a pinned "opencode-cli/<version>" is a claim about an
+      // install we do not have and goes stale on the vendor's schedule, not ours.
+      // Corroboration, not authority: OmniRoute — an independent open-source broker against
+      // the same Zen upstream — defaults to exactly this pair (userAgent "opencode", client
+      // "desktop") in open-sse/executors/opencode.ts, and got there by RETREATING from its
+      // own earlier "opencode-cli/1.0.0" pin. An operator can still override either value
+      // through the provider headers API; user headers win case-insensitively at route time.
+      "User-Agent": "opencode",
       "x-opencode-client": "desktop",
     },
     modelReasoningEfforts: Object.fromEntries(OPENCODE_FREE_DEEPSEEK_MODELS.map(id => [id, deepseekThinkingEffortsFor(id)])),
     modelReasoningEffortMap: Object.fromEntries(OPENCODE_FREE_DEEPSEEK_MODELS.map(id => [id, deepseekReasoningMapFor(id)])),
     preserveReasoningContentModels: OPENCODE_FREE_DEEPSEEK_MODELS,
+    // Ox Alpha Free (`x-preview-f-free`): the OpenRouter stealth model on Zen's
+    // free tier — 1,048,576 context, text+image input. Deliberately NOT in the
+    // text-only list below. The DeepSeek vision preview id is preemptive
+    // metadata for when Zen starts serving it (merges into v4-flash later).
+    modelContextWindows: {
+      [OPENCODE_OX_ALPHA_FREE_MODEL]: OX_ALPHA_CONTEXT_WINDOW,
+      [DEEPSEEK_VISION_PREVIEW_MODEL]: 1_048_576,
+    },
+    modelInputModalities: {
+      [OPENCODE_OX_ALPHA_FREE_MODEL]: ["text", "image"],
+      [DEEPSEEK_VISION_PREVIEW_MODEL]: ["text", "image"],
+    },
     // Same Zen roster behind the same base URL, so it carries the same measured
     // text-only list rather than only its DeepSeek member (#1043).
     noVisionModels: OPENCODE_ZEN_TEXT_ONLY_MODELS,
@@ -2461,6 +2649,10 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // The gateway validates the ladder strictly and rejects anything above `high`.
     reasoningEfforts: ["low", "medium", "high"],
     reasoningEffortMap: { xhigh: "high", max: "high", ultra: "high" },
+    // Live token-plan verification (#1927): the Pro route rejects image input while
+    // mimo-v2.5 accepts it natively. Keep this provider-scoped so a hand-rolled
+    // provider with the same id but another destination does not inherit the claim.
+    noVisionModels: ["mimo-v2.5-pro"],
     // A user may already have hand-rolled a provider under this id against a different host;
     // without this, routedProviderConfig() would canonicalize their base URL onto ours and send
     // their key somewhere they did not choose.
@@ -2531,8 +2723,58 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   { id: "gitlab-duo", label: "GitLab Duo", baseUrl: "https://cloud.gitlab.com/ai/v1/proxy/openai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://gitlab.com/-/user_settings/personal_access_tokens" },
 ];
 
+export function providerRegistryFastWireError(
+  entry: Pick<ProviderRegistryEntry, "fastWire" | "supportsServiceTier" | "modelSupportsServiceTier">,
+): string | null {
+  return fastWireDeclarationError(entry);
+}
+
+for (const entry of PROVIDER_REGISTRY) {
+  const error = providerRegistryFastWireError(entry);
+  if (error) throw new TypeError(`Invalid provider registry entry ${entry.id}: ${error}`);
+}
+
 export function getProviderRegistryEntry(id: string): ProviderRegistryEntry | undefined {
   return PROVIDER_REGISTRY.find(entry => entry.id === id);
+}
+
+/**
+ * Merge a registry row's `staticHeaders` beneath a provider's own headers.
+ *
+ * The field is documented as "merged into every upstream request for this provider", but that
+ * was only ever true for a freshly seeded config: `providerConfigSeed` copies the block once
+ * (`derive.ts`), `enrichProviderFromCatalog` fills it only when the whole block is absent, and
+ * nothing merged it at request time. So an install that predates a header — or that saved any
+ * header of its own — never received the new one, which is exactly what #2067 would have
+ * shipped for every existing opencode-free user.
+ *
+ * The comparison is case-insensitive on purpose. HTTP header names are case-insensitive, but a
+ * plain object spread is not: merging a registry `User-Agent` over a user's `user-agent`
+ * produces two entries that `Headers` serializes as one comma-joined value
+ * ("opencode, custom-agent"), which is a corrupted request rather than an override. The user's
+ * spelling and value both win; the registry only fills names the user has not spoken for.
+ */
+export function mergeRegistryStaticHeaders(
+  staticHeaders: Record<string, string> | undefined,
+  userHeaders: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (!staticHeaders) return userHeaders;
+  if (!userHeaders) return { ...staticHeaders };
+  const claimed = new Set(Object.keys(userHeaders).map(name => name.toLowerCase()));
+  const merged: Record<string, string> = { ...userHeaders };
+  for (const [name, value] of Object.entries(staticHeaders)) {
+    if (!claimed.has(name.toLowerCase())) merged[name] = value;
+  }
+  return merged;
+}
+
+/** Whether this registry row's per-model service-tier evidence applies to one configured target. */
+export function registryModelServiceTierCapabilityApplies(
+  entry: Pick<ProviderRegistryEntry, "modelServiceTierCapabilityBaseUrlGuard">,
+  provider: Pick<OcxProviderConfig, "baseUrl">,
+): boolean {
+  const guard = entry.modelServiceTierCapabilityBaseUrlGuard;
+  return guard === undefined || guard(provider.baseUrl);
 }
 
 function normalizedProviderEndpoint(value: string): string {
@@ -2614,8 +2856,12 @@ export function providerModelWireDefault(
   if (!entry?.modelWireDefaults || !providerMatchesRegistryTransport(id, provider)) return undefined;
   const declared = entry.modelWireDefaults[modelId.trim().toLowerCase()];
   if (declared === undefined) return undefined;
-  // A bare string applies to every inbound; the object form only to the listed ones.
-  if (typeof declared !== "string" && !declared.inbound.includes(inbound)) return undefined;
+  // A bare string applies to every inbound/auth mode; the object form may narrow either.
+  if (typeof declared !== "string") {
+    if (!declared.inbound.includes(inbound)) return undefined;
+    const authMode = provider.authMode ?? entry.authKind;
+    if (declared.authModes && !declared.authModes.includes(authMode)) return undefined;
+  }
   const wire = typeof declared === "string" ? declared : declared.wire;
   return wire !== undefined && allowedWires.has(wire) ? wire : undefined;
 }

@@ -528,6 +528,210 @@ describe("routed Responses custom-tool compatibility", () => {
     }
   });
 
+  test("handleResponses lowers and restores apply_patch when the destination denies custom tools", async () => {
+    const savedFetch = globalThis.fetch;
+    let outboundBody: Record<string, unknown> | undefined;
+    const upstreamItem = {
+      type: "function_call",
+      id: "fc_patch_next",
+      call_id: "call_patch_next",
+      name: "apply_patch",
+      arguments: JSON.stringify({ input: "*** Begin Patch\n*** End Patch" }),
+      status: "completed",
+    };
+    const upstream = [
+      frame("response.output_item.added", {
+        output_index: 0,
+        item: { ...upstreamItem, arguments: "", status: "in_progress" },
+      }),
+      frame("response.function_call_arguments.done", {
+        output_index: 0,
+        item_id: upstreamItem.id,
+        arguments: upstreamItem.arguments,
+      }),
+      frame("response.output_item.done", { output_index: 0, item: upstreamItem }),
+      frame("response.completed", {
+        response: { id: "resp_patch", status: "completed", output: [upstreamItem] },
+      }),
+      "data: [DONE]",
+    ].join("\n\n") + "\n\n";
+    globalThis.fetch = (async (_input, init) => {
+      outboundBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(upstream, { headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+    const config = {
+      port: 0,
+      defaultProvider: "fixture",
+      providers: {
+        fixture: {
+          adapter: "openai-responses",
+          baseUrl: "https://fixture.test/v1",
+          authMode: "key",
+          apiKey: "fixture-key",
+          supportsResponsesCustomTools: false,
+        },
+      },
+    } as OcxConfig;
+
+    try {
+      const response = await handleResponses(new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "fixture/grok-4.6",
+          stream: true,
+          input: [
+            {
+              type: "custom_tool_call",
+              id: "ctc_patch_prior",
+              call_id: "call_patch_prior",
+              name: "apply_patch",
+              input: "noop",
+            },
+            { type: "custom_tool_call_output", call_id: "call_patch_prior", output: "done" },
+          ],
+          tools: [{
+            type: "custom",
+            name: "apply_patch",
+            description: "Apply a patch",
+            format: { type: "grammar", syntax: "lark" },
+          }],
+        }),
+      }), config, { model: "", provider: "" });
+      const clientSse = await response.text();
+      const outboundTools = outboundBody?.tools as Array<Record<string, unknown>> | undefined;
+      const outboundInput = outboundBody?.input as Array<Record<string, unknown>> | undefined;
+
+      expect(outboundTools?.[0]).toMatchObject({ type: "function", name: "apply_patch" });
+      expect(outboundInput?.[0]).toMatchObject({
+        type: "function_call",
+        call_id: "call_patch_prior",
+        name: "apply_patch",
+        arguments: JSON.stringify({ input: "noop" }),
+      });
+      expect(outboundInput?.[1]).toMatchObject({
+        type: "function_call_output",
+        call_id: "call_patch_prior",
+        output: "done",
+      });
+      expect(clientSse).toContain('"type":"custom_tool_call"');
+      expect(clientSse).toContain('"id":"ctc_patch_next"');
+      expect(clientSse).toContain('"call_id":"call_patch_next"');
+      expect(clientSse).toContain('"name":"apply_patch"');
+      expect(clientSse).toContain('"type":"response.custom_tool_call_input.done"');
+      expect(clientSse).toContain("data: [DONE]");
+      expect(clientSse).not.toContain('"type":"function_call"');
+      expect(clientSse).not.toContain("response.function_call_arguments.done");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  test("handleResponses lowers apply_patch for a noncanonical forward destination that denies custom tools", async () => {
+    const savedFetch = globalThis.fetch;
+    let outboundBody: Record<string, unknown> | undefined;
+    let outboundAuthorization: string | null = null;
+    let outboundUrl = "";
+    const upstreamItem = {
+      type: "function_call",
+      id: "fc_patch_next",
+      call_id: "call_patch_next",
+      name: "apply_patch",
+      arguments: JSON.stringify({ input: "*** Begin Patch\n*** End Patch" }),
+      status: "completed",
+    };
+    const upstream = [
+      frame("response.output_item.added", {
+        output_index: 0,
+        item: { ...upstreamItem, arguments: "", status: "in_progress" },
+      }),
+      frame("response.function_call_arguments.done", {
+        output_index: 0,
+        item_id: upstreamItem.id,
+        arguments: upstreamItem.arguments,
+      }),
+      frame("response.output_item.done", { output_index: 0, item: upstreamItem }),
+      frame("response.completed", {
+        response: { id: "resp_patch", status: "completed", output: [upstreamItem] },
+      }),
+      "data: [DONE]",
+    ].join("\n\n") + "\n\n";
+    globalThis.fetch = (async (input, init) => {
+      outboundUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      outboundBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      outboundAuthorization = new Headers(init?.headers).get("authorization");
+      return new Response(upstream, { headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+    const config = {
+      port: 0,
+      defaultProvider: "fixture",
+      providers: {
+        fixture: {
+          adapter: "openai-responses",
+          baseUrl: "https://provider.example/v1",
+          authMode: "forward",
+          headers: { authorization: "Bearer provider-static" },
+          supportsResponsesCustomTools: false,
+        },
+      },
+    } as OcxConfig;
+
+    try {
+      const response = await handleResponses(new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer caller-secret" },
+        body: JSON.stringify({
+          model: "fixture/grok-4.6",
+          stream: true,
+          input: [
+            {
+              type: "custom_tool_call",
+              id: "ctc_patch_prior",
+              call_id: "call_patch_prior",
+              name: "apply_patch",
+              input: "noop",
+            },
+            { type: "custom_tool_call_output", call_id: "call_patch_prior", output: "done" },
+          ],
+          tools: [{
+            type: "custom",
+            name: "apply_patch",
+            description: "Apply a patch",
+            format: { type: "grammar", syntax: "lark" },
+          }],
+        }),
+      }), config, { model: "", provider: "" });
+      const clientSse = await response.text();
+      const outboundTools = outboundBody?.tools as Array<Record<string, unknown>> | undefined;
+      const outboundInput = outboundBody?.input as Array<Record<string, unknown>> | undefined;
+
+      expect(outboundUrl).toBe("https://provider.example/v1/responses");
+      expect(outboundAuthorization).toBe("Bearer provider-static");
+      expect(outboundTools?.[0]).toMatchObject({ type: "function", name: "apply_patch" });
+      expect(outboundInput?.[0]).toMatchObject({
+        type: "function_call",
+        call_id: "call_patch_prior",
+        name: "apply_patch",
+        arguments: JSON.stringify({ input: "noop" }),
+      });
+      expect(outboundInput?.[1]).toMatchObject({
+        type: "function_call_output",
+        call_id: "call_patch_prior",
+        output: "done",
+      });
+      expect(clientSse).toContain('"type":"custom_tool_call"');
+      expect(clientSse).toContain('"id":"ctc_patch_next"');
+      expect(clientSse).toContain('"call_id":"call_patch_next"');
+      expect(clientSse).toContain('"name":"apply_patch"');
+      expect(clientSse).toContain('"type":"response.custom_tool_call_input.done"');
+      expect(clientSse).toContain("data: [DONE]");
+      expect(clientSse).not.toContain('"type":"function_call"');
+      expect(clientSse).not.toContain("response.function_call_arguments.done");
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
   test("handleResponses continuation rewrites custom_tool_call_output and keeps call_id ordered", async () => {
     const savedFetch = globalThis.fetch;
     const outboundBodies: Array<Record<string, unknown>> = [];
@@ -742,6 +946,8 @@ describe("routed Responses custom-tool compatibility", () => {
       tools: Array<Record<string, unknown>>;
       toolChoice?: unknown;
       metadata?: unknown;
+      /** The upstream call names a tool this request never declared at all (#1700). */
+      undeclared?: boolean;
     }> = [
       {
         name: "streaming none",
@@ -770,6 +976,7 @@ describe("routed Responses custom-tool compatibility", () => {
         stream: false,
         tools: [ordinaryTool],
         metadata: { nested: { type: "custom", name: "exec" } },
+        undeclared: true,
       },
     ];
 
@@ -823,6 +1030,14 @@ describe("routed Responses custom-tool compatibility", () => {
           expect(clientSse).toContain("response.function_call_arguments.done");
           expect(clientSse).not.toContain("custom_tool_call");
           expect(clientSse).not.toContain("ctc_exec");
+        } else if (policyCase.undeclared) {
+          // #1700: this request's catalog holds only `ordinary` — a metadata blob that merely
+          // looks like a tool declaration declares nothing — so a call to `exec` is refused
+          // instead of relayed. The restore contract still holds either way: it never became
+          // a custom_tool_call.
+          expect(response.status).toBe(502);
+          const body = await response.json() as { error: { message: string } };
+          expect(body.error.message).toContain('undeclared client tool "exec"');
         } else {
           const body = await response.json() as { output: Array<Record<string, unknown>> };
           expect(body.output[0]).toEqual(upstreamItem);

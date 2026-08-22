@@ -10,6 +10,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { baseUrlForChoice, matchChoiceId, resolvedBaseUrlForChoice } from "../../base-url-choice";
 import { readJsonIfOk } from "../../fetch-json";
+import { createBoundedFetch } from "../../bounded-fetch";
+import { startVisibilityPoll } from "../../visibility-poll";
 import { useT } from "../../i18n/shared";
 import { IconLock } from "../../icons";
 import { isCatalogProviderId } from "../../provider-icons";
@@ -17,7 +19,7 @@ import { openAiAccountProviderState } from "../../provider-payload";
 import { providerSupportsLiveModelDiscovery } from "../../provider-workspace/catalog";
 import type { CatalogPreset } from "../provider-catalog/provider-presets";
 import { authModeLabel } from "./ProviderRail";
-import type { WorkspaceItem, ProviderUpdatePatch } from "./types";
+import type { WorkspaceItem, ProviderUpdatePatch, ProviderUpdateResult } from "./types";
 
 const ADAPTERS = ["openai-responses", "openai-chat", "anthropic", "google", "azure-openai", "cursor"] as const;
 const EMPTY_MODELS: string[] = [];
@@ -25,6 +27,11 @@ const EMPTY_MODELS: string[] = [];
 type ChoicesStatus = "idle" | "loading" | "ready" | "error";
 type PacingRule = { requestsPerMinute?: number; minIntervalMs?: number };
 type PacingStatus = { enabled: boolean; queued: number; nextSlotInMs: number; lastStartedAt?: number; lastModelId?: string };
+type CursorHttpVersion = "http2" | "http1.1";
+
+function effectiveCursorHttpVersion(value: WorkspaceItem["upstreamHttpVersion"]): CursorHttpVersion {
+  return value === "http1.1" || value === "h1" ? "http1.1" : "http2";
+}
 
 function numberDraft(value: number | undefined): string { return value === undefined ? "" : String(value); }
 function positiveRpm(value: string): number | undefined {
@@ -56,7 +63,7 @@ export default function ProviderSettings({
   availableModels?: string[];
   /** When set, load endpoint choices for catalog providers that expose baseUrlChoices. */
   apiBase?: string;
-  onUpdateProvider?: (name: string, patch: ProviderUpdatePatch) => Promise<{ ok: boolean; error?: string }>;
+  onUpdateProvider?: (name: string, patch: ProviderUpdatePatch) => Promise<ProviderUpdateResult>;
   onDirtyChange?: (dirty: boolean) => void;
   /** Lets parent dialogs trigger the same save path as the sticky bar. */
   onRegisterSave?: (save: (() => Promise<boolean>) | null) => void;
@@ -65,6 +72,7 @@ export default function ProviderSettings({
   const initialAuth = String(item.authMode ?? (item.keyOptional ? "local" : "key"));
   const liveModelDiscoverySupported = providerSupportsLiveModelDiscovery(item.name, item);
   const savedLiveModels = liveModelDiscoverySupported ? item.liveModels !== false : false;
+  const savedCursorHttpVersion = effectiveCursorHttpVersion(item.upstreamHttpVersion);
   const [adapter, setAdapter] = useState(item.adapter);
   const [baseUrl, setBaseUrl] = useState(item.baseUrl);
   const [defaultModel, setDefaultModel] = useState(item.defaultModel ?? "");
@@ -73,6 +81,7 @@ export default function ProviderSettings({
   const [note, setNote] = useState(item.note ?? "");
   const [allowPrivateNetwork, setAllowPrivateNetwork] = useState(item.allowPrivateNetwork ?? false);
   const [liveModels, setLiveModels] = useState(savedLiveModels);
+  const [cursorHttpVersion, setCursorHttpVersion] = useState<CursorHttpVersion>(savedCursorHttpVersion);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [accountMode, setAccountMode] = useState<"pool" | "direct">(item.codexAccountMode ?? "pool");
@@ -100,6 +109,7 @@ export default function ProviderSettings({
     setNote(item.note ?? "");
     setAllowPrivateNetwork(item.allowPrivateNetwork ?? false);
     setLiveModels(savedLiveModels);
+    setCursorHttpVersion(savedCursorHttpVersion);
     setPacingEnabled(item.requestPacing?.enabled === true);
     setPacingRpm(numberDraft(item.requestPacing?.requestsPerMinute));
     setPacingDelay(numberDraft(item.requestPacing?.minIntervalMs));
@@ -107,7 +117,7 @@ export default function ProviderSettings({
     setMsg(null);
     setModeMsg(null);
     queueMicrotask(() => setEndpointChoice(matchChoiceId(baseUrlChoices, item.baseUrl)));
-  }, [item.adapter, item.baseUrl, item.defaultModel, item.authMode, item.apiKeyTransport, item.keyOptional, item.note, item.allowPrivateNetwork, savedLiveModels, item.requestPacing, baseUrlChoices]);
+  }, [item.adapter, item.baseUrl, item.defaultModel, item.authMode, item.apiKeyTransport, item.keyOptional, item.note, item.allowPrivateNetwork, savedLiveModels, savedCursorHttpVersion, item.requestPacing, baseUrlChoices]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // Account mode syncs on its own: a mode PATCH refresh must not reset an in-progress
@@ -152,15 +162,21 @@ export default function ProviderSettings({
   useEffect(() => {
     if (!apiBase) return;
     let active = true;
+    let inFlight = false;
     const load = () => {
-      fetch(`${apiBase}/api/provider-request-pacing?name=${encodeURIComponent(item.name)}`)
+      // Guarded + bounded: a hung pacing read must never stack or pin the panel.
+      if (inFlight) return;
+      inFlight = true;
+      const bounded = createBoundedFetch(10_000);
+      fetch(`${apiBase}/api/provider-request-pacing?name=${encodeURIComponent(item.name)}`, { signal: bounded.signal })
         .then(r => readJsonIfOk<PacingStatus>(r))
         .then(status => { if (active && status) setPacingStatus(status); })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => { bounded.clear(); inFlight = false; });
     };
     load();
-    const timer = window.setInterval(load, 2_000);
-    return () => { active = false; window.clearInterval(timer); };
+    const stop = startVisibilityPoll(load, 2_000);
+    return () => { active = false; stop(); };
   }, [apiBase, item.name]);
 
   const pacingDraft = useMemo(() => ({
@@ -177,7 +193,8 @@ export default function ProviderSettings({
     || (adapter.trim() === "anthropic" && authMode === "key" && apiKeyTransport !== (item.apiKeyTransport ?? "x-api-key"))
     || note.trim() !== (item.note ?? "")
     || allowPrivateNetwork !== (item.allowPrivateNetwork ?? false)
-    || liveModels !== savedLiveModels;
+    || liveModels !== savedLiveModels
+    || (adapter.trim() === "cursor" && cursorHttpVersion !== savedCursorHttpVersion);
   const pacingDirty = pacingSignature(pacingDraft) !== pacingSignature(item.requestPacing);
   const formDirty = dirty || pacingDirty;
 
@@ -234,6 +251,9 @@ export default function ProviderSettings({
         // Keep omitted legacy values omitted unless the user actually changes this toggle.
         // Otherwise an unrelated settings save manufactures `liveModels: true` provenance.
         if (liveModelDiscoverySupported && liveModels !== (item.liveModels !== false)) patch.liveModels = liveModels;
+        if (adapter.trim() === "cursor" && cursorHttpVersion !== savedCursorHttpVersion) {
+          patch.upstreamHttpVersion = cursorHttpVersion === "http1.1" ? "http1.1" : null;
+        }
         if (supportsApiKeyTransport) patch.apiKeyTransport = apiKeyTransport;
         else if (item.apiKeyTransport !== undefined) patch.apiKeyTransport = "";
       }
@@ -279,7 +299,8 @@ export default function ProviderSettings({
     setAdapter(item.adapter); setBaseUrl(item.baseUrl);
     setDefaultModel(item.defaultModel ?? ""); setAuthMode(initialAuth);
     setApiKeyTransport(item.apiKeyTransport ?? "x-api-key");
-    setNote(item.note ?? ""); setAllowPrivateNetwork(item.allowPrivateNetwork ?? false); setLiveModels(savedLiveModels); setMsg(null);
+    setNote(item.note ?? ""); setAllowPrivateNetwork(item.allowPrivateNetwork ?? false); setLiveModels(savedLiveModels);
+    setCursorHttpVersion(savedCursorHttpVersion); setMsg(null);
     setPacingEnabled(item.requestPacing?.enabled === true); setPacingRpm(numberDraft(item.requestPacing?.requestsPerMinute));
     setPacingDelay(numberDraft(item.requestPacing?.minIntervalMs)); setPacingModels({ ...(item.requestPacing?.models ?? {}) });
     setEndpointChoice(matchChoiceId(baseUrlChoices, item.baseUrl));
@@ -346,6 +367,20 @@ export default function ProviderSettings({
         <label className="pwi-settings-field">
           <span className="pwi-settings-label">{t("modal.baseUrl")}</span>
           <input className="input" value={baseUrl} onChange={e => setBaseUrl(e.target.value)} readOnly={plainBaseUrlLocked} disabled={plainBaseUrlLocked} />
+        </label>
+      )}
+      {adapter.trim() === "cursor" && (
+        <label className="pwi-settings-field">
+          <span className="pwi-settings-label">{t("pws.cursorTransport")}</span>
+          <select
+            className="input"
+            value={cursorHttpVersion}
+            onChange={e => setCursorHttpVersion(e.target.value as CursorHttpVersion)}
+          >
+            <option value="http2">{t("pws.cursorTransportHttp2")}</option>
+            <option value="http1.1">{t("pws.cursorTransportHttp1")}</option>
+          </select>
+          <span className="pwi-settings-hint">{t("pws.cursorTransportDesc")}</span>
         </label>
       )}
       <label className="pwi-settings-field">

@@ -12,7 +12,18 @@ import { identifyRoutedModel } from "./identity";
 import { peekReasoningForCall } from "../responses/reasoning-replay-cache";
 import { buildNonOpenAIToolCatalogNudgeForTools, shouldInjectNonOpenAIToolCatalogNudge } from "./tool-catalog-nudge";
 import { openRouterProviderPayload, resolveOpenRouterRouting } from "../providers/openrouter-routing";
-import { canSerializeServiceTierForChatModel } from "../providers/service-tier";
+import {
+  canForwardForeignServiceTierForChatModel,
+  fastPolicyForModel,
+  supportsServiceTierForModel,
+} from "../providers/service-tier";
+import {
+  canonicalFastTierMarker,
+  createAdapterTierMetadata,
+  decideTier,
+  type AdapterTierMetadata,
+  type ResolvedFastPolicy,
+} from "../providers/fastwire";
 import { openaiChatCompletionsUrl } from "./openai-chat-url";
 import { stripResponsesOnlyEncryptedMarker } from "./responses-tool-schema";
 import {
@@ -88,6 +99,8 @@ export function buildOpenAIChatPassthroughRequest(
   rawBody: Record<string, unknown>,
   modelId: string,
   stream: boolean,
+  fastPolicy: ResolvedFastPolicy = fastPolicyForModel(provider, modelId, undefined, "chat"),
+  fastMode?: boolean,
 ): AdapterRequest {
   const { url, headers, hasCredential } = openAIChatTransport(provider);
 
@@ -100,15 +113,31 @@ export function buildOpenAIChatPassthroughRequest(
     if (rawBody[field] !== undefined) body[field] = rawBody[field];
   }
 
+  const openRouterRouting = resolveOpenRouterRouting(provider, modelId);
+  if (openRouterRouting) body.provider = openRouterProviderPayload(openRouterRouting);
+
   if (modelInList(provider.noTemperatureModels, modelId)) delete body.temperature;
   if (modelInList(provider.noTopPModels, modelId)) delete body.top_p;
   if (modelInList(provider.noPenaltyModels, modelId)) {
     delete body.presence_penalty;
     delete body.frequency_penalty;
   }
-  if (modelInList(provider.noStructuredOutputModels, modelId)) delete body.response_format;
+  // Exact match, unlike the gates above: `noStructuredOutputModels` is documented as
+  // "only an exact requested-model match omits the field" (#1424), and the Responses
+  // ingress enforces exactly that. A prefix match here would strip response_format from
+  // `<listed>:<tag>` siblings the operator never opted out, silently returning prose.
+  if (provider.noStructuredOutputModels?.includes(modelId)) delete body.response_format;
 
-  if (provider.chatServiceTier && rawBody.service_tier !== undefined) {
+  // Run the same complete Fast policy as the translated Chat path, including explicit
+  // fastMode and foreign-tier handling. On inherited canonical Fast, the passthrough still
+  // retains the caller's exact spelling; forced Fast uses the policy-owned wire value.
+  const callerTier = typeof rawBody.service_tier === "string" ? rawBody.service_tier : undefined;
+  const tierDecision = decideTier(fastPolicy, fastMode, callerTier);
+  if (tierDecision.kind === "set") {
+    body.service_tier = fastMode === undefined && canonicalFastTierMarker(callerTier) !== undefined
+      ? callerTier
+      : tierDecision.value;
+  } else if (tierDecision.kind === "forward-caller" && rawBody.service_tier !== undefined) {
     body.service_tier = rawBody.service_tier;
   }
   if (provider.promptCacheKey && rawBody.prompt_cache_key !== undefined) {
@@ -289,10 +318,25 @@ function invalidChoicesEvent(usage?: OcxUsage): Extract<AdapterEvent, { type: "e
   };
 }
 
-function invalidToolCallsEvent(usage?: OcxUsage): Extract<AdapterEvent, { type: "error" }> {
+function invalidToolCallsEvent(
+  rawToolCalls: unknown,
+  mode: "stream" | "response",
+  usage?: OcxUsage,
+  diagnosticOverride?: InvalidToolCallDiagnostic,
+): Extract<AdapterEvent, { type: "error" }> {
+  // The streamed accumulator knows things a rescan cannot: which field on which pending call
+  // was actually rejected. Without the override, a stream carrying accepted padding on call 0
+  // and a real defect on call 1 blames call 0, because the stateless scan stops at the first
+  // structurally odd value it sees.
+  const diagnostic = diagnosticOverride ?? diagnoseInvalidToolCalls(rawToolCalls, mode);
+  const detail = diagnostic
+    ? ` (${diagnostic.reason}${diagnostic.callIndex !== undefined ? `; callIndex=${diagnostic.callIndex}` : ""}; valueType=${diagnostic.valueType})`
+    : "";
   return {
     type: "error",
-    message: "upstream response contained invalid tool calls",
+    status: 502,
+    errorType: "upstream_error",
+    message: `upstream response contained invalid tool calls${detail}`,
     ...(usage !== undefined ? { usage } : {}),
   };
 }
@@ -333,6 +377,83 @@ type InvalidToolCallReason =
   | "tool_call_function_name_blank"
   | "tool_call_function_arguments_invalid";
 
+type InvalidToolCallDiagnostic = {
+  reason: InvalidToolCallReason;
+  callIndex?: number;
+  valueType: string;
+};
+
+type InvalidFieldShape =
+  | {
+      kind: "object";
+      knownKeys: string[];
+      knownFieldTypes: Record<string, string>;
+      hasUnknownKeys: boolean;
+    }
+  | {
+      kind: "array";
+      length: number;
+    };
+
+const SAFE_TOOL_CALL_SHAPE_KEYS = [
+  "name",
+  "type",
+  "value",
+  "function",
+  "arguments",
+  "id",
+  "index",
+] as const;
+const SAFE_TOOL_CALL_SHAPE_KEY_SET = new Set<string>(SAFE_TOOL_CALL_SHAPE_KEYS);
+
+function structuralValueType(value: unknown): string {
+  return value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+}
+
+function invalidToolCallField(rawToolCalls: unknown, diagnostic: InvalidToolCallDiagnostic): unknown {
+  if (diagnostic.reason === "tool_calls_not_array") return rawToolCalls;
+  if (!Array.isArray(rawToolCalls) || diagnostic.callIndex === undefined) return undefined;
+
+  const rawToolCall = rawToolCalls[diagnostic.callIndex];
+  if (diagnostic.reason === "tool_call_not_object") return rawToolCall;
+  if (!isRecord(rawToolCall)) return undefined;
+  if (diagnostic.reason === "tool_call_function_not_object") return rawToolCall.function;
+
+  const rawFunction = rawToolCall.function;
+  switch (diagnostic.reason) {
+    case "tool_call_id_invalid":
+      return rawToolCall.id;
+    case "tool_call_function_name_invalid":
+      return isRecord(rawFunction) ? rawFunction.name : undefined;
+    case "tool_call_function_arguments_invalid":
+      return isRecord(rawFunction) ? rawFunction.arguments : undefined;
+    default:
+      return undefined;
+  }
+}
+
+function fingerprintInvalidField(value: unknown): InvalidFieldShape | undefined {
+  if (Array.isArray(value)) return { kind: "array", length: value.length };
+  if (!isRecord(value)) return undefined;
+
+  const knownKeys: string[] = [];
+  const knownFieldTypes: Record<string, string> = {};
+  for (const key of SAFE_TOOL_CALL_SHAPE_KEYS) {
+    if (!Object.hasOwn(value, key)) continue;
+    knownKeys.push(key);
+    knownFieldTypes[key] = structuralValueType(value[key]);
+  }
+
+  let hasUnknownKeys = false;
+  for (const key of Object.keys(value)) {
+    if (!SAFE_TOOL_CALL_SHAPE_KEY_SET.has(key)) {
+      hasUnknownKeys = true;
+      break;
+    }
+  }
+  return { kind: "object", knownKeys, knownFieldTypes, hasUnknownKeys };
+}
+
 /**
  * Streamed string fields are absent when null or undefined (#1731): OpenAI-compatible
  * streamers repeat already-sent `id`/`name`/`arguments` as null on continuation deltas.
@@ -350,7 +471,7 @@ function isInvalidStreamStringField(value: unknown): boolean {
 function diagnoseInvalidToolCalls(
   rawToolCalls: unknown,
   mode: "stream" | "response",
-): { reason: InvalidToolCallReason; callIndex?: number; valueType: string } | undefined {
+): InvalidToolCallDiagnostic | undefined {
   if (!Array.isArray(rawToolCalls)) {
     return { reason: "tool_calls_not_array", valueType: rawToolCalls === null ? "null" : typeof rawToolCalls };
   }
@@ -425,9 +546,20 @@ function diagnoseInvalidToolCalls(
   return undefined;
 }
 
-function logInvalidToolCalls(mode: "stream" | "response", rawToolCalls: unknown): void {
-  const diagnostic = diagnoseInvalidToolCalls(rawToolCalls, mode);
-  if (diagnostic) debugProviderDiagnostic("openai-chat", "invalid-tool-calls", { mode, ...diagnostic });
+function logInvalidToolCalls(
+  mode: "stream" | "response",
+  rawToolCalls: unknown,
+  diagnosticOverride?: InvalidToolCallDiagnostic,
+): void {
+  if (!isDebugEnabled()) return;
+  const diagnostic = diagnosticOverride ?? diagnoseInvalidToolCalls(rawToolCalls, mode);
+  if (!diagnostic) return;
+  const fieldShape = fingerprintInvalidField(invalidToolCallField(rawToolCalls, diagnostic));
+  debugProviderDiagnostic("openai-chat", "invalid-tool-calls", {
+    mode,
+    ...diagnostic,
+    ...(fieldShape ? { fieldShape } : {}),
+  });
 }
 
 function developerSystemText(message: OcxMessage): string | undefined {
@@ -1048,7 +1180,11 @@ function normalizeXaiToolParameters(parameters: unknown): Record<string, unknown
   if (!isXaiObjectSchema(parameters)) return undefined;
   const resolved = resolveXaiSchemaRefs(parameters, parameters);
   if (!isXaiObjectSchema(resolved)) return undefined;
-  const variants = expandXaiRootObjectSchemas(resolved);
+
+  const normalizedRoot = { ...resolved };
+  delete normalizedRoot.$schema;
+
+  const variants = expandXaiRootObjectSchemas(normalizedRoot);
   if (!variants) return undefined;
   if (variants.length === 1) {
     return xaiVariantIsConcreteObject(variants[0]) ? variants[0] : undefined;
@@ -1058,7 +1194,7 @@ function normalizeXaiToolParameters(parameters: unknown): Record<string, unknown
   if (!additionalProperties.ok) return undefined;
   if (!xaiPropertyMergeIsLossless(variants)) return undefined;
 
-  const metadata = Object.fromEntries(Object.entries(resolved).filter(([key]) => key !== "oneOf" && key !== "anyOf" && key !== "type"));
+  const metadata = Object.fromEntries(Object.entries(normalizedRoot).filter(([key]) => key !== "oneOf" && key !== "anyOf" && key !== "type"));
   delete metadata.properties;
   delete metadata.required;
   delete metadata.additionalProperties;
@@ -1072,6 +1208,7 @@ function normalizeXaiToolParameters(parameters: unknown): Record<string, unknown
       propertyValues.set(name, values);
     }
   }
+
   const properties = Object.fromEntries(
     [...propertyValues].map(([name, values]) => [name, mergeXaiPropertySchemas(values)]),
   );
@@ -1088,7 +1225,7 @@ function normalizeXaiToolParameters(parameters: unknown): Record<string, unknown
 
 function toolsToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] | undefined {
   if (!parsed.context.tools || parsed.context.tools.length === 0) return undefined;
-  const tools = parsed.context.tools.filter(toolChoiceToolPredicate(parsed.options.toolChoice));
+  const tools = parsed.context.tools.filter(toolChoiceToolPredicate(parsed.options.toolChoice, parsed.context.tools));
   if (tools.length === 0) return undefined;
   const xaiTarget = isXaiSchemaTarget(provider);
   const formatted = tools.flatMap(t => {
@@ -1176,6 +1313,26 @@ function thinkingBudgetForEffort(parsed: OcxParsedRequest, reasoningEffort: stri
   return fraction === undefined ? undefined : Math.max(1, Math.floor(maxBudget * fraction));
 }
 
+function canSerializeOpenAIChatServiceTier(
+  provider: OcxProviderConfig,
+  modelId: string,
+  serviceTier: unknown,
+  tierDecision?: OcxParsedRequest["options"]["tierDecision"],
+): boolean {
+  if (serviceTier === undefined) return false;
+  if (tierDecision !== undefined) {
+    return tierDecision.kind === "set" || tierDecision.kind === "forward-caller";
+  }
+  // No decision from the router means this call did not go through the tier state machine, so
+  // ask that machine rather than re-deriving a looser answer beside it. The previous fallback
+  // returned true whenever foreign forwarding was allowed at all, which let a caller tier
+  // reach the wire in cases `decideTier` would have dropped — the two paths disagreeing is
+  // precisely the bug, so there is now only one authority.
+  const callerTier = typeof serviceTier === "string" ? serviceTier : undefined;
+  const decision = decideTier(fastPolicyForModel(provider, modelId, undefined, "chat"), undefined, callerTier);
+  return decision.kind === "set" || decision.kind === "forward-caller";
+}
+
 export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAdapter {
   return {
     name: "openai-chat",
@@ -1184,7 +1341,6 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
 
     buildRequest(parsed: OcxParsedRequest) {
       const { url, headers, hasCredential } = openAIChatTransport(provider);
-
       const messages = messagesToChatFormat(parsed, provider);
       const tools = toolsToChatFormatForProvider(parsed, provider);
       const toolChoice = toolChoiceToChatFormat(parsed.options.toolChoice, parsed.context.tools, provider);
@@ -1194,17 +1350,19 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         messages,
         stream: parsed.stream,
       };
-      // Preserve a caller-selected service tier for OpenAI-compatible chat gateways. The
-      // request pipeline deliberately does not inject fast mode for this adapter, but dropping
-      // an explicit value here makes the Responses parser's serviceTier projection ineffective.
-      //
-      // Opt-in, like `prompt_cache_key` directly below: `service_tier` is an OpenAI-specific
-      // extension and 66 registry providers share this adapter. A provider-wide Chat opt-in
-      // authorizes undeclared models; an exact model declaration can authorize or deny one
-      // model. Provider-level false remains fail-closed.
-      if (canSerializeServiceTierForChatModel(provider, parsed.modelId)
-        && parsed.options.serviceTier !== undefined) {
-        body.service_tier = parsed.options.serviceTier;
+      // A policy-produced canonical decision has already passed capability validation. Without
+      // that decision, a canonical caller value still requires an explicit true capability;
+      // unclassified Chat routes remain behind the caller-forwarding opt-in.
+      const serviceTier = parsed.options.serviceTier;
+      const tierDecision = parsed.options.tierDecision;
+      const canSerializeServiceTier = canSerializeOpenAIChatServiceTier(
+        provider,
+        parsed.modelId,
+        serviceTier,
+        tierDecision,
+      );
+      if (canSerializeServiceTier && serviceTier !== undefined) {
+        body.service_tier = serviceTier;
       }
       if (modelInList(provider.reasoningSplitModels, parsed.modelId)) body.reasoning_split = true;
       const maxTokens = resolveMaxTokens(provider, parsed);
@@ -1337,6 +1495,13 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       if (parsed.stream) body.stream_options = { include_usage: true };
 
       const bodyJson = JSON.stringify(body);
+      const actualServiceTier = typeof body.service_tier === "string" ? body.service_tier : null;
+      const tierLog = createAdapterTierMetadata(
+        parsed.options.tierObservation,
+        parsed.options.tierDecision,
+        actualServiceTier === null ? null : "service-tier",
+        actualServiceTier,
+      );
       if (isDebugEnabled()) {
         let host = "upstream";
         try { host = new URL(url).host; } catch { /* keep fallback */ }
@@ -1357,10 +1522,15 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         headers,
         body: bodyJson,
         ...(reasoningLog ? { reasoningLog } : {}),
+        ...(tierLog ? { tierLog } : {}),
       };
     },
 
-    async *parseStream(response: Response, budget: TranslatorBudget): AsyncGenerator<AdapterEvent> {
+    async *parseStream(
+      response: Response,
+      budget: TranslatorBudget,
+      tierMetadata?: AdapterTierMetadata,
+    ): AsyncGenerator<AdapterEvent> {
       if (!response.body) {
         yield { type: "error", message: "No response body" };
         return;
@@ -1371,7 +1541,20 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       const budgetEncoder = new TextEncoder();
       let buffer = "";
       let bufferBytes = 0;
-      interface PendingToolCall { key: string; id: string; name: string; args: string; argsBytes: number }
+      interface PendingToolCall {
+        key: string;
+        id: string;
+        name: string;
+        args: string;
+        argsBytes: number;
+        /**
+         * Whether this call has ever received `arguments` as an actual string, empty included.
+         * An empty string still counts: it proves the upstream sent the field with the right
+         * wire type, which is what a later malformed repeat of that field would be padding for.
+         * A canonical NAME is not evidence about the ARGUMENTS field and must not stand in.
+         */
+        sawArgumentsString: boolean;
+      }
       const pendingToolCalls: PendingToolCall[] = [];
       let toolCallSeq = 0;
       const closeToolCalls = (): PendingToolCall[] => {
@@ -1380,6 +1563,16 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         pendingToolCalls.length = 0;
         return calls;
       };
+      const pendingToolCallsAreCompleteJsonObjects = (): boolean =>
+        pendingToolCalls.length > 0 && pendingToolCalls.every(call => {
+          if (call.name.trim().length === 0 || !call.sawArgumentsString || call.args.length === 0) return false;
+          try {
+            const parsed = JSON.parse(call.args) as unknown;
+            return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed);
+          } catch {
+            return false;
+          }
+        });
       // Returns "terminate" when a pending call cannot be dispatched, so every flush site
       // stops the turn instead of emitting an unusable call. `closeToolCalls()` runs first,
       // so budget reservations are released for every pending call even on the early return.
@@ -1429,11 +1622,15 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         try {
           parsed = JSON.parse(payload);
         } catch {
+          tierMetadata?.markResponseUnparseable();
           yield { type: "error", message: "malformed upstream SSE data frame" };
           return "terminate";
         }
         if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return "continue";
         const chunk = parsed as Record<string, unknown>;
+        if (Object.hasOwn(chunk, "service_tier")) {
+          tierMetadata?.observeResponseServiceTier(chunk.service_tier);
+        }
 
         if (chunk.error !== undefined && chunk.error !== null) {
           const event = upstreamErrorEvent(chunk.error, pendingUsage);
@@ -1479,63 +1676,105 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
             // tolerated as absent because OpenAI-compatible providers may emit it as stream padding.
             if (!Array.isArray(rawToolCalls)) {
               logInvalidToolCalls("stream", rawToolCalls);
-              return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
+              return yield* terminateWithError(invalidToolCallsEvent(rawToolCalls, "stream", pendingUsage));
             }
-            for (const rawToolCall of rawToolCalls) {
+            for (let callIndex = 0; callIndex < rawToolCalls.length; callIndex++) {
+              const rawToolCall: unknown = rawToolCalls[callIndex];
               if (!isRecord(rawToolCall)) {
-                logInvalidToolCalls("stream", rawToolCalls);
-                return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
+                const diagnostic: InvalidToolCallDiagnostic = {
+                  reason: "tool_call_not_object",
+                  callIndex,
+                  valueType: rawToolCall === null ? "null" : Array.isArray(rawToolCall) ? "array" : typeof rawToolCall,
+                };
+                logInvalidToolCalls("stream", rawToolCalls, diagnostic);
+                return yield* terminateWithError(invalidToolCallsEvent(rawToolCalls, "stream", pendingUsage, diagnostic));
               }
-              const tc = rawToolCall as {
-                index?: number;
-                id?: string;
-                function?: { name?: string; arguments?: string };
-              };
-              // That cast is a TypeScript convenience, not a runtime guarantee: this is
-              // upstream JSON. Validate the fields before they are stored, so a non-string
-              // name or arguments value fails closed through the #1325 channel here rather
-              // than escaping later as a TypeError from string handling at flush time.
-              const rawFunction = (rawToolCall as { function?: unknown }).function;
-              if (rawFunction !== undefined && rawFunction !== null) {
-                if (!isRecord(rawFunction)) {
-                  logInvalidToolCalls("stream", rawToolCalls);
-                  return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
-                }
-                const rawName = rawFunction.name;
-                const rawArguments = rawFunction.arguments;
-                // Some OpenAI-compatible streamers repeat already-sent fields as null on
-                // continuation deltas. Treat only null/undefined as absent; every other
-                // non-string value still fails closed before entering the accumulator.
-                if (isInvalidStreamStringField(rawName) || isInvalidStreamStringField(rawArguments)) {
-                  logInvalidToolCalls("stream", rawToolCalls);
-                  return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
-                }
+              // This is upstream JSON, so every field is validated before it is stored: a
+              // malformed value must fail closed through the #1325 channel here rather than
+              // escaping later as a TypeError from string handling at flush time.
+              const rawFunction = rawToolCall.function;
+              if (rawFunction !== undefined && rawFunction !== null && !isRecord(rawFunction)) {
+                const diagnostic: InvalidToolCallDiagnostic = {
+                  reason: "tool_call_function_not_object",
+                  callIndex,
+                  valueType: Array.isArray(rawFunction) ? "array" : typeof rawFunction,
+                };
+                logInvalidToolCalls("stream", rawToolCalls, diagnostic);
+                return yield* terminateWithError(invalidToolCallsEvent(rawToolCalls, "stream", pendingUsage, diagnostic));
               }
-              if (isInvalidStreamStringField(tc.id)) {
-                logInvalidToolCalls("stream", rawToolCalls);
-                return yield* terminateWithError(invalidToolCallsEvent(pendingUsage));
-              }
-              const key = typeof tc.index === "number"
-                ? `i:${tc.index}`
-                : tc.id
-                  ? `id:${tc.id}`
+              const fnRecord = isRecord(rawFunction) ? rawFunction : undefined;
+              const rawName = fnRecord?.name;
+              const rawArguments = fnRecord?.arguments;
+              const rawId = rawToolCall.id;
+              const idDelta = typeof rawId === "string" ? rawId : "";
+              const rawIndex = rawToolCall.index;
+
+              // Resolve the pending call BEFORE judging the fields. Some OpenAI-compatible
+              // streamers repeat an already-sent field as a non-string placeholder on a
+              // continuation delta; judging first meant the whole stream died with a 502 even
+              // though the value being repeated was already held in canonical form.
+              const key = typeof rawIndex === "number"
+                ? `i:${rawIndex}`
+                : idDelta
+                  ? `id:${idDelta}`
                   : pendingToolCalls[pendingToolCalls.length - 1]?.key;
               let call = key !== undefined ? pendingToolCalls.find(c => c.key === key) : undefined;
-              if (!call && tc.id) call = pendingToolCalls.find(c => c.id === tc.id);
+              if (!call && idDelta) call = pendingToolCalls.find(c => c.id === idDelta);
               if (!call) {
-                call = { key: key ?? `seq:${pendingToolCalls.length}`, id: "", name: "", args: "", argsBytes: 0 };
+                call = {
+                  key: key ?? `seq:${pendingToolCalls.length}`,
+                  id: "",
+                  name: "",
+                  args: "",
+                  argsBytes: 0,
+                  sawArgumentsString: false,
+                };
                 pendingToolCalls.push(call);
                 budget.openCall(call.key);
               }
-              if (tc.id && !call.id) call.id = tc.id;
-              if (tc.function?.name && !call.name) call.name = tc.function.name;
-              if (tc.function?.arguments) {
+
+              // Tolerance is per FIELD, keyed on that field's own provenance. A canonical name
+              // says nothing about whether `arguments` was ever sent as a string, so it cannot
+              // authorize a malformed arguments value — that would silently drop a real
+              // argument payload the model intended to send.
+              const rejection: InvalidToolCallDiagnostic | undefined =
+                isInvalidStreamStringField(rawName) && call.name.trim() === ""
+                  ? { reason: "tool_call_function_name_invalid", callIndex, valueType: typeof rawName }
+                  : isInvalidStreamStringField(rawArguments) && !call.sawArgumentsString
+                    ? { reason: "tool_call_function_arguments_invalid", callIndex, valueType: typeof rawArguments }
+                    : isInvalidStreamStringField(rawId) && call.id === ""
+                      ? { reason: "tool_call_id_invalid", callIndex, valueType: typeof rawId }
+                      : undefined;
+              if (rejection) {
+                logInvalidToolCalls("stream", rawToolCalls, rejection);
+                return yield* terminateWithError(invalidToolCallsEvent(rawToolCalls, "stream", pendingUsage, rejection));
+              }
+
+              if (idDelta && !call.id) call.id = idDelta;
+              if (typeof rawName === "string" && rawName && !call.name) call.name = rawName;
+              if (typeof rawArguments === "string") call.sawArgumentsString = true;
+              // Tool-call deltas are BUFFERED until a terminal signal, so this adapter can
+              // consume upstream frames for a long time while yielding nothing. The Responses
+              // bridge reads adapter activity, not socket activity, so a model that streams a
+              // large argument payload looks identical to a hung upstream and the stall
+              // watchdog can abort a turn that was progressing normally.
+              //
+              // Found while investigating #2156, but it is NOT that bug: a stall abort emits
+              // `response.incomplete` with `upstream_stall_timeout` from the bridge, whereas
+              // that report shows the adapter's own end-of-stream error after `reader.read()`
+              // returned EOF with tool calls still pending. Different path, different frame.
+              //
+              // A heartbeat is invisible downstream — the bridge consumes it to re-arm the
+              // watchdog and emits nothing — which is the same remedy the Cursor, Anthropic,
+              // Google, and Kiro adapters already use for their own silent phases.
+              yield { type: "heartbeat" };
+              if (typeof rawArguments === "string" && rawArguments) {
                 const previousBytes = call.argsBytes;
-                const nextBytes = previousBytes + budgetEncoder.encode(tc.function.arguments).byteLength;
+                const nextBytes = previousBytes + budgetEncoder.encode(rawArguments).byteLength;
                 const scope = { kind: "tool_args" as const, callId: call.key };
                 const reservation = budget.reserveTransient(nextBytes, scope);
                 try {
-                  call.args += tc.function.arguments;
+                  call.args += rawArguments;
                   reservation.commitRetained();
                   budget.releaseRetained(previousBytes, scope);
                   call.argsBytes = nextBytes;
@@ -1594,6 +1833,15 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         }
         const sawFinish = finishReason !== undefined;
         if (!sawFinish && pendingToolCalls.length > 0) {
+          // Some OpenAI-compatible gateways close immediately after a complete function-call
+          // delta and omit both terminal conventions. Keep the default fail-closed policy, and
+          // let an opted-in provider recover only calls whose assembled argument payload is a
+          // complete JSON object. A partial JSON prefix still takes the truncation path below.
+          if (provider.openaiChatEofTolerance === true && pendingToolCallsAreCompleteJsonObjects()) {
+            if ((yield* flushToolCalls()) === "terminate") return;
+            yield { type: "done", usage: pendingUsage };
+            return;
+          }
           debugProviderDiagnostic("openai-chat", "stream-truncated", {
             finishReason: null,
             hadUsage: pendingUsage !== undefined,
@@ -1634,8 +1882,26 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
       }
     },
 
-    async parseResponse(response: Response, budget: TranslatorBudget): Promise<AdapterEvent[]> {
-      const json = await response.json() as Record<string, unknown>;
+    async parseResponse(
+      response: Response,
+      budget: TranslatorBudget,
+      tierMetadata?: AdapterTierMetadata,
+    ): Promise<AdapterEvent[]> {
+      let parsed: unknown;
+      try {
+        parsed = await response.json();
+      } catch (error) {
+        tierMetadata?.markResponseUnparseable();
+        throw error;
+      }
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        tierMetadata?.markResponseUnparseable();
+        throw new Error("upstream response was not a JSON object");
+      }
+      const json = parsed as Record<string, unknown>;
+      if (Object.hasOwn(json, "service_tier")) {
+        tierMetadata?.observeResponseServiceTier(json.service_tier);
+      }
       const responseBytes = new TextEncoder().encode(JSON.stringify(json)).byteLength;
       budget.chargeRetained(responseBytes, { kind: "retained_collectors" });
       try {
@@ -1675,12 +1941,12 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
         if (rawToolCalls !== undefined && rawToolCalls !== null) {
           if (!Array.isArray(rawToolCalls)) {
             logInvalidToolCalls("response", rawToolCalls);
-            return [invalidToolCallsEvent(usage)];
+            return [invalidToolCallsEvent(rawToolCalls, "response", usage)];
           }
           for (const rawToolCall of rawToolCalls) {
             if (!isRecord(rawToolCall) || !isRecord(rawToolCall.function)) {
               logInvalidToolCalls("response", rawToolCalls);
-              return [invalidToolCallsEvent(usage)];
+              return [invalidToolCallsEvent(rawToolCalls, "response", usage)];
             }
             const id = rawToolCall.id;
             const name = rawToolCall.function.name;
@@ -1691,7 +1957,7 @@ export function createOpenAIChatAdapter(provider: OcxProviderConfig): ProviderAd
             if (typeof id !== "string" || typeof name !== "string" || typeof args !== "string"
               || name.trim().length === 0) {
               logInvalidToolCalls("response", rawToolCalls);
-              return [invalidToolCallsEvent(usage)];
+              return [invalidToolCallsEvent(rawToolCalls, "response", usage)];
             }
             events.push({ type: "tool_call_start", id, name });
             events.push({ type: "tool_call_delta", arguments: args });

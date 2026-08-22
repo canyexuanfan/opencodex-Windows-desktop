@@ -8,9 +8,14 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  resolveCodexCoordinatorDatabasePath,
+  resolveEffectiveUserIdentity,
+} from "../src/codex/user-identity";
+import { STABLE_ZERO_BYTE_COORDINATOR_AGE_MS } from "../src/codex/inject-coordination";
 
 const repoRoot = join(import.meta.dir, "..");
 const CHILD = join(repoRoot, "tests", "helpers", "codex-inject-race-child.ts");
@@ -20,6 +25,7 @@ let root = "";
 let codexHome = "";
 let opencodexHome = "";
 const cleanup: string[] = [];
+const coordinatorCleanup: string[] = [];
 
 function seedNative(): void {
   writeFileSync(join(codexHome, "config.toml"), 'model = "gpt-5"\n');
@@ -50,7 +56,29 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  while (cleanup.length) rmSync(cleanup.pop()!, { recursive: true, force: true });
+  while (coordinatorCleanup.length) {
+    const path = coordinatorCleanup.pop()!;
+    for (const suffix of ["", "-journal", "-wal", "-shm"]) {
+      rmSync(`${path}${suffix}`, { force: true });
+    }
+  }
+  while (cleanup.length) {
+    const dir = cleanup.pop()!;
+    // `force` covers a missing path, not a locked one: a child that is still exiting
+    // can hold a coordinator file open for a few milliseconds, and Windows answers
+    // EBUSY rather than unlinking underneath it. Retry briefly, then leave the temp
+    // directory to the OS -- failing teardown would blame whichever test ran here.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+        break;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY") throw err;
+        if (attempt < 4) Bun.sleepSync(50 * (attempt + 1));
+      }
+    }
+  }
 });
 
 describe("the lock is on the production path", () => {
@@ -98,7 +126,7 @@ describe("the lock is on the production path", () => {
    * lock module while a real injection runs; the injection must report busy and
    * must not have written its candidate bytes.
    */
-  test("a held lock makes real injection report busy and write nothing", () => {
+  test("a held lock makes real injection report busy and write nothing", async () => {
     seedNative();
     // Establish the coordinator first: a clean home has no row, and the holder
     // needs one to contend over.
@@ -130,7 +158,12 @@ describe("the lock is on the production path", () => {
     const contender = runInject(20200);
 
     writeFileSync(releaseMarker, "go");
-    holder.exited.then(() => undefined);
+    // AWAIT the holder. Dropping its exit on the floor left a live child owning the
+    // coordinator database while afterEach removed the temp root, and Windows refuses
+    // to unlink a file another process still has open -- so teardown failed with EBUSY
+    // and blamed this test for a race it had already won. POSIX unlinks regardless,
+    // which is why only Windows ever saw it, and only under full-suite load.
+    await holder.exited;
 
     expect(contender.success).toBeFalse();
     expect(contender.retryable).toBeTrue();
@@ -162,6 +195,35 @@ describe("homes the coordinator cannot adopt keep working", () => {
     const result = runInject(10100);
     expect(result.success).toBeTrue();
     expect(readFileSync(join(codexHome, "config.toml"), "utf-8")).toContain("openai_base_url");
+  });
+
+  test("a zero-byte coordinator remnant does not wedge a pre-substrate routed home", () => {
+    writeFileSync(join(codexHome, "config.toml"), [
+      'model_provider = "opencodex"',
+      'model = "gpt-5.5"',
+      "",
+      "[model_providers.opencodex]",
+      'name = "OpenCodex Proxy"',
+      'base_url = "http://127.0.0.1:10100/v1"',
+      'wire_api = "responses"',
+      "",
+    ].join("\n"));
+    const coordinatorPath = resolveCodexCoordinatorDatabasePath(
+      resolveEffectiveUserIdentity(),
+      realpathSync.native(codexHome),
+    );
+    coordinatorCleanup.push(coordinatorPath);
+    writeFileSync(coordinatorPath, "");
+    if (process.platform !== "win32") chmodSync(coordinatorPath, 0o600);
+    // Fresh zero-byte files remain on the coordinated path because they may
+    // belong to a live SQLite creator. This fixture represents an old remnant.
+    Bun.sleepSync(STABLE_ZERO_BYTE_COORDINATOR_AGE_MS + 100);
+
+    const result = runInject(10100);
+
+    expect(result.success).toBeTrue();
+    expect(readFileSync(join(codexHome, "config.toml"), "utf-8")).toContain("openai_base_url");
+    expect(readFileSync(coordinatorPath)).toHaveLength(0);
   });
 });
 

@@ -1,4 +1,15 @@
+import { namespacedToolName } from "../types";
+import { collectResponsesToolGroups } from "./tool-groups";
+
 const ROUTED_CUSTOM_TOOL_PASSTHROUGH = new Set(["apply_patch"]);
+const BUILTIN_FUNCTIONS_NAMESPACE = "functions";
+
+function routedCustomToolPassesThrough(
+  name: string,
+  supportsResponsesCustomTools: boolean | undefined,
+): boolean {
+  return supportsResponsesCustomTools !== false && ROUTED_CUSTOM_TOOL_PASSTHROUGH.has(name);
+}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -13,12 +24,77 @@ function customToolInput(argumentsText: unknown): string {
   return argumentsText;
 }
 
+function customToolWireName(namespace: string | undefined, name: string): string {
+  return namespace === BUILTIN_FUNCTIONS_NAMESPACE ? name : namespacedToolName(namespace, name);
+}
+
+/** Final upstream identity of a call, including a namespace restored by an earlier rewrite. */
+export function routedCustomToolWireName(value: unknown): string | undefined {
+  if (!isPlainObject(value) || typeof value.name !== "string") return undefined;
+  return customToolWireName(
+    typeof value.namespace === "string" ? value.namespace : undefined,
+    value.name,
+  );
+}
+
+/**
+ * Names of converted custom declarations after namespace lowering. Restoration uses these exact
+ * wire identities so same-named function and custom children in different namespaces stay distinct.
+ */
+function collectRoutedCustomToolWireNames(
+  body: unknown,
+  supportsResponsesCustomTools?: boolean,
+): Set<string> {
+  const names = new Set<string>();
+  const groups = collectResponsesToolGroups(body);
+  const bareWireNames = new Set<string>();
+  for (const group of groups) {
+    for (const tool of group) {
+      if (
+        isPlainObject(tool)
+        && tool.type !== "namespace"
+        && typeof tool.name === "string"
+      ) bareWireNames.add(tool.name);
+    }
+  }
+
+  for (const group of groups) {
+    for (const tool of group) {
+      if (!isPlainObject(tool)) continue;
+      if (
+        tool.type === "custom"
+        && typeof tool.name === "string"
+        && !routedCustomToolPassesThrough(tool.name, supportsResponsesCustomTools)
+      ) {
+        names.add(tool.name);
+        continue;
+      }
+      if (tool.type !== "namespace" || typeof tool.name !== "string" || !Array.isArray(tool.tools)) {
+        continue;
+      }
+      for (const child of tool.tools) {
+        if (
+          isPlainObject(child)
+          && child.type === "custom"
+          && typeof child.name === "string"
+          && !routedCustomToolPassesThrough(child.name, supportsResponsesCustomTools)
+          && !(tool.name === BUILTIN_FUNCTIONS_NAMESPACE && bareWireNames.has(child.name))
+        ) names.add(customToolWireName(tool.name, child.name));
+      }
+    }
+  }
+  return names;
+}
+
 export function customToolItemId(id: unknown): unknown {
   if (typeof id !== "string") return id;
   return id.startsWith("fc_") ? `ctc_${id.slice(3)}` : id;
 }
 
-export function collectRoutedCustomToolNames(body: unknown): Set<string> {
+export function collectRoutedCustomToolNames(
+  body: unknown,
+  supportsResponsesCustomTools?: boolean,
+): Set<string> {
   const names = new Set<string>();
   const visit = (value: unknown): void => {
     if (Array.isArray(value)) {
@@ -29,7 +105,7 @@ export function collectRoutedCustomToolNames(body: unknown): Set<string> {
     if (
       value.type === "custom"
       && typeof value.name === "string"
-      && !ROUTED_CUSTOM_TOOL_PASSTHROUGH.has(value.name)
+      && !routedCustomToolPassesThrough(value.name, supportsResponsesCustomTools)
     ) {
       names.add(value.name);
     }
@@ -121,15 +197,19 @@ function rewriteForUpstream(
   return changed ? next : value;
 }
 
-export function rewriteRoutedCustomToolsForUpstream(body: unknown): {
+export function rewriteRoutedCustomToolsForUpstream(
+  body: unknown,
+  supportsResponsesCustomTools?: boolean,
+): {
   body: unknown;
   names: Set<string>;
 } {
-  const names = collectRoutedCustomToolNames(body);
-  if (names.size === 0) return { body, names };
+  const conversionNames = collectRoutedCustomToolNames(body, supportsResponsesCustomTools);
+  const names = collectRoutedCustomToolWireNames(body, supportsResponsesCustomTools);
+  if (conversionNames.size === 0) return { body, names };
   const callIds = new Set<string>();
-  collectConvertedCallIds(body, names, callIds);
-  return { body: rewriteForUpstream(body, names, callIds), names };
+  collectConvertedCallIds(body, conversionNames, callIds);
+  return { body: rewriteForUpstream(body, conversionNames, callIds), names };
 }
 
 export function restoreRoutedCustomCalls(
@@ -155,7 +235,8 @@ export function restoreRoutedCustomCalls(
     changed ||= result.changed;
   }
 
-  if (value.type === "function_call" && typeof value.name === "string" && names.has(value.name)) {
+  const wireName = routedCustomToolWireName(value);
+  if (value.type === "function_call" && wireName !== undefined && names.has(wireName)) {
     restored.type = "custom_tool_call";
     restored.id = customToolItemId(value.id);
     restored.input = customToolInput(value.arguments);

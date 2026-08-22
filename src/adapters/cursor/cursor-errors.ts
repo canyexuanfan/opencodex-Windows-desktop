@@ -27,13 +27,77 @@ function errorCode(value: unknown): string {
  * True when Cursor intentionally cancelled the HTTP/2 stream after a client-tool suspend.
  * These are expected between multi-turn Responses bridge cycles, not upstream failures.
  */
+/**
+ * A Cursor stream that ended cleanly at the HTTP/2 layer while a client tool call was still
+ * open — no `turnEnded`, no error trailer, just EOF. The call's buffered arguments are lost,
+ * so the turn is truncated: reporting it as success would hand Codex a turn whose tool call
+ * silently never happened. Not retryable — the request is committed once the session connects.
+ */
+export class CursorStreamTruncatedError extends Error {
+  constructor(
+    public readonly openCallIds: readonly string[],
+    public readonly framesReceived: number,
+  ) {
+    super(
+      `Cursor stream ended without terminating the turn; ${openCallIds.length} tool call(s) left incomplete `
+      + `(${openCallIds.join(", ")}) after ${framesReceived} frame(s). Arguments may be truncated; the call was not committed.`,
+    );
+    this.name = "CursorStreamTruncatedError";
+  }
+}
+
+/**
+ * A cancel-shaped stream failure that WE did not request. `cancelCursorRun` is the only place
+ * that cancels our own stream, and it sets `expectedClose` first, so a cancel arriving without it
+ * came from Cursor or the network and is a real transport failure.
+ *
+ * It carries its own message on purpose. Left as a raw `NGHTTP2_CANCEL` error, the text is
+ * re-matched downstream (`classifyCursorError`) and labelled "Cursor stream suspended" — a turn
+ * that failed unexpectedly would report an intentional suspension and misdirect diagnosis.
+ */
+export class CursorUnexpectedCancelError extends Error {
+  /**
+   * The originating error's transport code (typically `NGHTTP2_CANCEL`), re-exposed so the
+   * per-turn `turn-failed` diagnostic still records how the stream actually died. Wrapping
+   * without this made the summary for exactly this failure the one with no code.
+   */
+  public readonly code?: string;
+
+  constructor(public readonly cause?: unknown) {
+    super("Cursor connection was cancelled by the server before the turn completed");
+    this.name = "CursorUnexpectedCancelError";
+    const causeCode = errorCode(cause);
+    if (causeCode) this.code = causeCode;
+  }
+}
+
 export function isCursorBenignCancelError(value: unknown): boolean {
+  // An unexpected cancel is never benign, however it is spelled. This class is raised only when
+  // the transport knows WE did not request the cancel, so its provenance outranks the code match
+  // below — otherwise the adapter would re-decide the same question from the error code alone
+  // and swallow a real transport failure (cursor.ts:181).
+  if (value instanceof CursorUnexpectedCancelError) return false;
   const message = errorMessage(value).toLowerCase();
   const code = errorCode(value).toUpperCase();
   if (code === "NGHTTP2_CANCEL") return true;
   if (message.includes("nghttp2_cancel")) return true;
   if (message.includes("cursor stream suspended")) return true;
   return false;
+}
+
+/**
+ * True when the turn was torn down by an `AbortSignal` rather than by a transport fault.
+ *
+ * This is deliberately NOT part of `isCursorBenignCancelError`: an abort mid-turn is a real
+ * failure and must still surface. It is only meaningful in combination with a terminal frame
+ * having already been emitted, where it means "the answer landed and then the connection went
+ * away" (#1527).
+ */
+export function isCursorAbortError(value: unknown): boolean {
+  const message = errorMessage(value).toLowerCase();
+  if (message.includes("cursor request was aborted")) return true;
+  const name = (value as { name?: unknown })?.name;
+  return typeof name === "string" && name === "AbortError";
 }
 
 /**
@@ -48,6 +112,58 @@ export function isCursorInvalidArgumentError(value: unknown): boolean {
 }
 
 const QUOTA_RATE_CUES = ["too many requests", "quota", "rate limit", "rate-limit", "throttl"];
+/**
+ * A bare `resource_exhausted` end-stream with no detail beyond a generic error wrapper
+ * ("Error" or empty tail) and zero tokens billed is the shape Cursor's backend emits when
+ * the request payload exceeded its context window — not when quota ran out (senpi #1009,
+ * #1036: same wording, two causes). Quota rejections always carry an explicit rate cue
+ * ("too many requests", "quota exhausted"), so the ABSENCE of those cues plus the
+ * absence of a size phrase means payload overflow. Classifying it as 429 makes Codex
+ * back off instead of compacting, which burns retries on an unfixable-by-retry failure.
+ */
+const BARE_RE_TAILS = new Set(["error", "", "resource_exhausted", "resource exhausted"]);
+
+/**
+ * Size prior for bare resource_exhausted classification (devlog 260, live probe 210):
+ * a plan-gated model returns the SAME bare RE shape on a ~20-token prompt that a real
+ * payload overflow produces, so the message alone cannot separate "compact and retry"
+ * from "this account cannot use this model". When the caller can supply how large the
+ * request actually was relative to the model's window, a small request keeps the
+ * 429-class mapping; only a plausibly-large one classifies as overflow. Unknown
+ * sizes keep today's overflow mapping so the prior only ever REMOVES false overflows
+ * it can prove.
+ */
+export interface CursorSizeContext {
+  estimatedInputTokens?: number;
+  contextWindow?: number;
+}
+
+const OVERFLOW_MIN_FRACTION = 0.5;
+
+function bareReLooksLikeOverflow(context?: CursorSizeContext): boolean {
+  if (!context) return true;
+  const { estimatedInputTokens, contextWindow } = context;
+  if (estimatedInputTokens === undefined || contextWindow === undefined || contextWindow <= 0) return true;
+  return estimatedInputTokens >= OVERFLOW_MIN_FRACTION * contextWindow;
+}
+
+export function isCursorZeroTokenResourceExhausted(lowerMessage: string): boolean {
+  if (!lowerMessage.includes("resource_exhausted") && !lowerMessage.includes("resource exhausted")) return false;
+  // Any explicit quota/rate cue wins: this is a real 429.
+  if (QUOTA_RATE_CUES.some(cue => lowerMessage.includes(cue))) return false;
+  // An explicit size phrase also wins (already handled by the existing classifier).
+  if (isCursorRequestTooLargeDetail(lowerMessage)) return false;
+  // Extract the tail after the resource_exhausted marker. If it names a specific
+  // non-quota, non-size cause, this is NOT bare overflow.
+  const idx = Math.max(
+    lowerMessage.indexOf("resource_exhausted"),
+    lowerMessage.indexOf("resource exhausted"),
+  );
+  const tail = lowerMessage.slice(idx + "resource_exhausted".length).trim().replace(/^[:\s]+/, "").trim();
+  if (!BARE_RE_TAILS.has(tail)) return false;
+  return true;
+}
+
 const REQUEST_TOO_LARGE_PATTERNS: (string | RegExp)[] = [
   "tool catalog too large",
   "tool registration too large",
@@ -80,7 +196,7 @@ export function isCursorRequestTooLargeDetail(lowerMessage: string): boolean {
  * The returned prefix string is recognized by `src/lib/errors.ts` `classifyError` keywords,
  * so bridge-level error mapping produces the right Codex error type (rate_limit, auth, etc.).
  */
-export function classifyCursorError(message: string): string {
+export function classifyCursorError(message: string, sizeContext?: CursorSizeContext): string {
   const lower = message.toLowerCase();
 
   if (isCursorBenignCancelError(message)) return "Cursor stream suspended";
@@ -94,9 +210,16 @@ export function classifyCursorError(message: string): string {
     // client-fixable 400; everything else surfaces as a 429 so Codex backs off
     // instead of hammering retries (live evidence: 6x 400 retry storm, devlog
     // 260723_cursor_context_continuity/000_plan.md).
-    return isCursorRequestTooLargeDetail(lower)
-      ? "Cursor resource limit exceeded"
-      : "Cursor rate limit exceeded";
+    if (isCursorRequestTooLargeDetail(lower)) return "Cursor resource limit exceeded";
+    // A bare resource_exhausted with no quota cue and no size phrase is payload
+    // overflow, not rate limiting. Classifying it as 429 makes Codex back off on a
+    // failure that only compaction can fix (senpi #1009 / #1036; research unit T01).
+    // Refinement (devlog 260): plan-gated models emit the same bare shape on tiny
+    // requests — when the caller proves the request was small, keep the 429 class.
+    if (isCursorZeroTokenResourceExhausted(lower)) {
+      return bareReLooksLikeOverflow(sizeContext) ? "Cursor context limit exceeded" : "Cursor rate limit exceeded";
+    }
+    return "Cursor rate limit exceeded";
   }
 
   if (
@@ -156,8 +279,8 @@ export function classifyCursorError(message: string): string {
  * Produce a user-facing, secret-safe Cursor error message with an actionable category prefix.
  * Mirrors `safeKiroErrorMessage` / `safeKiroHttpErrorMessage` in kiro-errors.ts.
  */
-export function safeCursorErrorMessage(rawMessage: string): string {
-  const prefix = classifyCursorError(rawMessage);
+export function safeCursorErrorMessage(rawMessage: string, sizeContext?: CursorSizeContext): string {
+  const prefix = classifyCursorError(rawMessage, sizeContext);
   const detail = sanitize(rawMessage)
     .replace(/resource[_ ]exhausted/gi, "resource limit exceeded")
     .slice(0, 500);

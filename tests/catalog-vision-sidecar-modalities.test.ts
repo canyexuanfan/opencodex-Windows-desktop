@@ -5,6 +5,8 @@ import type { OcxProviderConfig } from "../src/types";
 import { deriveComboCatalogModel } from "../src/codex/catalog";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import { enrichProviderFromRegistry } from "../src/providers/derive";
+import { CURSOR_NO_VISION_MODELS, CURSOR_STATIC_MODELS } from "../src/adapters/cursor/discovery";
+import { modelInList } from "../src/types";
 import type { CatalogModel } from "../src/types";
 
 const base: OcxProviderConfig = {
@@ -44,6 +46,32 @@ describe("vision-sidecar catalog modalities", () => {
     const prov: OcxProviderConfig = { ...base, modelInputModalities: { "glm-5.2": ["text"] } };
     const hinted = applyProviderConfigHints("opencode-go", prov, { id: "glm-5.2", provider: "opencode-go" });
     expect(hinted.inputModalities).toEqual(["text", "image"]);
+  });
+
+  test("MiMo token-plan sends only the Pro model through the sidecar (#1927)", () => {
+    const canonical: OcxProviderConfig = {
+      adapter: "openai-chat",
+      baseUrl: "https://token-plan-cn.xiaomimimo.com/v1",
+      authMode: "key",
+    };
+    enrichProviderFromRegistry("mimo", canonical);
+    expect(canonical.noVisionModels).toEqual(["mimo-v2.5-pro"]);
+    expect(applyProviderConfigHints("mimo", canonical, {
+      id: "mimo-v2.5-pro",
+      provider: "mimo",
+    }).inputModalities).toEqual(["text", "image"]);
+    expect(applyProviderConfigHints("mimo", canonical, {
+      id: "mimo-v2.5",
+      provider: "mimo",
+    }).inputModalities).toBeUndefined();
+
+    const customDestination: OcxProviderConfig = {
+      adapter: "openai-chat",
+      baseUrl: "https://mimo-compatible.example/v1",
+      authMode: "key",
+    };
+    enrichProviderFromRegistry("mimo", customDestination);
+    expect(customDestination.noVisionModels).toBeUndefined();
   });
 });
 
@@ -229,5 +257,24 @@ describe("vision-capable provider models feed combo modalities", () => {
     expect(prov.modelInputModalities?.["grok-4.5"]).toEqual(["text", "image"]);
     const hinted = applyProviderConfigHints("xai", prov, { provider: "xai", id: "grok-4.5" });
     expect(hinted.inputModalities).toEqual(["text", "image"]);
+  });
+});
+
+describe("Cursor native vs sidecar vision registry", () => {
+  test("curates noVisionModels for Auto/Composer/GLM while advertising image for all static ids", () => {
+    const cursor = PROVIDER_REGISTRY.find(entry => entry.id === "cursor");
+    expect(cursor?.noVisionModels).toEqual([...CURSOR_NO_VISION_MODELS]);
+    for (const model of ["auto", "composer-1", "composer-2.5", "composer-2.5-fast", "glm-5.2", "glm-5.3"]) {
+      expect(modelInList(cursor?.noVisionModels, model), `${model} should match noVision`).toBe(true);
+    }
+    for (const model of ["auto", "composer-2.5", "glm-5.2", "glm-5.3", "gpt-5.5", "gemini-3-pro", "grok-4.5", "kimi-k3"]) {
+      expect(cursor?.modelInputModalities?.[model]).toEqual(["text", "image"]);
+    }
+    for (const model of ["gpt-5.5", "gemini-3-pro", "grok-4.5", "kimi-k3"]) {
+      expect(modelInList(cursor?.noVisionModels, model)).toBe(false);
+    }
+    for (const model of CURSOR_STATIC_MODELS) {
+      expect(cursor?.modelInputModalities?.[model.id]).toEqual(["text", "image"]);
+    }
   });
 });

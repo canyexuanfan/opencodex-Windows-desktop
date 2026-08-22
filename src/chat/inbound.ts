@@ -99,17 +99,8 @@ function pushSystemText(parts: string[], content: unknown): void {
   if (text) parts.push(text);
 }
 
-function toolCallsToItems(toolCalls: unknown, input: Rec[]): void {
+function toolCallsToItems(toolCalls: unknown, input: Rec[], knownNameByCallId: Map<string, string>): void {
   if (!Array.isArray(toolCalls)) return;
-  // Recover names from earlier function_call items in the same transcript when a client
-  // re-sends tool_calls with only id/arguments (replace-style merge lost function.name).
-  const knownNameByCallId = new Map<string, string>();
-  for (const item of input) {
-    if (!isRec(item) || item.type !== "function_call") continue;
-    if (typeof item.call_id === "string" && typeof item.name === "string" && item.name.length > 0) {
-      knownNameByCallId.set(item.call_id, item.name);
-    }
-  }
   for (const raw of toolCalls) {
     if (!isRec(raw)) continue;
     const fn = isRec(raw.function) ? raw.function : null;
@@ -243,6 +234,9 @@ export function chatCompletionsToResponsesBody(raw: unknown): Rec {
 
   const systemParts: string[] = [];
   const input: Rec[] = [];
+  // Recover replace-style tool calls incrementally instead of rebuilding the
+  // call-id index from the entire translated transcript for every message.
+  const knownNameByCallId = new Map<string, string>();
 
   for (const msg of raw.messages) {
     if (!isRec(msg)) continue;
@@ -260,7 +254,7 @@ export function chatCompletionsToResponsesBody(raw: unknown): Rec {
       case "assistant": {
         const blocks = assistantContentToBlocks(msg.content);
         if (blocks.length > 0) input.push({ type: "message", role: "assistant", content: blocks });
-        if (msg.tool_calls !== undefined) toolCallsToItems(msg.tool_calls, input);
+        if (msg.tool_calls !== undefined) toolCallsToItems(msg.tool_calls, input, knownNameByCallId);
         break;
       }
       case "tool": {
@@ -305,6 +299,7 @@ export function chatCompletionsToResponsesBody(raw: unknown): Rec {
   if (raw.stop !== undefined) body.stop = raw.stop;
   if (typeof raw.user === "string") body.user = raw.user;
   if (typeof raw.parallel_tool_calls === "boolean") body.parallel_tool_calls = raw.parallel_tool_calls;
+  if (typeof raw.service_tier === "string") body.service_tier = raw.service_tier;
   if (typeof raw.prompt_cache_key === "string") body.prompt_cache_key = raw.prompt_cache_key;
   if (raw.metadata !== undefined) body.metadata = raw.metadata;
 

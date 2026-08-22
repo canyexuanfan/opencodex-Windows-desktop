@@ -103,6 +103,28 @@ export const CURSOR_ROUTER_MODEL_IDS = [
   ...CURSOR_ROUTING_LEVELS.map(level => `${CURSOR_AUTO_MODEL_ID}-${level}`),
 ] as const;
 
+/**
+ * Cursor models that cannot see images natively. OpenCodex routes them through the vision
+ * sidecar (the catalog still advertises image so Codex can attach). Evidence:
+ * - Composer family: Cursor staff — text-only; "Model does not support images"
+ * - Auto / router modes: Cursor docs omit Images for Auto Cost; staff — pick Claude/GPT for images
+ * - glm-5.2: Cursor docs omit Images; Z.ai GLM-5.2 is text-only (vision is GLM-5V)
+ * - glm-5.3: same family; seeded as text-only ahead of Cursor's lineup update
+ *
+ * Composer ids are enumerated explicitly — prefix wildcard matching is deliberately out of
+ * scope here; a live-discovered new Composer slug stays native-path until curated. Everyone
+ * else in the static seed (Claude, Gemini, GPT, Kimi, Grok) takes SelectedImage. Other
+ * live-discovered ids stay unclassified (native path) until curated.
+ */
+export const CURSOR_NO_VISION_MODELS = [
+  ...CURSOR_ROUTER_MODEL_IDS,
+  "composer-1",
+  "composer-2.5",
+  "composer-2.5-fast",
+  "glm-5.2",
+  "glm-5.3",
+] as const;
+
 /** Wire id Cursor Connect expects for the auto-router (GetUsableModels returns `default`, not `auto`). */
 export const CURSOR_AUTO_WIRE_MODEL_ID = "default";
 
@@ -146,6 +168,24 @@ export function isCursorExternalWireModel(modelId: string): boolean {
   return !isCursorNativeWireModel(modelId);
 }
 
+/**
+ * Native composer models whose tool-result continuation must still be sent as a
+ * userMessageAction with the plain "Continue:" text instead of a bare resumeAction.
+ *
+ * Observed on live Cursor Connect traffic (2026-08-20): `composer-2.5` (the
+ * standard, non-fast build) resumes a tool-result turn with server-side native
+ * tool calls (read/grep/exec) instead of answering, or completes with zero text
+ * (empty `content` + `stop`). `composer-2.5-fast` answers correctly on the same
+ * resumeAction path, so only the affected id is listed here. Sending the same
+ * continuation as an explicit user message (external path) makes the model
+ * answer reliably.
+ */
+export function cursorNeedsExternalToolContinuation(modelId: string): boolean {
+  if (isCursorExternalWireModel(modelId)) return true;
+  const wire = cursorCodexToWireModelId(modelId).trim().toLowerCase();
+  return wire === "composer-2.5";
+}
+
 function stripCursorEffortSuffix(wireModelId: string): string {
   const suffixes = [...CANONICAL_EFFORT_SUFFIXES].sort((a, b) => b.length - a.length);
   for (const suffix of suffixes) {
@@ -153,6 +193,13 @@ function stripCursorEffortSuffix(wireModelId: string): string {
     if (wireModelId.endsWith(marker)) return wireModelId.slice(0, -marker.length);
   }
   return wireModelId;
+}
+
+/** Compare Cursor wire models without effort suffix or the grok cursor- request prefix. */
+export function cursorCheckpointModelAffinityId(modelId: string): string {
+  const wire = cursorCodexToWireModelId(modelId).trim().toLowerCase();
+  const withoutPrefix = wire.startsWith("cursor-") ? wire.slice("cursor-".length) : wire;
+  return stripCursorEffortSuffix(withoutPrefix);
 }
 
 export function isCursorRouterModelId(modelId: string): boolean {
@@ -189,10 +236,15 @@ export const CURSOR_STATIC_MODELS: readonly CursorModelInfo[] = normalizeCursorM
   { id: "claude-4.6-opus", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
   { id: "claude-4.6-sonnet", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
   { id: "claude-opus-4-7", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
-  // opus-4-7-fast: effort-suffix tiers unverified -> no tier picker; sent bare like live-only ids.
-  { id: "claude-opus-4-7-fast", contextWindow: CONTEXT_200K },
+  // Opus Fast families: live GetUsableModels (260822) lists ONLY effort-suffixed wire ids
+  // ({base-without-fast}-{effort}-fast; the bare id returns not_found), so every entry
+  // carries a tier picker. Live-verified: claude-opus-4-8-high-fast completed a turn.
+  // Tiers per the 260822 dump (devlog 260822_senpi_cursor_transfer/300).
+  { id: "claude-opus-4-7-fast", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
+  { id: "claude-opus-4-8-fast", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
   { id: "claude-opus-4-8", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
   { id: "claude-opus-5", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
+  { id: "claude-opus-5-fast", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
   { id: "claude-fable-5", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
 
   { id: "composer-1", contextWindow: CONTEXT_200K },

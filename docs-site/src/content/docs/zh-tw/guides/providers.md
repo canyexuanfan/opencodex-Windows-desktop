@@ -15,7 +15,7 @@ description: opencodex 進行身分驗證並與 LLM 供應商通訊的所有方�
 
 在 Providers 頁面使用裸 `gpt-5.6-sol` 搭配 Pool／Direct 選項，或使用
 `openai-apikey/gpt-5.6-sol` 走 API。憑證路徑不會彼此 fallback。API 路徑發布的 metadata 為
-1,050,000 context／922,000 max input；`sol-pro`、`terra-pro` 與 `luna-pro` virtual id 會保留使用者
+922,000 context／922,000 max input；`sol-pro`、`terra-pro` 與 `luna-pro` virtual id 會保留使用者
 選到的公開 identity，但 wire 會改用 base model 加上 `reasoning.mode: "pro"`。
 
 若內建 `openai` 供應商缺失或已停用，儀表板 Accounts picker 與 Codex Auth 頁面可以恢復它：缺失的 row
@@ -103,7 +103,7 @@ ocx logout <provider>
 
 | 供應商 | Adapter | Base URL | 備註 |
 | --- | --- | --- | --- |
-| `xai` | `openai-chat` | `https://api.x.ai/v1` | 優先使用即時 Grok catalog；fallback 預設為 `grok-4.5`。 |
+| `xai` | `openai-chat` | `https://cli-chat-proxy.grok.com/v1` | OAuth 使用獨立的 Grok CLI 訂閱 gateway。API key 覆寫使用 `https://api.x.ai/v1`，並可能注入 Priority Processing。優先使用即時 Grok catalog；fallback 預設為 `grok-4.5`。 |
 | `anthropic` | `anthropic` | `https://api.anthropic.com` | Claude 模型；即時模型列表從 `/v1/models` 取得。 |
 | `kimi` | `openai-chat` | `https://api.kimi.com/coding/v1` | Kimi K2.7/K2.6/K2.5 coding 模型。 |
 | `nous` | `openai-chat` | `https://inference-api.nousresearch.com/v1` | Nous Research 訂閱 gateway（Hermes Agent 使用相同 backend）。透過 `portal.nousresearch.com` 做 device-grant 登入；access token 是每次請求使用的 inference JWT。混合付費與 `:free` 模型 catalog（`tencent/hy3:free`、`stepfun/step-3.7-flash:free` 等）會從已登入帳號即時探索。Refresh token 為單次使用，每次 refresh 都會輪換。 |
@@ -226,8 +226,10 @@ preset。儀表板的 **Add provider** picker 會開啟 key provider 的 dashboa
 與 [Chat Completions endpoint](https://docs.cline.bot/api/chat-completions)，由 Cline Bot Inc. 依
 [Cline terms](https://cline.bot/tos) 提供。像 `cline-pass/cline-pass/kimi-k3` 這類 routed id 是刻意設計：
 第一段選擇 opencodex provider，後面的 `cline-pass/kimi-k3` 才是送往上游的完整 model slug。ClinePass
-quota 由帳號共用，包含 rolling 5-hour、weekly 與 monthly limit。opencodex 目前只宣告 live-verified
-`low` reasoning tier；更高 requested tier 會 clamp 到 `low`，直到 gateway 發布或驗證更廣的 ladder。
+quota 由帳號共用，包含 rolling 5-hour、weekly 與 monthly limit。2026-08-13 的 live probe 已確認所有
+靜態 ClinePass model 在 gateway input 都接受 `low`、`medium`、`high`、`xhigh` 與 `max`。符合 registry
+transport 的 canonical ClinePass 設定會保留 requested tier；同名 custom provider 則保留明確設定的
+reasoning configuration。backend-specific normalization 由 ClinePass 負責。
 
 **Cline** 使用相同 API key 與 endpoint，但採 pay-as-you-go 用量計費，可使用 100+ 模型，包括
 OpenRouter 風格 id，例如 `anthropic/claude-sonnet-4-6`。Cline 的 promotional free model 只提供給 Cline
@@ -435,9 +437,9 @@ GPT-5.6 Sol/Terra/Luna 會預置在 provider fallback list 中，因此即使即
 
 | Codex 路由 | 預置 model id | Codex 可見 context |
 | --- | --- | --- |
-| Codex 登入（Pool 或 Direct） | `gpt-5.6-*` | 372,000 |
-| OpenAI (API key) | `openai-apikey/gpt-5.6-*` 加 `*-pro` | 1,050,000（922,000 max input） |
-| OpenRouter | `openrouter/openai/gpt-5.6-sol`、`openrouter/openai/gpt-5.6-terra`、`openrouter/openai/gpt-5.6-luna` | 1,050,000 |
+| Codex 登入（Pool 或 Direct） | `gpt-5.6-*` | 922,000 |
+| OpenAI (API key) | `openai-apikey/gpt-5.6-*` 加 `*-pro` | 922,000（922,000 max input） |
+| OpenRouter | `openrouter/openai/gpt-5.6-sol`、`openrouter/openai/gpt-5.6-terra`、`openrouter/openai/gpt-5.6-luna` | 922,000 |
 | Cursor | `cursor/gpt-5.6-sol`、`cursor/gpt-5.6-terra`、`cursor/gpt-5.6-luna` | 1,000,000 |
 
 原生 GPT-5.6 條目保留固定的上游 reasoning ladder，例如 Luna 有 `max` 但沒有 `ultra`。路由條目使用各

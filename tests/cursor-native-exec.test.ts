@@ -116,9 +116,12 @@ describe("Cursor native exec bridge", () => {
       expect(deniedRead.message.value.result.value.error).toContain("shell_command");
       expect(deniedRead.message.value.result.value.error).toContain("exec_command");
       expect(deniedRead.message.value.result.value.error).toContain("cat");
+      expect(deniedRead.message.value.result.value.error).toContain("Get-Content");
+      expect(deniedRead.message.value.result.value.error).toContain("Get-ChildItem");
+      expect(deniedRead.message.value.result.value.error).toContain("Select-String");
       expect(deniedRead.message.value.result.value.error).toContain("apply_patch");
-      expect(deniedRead.message.value.result.value.error).toContain("silently call");
-      expect(deniedRead.message.value.result.value.error).toContain("Do not tell the user");
+      expect(deniedRead.message.value.result.value.error).not.toContain("silently call");
+      expect(deniedRead.message.value.result.value.error).not.toContain("Do not tell the user");
       expect(deniedRead.message.value.result.value.error).not.toContain("disabled by OpenCodex policy");
       expect(deniedRead.message.value.result.value.error).not.toContain("sandbox denial");
     }
@@ -133,7 +136,8 @@ describe("Cursor native exec bridge", () => {
       expect(deniedShell.message.value.result.value.stderr).toContain("shell_command");
       expect(deniedShell.message.value.result.value.stderr).toContain("exec_command");
       expect(deniedShell.message.value.result.value.stderr).toContain("mcp_opencodex-responses_*");
-      expect(deniedShell.message.value.result.value.stderr).toContain("Do not tell the user");
+      expect(deniedShell.message.value.result.value.stderr).not.toContain("Do not tell the user");
+      expect(deniedShell.message.value.result.value.stderr).not.toContain("silently call");
       expect(deniedShell.message.value.result.value.stderr).not.toContain("disabled by OpenCodex policy");
       expect(deniedShell.message.value.result.value.stderr).not.toContain("sandbox denial");
     }
@@ -150,7 +154,8 @@ describe("Cursor native exec bridge", () => {
     expect(streamText).toContain("shell_command");
     expect(streamText).toContain("exec_command");
     expect(streamText).toContain("mcp_opencodex-responses_*");
-    expect(streamText).toContain("Do not tell the user");
+    expect(streamText).not.toContain("Do not tell the user");
+    expect(streamText).not.toContain("silently call");
     expect(streamText).not.toContain("sandbox denial");
 
     const deniedBackground = decode((await handleCursorNativeExec(execMessage({
@@ -162,7 +167,7 @@ describe("Cursor native exec bridge", () => {
     if (deniedBackground.message.value.result.case === "error") {
       expect(deniedBackground.message.value.result.value.error).toContain("shell_command");
       expect(deniedBackground.message.value.result.value.error).toContain("exec_command");
-      expect(deniedBackground.message.value.result.value.error).toContain("Do not tell the user");
+      expect(deniedBackground.message.value.result.value.error).not.toContain("Do not tell the user");
     }
 
     const deniedStdin = decode((await handleCursorNativeExec(execMessage({
@@ -183,7 +188,8 @@ describe("Cursor native exec bridge", () => {
     expect(deniedFetch.message.case).toBe("fetchResult");
     expect(deniedFetch.message.value.result.case).toBe("error");
     if (deniedFetch.message.value.result.case === "error") {
-      expect(deniedFetch.message.value.result.value.error).toContain("silently call");
+      expect(deniedFetch.message.value.result.value.error).not.toContain("silently call");
+      expect(deniedFetch.message.value.result.value.error).not.toContain("Do not tell the user");
       expect(deniedFetch.message.value.result.value.error).toContain("shell_command");
       expect(deniedFetch.message.value.result.value.error).toContain("curl");
       expect(deniedFetch.message.value.result.value.error).toContain("wget");
@@ -228,7 +234,7 @@ describe("Cursor native exec bridge", () => {
       expect(shell.message.value.result.value.stderr).toContain("shell_command");
       expect(shell.message.value.result.value.stderr).toContain("exec_command");
       expect(shell.message.value.result.value.stderr).toContain("mcp_opencodex-responses_*");
-      expect(shell.message.value.result.value.stderr).toContain("Do not tell the user");
+      expect(shell.message.value.result.value.stderr).not.toContain("Do not tell the user");
       expect(shell.message.value.result.value.stderr).not.toContain("sandbox denial");
     }
   });
@@ -247,12 +253,39 @@ describe("Cursor native exec bridge", () => {
     }
   });
 
-  test("unknown exec cases return empty reply instead of throwing (#116 hardening)", async () => {
+  test("unknown exec cases reply with ExecClientThrow + streamClose instead of silence (T05)", async () => {
     const result = await handleCursorNativeExec(execMessage({
       case: undefined,
       value: undefined,
     }));
-    expect(result).toEqual([]);
+    // T05 (senpi contract): a frame that cannot be answered gets a typed in-band error
+    // + stream-close so the server unblocks with a known failure. #116 was about an
+    // unhandled throw propagating to failAndClear and killing the whole gRPC connection;
+    // a typed ExecClientThrow does not do that.
+    expect(result).toHaveLength(2);
+
+    // Control messages use a different top-level case; decode them directly from the wire.
+    const throwMsg = fromBinary(AgentClientMessageSchema, result[0]);
+    const closeMsg = fromBinary(AgentClientMessageSchema, result[1]);
+    expect(throwMsg.message.case).toBe("execClientControlMessage");
+    if (throwMsg.message.case === "execClientControlMessage") {
+      expect(throwMsg.message.value.message.case).toBe("throw");
+      if (throwMsg.message.value.message.case === "throw") {
+        expect(throwMsg.message.value.message.value.error).toContain("Unknown exec message variant");
+      }
+    }
+    expect(closeMsg.message.case).toBe("execClientControlMessage");
+    if (closeMsg.message.case === "execClientControlMessage") {
+      expect(closeMsg.message.value.message.case).toBe("streamClose");
+    }
+  });
+
+  test("unknown exec cases do NOT kill the gRPC connection (#116 hardening preserved)", async () => {
+    // The T05 typed reply must not propagate into failAndClear. The transport-level
+    // contract is that handleCursorNativeExec returns bytes (not throws), which is
+    // what live-transport writes back. This test pins that boundary.
+    const replies = await handleCursorNativeExec(execMessage({ case: undefined, value: undefined }));
+    expect(replies.length).toBeGreaterThan(0);
   });
 
   test("rejects native write and delete when apply_patch is available", async () => {

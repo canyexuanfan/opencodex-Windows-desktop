@@ -29,6 +29,9 @@ MiniMax Code recherche d’abord `MINIMAX_DATA_DIR`, puis `MAVIS_DATA_DIR`, avan
 `~/.minimax`. Son bloc géré ne possède que `custom_provider.opencodex`. Il ne modifie ni `defaultModel`, ni
 la source d’identification MiniMax sélectionnée, ni la connexion MiniMax de l’utilisateur. Après l’avoir
 connecté, choisissez dans MCode une entrée `custom_provider:opencodex/<provider/model>`.
+L’actualisation de l’intégration met également à jour les fenêtres de contexte par modèle et les choix
+d’effort de raisonnement faisant autorité ; les capacités inconnues sont omises et l’effort courant,
+qui appartient à la session MCode, est préservé.
 
 Les chemins respectent les variables de remplacement propres à chaque client, lorsqu'elles existent. Pour
 OMP, la présence de `OMP_PROFILE` l'emporte sur `PI_PROFILE`, même si sa valeur est explicitement vide. Un
@@ -148,6 +151,10 @@ Pour MiniMax Code, connectez une fois le fournisseur puis utilisez l’enveloppe
 ocx integration client enable --client mcode
 ocx mcode
 ```
+
+Une fois l’intégration connectée, `ocx sync` actualise également le bloc MCode géré avec les fenêtres de
+contexte et les niveaux d’effort de raisonnement actuels. Les blocs absents, modifiés par un tiers, non sûrs
+ou jamais gérés restent intacts ; réactivez explicitement l’intégration lorsque vous souhaitez la reconnecter.
 
 Le CLI distinct de la plateforme MiniMax (`mmx`) n’est pas une intégration à commutateur de fichier. Ses
 commandes textuelles utilisent le point de terminaison compatible avec Anthropic de MiniMax ; OpenCodex

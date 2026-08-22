@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { SERVER_BUDGET_MS } from "./helpers/test-budget";
 import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { saveConfig } from "../src/config";
+import { getConfigPath, saveConfig } from "../src/config";
 import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
 import { serveGuiFile, serveSessionBootstrap } from "../src/server/gui-static";
@@ -586,6 +586,50 @@ describe("management and data-plane credential separation", () => {
     }
   });
 
+
+  test("config salvage does not weaken the management auth boundary (#1785)", async () => {
+    // Salvage keeps a config loading after dropping an invalid entry. That must not turn into
+    // a way to reach the management plane: the credential separation is enforced before route
+    // dispatch, and a partially-salvaged config has to behave exactly like a clean one.
+    const salvageable = remoteConfig() as Record<string, unknown>;
+    salvageable.routingProfiles = {
+      good: { candidates: [{ provider: "test", model: "gpt-test" }] },
+      bad:  { candidates: [{ provider: "not-configured", model: "gpt-test" }] },
+    };
+    writeFileSync(getConfigPath(), JSON.stringify(salvageable, null, 2), { mode: 0o600 });
+
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    const server = startServer(0);
+    try {
+      const anonymous = await fetch(new URL("/api/config", server.url));
+      expect(anonymous.status).toBe(401);
+
+      const withDataToken = await fetch(new URL("/api/config", server.url), {
+        headers: { "x-opencodex-api-key": "data-secret" },
+      });
+      expect(withDataToken.status).toBe(401);
+
+      const withWrongAdminToken = await fetch(new URL("/api/config", server.url), {
+        headers: { "x-opencodex-api-key": "not-the-admin-secret" },
+      });
+      expect(withWrongAdminToken.status).toBe(401);
+
+      const withAdminToken = await fetch(new URL("/api/config", server.url), {
+        headers: { "x-opencodex-api-key": "admin-secret" },
+      });
+      expect(withAdminToken.status).toBe(200);
+
+      // The salvaged config is what the authorized caller sees: the provider survives and only
+      // the invalid profile is gone. A fallback here would hand back built-in defaults, which a
+      // later write would persist over the operator's providers.
+      const body = await withAdminToken.json() as Record<string, any>;
+      expect(Object.keys(body.providers ?? {})).toContain("test");
+      expect(Object.keys(body.routingProfiles ?? {})).not.toContain("bad");
+    } finally {
+      await server.stop(true);
+      errorSpy.mockRestore();
+    }
+  });
   test("a management token that matches the data environment token closes only the management plane", async () => {
     process.env.OPENCODEX_ADMIN_AUTH_TOKEN = "data-secret";
     saveConfig(remoteConfig());

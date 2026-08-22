@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, constants as fsConstants, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, constants as fsConstants, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import * as z from "zod/v4";
+import { isValidProviderName, hasOwnProvider } from "./config/provider-name";
 import {
   bumpConfigGenerationAtPath,
   bumpCurrentConfigGeneration,
@@ -60,17 +61,21 @@ import {
   OPENAI_PROVIDER_TIER_VERSION,
   pinnedWireAdapter,
   REASONING_SUMMARY_DELIVERY_VALUES,
+  UPSTREAM_HTTP_VERSION_VALUES,
   type OcxClaudeCodeConfig,
   type OcxConfig,
   type OcxApiKeyEntry,
   type OcxProviderConfig,
+  type FastWire,
   type ProviderCostOverlay,
 } from "./types";
 import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "./providers/openai-tiers";
+import { fastWireDeclarationError, hasFastWireCapabilityConflict } from "./providers/fastwire";
 import {
   getProviderRegistryEntry,
   providerMatchesRegistryTransport,
   providerModelWireDefault,
+  registryModelServiceTierCapabilityApplies,
 } from "./providers/registry";
 import { resolveOpenAiVirtualModel } from "./providers/openai-virtual-models";
 import { parseDesktopProfile } from "./claude/desktop-profile";
@@ -92,34 +97,13 @@ import { isHostedToolUnsupportedForModel } from "./responses/hosted-tool-policy"
 
 let _atomicSeq = 0;
 
-interface AtomicRenameIO {
-  platform: NodeJS.Platform;
-  rename: (source: string, destination: string) => void;
-  sleep: (milliseconds: number) => void;
-}
-
-export function renameAtomicFile(
-  source: string,
-  destination: string,
-  io: AtomicRenameIO = {
-    platform: process.platform,
-    rename: renameSync,
-    sleep: Bun.sleepSync,
-  },
-): void {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      io.rename(source, destination);
-      return;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      const transientWindowsError = io.platform === "win32"
-        && (code === "EBUSY" || code === "EPERM" || code === "EACCES");
-      if (!transientWindowsError || attempt >= 2) throw error;
-      io.sleep(25 * (attempt + 1));
-    }
-  }
-}
+// The Windows-tolerant replace lives in lib/windows-atomic-replace: config-ownership
+// is one of its callers and this module already imports config-ownership, so
+// exporting it from here would close an import cycle. Re-exported because these
+// names are part of this module's public surface and its callers.
+export type { AtomicRenameIO } from "./lib/windows-atomic-replace";
+export { renameAtomicFile } from "./lib/windows-atomic-replace";
+import { renameAtomicFile, renameAtomicFileAsync } from "./lib/windows-atomic-replace";
 
 /**
  * Write a file atomically (temp + rename) so concurrent writers — e.g. `ocx stop` and the
@@ -281,21 +265,6 @@ export interface AtomicWriteAsyncIO {
 /** Test-only crash seam. Production callers leave this undefined. */
 export interface AtomicWriteAsyncTestSeam {
   afterTempWrite?: (tempPath: string) => void | Promise<void>;
-}
-
-async function renameAtomicFileAsync(source: string, destination: string): Promise<void> {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      renameSync(source, destination);
-      return;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      const transientWindowsError = process.platform === "win32"
-        && (code === "EBUSY" || code === "EPERM" || code === "EACCES");
-      if (!transientWindowsError || attempt >= 2) throw error;
-      await Bun.sleep(25 * (attempt + 1));
-    }
-  }
 }
 
 /**
@@ -661,12 +630,14 @@ function resolveRuntimePortPath(): string {
 }
 
 const warnedConfigFallbacks = new Set<string>();
+const warnedInheritedFastWireConflicts = new Set<string>();
 let lastWarningReconciledGeneration = 0;
 
 export function reconcileConfigWarningMemos(generation: number): number {
   if (generation <= lastWarningReconciledGeneration) return 0;
-  const removed = warnedConfigFallbacks.size;
+  const removed = warnedConfigFallbacks.size + warnedInheritedFastWireConflicts.size;
   warnedConfigFallbacks.clear();
+  warnedInheritedFastWireConflicts.clear();
   lastWarningReconciledGeneration = generation;
   return removed;
 }
@@ -715,6 +686,16 @@ export function requestPacingConfigError(value: unknown): string | null {
   return "requestPacing must contain enabled and a valid requestsPerMinute/minIntervalMs provider rule or model overrides";
 }
 
+const fastWireSchema = z.object({
+  kind: z.string(),
+  canonicalToWire: z.record(z.string().trim(), z.string().trim()),
+  foreignCallerTiers: z.string(),
+  betas: z.array(z.string().trim()).optional(),
+}).strict().superRefine((fastWire, ctx) => {
+  const error = fastWireDeclarationError({ fastWire });
+  if (error) ctx.addIssue({ code: "custom", message: error });
+}).transform(fastWire => fastWire as FastWire);
+
 /**
  * Zod schema for one provider entry: known fields are validated strictly while unknown
  * fields pass through (preserved for runtime extensions).
@@ -730,15 +711,29 @@ const providerConfigSchema = z.object({
   responsesPath: z.string().min(1).optional(),
   statelessResponses: z.boolean().optional(),
   requiresAdjacentResponsesToolResults: z.boolean().optional(),
+  fastWire: fastWireSchema.nullable().optional(),
   supportsServiceTier: z.boolean().optional(),
   modelSupportsServiceTier: z.record(z.string().min(1), z.boolean()).optional(),
   preserveResponsesReasoningContent: z.boolean().optional(),
+  decodesNativeCompactionBlobs: z.boolean().optional(),
   allowPrivateNetwork: z.boolean().optional(),
+  // The management API accepts `null` as "clear this", so a config written before the POST
+  // canonicalization below can hold one on disk. Rejecting it here would send the operator
+  // through invalid-config recovery for a value the API told them was fine.
+  upstreamHttpVersion: z.enum(UPSTREAM_HTTP_VERSION_VALUES)
+    .nullish()
+    .transform(value => value ?? undefined),
+  directGeminiWireRenames: z.boolean().optional(),
   noStructuredOutputModels: z.array(z.string().min(1))
     .transform(normalizeNonBlankStringArray)
     .optional(),
   retryOn429: retryOn429PolicySchema.optional(),
   codexAccountMode: z.enum(["pool", "direct"]).optional(),
+  // Validated rather than passed through: this schema ends in `.passthrough()`, so an
+  // undeclared key survives verbatim. A misspelled `codexToolMode` therefore used to be
+  // accepted, persisted, and then silently resolved to the `code_mode_only` default — the
+  // operator asked for shell mode, got code mode, and was told nothing (#2106).
+  codexToolMode: z.enum(["code_mode_only", "shell"]).optional(),
   responsesItemIdRepair: z.object({
     message: z.array(z.string().min(1)).optional(),
     reasoning: z.array(z.string().min(1)).optional(),
@@ -748,19 +743,6 @@ const providerConfigSchema = z.object({
   responsesSnapshotRepair: z.boolean().optional(),
 }).passthrough();
 
-const RESERVED_PROVIDER_NAMES = new Set([
-  // JavaScript prototype-pollution guards.
-  "__proto__",
-  "prototype",
-  "constructor",
-  // System-reserved routing namespace (resolved before provider/account
-  // namespaces in routeModelInternal). "combo" is intentionally NOT reserved:
-  // a physical provider named `combo` is a supported pattern (combo aliases
-  // hosted on the combo provider), and the combo selector only wins when an
-  // actual combo id matches.
-  "policy",
-]);
-const PROVIDER_NAME_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,62}[A-Za-z0-9])?$/;
 const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const SENSITIVE_PROVIDER_HEADERS = new Set([
   "authorization",
@@ -772,16 +754,7 @@ const SENSITIVE_PROVIDER_HEADERS = new Set([
   "x-amz-security-token",
 ]);
 
-export function isValidProviderName(name: string): boolean {
-  const trimmed = name.trim();
-  return trimmed === name
-    && PROVIDER_NAME_PATTERN.test(name)
-    && !RESERVED_PROVIDER_NAMES.has(name.toLowerCase());
-}
-
-export function hasOwnProvider(providers: Record<string, unknown>, name: string): boolean {
-  return Object.prototype.hasOwnProperty.call(providers, name);
-}
+export { isValidProviderName, hasOwnProvider } from "./config/provider-name";
 
 export function providerBaseUrlConfigError(baseUrl: string): string | null {
   try {
@@ -902,6 +875,20 @@ export function apiKeyTransportConfigError(
   }
   if (provider.authMode === "oauth" || provider.authMode === "forward" || provider.authMode === "local") {
     return "apiKeyTransport requires Anthropic API-key authentication";
+  }
+  return null;
+}
+
+/**
+ * Shared runtime boundary for the per-provider upstream HTTP-version pin (#1668). Used by
+ * the management write path (providerManagementConfigError / PATCH) so it can never disagree
+ * with the strict zod load schema: a value that survives POST/PATCH is always loadable, and
+ * a value the loader rejects is rejected at write time too.
+ */
+export function upstreamHttpVersionConfigError(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || !(UPSTREAM_HTTP_VERSION_VALUES as readonly string[]).includes(value)) {
+    return 'upstreamHttpVersion must be one of "auto", "http1.1", "h1", "http2", "h2", or null to clear';
   }
   return null;
 }
@@ -1394,6 +1381,13 @@ const configSchema = z.object({
       });
     }
     const provider = config.providers[name];
+    if (hasFastWireCapabilityConflict(provider)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", redactSecretString(name), "fastWire"],
+        message: "fastWire=null conflicts with supportsServiceTier=true",
+      });
+    }
     const openRouterRoutingError = openRouterRoutingConfigError(provider);
     if (openRouterRoutingError) {
       ctx.addIssue({
@@ -1997,12 +1991,30 @@ function normalizePersistedClaudeCode(claudeCode: unknown): OcxConfig["claudeCod
   if (Object.hasOwn(normalized, "subagentEffort") && !isClaudeSubagentEffort(normalized.subagentEffort)) {
     delete normalized.subagentEffort;
   }
+  // A hand-authored config never passes through the management validator, so coerce here too.
+  // A malformed classifierFallbacks (a bare string, or an array with non-string entries) would
+  // otherwise reach the resolver unchecked.
+  if (Object.hasOwn(normalized, "classifierModel")) {
+    const value = typeof normalized.classifierModel === "string" ? normalized.classifierModel.trim() : "";
+    if (value.length > 0) normalized.classifierModel = value;
+    else delete normalized.classifierModel;
+  }
+  if (Object.hasOwn(normalized, "classifierFallbacks")) {
+    const raw = normalized.classifierFallbacks;
+    const kept = Array.isArray(raw)
+      ? raw.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map(entry => entry.trim())
+      : [];
+    if (kept.length > 0) normalized.classifierFallbacks = kept;
+    else delete normalized.classifierFallbacks;
+  }
   return normalized as OcxConfig["claudeCode"];
 }
 
-function normalizeClaudeSubagentEffort(config: OcxConfig, rawParsed: unknown): OcxConfig {
-  const rawEffort = rawClaudeSubagentEffort(rawParsed);
-  if (rawEffort === undefined || isClaudeSubagentEffort(rawEffort)) return config;
+function normalizeClaudeSubagentEffort(config: OcxConfig, _rawParsed: unknown): OcxConfig {
+  // Unconditional. This used to short-circuit when `subagentEffort` was absent or already valid,
+  // which meant a config whose ONLY defect was elsewhere in `claudeCode` was never normalized.
+  // The specialized subagentEffort WARNING is a separate concern and stays exactly as it is.
+  if (!config.claudeCode) return config;
   return { ...config, claudeCode: normalizePersistedClaudeCode(config.claudeCode) };
 }
 
@@ -2115,6 +2127,54 @@ function warnDegradedNativeSubagentConfig(rawParsed: unknown, config: OcxConfig)
 }
 
 /**
+ * Registry metadata can gain service-tier capability after a config was written. An explicit
+ * `fastWire: null` remains authoritative on load and on whole-document writes; rejecting either
+ * would discard or lock access to unrelated providers and API keys. Direct contradictions within
+ * one provider row remain schema errors through the outer config refinement, where the dynamic
+ * provider name can be redacted before it reaches diagnostics.
+ */
+function inheritedFastWireConflictProviderNames(
+  config: Pick<OcxConfig, "providers">,
+): string[] {
+  const conflicts: string[] = [];
+  for (const [name, provider] of Object.entries(config.providers)) {
+    if (provider.fastWire !== null || provider.supportsServiceTier === false) continue;
+    const registry = providerMatchesRegistryTransport(name, provider)
+      ? getProviderRegistryEntry(name)
+      : undefined;
+    if (!registry) continue;
+    const effectiveProviderCapability = provider.supportsServiceTier ?? registry.supportsServiceTier;
+    const effectiveModelCapabilities = {
+      ...(registryModelServiceTierCapabilityApplies(registry, provider)
+        ? registry.modelSupportsServiceTier ?? {}
+        : {}),
+      ...(provider.modelSupportsServiceTier ?? {}),
+    };
+    if (
+      effectiveProviderCapability === true
+      || Object.values(effectiveModelCapabilities).some(value => value === true)
+    ) {
+      conflicts.push(name);
+    }
+  }
+  return conflicts;
+}
+
+function inheritedFastWireConflictWarning(name: string): string {
+  return `providers.${redactSecretString(name)}.fastWire=null overrides service-tier capability inherited from the matching registry entry`;
+}
+
+function warnInheritedFastWireConflicts(configPath: string, config: OcxConfig): void {
+  const names = inheritedFastWireConflictProviderNames(config);
+  if (names.length === 0 || warnedInheritedFastWireConflicts.has(configPath)) return;
+  warnedInheritedFastWireConflicts.add(configPath);
+  console.warn(
+    `⚠️  config.json ${names.map(inheritedFastWireConflictWarning).join("; ")}. `
+    + "The persisted providers and API keys were preserved.",
+  );
+}
+
+/**
  * Load and validate config.json into an OcxConfig. Missing files reset to
  * defaults and clear stale overlays. Broken existing files also fall back to
  * default routing (after backup), but keep the last-good cost-overlay registry
@@ -2138,6 +2198,7 @@ export function loadConfig(): OcxConfig {
     const result = configSchema.safeParse(parsed);
     if (result.success) {
       const config = normalizeApiKeyIds(result.data as OcxConfig);
+      warnInheritedFastWireConflicts(configPath, config);
       warnDegradedStreamMode(parsed, config);
       warnDegradedHostname(parsed, config);
       warnDegradedApiKeys(parsed, config);
@@ -2162,6 +2223,7 @@ export function loadConfig(): OcxConfig {
     if (retryResult.success) {
       warnConfigRepaired(configPath, result.error);
       const config = normalizeApiKeyIds(retryResult.data as OcxConfig);
+      warnInheritedFastWireConflicts(configPath, config);
       warnDegradedHostname(parsed, config);
       warnDegradedApiKeys(parsed, config);
       warnDegradedCodexAccountPriorities(parsed, config);
@@ -2171,6 +2233,27 @@ export function loadConfig(): OcxConfig {
       warnDegradedUpstreamHostCircuitThreshold(parsed);
       warnDegradedAgentTaskRecovery(parsed);
       return withRefreshedCostOverlays(normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed));
+    }
+    // Still failing, but if every complaint is about one or more named entries
+    // in an independent section, drop exactly those and keep the rest. Falling
+    // back to defaults here would silently retire the operator's providers,
+    // keys and prices over a mistake in one routing profile.
+    const salvaged = salvageConfigCandidate(merged, retryResult.error);
+    if (salvaged) {
+      {
+        warnDroppedConfigSections(configPath, salvaged.dropped, salvaged.issues);
+        const config = normalizeApiKeyIds(salvaged.parsed);
+        warnInheritedFastWireConflicts(configPath, config);
+        warnDegradedHostname(parsed, config);
+        warnDegradedApiKeys(parsed, config);
+        warnDegradedCodexAccountPriorities(parsed, config);
+        warnDegradedClaudeSubagentEffort(parsed);
+        warnDegradedNativeSubagentConfig(parsed, config);
+        warnDegradedCodexAccountPicker(parsed);
+        warnDegradedUpstreamHostCircuitThreshold(parsed);
+        warnDegradedAgentTaskRecovery(parsed);
+        return withRefreshedCostOverlays(normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, parsed), parsed));
+      }
     }
     // Merge couldn't fix it — truly broken config
     warnAndBackupInvalidConfig(configPath, result.error);
@@ -2220,6 +2303,7 @@ function validFileConfigDiagnostics(config: OcxConfig, rawParsed: unknown): Conf
   const rawEffort = rawClaudeSubagentEffort(rawParsed);
   const normalized = normalizeClaudeSubagentEffort(normalizeNativeSubagentSync(config, rawParsed), rawParsed);
   const warnings = configPlaceholderWarnings(normalized);
+  warnings.push(...inheritedFastWireConflictProviderNames(normalized).map(inheritedFastWireConflictWarning));
   warnings.push(...degradedCodexAccountPriorityWarnings(rawParsed, normalized));
   if (rawEffort !== undefined && !isClaudeSubagentEffort(rawEffort)) {
     warnings.push(`claudeCode.subagentEffort ignored: expected one of ${CLAUDE_SUBAGENT_EFFORTS.join(", ")}`);
@@ -2433,7 +2517,10 @@ export function validateConfigCandidate(value: unknown): { ok: true; config: Ocx
     ?? loopbackListenerPortError(value);
   if (boundaryError) return { ok: false, error: boundaryError };
   const result = configSchema.safeParse(value);
-  if (result.success) return { ok: true, config: normalizeApiKeyIds(result.data as OcxConfig) };
+  if (result.success) {
+    const config = normalizeApiKeyIds(result.data as OcxConfig);
+    return { ok: true, config };
+  }
   return { ok: false, error: schemaDiagnosticsError(result.error) };
 }
 
@@ -2450,9 +2537,29 @@ function configDiagnosticsFromRaw(raw: string): ConfigDiagnostics {
       return validFileConfigDiagnostics(normalizeApiKeyIds(result.data as OcxConfig), parsed);
     }
 
-    const retryResult = configSchema.safeParse(mergeConfigDefaults(parsed));
+    const merged = mergeConfigDefaults(parsed);
+    const retryResult = configSchema.safeParse(merged);
     if (retryResult.success) {
       return validFileConfigDiagnostics(normalizeApiKeyIds(retryResult.data as OcxConfig), parsed);
+    }
+
+    // #1785: one invalid routing profile must not make diagnostics report the built-in
+    // defaults AS the config, because a later config write persists those defaults over the
+    // operator's providers, keys and prices.
+    //
+    // The failure is still reported. `source` stays "fallback" and `error` keeps the real
+    // schema message -- diagnostics is the surface that tells callers the file is invalid,
+    // and every consumer that must refuse an invalid config (provider reload, catalog sync,
+    // cost reconcile, codex admission) gates on exactly those two fields. Only `config`
+    // changes: it carries the salvaged document instead of factory defaults, so a caller
+    // that ignores the error and writes it back preserves what the operator configured.
+    const salvaged = salvageConfigCandidate(merged, retryResult.error);
+    if (salvaged) {
+      return {
+        config: normalizeApiKeyIds(salvaged.parsed),
+        source: "fallback",
+        error: schemaDiagnosticsError(result.error),
+      };
     }
 
     return { config: getDefaultConfig(), source: "fallback", error: schemaDiagnosticsError(result.error) };
@@ -3426,6 +3533,194 @@ function warnConfigRepaired(configPath: string, error: z.ZodError): void {
   warnedConfigFallbacks.add(configPath);
   const fields = error.issues.map(i => i.path.join(".") || "config").join(", ");
   console.error(`opencodex config at ${configPath}: repaired missing field(s) [${fields}] with defaults. Your providers and accounts are preserved.`);
+}
+
+/**
+ * Sections whose entries are independent of one another, so one bad entry is
+ * safe to drop without changing what the rest mean.
+ *
+ * Both are validated entry-by-entry in the `superRefine` above, which raises
+ * every finding as a *document*-level issue. That is what made a single routing
+ * candidate naming a disabled provider discard the operator's whole config —
+ * all eleven providers, every API key, and the entire `modelCosts` table —
+ * while the proxy carried on serving from built-in defaults and reporting
+ * healthy.
+ */
+const SALVAGEABLE_CONFIG_SECTIONS = ["routingProfiles", "combos"] as const;
+
+/**
+ * Drop just the named entries a parse failure blamed, so the rest of the
+ * document survives.
+ *
+ * Returns `null` when the failure was not confined to those sections — the
+ * caller then keeps its existing behaviour rather than guessing.
+ *
+ * The whole entry goes, not the individual offending candidate. A routing
+ * profile that quietly loses one candidate still routes, just not where the
+ * operator said it should, and a policy that silently changed shape is a worse
+ * outcome than one that is plainly absent. Absent is also the loud option: a
+ * dry-run against it answers `unknown_profile`, which — paired with the warning
+ * this emits — points at the real mistake.
+ */
+function dropInvalidConfigSections(
+  parsed: unknown,
+  error: z.ZodError,
+): { candidate: Record<string, unknown>; dropped: string[] } | null {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+
+  const doomed = new Map<string, Set<string>>();
+  for (const issue of error.issues) {
+    if (isUnsalvageableIssue(issue)) return null;
+    const [section, id] = issue.path;
+    if (typeof section !== "string" || typeof id !== "string") return null;
+    if (!(SALVAGEABLE_CONFIG_SECTIONS as readonly string[]).includes(section)) return null;
+    // A complaint about the container itself ("combos must be an object") is
+    // not about one entry, so there is nothing selective to drop.
+    if (issue.path.length < 2) return null;
+    let ids = doomed.get(section);
+    if (!ids) doomed.set(section, ids = new Set());
+    ids.add(id);
+  }
+  if (doomed.size === 0) return null;
+
+  const candidate: Record<string, unknown> = { ...(parsed as Record<string, unknown>) };
+  const dropped: string[] = [];
+  for (const [section, ids] of doomed) {
+    const current = candidate[section];
+    if (!current || typeof current !== "object" || Array.isArray(current)) return null;
+    const kept: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(current as Record<string, unknown>)) {
+      if (ids.has(key)) dropped.push(`${section}.${key}`);
+      else kept[key] = value;
+    }
+    candidate[section] = kept;
+  }
+  return dropped.length > 0 ? { candidate, dropped } : null;
+}
+
+/**
+ * Salvage until the document parses, not just once.
+ *
+ * One pass is not enough because the sections depend on each other: routing
+ * profiles are validated against the combo map, so dropping an invalid combo can
+ * expose a profile that referenced it. A single-pass salvage sees that second
+ * failure and gives up, discarding the whole config -- the exact outcome this
+ * code exists to prevent.
+ *
+ * `rawDocument` is the operator's document before defaults were merged in. When
+ * supplied, the same entries are deleted from it too, so a diagnostics caller can
+ * still tell an absent optional setting from one we injected.
+ */
+
+/**
+ * Findings that must never be salvaged away.
+ *
+ * Salvage removes the entry a finding blamed, which is right for an ordinary
+ * validation mistake and wrong for a namespace collision: the collision is a
+ * *relationship* between a combo/profile and a Codex account selector, and it is
+ * reported on the combo. Dropping that combo makes the document parse and quietly
+ * admits the account selector the schema just refused, turning a hard admission
+ * boundary into a config that loads. Refuse the whole document instead.
+ */
+const UNSALVAGEABLE_ISSUE_MESSAGES: readonly string[] = [
+  CODEX_ACCOUNT_NAMESPACE_COMBO_ALIAS_COLLISION_ERROR,
+];
+
+function isUnsalvageableIssue(issue: z.ZodIssue): boolean {
+  return UNSALVAGEABLE_ISSUE_MESSAGES.some(message => issue.message.includes(message));
+}
+function salvageConfigCandidate(
+  merged: unknown,
+  initialError: z.ZodError,
+  rawDocument?: unknown,
+): {
+  candidate: Record<string, unknown>;
+  rawCandidate: unknown;
+  parsed: OcxConfig;
+  dropped: string[];
+  issues: z.ZodIssue[];
+} | null {
+  let candidate: unknown = merged;
+  let rawCandidate: unknown = rawDocument;
+  let error = initialError;
+  const dropped: string[] = [];
+  const issues: z.ZodIssue[] = [];
+  // Bounded by construction: every pass must remove at least one entry, and there
+  // are only so many entries to remove.
+  const budget = countSalvageableEntries(merged) + 1;
+  for (let pass = 0; pass < budget; pass++) {
+    const step = dropInvalidConfigSections(candidate, error);
+    if (!step || step.dropped.length === 0) return null;
+    dropped.push(...step.dropped);
+    issues.push(...error.issues);
+    candidate = step.candidate;
+    rawCandidate = deleteEntryPaths(rawCandidate, step.dropped);
+    const result = configSchema.safeParse(candidate);
+    if (result.success) {
+      return { candidate: step.candidate, rawCandidate, parsed: result.data as OcxConfig, dropped, issues };
+    }
+    error = result.error;
+  }
+  return null;
+}
+
+function countSalvageableEntries(document: unknown): number {
+  if (!document || typeof document !== "object" || Array.isArray(document)) return 0;
+  let total = 0;
+  for (const section of SALVAGEABLE_CONFIG_SECTIONS) {
+    const value = (document as Record<string, unknown>)[section];
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      total += Object.keys(value as Record<string, unknown>).length;
+    }
+  }
+  return total;
+}
+
+/** Delete `section.id` entries from a copy of the raw document. */
+function deleteEntryPaths(document: unknown, entryPaths: readonly string[]): unknown {
+  if (!document || typeof document !== "object" || Array.isArray(document)) return document;
+  const next: Record<string, unknown> = { ...(document as Record<string, unknown>) };
+  for (const entryPath of entryPaths) {
+    const separator = entryPath.indexOf(".");
+    if (separator <= 0) continue;
+    const section = entryPath.slice(0, separator);
+    const id = entryPath.slice(separator + 1);
+    const container = next[section];
+    if (!container || typeof container !== "object" || Array.isArray(container)) continue;
+    const kept: Record<string, unknown> = { ...(container as Record<string, unknown>) };
+    delete kept[id];
+    next[section] = kept;
+  }
+  return next;
+}
+
+/**
+ * Entry ids are operator-chosen and can be token-shaped, so nothing dynamic reaches
+ * the log unredacted. Static section names stay readable -- they are the part that
+ * tells the operator where to look.
+ */
+function redactEntryPath(entryPath: string): string {
+  const separator = entryPath.indexOf(".");
+  if (separator <= 0) return redactSecretString(entryPath);
+  return entryPath.slice(0, separator) + "." + redactSecretString(entryPath.slice(separator + 1));
+}
+
+function redactIssuePath(path: readonly PropertyKey[]): string {
+  return path
+    .map((segment, index) => (index === 0 && typeof segment === "string" ? segment : redactSecretString(String(segment))))
+    .join(".");
+}
+
+function warnDroppedConfigSections(configPath: string, dropped: string[], issues: readonly z.ZodIssue[]): void {
+  if (warnedConfigFallbacks.has(configPath)) return;
+  warnedConfigFallbacks.add(configPath);
+  const reasons = issues
+    .map(issue => `${redactIssuePath(issue.path)}: ${redactSecretString(issue.message)}`)
+    .join("; ");
+  console.error(
+    `opencodex config at ${configPath}: dropped [${dropped.map(redactEntryPath).join(", ")}] and loaded the rest — ${reasons}. `
+    + "Everything else in your config, including providers and modelCosts, is preserved.",
+  );
 }
 
 export function readPidFileValue(): number | null {

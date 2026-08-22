@@ -110,13 +110,13 @@ ocx logout <provider>
 
 | Provider | Adapter | Base URL | Notes |
 | --- | --- | --- | --- |
-| `xai` | `openai-chat` | `https://api.x.ai/v1` | Live-first Grok catalog; `grok-4.5` is the fallback default. |
+| `xai` | `openai-chat` | `https://cli-chat-proxy.grok.com/v1` | OAuth uses the separate Grok CLI subscription gateway. The API-key override uses `https://api.x.ai/v1` and may inject Priority Processing. Live-first Grok catalog; `grok-4.5` is the fallback default. |
 | `anthropic` | `anthropic` | `https://api.anthropic.com` | Claude models; live model list fetched from `/v1/models`. |
 | `kimi` | `openai-chat` | `https://api.kimi.com/coding/v1` | Kimi K2.7/K2.6/K2.5 coding models. |
 | `nous` | `openai-chat` | `https://inference-api.nousresearch.com/v1` | Nous Research subscription gateway (same backend Hermes Agent uses). Device-grant login against `portal.nousresearch.com`; the access token is the per-request inference JWT. Mixed paid + `:free` model catalog (`tencent/hy3:free`, `stepfun/step-3.7-flash:free`, ...) discovered live from the signed-in account. Refresh tokens are single-use and rotated on every refresh. |
 | `kiro` | `kiro` | `https://runtime.us-east-1.kiro.dev` | Initial login imports the installed, signed-in `kiro-cli` session (on Unix, install with `curl -fsSL https://cli.kiro.dev/install` &#124; `bash`; on Windows PowerShell, use `irm 'https://cli.kiro.dev/install.ps1'` &#124; `iex`; then run `kiro-cli login`). **Add account** logs `kiro-cli` out, starts a fresh browser login that switches the account used by `kiro-cli`, and stores account-scoped profile metadata. Existing OpenCodex accounts are preserved, and cancellation or failure restores the previous `kiro-cli` session. |
 | `google-antigravity` | `google` | `https://daily-cloudcode-pa.googleapis.com` | Google OAuth over the Cloud Code Assist wire. Live discovery uses CCA's authenticated `v1internal:fetchAvailableModels` endpoint and publishes the agent models available to the signed-in account; the maintained catalog remains the fallback. |
-| `cursor` | `cursor` | `https://api2.cursor.sh` | Experimental PKCE login, live HTTP/2 transport, and account-filtered model discovery. |
+| `cursor` | `cursor` | `https://api2.cursor.sh` | Experimental PKCE login, live HTTP/2 transport with an opt-in HTTP/1.1 compatibility path, and account-filtered model discovery. |
 | `github-copilot` | `openai-chat` | `https://api.githubcopilot.com` | Experimental. GitHub device flow + `copilot_internal` exchange (VS Code OAuth client). Requires an active Copilot subscription; not an official third-party API. |
 
 After a terminal Nous refresh failure, run `ocx login nous` to reauthenticate.
@@ -188,6 +188,15 @@ headers — see [Adapters](/reference/adapters/)). Pool mode overwrites only aut
 `chatgpt-account-id` to match the selected credential. opencodex does **not** fabricate official
 client identity (for example `originator`, session, or thread headers) when the caller did not send
 them.
+
+For account-switch compatibility diagnosis, enabling provider debug (`ocx debug provider on`) adds
+one `[ocx:codex:affinity]` line per canonical ChatGPT forward response. The line contains header
+presence, coarse size buckets, process-local HMAC equality tags, safe summaries of known top-level
+turn fields, and a count of unknown turn fields. It never includes raw credentials, account ids,
+attestation values, thread/session ids, turn metadata, or request bodies; the tags intentionally
+change after every proxy restart. Use `ocx debug provider logs -f` while
+reproducing the two requests, then run `ocx debug provider off`. This capture is observation-only and
+does not strip metadata, retry a request, switch accounts, reset a thread, or otherwise affect routing.
 
 **Diagnostics and reauth.** Human `ocx status` prints an OAuth health block (redacted account ids,
 no tokens). `ocx doctor` adds an OAuth reliability section with writable-store / single-flight checks
@@ -363,9 +372,10 @@ key from the subscription overview in the [Vultr Console](https://my.vultr.com).
 the fixed Provider API host, preserves provider-native ids, and caps discovery at 256 KiB and 256 raw
 rows. `ocx login command-code` supports OAuth via browser sign-in (with optional local CLI credential
 import from `~/.commandcode/auth.json` for existing Command Code CLI users); the model catalog is
-account-scoped and comes from the authenticated discovery endpoint after login. Chat requests use the
-configured Bearer key. Create keys at
-[Command Code Studio](https://commandcode.ai/studio/).
+account-scoped and comes from the authenticated discovery endpoint after login. The Provider-API
+preset (`commandcode`) uses the active configured Bearer key for chat requests; the OAuth preset
+(`command-code`) uses the stored account bearer for authenticated discovery and chat. Create
+Provider-API keys at [Command Code Studio](https://commandcode.ai/studio/).
 
 **Command Code quota.** The dashboard and `ocx account refresh` probe Command Code's
 `/alpha/billing/credits` windows (5-hour and weekly) on the canonical
@@ -477,9 +487,9 @@ visible even while live catalogs lag:
 
 | Codex route | Seeded model ids | Codex-visible context |
 | --- | --- | --- |
-| Codex login (Pool or Direct) | `gpt-5.6-*` | 372,000 |
-| OpenAI (API key) | `openai-apikey/gpt-5.6-*` plus `*-pro` | 1,050,000 (922,000 max input) |
-| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 1,050,000 |
+| Codex login (Pool or Direct) | `gpt-5.6-*` | 922,000 |
+| OpenAI (API key) | `openai-apikey/gpt-5.6-*` plus `*-pro` | 922,000 (922,000 max input) |
+| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 922,000 |
 | Cursor | `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, `cursor/gpt-5.6-luna` | 1,000,000 |
 
 The native GPT-5.6 entries preserve the pinned upstream reasoning ladders (for example, Luna has
@@ -510,7 +520,9 @@ provider-wide adapter. To opt a model without a built-in default (for example
 Cursor is tracked separately as an experimental adapter. `adapter: "cursor"` appears in `ocx init`
 and the dashboard Add Provider picker as an experimental local config entry with Cursor's static
 fallback model catalog metadata. When a Cursor access token is configured, opencodex uses Cursor's
-live HTTP/2 transport. Its bundled fallback seed includes `gpt-5.6-sol` / `terra` / `luna` (1M context),
+live HTTP/2 transport. Set `upstreamHttpVersion: "http1.1"` when a proxy requires Cursor's HTTP/1.1
+compatibility path; the setting covers both inference and live model discovery and is exposed at
+**Providers → Cursor → Settings → Cursor transport**. Its bundled fallback seed includes `gpt-5.6-sol` / `terra` / `luna` (1M context),
 regular/Fast rows for Grok 4.5 and 4.6 (500K), and `kimi-k3` (262K); live discovery decides which
 remain visible for the account. Grok 4.6 exposes `low` / `medium` / `high` / `xhigh` in both forms,
 while 4.5 stops at `high`. Fast requests send the matching base Grok model with separate `effort`
@@ -563,6 +575,25 @@ The bars show how much of a window (5-hour, weekly, monthly, or
 provider-specific) is already consumed.
 
 Providers with a live probe: OpenAI/Codex, Anthropic, xAI, Cursor, Kimi,
-Google Antigravity, OpenRouter, DeepSeek, ClinePass, Z.AI, MiniMax,
-Moonshot, Venice, Synthetic, DeepInfra, Neuralwatt, and any a6api-backed
+Google Antigravity, OpenCode Go, OpenRouter, DeepSeek, ClinePass, Z.AI, MiniMax,
+Moonshot, Venice, Synthetic, DeepInfra, Neuralwatt, Command Code, and any a6api-backed
 custom provider.
+
+**OpenCode Go quota.** The canonical `opencode-go` preset reads
+`GET https://opencode.ai/zen/go/v1/usage` with the configured key as a Bearer token and
+does not follow redirects. The response's rolling, weekly, and monthly `percent` values are
+already-consumed utilization: rolling maps to the 5-hour bar, while weekly and monthly keep
+their matching bars. OpenCodex does not reconstruct dollar caps from local usage logs, and a
+provider using a non-canonical `baseUrl` is never sent the key for this probe.
+
+**Z.AI GLM Coding Plan quota.** The `zai`, `glm`, `glm-cn`, and `zhipu-bigmodel-coding`
+presets read `GET /api/monitor/usage/quota/limit` with the configured key as a Bearer token
+and do not follow redirects. The probe runs against the region the provider points at:
+`api.z.ai` (bare or `/api/coding/paas/v4`) or `open.bigmodel.cn` (bare,
+`/api/coding/paas/v4`, or the OpenAI Responses endpoint `/api/v1`). The response's `limits`
+rows fill the utilization bars: `TOKENS_LIMIT` / `CREDIT_LIMIT` rows with `unit` 3 /
+`number` 5 fill the 5-hour bar and `unit` 6 / `number` 1 the weekly bar, while
+`TIME_LIMIT` rows fill the monthly MCP bar. The v2 coding-plan protocol reports the
+monthly MCP row; the newer protocol does not, so the monthly bar renders only when that
+row is present. A provider using a non-canonical `baseUrl` is never sent the key for this
+probe.

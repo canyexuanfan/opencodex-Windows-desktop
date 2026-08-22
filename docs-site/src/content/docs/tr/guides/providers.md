@@ -17,7 +17,7 @@ bulunur.
 
 Sağlayıcılar sayfasındaki Pool/Direct seçeneğiyle yalın `gpt-5.6-sol` kullanın
 veya API için `openai-apikey/gpt-5.6-sol` kullanın. Kimlik bilgisi rotaları asla
-birbirine geri dönmez (fall through yapmaz). API rotası 1.050.000 bağlam /
+birbirine geri dönmez (fall through yapmaz). API rotası 922.000 bağlam /
 922.000 maksimum girdi meta verisi yayınlar. `sol-pro`, `terra-pro` ve
 `luna-pro` sanal kimlikleri, hat temel modeli artı `reasoning.mode: "pro"`
 kullanırken seçilen genel kimliklerini korur.
@@ -129,7 +129,7 @@ ocx logout <saglayici>
 
 | Sağlayıcı | Adaptör | Temel URL | Notlar |
 | --- | --- | --- | --- |
-| `xai` | `openai-chat` | `https://api.x.ai/v1` | Canlı öncelikli Grok kataloğu; `grok-4.5` geri dönüş varsayılanıdır. |
+| `xai` | `openai-chat` | `https://cli-chat-proxy.grok.com/v1` | OAuth ayrı Grok CLI abonelik ağ geçidini kullanır. API anahtarı geçersiz kılması `https://api.x.ai/v1` kullanır ve Priority Processing ekleyebilir. Canlı öncelikli Grok kataloğu; `grok-4.5` geri dönüş varsayılanıdır. |
 | `anthropic` | `anthropic` | `https://api.anthropic.com` | Claude modelleri; canlı model listesi `/v1/models` üzerinden getirilir. |
 | `kimi` | `openai-chat` | `https://api.kimi.com/coding/v1` | Kimi K2.7/K2.6/K2.5 kodlama modelleri. |
 | `nous` | `openai-chat` | `https://inference-api.nousresearch.com/v1` | Nous Research abonelik ağ geçidi (Hermes Agent'ın kullandığı aynı arka uç). `portal.nousresearch.com`'a karşı cihaz yetkilendirmesi girişi; erişim belirteci istek başına çıkarım JWT'sidir. Oturum açmış hesaptan canlı olarak keşfedilen karışık ücretli + `:free` model kataloğu (`tencent/hy3:free`, `stepfun/step-3.7-flash:free`, ...). Yenileme belirteçleri tek kullanımlıktır ve her yenilemede döndürülür. |
@@ -560,9 +560,9 @@ tohumlanmıştır:
 
 | Codex rotası | Tohumlanan model kimlikleri | Codex tarafından görülebilen bağlam |
 | --- | --- | --- |
-| Codex girişi (Pool veya Direct) | `gpt-5.6-*` | 372.000 |
-| OpenAI (API anahtarı) | `openai-apikey/gpt-5.6-*` artı `*-pro` | 1.050.000 (922.000 maksimum girdi) |
-| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 1.050.000 |
+| Codex girişi (Pool veya Direct) | `gpt-5.6-*` | 922.000 |
+| OpenAI (API anahtarı) | `openai-apikey/gpt-5.6-*` artı `*-pro` | 922.000 (922.000 maksimum girdi) |
+| OpenRouter | `openrouter/openai/gpt-5.6-sol`, `openrouter/openai/gpt-5.6-terra`, `openrouter/openai/gpt-5.6-luna` | 922.000 |
 | Cursor | `cursor/gpt-5.6-sol`, `cursor/gpt-5.6-terra`, `cursor/gpt-5.6-luna` | 1.000.000 |
 
 Yerel GPT-5.6 girdileri sabitlenmiş yukarı akış akıl yürütme merdivenlerini

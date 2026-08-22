@@ -48,6 +48,21 @@ function hasExactShellCommand(run: string | undefined, expected: string): boolea
     .includes(expected);
 }
 
+/**
+ * Same intent as {@link hasExactShellCommand}, but for a command that is the HEAD of a
+ * pipeline. The retry loops capture the suite with `… 2>&1 | tee "$suite_log"`, so an exact
+ * whole-line match would reject the very shape the retry requires. Anchoring at the start of
+ * the line still rejects an `echo` of the command or a commented-out copy, which is what the
+ * exact match was protecting against.
+ */
+function hasShellCommandHead(run: string | undefined, expected: string): boolean {
+  return (run ?? "")
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line.length > 0 && !line.startsWith("#"))
+    .some(line => line === expected || line.startsWith(`${expected} `));
+}
+
 function expectSecureLinuxKeyringBootstrap(workflow: string): void {
   const smokeStep = workflow
     .split("- name: OS keyring create/read/delete smoke")[1]
@@ -86,7 +101,9 @@ describe("GitHub Actions hardening", () => {
     expect(ci.jobs?.test?.["timeout-minutes"]).toBe(15);
     expect(ci.jobs?.gates?.["timeout-minutes"]).toBe(15);
     expect(ci.jobs?.["platform-macos"]?.["timeout-minutes"]).toBe(30);
-    expect(ci.jobs?.["platform-windows"]?.["timeout-minutes"]).toBe(15);
+    // Higher than the Linux shards on purpose: at 15 the Windows leg cancelled a
+    // shard mid-suite, which reports as neither pass nor fail (#2152).
+    expect(ci.jobs?.["platform-windows"]?.["timeout-minutes"]).toBe(25);
     expect(ci.jobs?.["keyring-smoke"]?.["timeout-minutes"]).toBe(8);
     expect(ci.jobs?.["npm-global-smoke"]?.["timeout-minutes"]).toBe(8);
     expect(ci.jobs?.ci?.["timeout-minutes"]).toBe(5);
@@ -116,7 +133,13 @@ describe("GitHub Actions hardening", () => {
       expect(`${name}:${typeof job?.["timeout-minutes"]}`).toBe(`${name}:number`);
     }
     expect(workflow).toContain("actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0");
-    expect(workflow).toContain("oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6");
+    // Bun setup moved into .github/actions/setup-project-bun so the runtime
+    // version has a single source (package.json). The SHA pin still has to
+    // exist — it just lives in the composite action now, and this workflow
+    // must reference that local action rather than a third-party one.
+    expect(workflow).toContain("./.github/actions/setup-project-bun");
+    expect(await readText(".github/actions/setup-project-bun/action.yml"))
+      .toContain("oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6");
     expect(workflow).toContain("actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e");
     expect(workflow).toContain("bun test --isolate tests");
     expect(workflow).not.toMatch(/uses:\s+\S+@(?:v\d+|main|master)\b/);
@@ -144,8 +167,9 @@ describe("GitHub Actions hardening", () => {
     // keys closes all three — a hardcoded list rots on the next job added.
     const gate = ci.jobs?.ci as { if?: unknown; needs?: string[] } | undefined;
     expect(gate?.if).toBe("always()");
+    const ungated = new Set(["ci"]);
     expect([...(gate?.needs ?? [])].sort())
-      .toEqual(Object.keys(ci.jobs ?? {}).filter(name => name !== "ci").sort());
+      .toEqual(Object.keys(ci.jobs ?? {}).filter(name => !ungated.has(name)).sort());
 
     // The focused doctor contract config is ADDITIVE evidence. It must never
     // replace the repository-wide strict typecheck: doing so made the aggregate
@@ -219,17 +243,56 @@ describe("GitHub Actions hardening", () => {
     // the runner's disk and the suite passes against a tree that no longer
     // exists in git.
     const winSteps = (ci.jobs?.["platform-windows"] as { steps?: { if?: string; run?: string }[] })?.steps ?? [];
-    const windowsTestCommand = `bun test --isolate tests --shard=\${{ matrix.shard }}/${windowsShards.length}`;
-    expect(hasExactShellCommand(`echo ${windowsTestCommand}`, windowsTestCommand)).toBe(false);
+    // --timeout is part of the contract, not incidental: this leg ran on Bun's 5s default
+    // while Linux and macOS both pass 60000, and it is the slowest hardware on the board.
+    // Three composed-acceptance failures were that default firing on tests still working
+    // at 41s. Pin the flag so the leg cannot silently drift back to the default.
+    const windowsTestCommand = `bun test --isolate --timeout 60000 tests --shard=\${{ matrix.shard }}/${windowsShards.length}`;
+    expect(hasShellCommandHead(`echo ${windowsTestCommand}`, windowsTestCommand)).toBe(false);
     // Binding the assertion to an executable line is only half the guarantee: a
     // step carrying the exact command still runs nothing under `if: false`, and
     // the suite would stay green against a Windows leg that never tests. Require
     // the matching step to be unconditional.
-    const windowsTestSteps = winSteps.filter(step => hasExactShellCommand(step.run, windowsTestCommand));
+    const windowsTestSteps = winSteps.filter(step => hasShellCommandHead(step.run, windowsTestCommand));
     expect(windowsTestSteps.length).toBeGreaterThan(0);
     expect(windowsTestSteps.every(step => step.if === undefined)).toBe(true);
     expect(winSteps.some(step => step.if === "runner.environment == 'self-hosted'"
       && step.run?.includes("git clean -xffd"))).toBe(true);
+
+    // The three crash-signature lists must stay identical, and they must not key on
+    // `panic(thread`.
+    //
+    // Bun emits BOTH `panic(thread 2852)` and `panic(main thread)` for the same class of
+    // failure, so a grep anchored on the numbered form silently misses half of them and the
+    // shard fails on a crash it was supposed to retry. This repository already learned that
+    // once — `devlog/_fin/260731_pr_issue_triage_round/050_windows_ci_flake_rca.md` names
+    // `Internal assertion failure` as the stable fingerprint — and #2152 reintroduced it.
+    // Three copies of one list is the real hazard, so pin the sync rather than the text.
+    const crashSignatures = [
+      "oh no: Bun has crashed",
+      "Internal assertion failure",
+      "Segmentation fault at address",
+      "Illegal instruction",
+      "Bus error",
+    ];
+    const windowsTestRun = windowsTestSteps[0]?.run ?? "";
+    const batchScript = await readText("scripts/ci/run-bun-test-batches.sh");
+    for (const signature of crashSignatures) {
+      expect(`macos:${signature}:${macosTestRun.includes(signature)}`).toBe(`macos:${signature}:true`);
+      expect(`windows:${signature}:${windowsTestRun.includes(signature)}`).toBe(`windows:${signature}:true`);
+      expect(`script:${signature}:${batchScript.includes(signature)}`).toBe(`script:${signature}:true`);
+    }
+    // The thread-numbered form must not be the anchor anywhere.
+    expect(macosTestRun).not.toContain("panic\\(thread");
+    expect(windowsTestRun).not.toContain("panic\\(thread");
+    expect(batchScript).not.toContain("panic\\(thread");
+
+    // Windows carries the same bounded retry as macOS: one attempt, crash-only.
+    expect(hasExactShellCommand(windowsTestRun, "set +e")).toBe(true);
+    expect(windowsTestRun).toContain("for attempt in 1 2");
+    expect(windowsTestRun).not.toContain("while true");
+    expect(windowsTestRun).toContain("assertion failures are not retried");
+    expect(windowsTestRun).toContain("failing after one retry");
 
     // Every job that runs the root suite must build the GUI first, unconditionally.
     // Tests that fetch the served dashboard read their session bootstrap out of
@@ -324,7 +387,8 @@ describe("GitHub Actions hardening", () => {
       };
       jobs?: Record<string, Record<string, unknown> | undefined>;
     };
-    expect([...(ci.on?.push?.branches ?? [])].sort()).toEqual(["dev", "main", "preview"]);
+    expect([...(ci.on?.push?.branches ?? [])].sort())
+      .toEqual(["dev", "main", "preview"]);
 
     // The PR trigger must carry NO base-branch filter, and the two triggers
     // differ on purpose. GitHub matches `branches:` against the BASE ref, so
@@ -644,7 +708,11 @@ describe("GitHub Actions hardening", () => {
 
     // Immutable action references.
     expect(workflow).toContain("actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0");
-    expect(workflow).toContain("oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6");
+    // Same move as the CI workflow: the pinned setup-bun reference now lives in
+    // the shared composite action.
+    expect(workflow).toContain("./.github/actions/setup-project-bun");
+    expect(await readText(".github/actions/setup-project-bun/action.yml"))
+      .toContain("oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6");
     expect(workflow).toContain("actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e");
     expect(workflow).not.toMatch(/uses:\s+\S+@(?:v\d+|main|master)\b/);
 

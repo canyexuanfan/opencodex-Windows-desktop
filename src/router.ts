@@ -8,11 +8,18 @@ import {
   type ComboPick,
 } from "./combos";
 import type { NormalizedComboConfig } from "./combos/types";
-import { hasOwnProvider, resolveEnvValue } from "./config";
+import { hasOwnProvider } from "./config/provider-name";
+import { resolveEnvValue } from "./config";
 import { assertProviderDestinationAllowed } from "./lib/destination-policy";
 import { redactSecretString, redactUrlForLog } from "./lib/redact";
-import { PROVIDER_REGISTRY, providerCodexAccountMode } from "./providers/registry";
-import { applyDirectReasoningEffortContracts } from "./providers/derive";
+import {
+  PROVIDER_REGISTRY,
+  mergeRegistryStaticHeaders,
+  providerCodexAccountMode,
+  registryModelServiceTierCapabilityApplies,
+} from "./providers/registry";
+import { applyDirectReasoningEffortContracts, hasLegacyClinePassReasoningEfforts } from "./providers/derive";
+import { cloneFastWire } from "./providers/fastwire";
 import {
   providerMatchesRegistryTransportWithStaticGuards,
   providerSupportsLiveModelDiscovery,
@@ -286,24 +293,23 @@ export function routedProviderConfig(providerName: string, provider: OcxProvider
   const modelReasoningEffortMap = mergeNestedRecord(registryEntry.modelReasoningEffortMap, provider.modelReasoningEffortMap);
   const modelReasoningEfforts = mergeStringArrayRecord(registryEntry.modelReasoningEfforts, provider.modelReasoningEfforts);
   const modelDefaultReasoningEfforts = mergeRecordFill(registryEntry.modelDefaultReasoningEfforts, provider.modelDefaultReasoningEfforts);
-  // Key-login used to persist this exact low-only ClinePass capability seed. Once the gateway's
-  // wider input ladder was live-verified, leaving that generated row untouched would keep old
-  // installs clamped forever. This branch is reached only after canonical transport matching, so
-  // same-named custom destinations and every other explicit ladder still retain user precedence.
-  const repairLegacyClinePassReasoningEfforts = providerName === "cline-pass"
-    && provider.reasoningWireFormat === "gateway-object"
-    && provider.reasoningEfforts?.length === 1
-    && provider.reasoningEfforts[0] === "low";
   const modelContextWindows = providerName === OPENAI_API_PROVIDER_ID
     ? mergePositiveNumberCaps(registryEntry.modelContextWindows, provider.modelContextWindows)
     : mergeRecordFill(registryEntry.modelContextWindows, provider.modelContextWindows);
   const modelInputModalities = mergeRecordFill(registryEntry.modelInputModalities, provider.modelInputModalities);
+  // Registry static headers are documented as applying to every upstream request, so they are
+  // filled at resolve time rather than only at seed time: a config written before a header
+  // existed, or one carrying any header of its own, would otherwise never receive it. User
+  // headers win, matched case-insensitively so an override replaces rather than duplicates.
+  const headers = mergeRegistryStaticHeaders(registryEntry.staticHeaders, provider.headers);
   const modelMaxInputTokens = providerName === OPENAI_API_PROVIDER_ID
     ? mergePositiveNumberCaps(registryEntry.modelMaxInputTokens, provider.modelMaxInputTokens)
     : mergeRecordFill(registryEntry.modelMaxInputTokens, provider.modelMaxInputTokens);
   const modelMaxOutputTokens = mergeRecordFill(registryEntry.modelMaxOutputTokens, provider.modelMaxOutputTokens);
   const modelSupportsServiceTier = mergeRecordFill(
-    registryEntry.modelSupportsServiceTier,
+    registryModelServiceTierCapabilityApplies(registryEntry, provider)
+      ? registryEntry.modelSupportsServiceTier
+      : undefined,
     provider.modelSupportsServiceTier,
   );
   const noVisionModels = mergeStringArray(registryEntry.noVisionModels, provider.noVisionModels);
@@ -341,8 +347,27 @@ export function routedProviderConfig(providerName: string, provider: OcxProvider
       && registryEntry.requiresAdjacentResponsesToolResults !== undefined
       ? { requiresAdjacentResponsesToolResults: registryEntry.requiresAdjacentResponsesToolResults }
       : {}),
+    ...(provider.fastWire === undefined && registryEntry.fastWire !== undefined
+      ? {
+        fastWire: cloneFastWire(registryEntry.fastWire),
+      }
+      : {}),
     ...(provider.supportsServiceTier === undefined && registryEntry.supportsServiceTier !== undefined
       ? { supportsServiceTier: registryEntry.supportsServiceTier }
+      : {}),
+    // Registry-only web-search capability: without this backfill a saved provider row reaches
+    // the Responses adapter with the flag `undefined`, so the capability gate added in #2262
+    // reads "unclassified" and forwards Codex's OpenAI-only `web_search` config fields. xAI
+    // rejects the whole request before inference ("Argument not supported:
+    // external_web_access"), which killed every routed Grok turn on the Responses lane.
+    // enrichProviderFromRegistry() already fills this, but the request path resolves through
+    // routedProviderConfig() and never called it.
+    ...(provider.supportsOpenAiWebSearchToolFields === undefined
+      && registryEntry.supportsOpenAiWebSearchToolFields !== undefined
+      ? { supportsOpenAiWebSearchToolFields: registryEntry.supportsOpenAiWebSearchToolFields }
+      : {}),
+    ...(provider.supportsResponsesCustomTools === undefined && registryEntry.supportsResponsesCustomTools !== undefined
+      ? { supportsResponsesCustomTools: registryEntry.supportsResponsesCustomTools }
       : {}),
     ...(provider.preserveResponsesReasoningContent === undefined && registryEntry.preserveResponsesReasoningContent !== undefined
       ? { preserveResponsesReasoningContent: registryEntry.preserveResponsesReasoningContent }
@@ -367,6 +392,7 @@ export function routedProviderConfig(providerName: string, provider: OcxProvider
     authMode: canonicalAuthMode,
     apiKey: resolvedApiKey,
     ...(staticModelCatalog ? { liveModels: false } : {}),
+    ...(headers ? { headers } : {}),
     // Backfill the Google wire mode + Vertex project/location from the registry when the user
     // config omits them, so a minimal `google-vertex`/`google-antigravity` entry still routes
     // through the correct branch (CCA/Vertex) instead of falling back to AI Studio.
@@ -374,7 +400,7 @@ export function routedProviderConfig(providerName: string, provider: OcxProvider
     ...(provider.project === undefined && registryEntry.project !== undefined ? { project: registryEntry.project } : {}),
     ...(provider.location === undefined && registryEntry.location !== undefined ? { location: registryEntry.location } : {}),
     ...(provider.contextWindow === undefined && registryEntry.contextWindow !== undefined ? { contextWindow: registryEntry.contextWindow } : {}),
-    ...((provider.reasoningEfforts === undefined || repairLegacyClinePassReasoningEfforts)
+    ...((provider.reasoningEfforts === undefined || hasLegacyClinePassReasoningEfforts(providerName, provider))
       && registryEntry.reasoningEfforts !== undefined
       ? { reasoningEfforts: [...registryEntry.reasoningEfforts] }
       : {}),
@@ -386,6 +412,9 @@ export function routedProviderConfig(providerName: string, provider: OcxProvider
     ...(provider.parallelToolCalls === undefined && registryEntry.parallelToolCalls !== undefined ? { parallelToolCalls: registryEntry.parallelToolCalls } : {}),
     ...(provider.promptCacheKey === undefined && registryEntry.promptCacheKey !== undefined ? { promptCacheKey: registryEntry.promptCacheKey } : {}),
     ...(provider.chatServiceTier === undefined && registryEntry.chatServiceTier !== undefined ? { chatServiceTier: registryEntry.chatServiceTier } : {}),
+    ...(provider.openaiChatEofTolerance === undefined && registryEntry.openaiChatEofTolerance !== undefined
+      ? { openaiChatEofTolerance: registryEntry.openaiChatEofTolerance }
+      : {}),
     ...(provider.reasoningWireFormat === undefined && registryEntry.reasoningWireFormat !== undefined
       ? { reasoningWireFormat: registryEntry.reasoningWireFormat }
       : {}),
@@ -715,12 +744,17 @@ function routeByKnownModelPattern(config: OcxConfig, modelId: string): RouteResu
   for (const { providerNames, prefixes } of MODEL_PROVIDER_PATTERNS) {
     if (prefixes.some(prefix => modelId.startsWith(prefix))) {
       const matchingProvider = Object.entries(config.providers).find(
-        ([name]) => providerNames.some(providerName => name === providerName || name.startsWith(`${providerName}-`))
+        ([name, prov]) => prov.disabled !== true && providerNames.some(providerName => name === providerName || name.startsWith(`${providerName}-`))
       );
       if (matchingProvider) {
         const [provName, prov] = matchingProvider;
         return routeResult(provName, prov, modelId, "explicit-provider", "model-pattern");
       }
+      // Deliberately no "first provider with an Anthropic adapter" fallback here. Picking by
+      // object insertion order, without checking `models`, `selectedModels`, `disabledModels` or
+      // discovery state, silently moves a request onto a provider the operator never chose, with
+      // its own privacy and billing consequences (#1697). A classifier turn that needs a specific
+      // target gets it from operator-declared `claudeCode.classifierModel` / `classifierFallbacks`.
     }
   }
   return undefined;

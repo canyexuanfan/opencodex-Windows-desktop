@@ -36,6 +36,10 @@ Usage:
                               Refresh Codex's model cache from the active catalog
   ocx status                  Check proxy server status
   ocx doctor                  Diagnose environment/network issues (WSL, proxy, ChatGPT reachability)
+  ocx doctor --reclaim-response-temps
+                              Reclaim abandoned response-state temp files (works without a running proxy)
+  ocx doctor --recover-zero-byte-coordinator --yes
+                              Back up a proven zero-byte Codex coordinator after stopping the proxy
   ocx debug <scope>           provider/usage/injection/claude on|off|status|reset
   ocx login <provider>        OAuth or API-key provider login
   ocx logout <provider>       Remove a stored OAuth login
@@ -58,7 +62,7 @@ Usage:
   ocx memory [--json]         Alias of ocx observe memory
   ocx api-key <sub>           Alias of ocx access key
   ocx access <sub>            External API keys and endpoint information
-  ocx export --client <id>    Print a client config wired to the running proxy (8 clients)
+  ocx export --client <id>    Print a client config wired to the running proxy (11 clients)
   ocx integration client <sub> Enable, disable, inspect or roll back a client integration
   ocx grok <sub>              Grok Build model selection and apply
   ocx system <sub>            Runtime settings, startup, sync, and updates
@@ -69,6 +73,7 @@ Usage:
   ocx opencode [args...]      Launch opencode wired to the proxy (runtime provider config)
   ocx mcode [args...]         Launch MiniMax Code through its managed provider
   ocx mmx text <sub> [args]   Launch MiniMax CLI text through the proxy
+  ocx zcode [sub]             Connect ZCode to the proxy (managed provider)
   ocx help [command]          Show help
   ocx --version | -v          Print version
 

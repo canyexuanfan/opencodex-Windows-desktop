@@ -10,6 +10,8 @@ export const FILE_INTEGRATION_CLIENTS = [
   "gajae",
   "dsh",
   "mcode",
+  "zcode",
+  "prime",
 ] as const;
 
 export type FileIntegrationClientId = (typeof FILE_INTEGRATION_CLIENTS)[number];
@@ -324,6 +326,8 @@ export async function loadClaudeDesktopStatus(apiBase: string, signal?: AbortSig
   const body = await readOptional<{
     applied?: unknown;
     stale?: unknown;
+    drift?: unknown;
+    driftReason?: unknown;
     activeProfile?: unknown;
     appliedAt?: unknown;
     desiredEnabled?: unknown;
@@ -337,6 +341,8 @@ export async function loadClaudeDesktopStatus(apiBase: string, signal?: AbortSig
     observedKind: body.observedKind,
     applied: body.applied === true,
     stale: body.stale === true,
+    drift: body.drift === true,
+    driftReason: typeof body.driftReason === "string" ? body.driftReason : null,
     // Tri-state on purpose: `null` means undeterminable, which must not be
     // read as "Desktop is serving someone else's profile".
     activeProfile: typeof body.activeProfile === "boolean" ? body.activeProfile : null,

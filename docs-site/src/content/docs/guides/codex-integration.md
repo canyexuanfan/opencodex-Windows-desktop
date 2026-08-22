@@ -121,7 +121,7 @@ name = "OpenCodex Proxy"
 base_url = "http://your-host:10100/v1"
 wire_api = "responses"
 requires_openai_auth = true
-env_http_headers = { "x-opencodex-api-key" = "OPENCODEX_API_AUTH_TOKEN" }
+env_key = "OPENCODEX_API_AUTH_TOKEN"
 # supports_websockets = true   # only when config.websockets is true
 ```
 
@@ -203,6 +203,31 @@ Routed catalog entries also get their GPT-5 identity rewritten to the real upstr
 Reasoning controls come from provider/model metadata across Codex's `low | medium | high | xhigh |
 max | ultra` ladder; unsupported values are mapped or clamped before the upstream request.
 
+### Coordinator diagnosis and recovery
+
+Native config/history writes use a per-user SQLite coordinator keyed by the canonical `CODEX_HOME`.
+If a process terminates in SQLite's initial creation window, a zero-byte coordinator can remain even
+though it contains no authoritative transition row. `ocx doctor` reports the exact coordinator path
+and distinguishes zero-byte, unversioned, rowless, valid, unsafe, and unreadable states without
+creating SQLite sidecars. Automatic sync tolerates only an identity-stable zero-byte file that has
+settled for at least one second and whose immutable SQLite snapshot has version zero with no tables;
+a newly created zero-byte file remains on the locked coordinator path.
+
+For a state that doctor proves is a zero-byte creation remnant, stop the OpenCodex proxy/service
+and run:
+
+```bash
+ocx doctor --recover-zero-byte-coordinator --yes
+ocx sync
+```
+
+Recovery moves the still-identical zero-byte file to a same-directory `.zero-byte-backup-*` path;
+it does not delete the evidence or adopt legacy routed state. It refuses a running proxy, lock
+contention, symlinks/reparse points, foreign ownership, changed files, every non-empty database,
+and any coordinator that already has an authoritative row. Desktop renderer filtering is a
+separate layer: a correct catalog and coordinator do not by themselves bypass the Codex App model
+allowlist.
+
 ### Routed local tools
 
 Non-native routed catalog rows use `tool_mode: "code_mode_only"`. This lets Codex expose its official
@@ -278,6 +303,51 @@ provider manager, point that provider at `http://127.0.0.1:10100/v1` with Respon
 enabled, also pass `x-opencodex-api-key` from `OPENCODEX_API_AUTH_TOKEN`, matching the non-loopback
 provider form above. To let OpenCodex inject routing directly, first switch Codex back to its
 built-in `openai` provider and remove any user-owned root `openai_base_url`, then rerun `ocx start`.
+
+### Explicit `tool_search` troubleshooting
+
+Routed local tooling has two distinct discovery paths. In normal routed code mode, Codex can expose
+deferred MCP/app tools through the official `exec` tool's `tools` global and `ALL_TOOLS`; that path
+does not require the model to see or call `tool_search`.
+
+Separately, `tool_search` is a client-executed Codex discovery surface. It is not an OpenCodex
+feature flag, and an upstream `tool_choice: "auto"` value does not create or enable it. OpenCodex can
+relay the explicit surface only when Codex already included a declaration like this in the incoming
+Responses request:
+
+```json
+{
+  "tools": [
+    { "type": "tool_search", "description": "Load deferred tools" }
+  ]
+}
+```
+
+For routed chat/local models, OpenCodex exposes that declaration as a normal function named
+`tool_search`. If the model calls it, OpenCodex converts the call back to a Responses
+`tool_search_call`; Codex executes the search and supplies the resulting tool definitions in a
+later `tool_search_output`. Definitions loaded that way are then available on the next model turn.
+
+Check the failure boundary before changing provider settings:
+
+1. **No `type: "tool_search"` in the incoming request:** the active Codex client/session did not
+   advertise the explicit `tool_search` surface. OpenCodex cannot invent that declaration. This
+   does not mean normal code-mode tools are unavailable: check whether the routed model can use
+   `exec` and discover the needed nested tool through `tools` / `ALL_TOOLS` first.
+2. **The incoming declaration exists, but no `tool_search` function reaches the routed request:**
+   capture only the redacted tool-type/name list and open an OpenCodex bug. Never attach the bearer,
+   account id, conversation input, full headers, or complete request body.
+3. **The routed request contains `tool_search`, but the local model never calls it:** the relay is
+   working. Use a model/template with reliable function calling and instructions that explicitly
+   tell it to search for a deferred tool it needs. LM Studio's `tool_choice: "auto"` permits tool use;
+   it does not force the model to call this function.
+4. **A call is emitted repeatedly or loaded tools never become usable:** capture the redacted
+   `tool_search_call` / `tool_search_output` item types and call ids. OpenCodex preserves both in
+   history so the model should see the completed search instead of issuing it forever.
+
+See [The parser and bridge](/reference/architecture/#the-parser) for the explicit wire mapping.
+There is no provider-level setting that can add a missing `tool_search` declaration; ordinary
+code-mode discovery remains a separate path.
 
 ### Catalog troubleshooting
 
