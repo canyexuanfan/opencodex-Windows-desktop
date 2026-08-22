@@ -318,6 +318,43 @@ describe("Responses custom-tool destination capability", () => {
     });
     expect([...(request.convertedRoutedCustomToolNames ?? [])]).toEqual(["apply_patch"]);
   });
+
+  test("the canonical Codex forward surface never lowers custom tools, even with an explicit denial", () => {
+    const rawBody = {
+      model: "gpt-5.6-sol",
+      stream: true,
+      input: [
+        { type: "custom_tool_call", id: "ctc_patch", call_id: "c1", name: "apply_patch", input: "noop" },
+      ],
+      tools: [
+        { type: "custom", name: "apply_patch", description: "Apply a patch", format: { type: "grammar", syntax: "lark" } },
+      ],
+    };
+    const parsed = {
+      modelId: "gpt-5.6-sol",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: rawBody,
+    };
+    const request = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      // Exact canonical Codex forward base URL: isCanonicalOpenAiForwardProvider is true,
+      // so the lowering gate must be unreachable regardless of the capability flag.
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      authMode: "forward",
+      headers: { authorization: "Bearer provider-static" },
+      supportsResponsesCustomTools: false,
+    }).buildRequest(parsed, { headers: new Headers({ authorization: "Bearer caller-secret" }) });
+    const body = JSON.parse(request.body) as {
+      tools: Array<Record<string, unknown>>;
+      input: Array<Record<string, unknown>>;
+    };
+
+    expect(body.tools[0]).toMatchObject({ type: "custom", name: "apply_patch" });
+    expect(body.input[0]).toMatchObject({ type: "custom_tool_call", call_id: "c1", name: "apply_patch" });
+    expect(request.convertedRoutedCustomToolNames ?? []).toEqual([]);
+  });
 });
 
 describe("routed compaction lowering order", () => {
