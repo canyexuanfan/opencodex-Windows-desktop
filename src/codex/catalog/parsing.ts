@@ -149,6 +149,11 @@ export const JAWCODE_CATALOG_AUGMENT_PROVIDERS = new Set(["opencode-go", "deepse
 export const ROUTED_MODEL_COMPATIBILITY_EXCLUSIONS = new Set([
   // Issue #82: Zen Go /models advertises HY3, but Console Go rejects it as outside the lite list.
   "opencode-go/hy3-preview",
+  // Issue #2330: OpenCode Go/Zen models absent from current documentation or returning terminal HTTP 400/401 errors.
+  "opencode-go/grok-4.6",
+  "opencode-go/mimo-v2-omni",
+  "opencode-go/mimo-v2-pro",
+  "opencode-free/deepseek-v4-flash-free",
 ]);
 
 export function isRoutedModelCompatibilityExcluded(slug: string): boolean {
