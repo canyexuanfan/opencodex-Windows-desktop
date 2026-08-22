@@ -35,6 +35,42 @@ describe("routed custom-tool compatibility", () => {
     expect(rewritten.repairNames).toEqual(new Set(["apply_patch"]));
   });
 
+  test.each([
+    ["none", "none"],
+    ["a forced other tool", { type: "function", name: "ordinary" }],
+    ["an allowlist exclusion", {
+      type: "allowed_tools",
+      mode: "required",
+      tools: [{ type: "function", name: "ordinary" }],
+    }],
+  ] as const)("does not arm apply_patch repair under %s", (_label, toolChoice) => {
+    const rewritten = rewriteRoutedCustomToolsForUpstream({
+      tools: [
+        { type: "custom", name: "apply_patch", description: "Apply a patch", format: { type: "text" } },
+        { type: "function", name: "ordinary", parameters: { type: "object" } },
+      ],
+      tool_choice: toolChoice,
+    });
+
+    expect(rewritten.repairNames).toEqual(new Set());
+  });
+
+  test.each([
+    { type: "custom", name: "apply_patch" },
+    {
+      type: "allowed_tools",
+      mode: "required",
+      tools: [{ type: "custom", name: "apply_patch" }],
+    },
+  ] as const)("arms apply_patch repair when the selector authorizes it", toolChoice => {
+    const rewritten = rewriteRoutedCustomToolsForUpstream({
+      tools: [{ type: "custom", name: "apply_patch", description: "Apply a patch", format: { type: "text" } }],
+      tool_choice: toolChoice,
+    });
+
+    expect(rewritten.repairNames).toEqual(new Set(["apply_patch"]));
+  });
+
   test("lowers apply_patch declarations and replay items on an explicit capability denial", () => {
     const raw = {
       tools: [{ type: "custom", name: "apply_patch", description: "Apply a patch", format: { type: "text" } }],

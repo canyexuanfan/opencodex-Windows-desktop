@@ -2893,7 +2893,10 @@ async function handleResponsesInner(
         ) routedCustomToolNames.add(name);
       }
       for (const name of request.routedCustomToolRepairNames ?? []) {
-        routedCustomToolRepairNames.add(name);
+        if (
+          toolBridgeMaps.freeformToolNames.has(name)
+          || toolBridgeMaps.toolNsMap.get(name)?.freeform === true
+        ) routedCustomToolRepairNames.add(name);
       }
     }
     for (const name of request.convertedRoutedToolSearchNames ?? []) {

@@ -1185,6 +1185,110 @@ describe("routed Responses custom-tool compatibility", () => {
     }
   });
 
+  test("handleResponses preserves disallowed native apply_patch input in JSON and SSE", async () => {
+    const savedFetch = globalThis.fetch;
+    const config = {
+      port: 0,
+      defaultProvider: "fixture",
+      providers: {
+        fixture: {
+          adapter: "openai-responses",
+          baseUrl: "https://fixture.test/v1",
+          authMode: "key",
+          apiKey: "fixture-key",
+        },
+      },
+    } as OcxConfig;
+    const upstreamItem = {
+      type: "custom_tool_call",
+      id: "ctc_patch",
+      call_id: "call_patch",
+      name: "apply_patch",
+      input: DECORATED_PATCH,
+      status: "completed",
+    };
+
+    globalThis.fetch = (async (_input, init) => {
+      const outbound = JSON.parse(String(init?.body)) as { stream?: boolean };
+      if (outbound.stream === true) {
+        const upstream = [
+          frame("response.output_item.added", {
+            output_index: 0,
+            item: { ...upstreamItem, input: "", status: "in_progress" },
+          }),
+          frame("response.custom_tool_call_input.done", {
+            output_index: 0,
+            item_id: "ctc_patch",
+            input: DECORATED_PATCH,
+          }),
+          frame("response.output_item.done", { output_index: 0, item: upstreamItem }),
+          frame("response.completed", {
+            response: { id: "resp_patch_stream", status: "completed", output: [upstreamItem] },
+          }),
+          "data: [DONE]",
+        ].join("\n\n") + "\n\n";
+        return new Response(upstream, { headers: { "content-type": "text/event-stream" } });
+      }
+      return Response.json({ id: "resp_patch_json", status: "completed", output: [upstreamItem] });
+    }) as typeof fetch;
+
+    try {
+      for (const stream of [false, true]) {
+        const response = await handleResponses(new Request("http://localhost/v1/responses", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "fixture/deepseek-v4-flash",
+            stream,
+            input: [{ role: "user", content: [{ type: "input_text", text: "patch" }] }],
+            tools: [
+              {
+                type: "custom",
+                name: "apply_patch",
+                description: "Apply a patch",
+                format: { type: "grammar", syntax: "lark" },
+              },
+              {
+                type: "function",
+                name: "ordinary",
+                description: "Ordinary function",
+                parameters: { type: "object" },
+              },
+            ],
+            tool_choice: stream
+              ? {
+                  type: "allowed_tools",
+                  mode: "required",
+                  tools: [{ type: "function", name: "ordinary" }],
+                }
+              : { type: "function", name: "ordinary" },
+          }),
+        }), config, { model: "", provider: "" });
+
+        if (!stream) {
+          const body = await response.json() as { output: Array<Record<string, unknown>> };
+          expect(body.output[0]).toEqual(upstreamItem);
+          continue;
+        }
+
+        const blocks = (await response.text()).split("\n\n").filter(block => block.includes("data: {"));
+        const payloads = blocks.map(dataPayload);
+        const inputDone = payloads.find(payload => payload.type === "response.custom_tool_call_input.done");
+        expect(inputDone).toMatchObject({ input: DECORATED_PATCH });
+        const itemDone = payloads.find(payload => payload.type === "response.output_item.done") as {
+          item?: Record<string, unknown>;
+        } | undefined;
+        expect(itemDone?.item).toMatchObject({ type: "custom_tool_call", input: DECORATED_PATCH });
+        const completed = payloads.find(payload => payload.type === "response.completed") as {
+          response?: { output?: Array<Record<string, unknown>> };
+        } | undefined;
+        expect(completed?.response?.output?.[0]).toMatchObject({ input: DECORATED_PATCH });
+      }
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
   test("handleResponses repairs authorized native apply_patch calls in JSON and SSE", async () => {
     const savedFetch = globalThis.fetch;
     const config = {

@@ -20,6 +20,37 @@ function customToolWireName(namespace: string | undefined, name: string): string
   return namespace === BUILTIN_FUNCTIONS_NAMESPACE ? name : namespacedToolName(namespace, name);
 }
 
+function toolChoiceAllowsRoutedCustomTool(
+  body: unknown,
+  wireName: string,
+  candidateNames: ReadonlySet<string>,
+): boolean {
+  if (!isPlainObject(body)) return true;
+  const choice = body.tool_choice;
+  if (choice === undefined || choice === null || choice === "auto" || choice === "required") {
+    return true;
+  }
+  if (choice === "none") return false;
+  if (!isPlainObject(choice)) return true;
+
+  const selectorAllows = (selector: unknown): boolean => {
+    if (!isPlainObject(selector) || typeof selector.name !== "string") return false;
+    if (typeof selector.namespace === "string") {
+      return customToolWireName(selector.namespace, selector.name) === wireName;
+    }
+    if (selector.name === wireName) return true;
+    const suffix = `__${selector.name}`;
+    const candidates = [...candidateNames].filter(name => name.endsWith(suffix));
+    return candidates.length === 1 && candidates[0] === wireName;
+  };
+
+  if (choice.type === "function" || choice.type === "custom") return selectorAllows(choice);
+  if (choice.type === "allowed_tools" && Array.isArray(choice.tools)) {
+    return choice.tools.some(selectorAllows);
+  }
+  return false;
+}
+
 /** Final upstream identity of a call, including a namespace restored by an earlier rewrite. */
 export function routedCustomToolWireName(value: unknown): string | undefined {
   if (!isPlainObject(value) || typeof value.name !== "string") return undefined;
@@ -200,6 +231,9 @@ export function rewriteRoutedCustomToolsForUpstream(
   const conversionNames = collectRoutedCustomToolNames(body, supportsResponsesCustomTools);
   const names = collectRoutedCustomToolWireNames(body, supportsResponsesCustomTools);
   const repairNames = collectRoutedCustomToolWireNames(body, supportsResponsesCustomTools, true);
+  for (const name of repairNames) {
+    if (!toolChoiceAllowsRoutedCustomTool(body, name, repairNames)) repairNames.delete(name);
+  }
   if (conversionNames.size === 0) return { body, names, repairNames };
   const callIds = new Set<string>();
   collectConvertedCallIds(body, conversionNames, callIds);
