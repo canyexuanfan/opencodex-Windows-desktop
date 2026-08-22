@@ -91,6 +91,12 @@ const CURSOR_RUN_PATH = "/agent.v1.AgentService/Run";
 const CURSOR_CLIENT_VERSION = "cli-2026.07.08-0c04a8a";
 const HEARTBEAT_MS = 5_000;
 const CURSOR_FIRST_FRAME_TIMEOUT_MS = 30_000;
+/**
+ * After `turnEnded` is decoded, the application turn is complete. A server that keeps
+ * HTTP/2 open past this point cannot hold the turn hostage (senpi #1062): we close our side
+ * after a short grace so any trailing frames (late usage, checkpoint) still land.
+ */
+const TURN_ENDED_CLOSE_GRACE_MS = 500;
 const CURSOR_TIMEOUT_DESTROY_GRACE_MS = 1_000;
 const CLIENT_TOOL_FINALIZE_GRACE_MS = 50;
 const GENERIC_TOOL_COUNT_MIN_FINALIZE_GRACE_MS = 750;
@@ -414,6 +420,7 @@ class LiveCursorTransport implements CursorTransport {
   private http1Connection?: CursorHttp1BidiConnection;
   private heartbeat?: ReturnType<typeof setInterval>;
   private firstFrameTimer?: ReturnType<typeof setTimeout>;
+  private turnEndedCloseTimer?: ReturnType<typeof setTimeout>;
   private committed = false;
   private expectedClose = false;
   /**
@@ -759,6 +766,7 @@ class LiveCursorTransport implements CursorTransport {
 
   async close(): Promise<void> {
     if (this.heartbeat) clearInterval(this.heartbeat);
+    if (this.turnEndedCloseTimer) clearTimeout(this.turnEndedCloseTimer);
     this.clearPendingFinalize();
     this.clearFirstFrameTimer();
     this.stream?.close();
@@ -791,6 +799,41 @@ class LiveCursorTransport implements CursorTransport {
     this.releaseMcpObservation = undefined;
     void this.mcpManager?.dispose();
     void this.startShellCleanup().catch(() => { /* close() observes the same cleanup promise */ });
+  }
+
+  /**
+   * T03 (#1062): after the server sends `turnEnded`, the application turn is complete.
+   * A server that keeps the HTTP/2 stream open past this point cannot hold the turn
+   * hostage until a 300s bridge idle timeout. Close our side after a short grace so any
+   * trailing frames (late usage, checkpoint) still land before we release the socket.
+   */
+  private closeAfterTurnEnded(): void {
+    if (this.turnEndedCloseTimer) return;
+    this.turnEndedCloseTimer = setTimeout(() => {
+      this.turnEndedCloseTimer = undefined;
+      // Only expectedClose (client-tool suspend cancel) blocks the close.
+      // emittedTerminal is intentionally NOT checked here: finalizeTurnEvents sets it
+      // synchronously during turnEnded mapping, ~500ms before this timer fires, so
+      // checking it would make the close unreachable on every real path (the exact
+      // scenario this PR exists to fix — senpi #1062).
+      if (this.expectedClose) return;
+      debugProviderDiagnostic("cursor", "turn-ended-close", {
+        committed: this.committed,
+        framesReceived: this.framesReceived,
+      });
+      this.expectedClose = true;
+      this.clearFirstFrameTimer();
+      if (this.heartbeat) clearInterval(this.heartbeat);
+      if (this.http1Connection) {
+        this.http1Connection.close();
+      } else {
+        try {
+          this.stream?.close();
+        } catch {
+          this.stream?.destroy();
+        }
+      }
+    }, TURN_ENDED_CLOSE_GRACE_MS);
   }
 
   private releaseBlobRequestScope(): void {
@@ -1273,6 +1316,12 @@ class LiveCursorTransport implements CursorTransport {
     // A completion may carry only callId. Capture its ownership before mapping removes the open
     // call, because the embedded-tool classifier cannot identify that valid compact frame.
     const update = message.message.case === "interactionUpdate" ? message.message.value.message : undefined;
+    if (update?.case === "turnEnded") {
+      // T03: the application turn is complete. Close our side of HTTP/2 after a short
+      // grace so a held-open server response cannot pin the turn to the bridge's idle
+      // timeout (senpi #1062). finalizeTurnEvents already emitted done via the mapper.
+      this.closeAfterTurnEnded();
+    }
     const completesOpenClientTool = update?.case === "toolCallCompleted"
       && state.openToolCalls.has(update.value.callId);
     const awaitedNativeArgsBeforeMapping = update?.case === "toolCallCompleted"
