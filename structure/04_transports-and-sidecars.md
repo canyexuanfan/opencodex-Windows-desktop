@@ -618,6 +618,15 @@ switch therefore costs one extra upstream round trip and one turn of degraded re
 wedging the thread; unrelated 4xx responses and requests whose outbound body carries no blob never
 enter this recovery.
 
+After a self-identified opaque-blob rejection, the proxy also keeps a five-minute rejection memo.
+The memo key is the resolved conversation identity plus the durable serving identity: provider,
+destination, adapter, model, and credential. It is recorded only when the blobless recovery resend
+succeeds. A missing durable destination or credential prevents memo creation and lookup. On a later
+request with the same key, pre-flight sanitation removes opaque reasoning `encrypted_content` and
+degrades compaction blobs before the first upstream send. This skips the rejected first send and
+the recovery round trip. A different serving identity does not match the memo. Route changes still
+follow the normal pre-flight stripping rule. Memo expiry returns to the fail-soft recovery path.
+
 A combo target rotation between turns legitimately changes that serving identity, so the following
 turn drops blobs minted by the prior target. This is correct because the new target cannot decode
 them, but it is intentionally unobvious to the client: `pickComboTarget` keys selection state only by

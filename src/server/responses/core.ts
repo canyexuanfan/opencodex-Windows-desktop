@@ -22,8 +22,10 @@ import {
   durableReplayDestinationIdentity,
   durableReplayCredentialIdentity,
   reasoningReplayKeyCredentialIdentity,
+  reasoningReplayOpaqueBlobRejectionMemoized,
   reasoningReplayOAuthCredentialIdentity,
   reasoningReplayServingIdentityChanged,
+  rememberReasoningReplayOpaqueBlobRejection,
 } from "../../responses/reasoning-replay-cache";
 import { awaitThoughtSignatureDurability, thoughtSignatureReplaySalt } from "../../responses/thought-signature-replay";
 import { buildCompactV1Output, COMPACT_PROMPT, decodeCompactionSummary, extractCompactUserMessages } from "../../responses/compaction";
@@ -225,6 +227,7 @@ import {
 import {
   conversationIdFromResponsesRequest,
   normalizeLogConversationId,
+  reasoningReplayConversationIdFromResponsesRequest,
   sessionIdHeaderFromRequest,
 } from "../request-log-conversation";
 import type { AttemptRecoveryKind } from "../../usage/log";
@@ -515,6 +518,9 @@ function bindRouteReasoningReplayScope(args: {
   if (reasoningReplayServingIdentityChanged(parsed._reasoningReplayScope)) {
     parsed._stripReasoningEncryptedContent = true;
   }
+  if (reasoningReplayOpaqueBlobRejectionMemoized(parsed._reasoningReplayScope)) {
+    parsed._stripReasoningEncryptedContent = true;
+  }
   bindProviderContinuationForRoute(parsed, continuationOwner);
 }
 
@@ -668,9 +674,20 @@ async function attemptOpaqueBlobRecovery(
   }
 
   args.guard.attempted = true;
+  const rejectedScope = args.parsed._reasoningReplayScope
+    ? {
+        clientThreadId: args.parsed._reasoningReplayScope.clientThreadId,
+        ...(args.parsed._reasoningReplayScope.current
+          ? { current: { ...args.parsed._reasoningReplayScope.current } }
+          : {}),
+      }
+    : undefined;
   prepareOpaqueBlobRecovery(args.parsed);
   try { void args.response.body?.cancel().catch(() => {}); } catch { /* already consumed/closed */ }
   const result = await rebuild("opaque-blob-rejection");
+  if (!("failed" in result) && result.ok) {
+    rememberReasoningReplayOpaqueBlobRejection(rejectedScope);
+  }
   return "failed" in result
     ? { kind: "failed", response: result.failed }
     : { kind: "recovered", response: result };
@@ -2185,7 +2202,6 @@ async function handleResponsesInner(
     if (providerContinuationCandidate) parsed._providerContinuationCandidate = providerContinuationCandidate;
     if (inboundClientThreadId) {
       parsed._clientThreadId = inboundClientThreadId;
-      parsed._reasoningReplayScope = { clientThreadId: inboundClientThreadId };
     } else if (
       options.inboundWire === "anthropic"
       && options.promptCacheKeyIsSharedCohort !== true
@@ -2221,15 +2237,31 @@ async function handleResponsesInner(
     ...(force ? { force: true } : {}),
     ...(parsed._clientThreadId ? { clientThreadId: parsed._clientThreadId } : {}),
   });
+  const resolvedConversationId = conversationIdFromResponsesRequest({
+    clientThreadId: parsed._clientThreadId,
+    sessionIdHeader: sessionIdHeaderFromRequest(req.headers),
+    threadIdHeader: req.headers.get("thread-id"),
+    cursorConversationId: parsed._cursorConversationId,
+  });
+  // _clientThreadId remains the routing/continuation identity supplied by Codex. Replay state uses
+  // a dedicated raw conversation namespace so mixed headers that carry the same identity still
+  // match, and a shared/synthetic session_id cannot coalesce distinct thread/Cursor conversations.
+  // Keep an Anthropic prompt_cache_key scope already bound above (#1735/#1926).
+  if (!parsed._reasoningReplayScope) {
+    const reasoningReplayConversationId = reasoningReplayConversationIdFromResponsesRequest({
+      clientThreadId: parsed._clientThreadId,
+      threadIdHeader: req.headers.get("thread-id"),
+      cursorConversationId: parsed._cursorConversationId,
+      sessionIdHeader: sessionIdHeaderFromRequest(req.headers),
+    });
+    if (reasoningReplayConversationId) {
+      parsed._reasoningReplayScope = { clientThreadId: reasoningReplayConversationId };
+    }
+  }
   // Prefer a pre-populated id (routed Claude) over Responses headers that may be
   // absent or synthetically injected (session_id from prompt_cache_key).
   if (!logCtx.conversationId) {
-    logCtx.conversationId = conversationIdFromResponsesRequest({
-      clientThreadId: parsed._clientThreadId,
-      sessionIdHeader: sessionIdHeaderFromRequest(req.headers),
-      threadIdHeader: req.headers.get("thread-id"),
-      cursorConversationId: parsed._cursorConversationId,
-    });
+    logCtx.conversationId = resolvedConversationId;
   }
   logCtx.requestedModel = parsed.modelId;
   logCtx.requestedEffort = parsed.options.reasoning;
