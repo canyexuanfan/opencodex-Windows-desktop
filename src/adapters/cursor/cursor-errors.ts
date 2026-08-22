@@ -112,6 +112,34 @@ export function isCursorInvalidArgumentError(value: unknown): boolean {
 }
 
 const QUOTA_RATE_CUES = ["too many requests", "quota", "rate limit", "rate-limit", "throttl"];
+/**
+ * A bare `resource_exhausted` end-stream with no detail beyond a generic error wrapper
+ * ("Error" or empty tail) and zero tokens billed is the shape Cursor's backend emits when
+ * the request payload exceeded its context window — not when quota ran out (senpi #1009,
+ * #1036: same wording, two causes). Quota rejections always carry an explicit rate cue
+ * ("too many requests", "quota exhausted"), so the ABSENCE of those cues plus the
+ * absence of a size phrase means payload overflow. Classifying it as 429 makes Codex
+ * back off instead of compacting, which burns retries on an unfixable-by-retry failure.
+ */
+const BARE_RE_TAILS = new Set(["error", "", "resource_exhausted", "resource exhausted"]);
+
+export function isCursorZeroTokenResourceExhausted(lowerMessage: string): boolean {
+  if (!lowerMessage.includes("resource_exhausted") && !lowerMessage.includes("resource exhausted")) return false;
+  // Any explicit quota/rate cue wins: this is a real 429.
+  if (QUOTA_RATE_CUES.some(cue => lowerMessage.includes(cue))) return false;
+  // An explicit size phrase also wins (already handled by the existing classifier).
+  if (isCursorRequestTooLargeDetail(lowerMessage)) return false;
+  // Extract the tail after the resource_exhausted marker. If it names a specific
+  // non-quota, non-size cause, this is NOT bare overflow.
+  const idx = Math.max(
+    lowerMessage.indexOf("resource_exhausted"),
+    lowerMessage.indexOf("resource exhausted"),
+  );
+  const tail = lowerMessage.slice(idx + "resource_exhausted".length).trim().replace(/^[:\s]+/, "").trim();
+  if (!BARE_RE_TAILS.has(tail)) return false;
+  return true;
+}
+
 const REQUEST_TOO_LARGE_PATTERNS: (string | RegExp)[] = [
   "tool catalog too large",
   "tool registration too large",
@@ -158,9 +186,12 @@ export function classifyCursorError(message: string): string {
     // client-fixable 400; everything else surfaces as a 429 so Codex backs off
     // instead of hammering retries (live evidence: 6x 400 retry storm, devlog
     // 260723_cursor_context_continuity/000_plan.md).
-    return isCursorRequestTooLargeDetail(lower)
-      ? "Cursor resource limit exceeded"
-      : "Cursor rate limit exceeded";
+    if (isCursorRequestTooLargeDetail(lower)) return "Cursor resource limit exceeded";
+    // A bare resource_exhausted with no quota cue and no size phrase is payload
+    // overflow, not rate limiting. Classifying it as 429 makes Codex back off on a
+    // failure that only compaction can fix (senpi #1009 / #1036; research unit T01).
+    if (isCursorZeroTokenResourceExhausted(lower)) return "Cursor context limit exceeded";
+    return "Cursor rate limit exceeded";
   }
 
   if (

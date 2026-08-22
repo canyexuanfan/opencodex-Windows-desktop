@@ -12,9 +12,7 @@ describe("classifyCursorError", () => {
     expect(classifyCursorError("rate limit exceeded for model")).toBe("Cursor rate limit exceeded");
   });
 
-  test("generic resource_exhausted is quota-style rate limiting, not a too-large request", () => {
-    // The live retry-storm shape: no detail beyond "Error" — must map to 429 so Codex backs off.
-    expect(classifyCursorError("Cursor Connect error resource_exhausted: Error")).toBe("Cursor rate limit exceeded");
+  test("explicit quota-cue resource_exhausted is rate limiting; bare overflow is context limit (T01)", () => {
     expect(classifyCursorError("resource_exhausted: too many requests")).toBe("Cursor rate limit exceeded");
     expect(classifyCursorError("resource_exhausted while loading tool catalog: quota exhausted")).toBe("Cursor rate limit exceeded");
     // Concurrency limits are quota shapes, not request-size overflow (a bare "limit"
@@ -30,6 +28,20 @@ describe("classifyCursorError", () => {
     // Explicit body/size subject keeps overflow semantics even with a "limit" tail.
     expect(classifyCursorError("resource_exhausted: request body exceeds maximum allowed limit")).toBe("Cursor resource limit exceeded");
     expect(classifyCursorError("resource_exhausted: request size exceeds maximum allowed limit")).toBe("Cursor resource limit exceeded");
+  });
+
+  test("bare resource_exhausted with no quota cue and no size phrase is payload overflow (T01)", () => {
+    // senpi #1009 / #1036: a huge session hits the context window and Cursor returns a bare
+    // gRPC resource_exhausted end-stream with no detail. Classifying it as 429 makes Codex
+    // back off instead of compacting, which burns retries on an unfixable-by-retry failure.
+    expect(classifyCursorError("Cursor Connect error resource_exhausted: Error")).toBe("Cursor context limit exceeded");
+    expect(classifyCursorError("resource_exhausted")).toBe("Cursor context limit exceeded");
+    expect(classifyCursorError("resource exhausted")).toBe("Cursor context limit exceeded");
+  });
+
+  test("explicit quota wording still maps to rate limit even without a size phrase", () => {
+    expect(classifyCursorError("resource_exhausted: too many requests for this model")).toBe("Cursor rate limit exceeded");
+    expect(classifyCursorError("resource_exhausted while loading tool catalog: quota exhausted")).toBe("Cursor rate limit exceeded");
   });
 
   test("authentication / permission denied", () => {
@@ -102,9 +114,10 @@ describe("safeCursorErrorMessage", () => {
     expect(msg).not.toContain("rate limit");
   });
 
-  test("end-to-end: quota-style resource exhaustion carries the rate-limit prefix", () => {
+  test("end-to-end: bare resource_exhausted carries the overflow prefix; explicit quota carries the rate-limit prefix", () => {
+    // Bare resource_exhausted is payload overflow (T01): the 400-class prefix lets Codex compact.
     expect(safeCursorErrorMessage("Cursor Connect error resource_exhausted: Error"))
-      .toContain("Cursor rate limit exceeded");
+      .toContain("Cursor context limit exceeded");
     expect(safeCursorErrorMessage("resource_exhausted: too many requests"))
       .toContain("Cursor rate limit exceeded");
     expect(safeCursorErrorMessage("resource_exhausted while loading tool catalog: quota exhausted"))
