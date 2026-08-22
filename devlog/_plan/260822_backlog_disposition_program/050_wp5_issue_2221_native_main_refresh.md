@@ -206,3 +206,111 @@ $ bun test tests/codex-main-account-refresh.test.ts tests/codex-account-store.te
 exact-head maintainer security review per AGENTS.md and MAINTAINERS.md. It does not merge
 on this unit's verification alone.
 
+
+---
+
+# AMENDMENT 2 (WP5 A-gate, security audit) — AUTHORITATIVE over everything above
+
+An independent security audit of this plan returned **GO-WITH-FIXES with 4 High
+blockers**, every one re-verified by the main agent against `dev@e1d197565`. Two of
+them are **plan decisions that must be made before any code is written**, which is why
+this work-phase does not proceed to implementation on the strength of the earlier
+amendment alone.
+
+## B1 (High) — the body's code sample still blind-writes `auth.json`
+
+Amendment 1 promoted external-writer CAS into acceptance criteria, but it left the
+sample in the body intact:
+
+```ts
+const t = await refreshChatGPTTokenRaw(locked.refreshToken, { signal });
+persistMainAuthJsonWith(cred);              // <- no re-check
+publishFreshCredentialForGrant({ ... });    // <- pool published from the same result
+```
+
+An implementer copies the sample, not the acceptance list. The sample must be rewritten
+in place to: capture identity (`dev`/`ino`/`mtime`/`size`) **and** a content hash at
+read; re-stat and re-hash **immediately before the rename**, not merely after the HTTP
+round trip; on mismatch **discard the freshly-fetched grant** and either adopt the disk
+token if it is fresh or refuse; and persist `auth.json` **before** any pool publish.
+
+PR #2222 published to the pool first, which the owner already rejected.
+
+**Residual, to be named in the PR rather than hidden:** after a true pre-rename
+re-check there is still a microsecond window where the Codex CLI can rename between our
+check and our rename. There is no userspace CAS against a writer that ignores our lock.
+That residual is acceptable; the multi-second IdP-round-trip window is not.
+
+## B2 (High) — dropping the fingerprint freeze breaks pool-first adoption
+
+This is a real fork in the plan, not a test-gated maybe. Verified on `dev`:
+
+```ts
+// src/codex/account-store.ts:206
+const refreshGrantFingerprint = current.credential.refreshToken === cred.refreshToken
+  ? current.refreshGrantFingerprint ?? refreshGrantFingerprintForToken(cred.refreshToken)
+  : refreshGrantFingerprintForToken(cred.refreshToken);   // rotates
+```
+
+pinned by `tests/codex-account-store.test.ts:257`.
+
+- **Native-first still works.** Look up pool rows by the old fingerprint, write, and let
+  the save path stamp `hash(newRT)`.
+- **Pool-first does not.** After the pool rotates `RT1`→`RT2`, its row is
+  `hash(RT2)` while `auth.json` still holds `RT1`; native
+  `findFreshCredentialForGrant(hash(RT1))` misses and then POSTs a possibly-invalidated
+  `RT1`.
+
+#2222 solved this by freezing the fingerprint across rotation — a pool-wide invariant
+change that contradicts a currently-passing test, which is exactly why this plan dropped
+it. **Three honest options, and one must be chosen before building:** (a) land the
+freeze as its own reviewed PR first, (b) define a non-fingerprint same-grant lookup and
+state what happens on a ChatGPT-account-id collision, or (c) drop pool-first adoption
+from WP5's scope. "Decide if the tests fail" is not an A-gate.
+
+## B3 (High) — compact needs its own 401 replay
+
+The plan gives compact a pre-I/O refresh only. `src/server/responses/compact.ts`
+alternates on 429/402 and has no 401 replay, so a grant rotated by the CLI between our
+refresh and the request fails compact while Responses recovers. The issue contract asks
+for exactly one replay on **both**.
+
+## B4 (High) — a refresh-only `auth.json` is still unusable
+
+`readCodexTokensResult` treats a missing `access_token` as invalid
+(`src/codex/auth-collision.ts:47`), and `getMainAccountToken` returns null on it. A file
+holding a valid `refresh_token` with an empty or absent `access_token` is exactly the
+state this feature should recover from. Usability must be "a non-empty refresh token OR
+a live access JWT", and the refresh entrypoint must not require a prior access token.
+
+## Two Mediums, both accepted
+
+**Do not put `refresh_token` on the shared `CodexTokens` type.** `readCodexTokens` is
+called from `auth-api.ts` and `doctor.ts`; widening the shared DTO spreads the secret to
+callers that are not refresh surfaces. This is the same shape as the #2351 defect where a
+secret rode along on a subtree nobody redacted. Parse the refresh token privately inside
+`main-account.ts`. Equally: **do not write `refresh_grant_fingerprint` into
+`auth.json`** — that is an ocx-private field in a file the Codex CLI owns. Preserve
+unknown fields; add none.
+
+**The test-isolation guidance in Amendment 1 was over-corrected.** The repo's seam
+genuinely is `CODEX_HOME` mutation, via `tests/helpers/isolated-codex-home.ts`; #2222's
+defect was mutating it *without* isolation, not the mutation itself. Mandate
+`installIsolatedCodexHome` **plus** `OPENCODEX_HOME`, not spawn-per-test.
+
+This one matters more than it looks: `src/lib/test-home-guard.ts:61` protects only
+`~/.opencodex`. **`~/.codex` is unguarded**, and WP5 would be the first code in this
+repository that writes `auth.json` at all. A persist test that skips isolation
+overwrites the developer's real Codex credentials.
+
+## Disposition of this work-phase
+
+WP5 is **NOT implemented in this cycle**. B2 requires a maintainer decision about a
+pool-wide invariant (freeze the fingerprint, or restructure same-grant lookup, or narrow
+the scope), and that decision changes the shape of the diff rather than one of its
+lines. Building first and asking afterwards would produce exactly the kind of PR this
+program has been rejecting in other people's work.
+
+The rest of the plan is sound and now carries the corrections above, so the next cycle
+can implement directly once the fork is settled.
+
