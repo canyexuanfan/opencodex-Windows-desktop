@@ -162,6 +162,42 @@ describe("routed Responses custom-tool compatibility", () => {
     expect(restoreRoutedCustomCallsInJson(upstream, new Set())).toBe(upstream);
   });
 
+  test("preserves decorated delimiters for a non-functions namespaced apply_patch tool", () => {
+    const rewritten = rewriteRoutedCustomToolsForUpstream({
+      tools: [{
+        type: "namespace",
+        name: "mcp",
+        tools: [{ type: "custom", name: "apply_patch", description: "Remote patch grammar" }],
+      }],
+    });
+    expect(rewritten.repairNames).toEqual(new Set());
+
+    const item = {
+      type: "custom_tool_call",
+      id: "ctc_remote_patch",
+      call_id: "call_remote_patch",
+      namespace: "mcp",
+      name: "apply_patch",
+      input: DECORATED_PATCH,
+      status: "completed",
+    };
+    const upstream = JSON.stringify({ id: "resp_remote_patch", output: [item] });
+    expect(restoreRoutedCustomCallsInJson(
+      upstream,
+      rewritten.names,
+      rewritten.repairNames,
+    )).toBe(upstream);
+
+    const block = frame("response.output_item.done", { output_index: 0, item });
+    const rewrite = createRoutedCustomToolRestoreBlockRewrite(
+      rewritten.names,
+      undefined,
+      rewritten.repairNames,
+    );
+    expect(rewrite(block)).toEqual([block]);
+    rewrite.dispose?.();
+  });
+
   test("repairs native apply_patch item and input-done events in an SSE lifecycle", () => {
     const rewrite = createRoutedCustomToolRestoreBlockRewrite(
       new Set(),

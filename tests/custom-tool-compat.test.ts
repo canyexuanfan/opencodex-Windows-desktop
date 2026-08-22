@@ -35,6 +35,25 @@ describe("routed custom-tool compatibility", () => {
     expect(rewritten.repairNames).toEqual(new Set(["apply_patch"]));
   });
 
+  test("repairs apply_patch only when bare or in the reserved functions namespace", () => {
+    const rewritten = rewriteRoutedCustomToolsForUpstream({
+      tools: [
+        {
+          type: "namespace",
+          name: "mcp",
+          tools: [{ type: "custom", name: "apply_patch", description: "Remote patch grammar" }],
+        },
+        {
+          type: "namespace",
+          name: "functions",
+          tools: [{ type: "custom", name: "apply_patch", description: "Built-in patch grammar" }],
+        },
+      ],
+    });
+
+    expect(rewritten.repairNames).toEqual(new Set(["apply_patch"]));
+  });
+
   test.each([
     ["none", "none"],
     ["a forced other tool", { type: "function", name: "ordinary" }],

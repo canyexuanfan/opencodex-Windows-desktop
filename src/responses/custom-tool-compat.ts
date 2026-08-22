@@ -107,6 +107,7 @@ function collectRoutedCustomToolWireNames(
           && child.type === "custom"
           && typeof child.name === "string"
           && routedCustomToolPassesThrough(child.name, supportsResponsesCustomTools) === passthrough
+          && (!passthrough || tool.name === BUILTIN_FUNCTIONS_NAMESPACE)
           && !(tool.name === BUILTIN_FUNCTIONS_NAMESPACE && bareWireNames.has(child.name))
         ) names.add(customToolWireName(tool.name, child.name));
       }
