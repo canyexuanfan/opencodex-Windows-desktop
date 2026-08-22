@@ -47,6 +47,45 @@ function installAbortAwareFetch(): () => AbortSignal {
   };
 }
 
+function installBodyAbortFetch(): { getSignal: () => AbortSignal; getBody: () => ReadableStream<Uint8Array> } {
+  let seenSignal: AbortSignal | undefined;
+  let seenBody: ReadableStream<Uint8Array> | undefined;
+  globalThis.fetch = ((_, init) => {
+    seenSignal = init?.signal as AbortSignal | undefined;
+    let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    seenBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        bodyController = controller;
+      },
+    });
+    const signal = seenSignal;
+    signal?.addEventListener("abort", () => bodyController?.error(signal.reason), { once: true });
+    return Promise.resolve(new Response(seenBody, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }));
+  }) as typeof fetch;
+  return {
+    getSignal: () => {
+      if (!seenSignal) throw new Error("fetch was not called");
+      return seenSignal;
+    },
+    getBody: () => {
+      if (!seenBody) throw new Error("fetch was not called");
+      return seenBody;
+    },
+  };
+}
+
+async function waitForBodyReader(body: ReadableStream<Uint8Array>, turn: AbortController): Promise<void> {
+  for (let attempt = 0; attempt < 200 && !body.locked; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  if (body.locked) return;
+  turn.abort(new Error("sidecar response body reader was not attached"));
+  throw new Error("sidecar response body reader was not attached");
+}
+
 function sseText(text: string): Response {
   return new Response(
     `event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":${JSON.stringify(text)}}\n\n` +
@@ -240,6 +279,51 @@ describe("sidecar abort propagation", () => {
     expect(signal.aborted).toBe(true);
     expect((await outcome).error).toBe("aborted by turn");
     expect(recorded).toEqual(["connect_neutral"]);
+  });
+
+  test("response-body caller aborts stay account-neutral for both sidecars", async () => {
+    const webFetch = installBodyAbortFetch();
+    const webTurn = new AbortController();
+    const webRecorded: unknown[] = [];
+    const webOutcome = runWebSearch(
+      "current docs",
+      { type: "web_search" },
+      forwardProvider,
+      new Headers({ authorization: "Bearer token" }),
+      { model: "gpt-5.4-mini", reasoning: "low", timeoutMs: 30_000 },
+      webTurn.signal,
+      value => webRecorded.push(value),
+    );
+    const webSignal = webFetch.getSignal();
+    const webBody = webFetch.getBody();
+    await waitForBodyReader(webBody, webTurn);
+    const webReason = new Error("web body aborted by turn");
+    webTurn.abort(webReason);
+    expect(webSignal.reason).toBe(webReason);
+    expect((await webOutcome).error).toBe("web body aborted by turn");
+    expect(webRecorded).toEqual([200, "connect_neutral"]);
+
+    const visionFetch = installBodyAbortFetch();
+    const visionTurn = new AbortController();
+    const visionRecorded: unknown[] = [];
+    const visionOutcome = describeImage(
+      "data:image/png;base64,iVBORw0KGgo=",
+      "high",
+      "inspect screenshot",
+      forwardProvider,
+      new Headers({ authorization: "Bearer token" }),
+      { model: "gpt-5.4-mini", timeoutMs: 30_000 },
+      visionTurn.signal,
+      value => visionRecorded.push(value),
+    );
+    const visionSignal = visionFetch.getSignal();
+    const visionBody = visionFetch.getBody();
+    await waitForBodyReader(visionBody, visionTurn);
+    const visionReason = new Error("vision body aborted by turn");
+    visionTurn.abort(visionReason);
+    expect(visionSignal.reason).toBe(visionReason);
+    expect((await visionOutcome).error).toBe("vision body aborted by turn");
+    expect(visionRecorded).toEqual([200, "connect_neutral"]);
   });
 
   test("vision sidecar records HTTP and connect outcomes", async () => {
