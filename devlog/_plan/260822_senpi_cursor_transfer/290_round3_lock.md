@@ -38,3 +38,13 @@ require entitlement or a reproduction neither project can show today.
 - Final gate: Cross-platform CI on the resulting dev head (see PR checks);
   the verdict above stands as written — no remaining provable senpi-ahead
   row on this plan tier.
+
+## Amendment (re-probe reopens the maxMode row)
+
+The 210 entitlement interpretation was withdrawn by a same-day re-probe
+(claude-opus-4-8-high-fast works; only 4-7-low-fast RE persists). maxMode is
+therefore PROVABLE on this plan tier: the parity claim's "unprovable" basis
+for that row no longer holds, and the row is reopened pending 310 (big-
+context A/B, billing approved). The 300 catalog repair also supersedes the
+"no remaining provable row" phrasing: the static catalog itself under-
+exposed working -fast families, which is our defect, now roadmapped.

@@ -13,12 +13,21 @@
   The server ACCEPTED the flag both ways (no invalid_argument); the model is
   plan-gated for this account regardless.
 
-## Verdict: BLOCKED (plan tier)
+## Verdict: BLOCKED (plan tier) — WITHDRAWN by re-probe (see below)
 
-maxMode only decorates -fast (paid burst) variants, and this account cannot
-run them at all, so no user-visible gain is provable here. Wire flag stays
-hardcoded false. Re-probe requires an account with -fast entitlement
-(NEEDS_HUMAN to provision).
+Original interpretation: the account cannot run -fast at all. Wire flag
+stayed hardcoded false pending an entitled account.
+
+## Correction (same-day re-probe, supersedes the interpretation above)
+
+A follow-up probe with a different tier disproved the entitlement story:
+- claude-opus-4-8-high-fast -> SUCCESS ("FP-OK"); BOTH maxMode arms succeed.
+- claude-opus-4-7-low-fast -> bare resource_exhausted persists
+  (tier-specific; cause unknown — not account-wide).
+- claude-opus-4-7-fast (bare) -> not_found (wire has only suffixed forms).
+The original probe sampled ONLY 4-7-low-fast and over-generalized. -fast IS
+callable on this account; maxMode therefore IS provable — the deciding
+probe is 310 (big-context A/B). Catalog repair: 300.
 
 ## Side finding (feeds 260)
 

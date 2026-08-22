@@ -4,10 +4,13 @@
 
 #2320 classifies a bare 0-token resource_exhausted (no quota cue, no size
 phrase) as CONTEXT OVERFLOW -> 400-class so Codex compacts. Live probe 210
-found a counterexample: a ~20-token prompt on a plan-gated model
-(claude-opus-4-7-low-fast) returns the SAME bare shape. Misclassifying that
-as overflow makes Codex compact a 20-token turn — wrong remedy, confusing UX,
-and the retry can never succeed.
+found a counterexample: a ~20-token prompt on claude-opus-4-7-low-fast
+returns the SAME bare shape. (Re-probe note: the cause of that RE is
+tier-specific and unknown — the entitlement story was withdrawn — but the
+evidence stands as-is: NON-OVERFLOW rejections share the bare shape, so the
+shape alone cannot justify compaction.) Misclassifying a tiny turn as
+overflow makes Codex compact it — wrong remedy, and the retry can never
+succeed.
 
 ## Design
 
