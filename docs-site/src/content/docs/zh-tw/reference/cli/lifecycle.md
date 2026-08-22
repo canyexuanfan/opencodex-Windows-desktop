@@ -141,15 +141,16 @@ ocx status --json
 
 ## 背景服務
 
-### `ocx service [install|repair|start|stop|status|uninstall|remove]`
+### `ocx service [install|repair|restart|start|stop|status|uninstall|remove]`
 
 將 opencodex 作為登入管理的背景服務執行（macOS **launchd**、Linux **systemd user unit**、Windows **Task Scheduler**），在登入時自動啟動並在崩潰時自動重啟。服務執行時設定 `OCX_SERVICE=1`，使重啟不會折騰 Codex 設定。
 
 | 子指令 | 動作 |
 | --- | --- |
-| 無 | 建立／更新並啟動服務。 |
+| 無 | 服務不存在時安裝並啟動；已存在時不重新註冊，直接重新整理並重啟。 |
 | `install` | 建立並啟動服務。註冊它，在 Windows 上需要提高權限。 |
 | `repair` | 就地重新整理已安裝的服務並重啟它，而不重新註冊。 |
+| `restart` | `repair` 的別名。 |
 | `start` | 啟動已安裝的服務。 |
 | `stop` | 停止服務並還原原生 Codex。 |
 | `status` | 回報服務與代理診斷及日誌路徑。 |
@@ -160,6 +161,7 @@ ocx status --json
 ocx service
 ocx service install
 ocx service repair
+ocx service restart
 ocx service status
 ocx service uninstall
 ```

@@ -215,7 +215,7 @@ same stale-`app-server` warning and optional `--restart-codex` behavior as `ocx 
 
 ## Background service
 
-### `ocx service [install|repair|start|stop|status|uninstall|remove]`
+### `ocx service [install|repair|restart|start|stop|status|uninstall|remove]`
 
 Run opencodex as a login-managed background service (macOS **launchd**, Linux **systemd user unit**,
 Windows **Task Scheduler**) that auto-starts on login and auto-restarts on crash. Service runs set
@@ -228,19 +228,25 @@ run `ocx service repair` to refresh the task with the restored package paths.
 
 | Subcommand | Action |
 | --- | --- |
-| none | Create/update and start the service. |
+| none | Install and start when absent; otherwise refresh and restart the existing service without re-registering it. |
 | `install` | Create and start the service. Registers it, which on Windows needs elevation. |
 | `repair` | Refresh an installed service in place and restart it, without re-registering it. |
+| `restart` | Alias of `repair`. |
 | `start` | Start an installed service. |
 | `stop` | Stop the service and restore native Codex. |
 | `status` | Report service and proxy diagnostics plus log paths. |
 | `uninstall` | Remove the service and restore native Codex. |
 | `remove` | Alias of `uninstall`. |
 
+On Windows, a bare `ocx service` runs the install path only after both Task Scheduler and WinSW are
+proven absent. If either status query is inconclusive, it refuses to register anything and asks you
+to run `ocx service status`; use explicit `ocx service install` only after confirming absence.
+
 ```bash
 ocx service
 ocx service install
 ocx service repair
+ocx service restart
 ocx service status
 ocx service uninstall
 ```
