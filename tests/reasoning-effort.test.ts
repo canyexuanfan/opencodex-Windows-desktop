@@ -1002,6 +1002,17 @@ describe("stale reasoning-ladder self-heal", () => {
     expect(mapReasoningEffort(ollamaProv, "qwen3.8-uncensored:27b-q4", "low")).toBe("low");
     expect(mapReasoningEffort(ollamaProv, "qwen3.8-uncensored:27b-q4", "medium")).toBe("medium");
 
+    const fallbackProv: OcxProviderConfig = {
+      ...ollamaProv,
+      modelReasoningEfforts: {
+        "qwen3.8-uncensored:27b-q4": ["low", "high"],
+      },
+      modelReasoningEffortMap: {
+        "qwen3.8-uncensored:27b-q4": { high: "__omit__" },
+      },
+    };
+    expect(mapReasoningEffort(fallbackProv, "qwen3.8-uncensored:27b-q4", "xhigh")).toBeUndefined();
+
     // Verify in openai-chat adapter buildRequest: field is completely omitted when mapped to __omit__
     const adapter = createOpenAIChatAdapter(ollamaProv);
     const reqMax = adapter.buildRequest({
