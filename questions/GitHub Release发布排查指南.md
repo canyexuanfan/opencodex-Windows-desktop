@@ -108,3 +108,21 @@
     gh auth token 注入 Authorization 模拟更新器逻辑。
   - ✅ Cross-platform CI 首跑暴露 6 类失败（详见上游v2.22.0同步合并排查指南附录），
     修复后 Build 2 重打包（desktop/package.json buildRevision 1→2 为构建号来源）。
+
+- ✅ 2026-08-23：Build 2 → Build 3 收敛过程（CI 从红到绿的三轮）：
+  - CI 第二轮 4 类失败全部为 fork/upstream 混搭或丢失防线：
+    * Provider 工作台：v2.22.0 同步留下了 fork Shell + 上游 ProviderRail 的混搭
+      （默认星标重复渲染）。✅ 三件套（Shell/测试/CSS）整体采纳上游自洽设计，
+      DOM 测试取上游版；再按用户级交互偏好补回三条 hover 规则
+      （.pws-filter-btn / .pws-sort-btn / .pws-model-expand）。
+    * init.ts 注入健康门（ad9d1682a，防死路由）在 v2.22.0 同步取上游时丢失，
+      ✅ 重放。
+    * windows-deploy 测试：OCX_BAKE_PORT 块取上游演进版；localhost 断言按
+      deps.hostname 契约微调。
+  - ✅ 第三轮 Cross-platform CI 全绿（run 32624158200）——本 fork 首次全平台
+    矩阵通过。经验：CI 是唯一能暴露"fork 契约测试长期没机会执行"的机制，
+    main 必须保持可触发 CI 的推送路径。
+  - ✅ Build 3 发布：buildRevision 3，tag v2.31.0-build.3，latest 已指向，
+    更新器模拟解析正确（2.31.0 build 3，资产精确匹配）。
+  - 残余风险：匿名 API 限流窗口内（共享代理 IP 403），运行实例的更新检查会
+    报 unavailable，限流重置后自愈；改进方向已在上一条记录。
