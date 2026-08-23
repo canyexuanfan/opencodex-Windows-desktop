@@ -905,11 +905,15 @@ async function handleStatus() {
 
 async function handleRecoverHistory() {
   if (args[1] !== "--legacy-openai") {
-    console.error("Usage: ocx recover-history --legacy-openai");
+    console.error("Usage: ocx recover-history --legacy-openai --yes");
     console.error("This force-relabels every user-message opencodex row to OpenAI, including legitimate dedicated-provider history. Back up first and use it only for pre-backup legacy recovery.");
     process.exit(1);
   }
   console.error("WARNING: this force-relabels every user-message opencodex row to OpenAI, normalizes exec to cli, and includes legitimate dedicated-provider history.");
+  if (args.length !== 3 || args[2] !== "--yes") {
+    console.error("Re-run with explicit confirmation: ocx recover-history --legacy-openai --yes");
+    process.exit(1);
+  }
   // Manifest-independent legacy ejection, serialized like every other history
   // mutation. It is a separate operation from generic restore precisely because
   // it must not read, consume or replace the backup manifest.

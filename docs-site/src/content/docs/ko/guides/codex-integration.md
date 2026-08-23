@@ -108,7 +108,7 @@ Windows에서 Orca shell은 `CODEX_HOME`과 `ORCA_CODEX_HOME`을 Orca의 번들 
 
 ## 스레드 식별자와 대화 기록
 
-기본 loopback 형식은 새 thread에 네이티브 `openai` provider 태그를 유지하므로 일반적인 resume history는 다시 매핑할 필요가 없습니다. sync와 restore는 일치하는 백업 manifest만 적용하여 각 thread의 원래 provider, source, event marker를 정확히 복원합니다. manifest가 없는 `opencodex` row는 변경하지 않으며, legacy 재태깅을 명시적으로 강제하려는 경우에만 `ocx recover-history --legacy-openai`를 사용합니다. 이 명령은 의도적으로 범위가 넓습니다. 사용자 메시지가 있고 현재 `opencodex`로 표시된 모든 thread를 `openai`로 바꾸고, `exec`를 `cli`로 정규화하며 event marker를 설정합니다. 정상적인 dedicated-provider history도 포함됩니다. 상태를 백업하고 이 전체 범위를 의도한 경우에만 사용하세요. non-loopback 전용 provider 모드는 활성 상태일 때만 history를 `opencodex` provider 아래로 미러링하고, 종료할 때는 백업된 메타데이터를 복원합니다. history를 건드리지 않으려면 `syncResumeHistory: false`로 설정하세요.
+기본 loopback 형식은 새 thread에 네이티브 `openai` provider 태그를 유지하므로 일반적인 resume history는 다시 매핑할 필요가 없습니다. sync와 restore는 일치하는 백업 manifest만 적용하여 각 thread의 원래 provider, source, event marker를 정확히 복원합니다. manifest가 없는 `opencodex` row는 변경하지 않으며, legacy 재태깅을 명시적으로 강제하려는 경우에만 `ocx recover-history --legacy-openai --yes`를 사용합니다. 이 명령은 의도적으로 범위가 넓습니다. 사용자 메시지가 있고 현재 `opencodex`로 표시된 모든 thread를 `openai`로 바꾸고, `exec`를 `cli`로 정규화하며 event marker를 설정합니다. 정상적인 dedicated-provider history도 포함됩니다. 상태를 백업하고 이 전체 범위를 의도한 경우에만 사용하세요. non-loopback 전용 provider 모드는 활성 상태일 때만 history를 `opencodex` provider 아래로 미러링하고, 종료할 때는 백업된 메타데이터를 복원합니다. history를 건드리지 않으려면 `syncResumeHistory: false`로 설정하세요.
 
 ## 모델 카탈로그 동기화
 

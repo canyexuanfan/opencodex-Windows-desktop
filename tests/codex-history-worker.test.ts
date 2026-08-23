@@ -249,7 +249,7 @@ test("manifest-backed restore preserves routed provenance and the next migrate i
   });
 });
 
-test("a late restore failure reports already-applied row and file progress", () => {
+test("a late permission failure reports already-applied row and file progress", () => {
   const fixture = makeFixture("ocx-history-worker-partial-");
   const backup = historyBackupPathFor(fixture.stateDb);
   backupArtifacts.push(backup);
@@ -286,7 +286,7 @@ test("a late restore failure reports already-applied row and file progress", () 
 
   expect(result).toMatchObject({
     type: "error",
-    reason: "integrity",
+    reason: "permission",
     rows: 1,
     files: 1,
   });

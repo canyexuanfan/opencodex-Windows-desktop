@@ -189,7 +189,7 @@ La configuration de bouclage par défaut conserve l'étiquette du fournisseur na
 nouveaux fils ; la reprise normale de l'historique ne nécessite donc aucun remappage. La synchronisation et la
 restauration n'appliquent qu'un manifeste de sauvegarde correspondant et rétablissent exactement le fournisseur,
 la source et l'indicateur d'événement d'origine. Une ligne `opencodex` sans manifeste reste inchangée ; utilisez
-`ocx recover-history --legacy-openai` uniquement pour forcer explicitement ce réétiquetage hérité. Cette commande
+`ocx recover-history --legacy-openai --yes` uniquement pour forcer explicitement ce réétiquetage hérité. Cette commande
 est volontairement large : elle réétiquette en `openai` chaque fil contenant un message utilisateur et actuellement
 marqué `opencodex`, normalise `exec` en `cli` et active l'indicateur d'événement — y compris l'historique légitime
 d'un fournisseur dédié. Sauvegardez l'état et ne l'utilisez que si vous souhaitez cette portée complète. Hors bouclage,

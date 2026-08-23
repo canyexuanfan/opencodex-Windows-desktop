@@ -62,7 +62,7 @@ ocx restore back
 ocx eject back
 ```
 
-### `ocx recover-history --legacy-openai`
+### `ocx recover-history --legacy-openai --yes`
 
 역방향 복구 지원이 생기기 전, 초기 개발 빌드에서 Codex App 기록을 재매핑하던 오래된 빌드를 위한
 명시적 복구 명령입니다. 기록 데이터베이스가 잠겨 있으면 먼저 Codex를 종료해 주세요.

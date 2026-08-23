@@ -63,7 +63,7 @@ ocx restore back
 ocx eject back
 ```
 
-### `ocx recover-history --legacy-openai`
+### `ocx recover-history --legacy-openai --yes`
 
 Explicit recovery for older development builds that remapped Codex App history before reversible
 backup support existed. Close Codex first if its history database is locked.

@@ -245,11 +245,15 @@ interface ThreadRow {
 }
 
 interface RestoreRowSnapshot extends ThreadRow {
-  first_user_message: string;
+  first_user_message: string | null;
 }
 
 interface ApplyRowSnapshot extends ThreadRow {
-  first_user_message: string;
+  first_user_message: string | null;
+}
+
+function hasFirstUserMessage(value: string | null): boolean {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 interface BackupEntry {
@@ -529,10 +533,10 @@ function rowMatchesRestoreTuple(
 
 function rowMatchesExpectedPostImage(row: RestoreRowSnapshot, entry: BackupEntry): boolean {
   if (entry.modelProvider === "openai") {
-    const postHasUserEvent = row.first_user_message.trim() ? 1 : entry.hasUserEvent;
+    const postHasUserEvent = hasFirstUserMessage(row.first_user_message) ? 1 : entry.hasUserEvent;
     return rowMatchesRestoreTuple(row, "opencodex", entry.source, postHasUserEvent);
   }
-  return Boolean(row.first_user_message.trim())
+  return hasFirstUserMessage(row.first_user_message)
     && (
       rowMatchesRestoreTuple(row, "opencodex", "cli", 1)
       // Older restore code coerced an opencodex/exec original into this exact tuple before
@@ -630,8 +634,22 @@ function preflightRestoreTargets(
   getCurrent: (id: string) => RestoreRowSnapshot | null,
   entries: BackupEntry[],
 ): RestoreTargetPreflight {
-  const snapshots = new Map<string, RestoreRowSnapshot>();
+  const snapshots = preflightRestoreRows(getCurrent, entries);
   const rolloutSnapshots = new Map<string, RestoreRolloutSnapshot>();
+  for (const entry of entries) {
+    // Validate every rollout before the first mutation. A later missing, foreign, or
+    // unpatchable entry must not leave an earlier file partially restored.
+    rolloutSnapshots.set(entry.id, snapshotRolloutForRestore(entry));
+  }
+  return { snapshots, rolloutSnapshots };
+}
+
+/** Cheap manifest-to-database authority check used by recurring no-op probes. */
+function preflightRestoreRows(
+  getCurrent: (id: string) => RestoreRowSnapshot | null,
+  entries: BackupEntry[],
+): Map<string, RestoreRowSnapshot> {
+  const snapshots = new Map<string, RestoreRowSnapshot>();
   for (const entry of entries) {
     const row = getCurrent(entry.id);
     if (!row || typeof row.rollout_path !== "string" || !samePath(row.rollout_path, entry.rolloutPath)) {
@@ -642,11 +660,8 @@ function preflightRestoreTargets(
       throw new CodexHistoryIntegrityError("history_backup_postimage_mismatch");
     }
     snapshots.set(entry.id, row);
-    // Validate every rollout before the first mutation. A later missing, foreign, or
-    // unpatchable entry must not leave an earlier file partially restored.
-    rolloutSnapshots.set(entry.id, snapshotRolloutForRestore(entry));
   }
-  return { snapshots, rolloutSnapshots };
+  return snapshots;
 }
 
 function assertRestoreReadback(
@@ -1121,7 +1136,9 @@ export function withHistoryRetry<T>(fn: () => T, io: { sleepFn?: (ms: number) =>
  * to the write attempt and keep today's behavior for genuinely unknown state.
  */
 function openaiRestoreIsNoop(stateDbPath: string, backupPath: string): boolean {
-  const pending = countPendingOpencodexHistory(stateDbPath, backupPath);
+  const pending = countPendingOpencodexHistory(stateDbPath, backupPath, {
+    validateRestoreTargets: false,
+  });
   return !pending.failed && pending.pendingRows === 0 && pending.backupEntries === 0;
 }
 
@@ -1194,7 +1211,7 @@ function syncCodexHistoryProviderUnsafe(provider: CodexHistoryProvider, stateDbP
           AND model_provider = ?
           AND source = ?
           AND has_user_event = ?
-          AND first_user_message = ?
+          AND first_user_message IS ?
       `);
       const routeExec = db.query(`
         UPDATE threads
@@ -1205,13 +1222,13 @@ function syncCodexHistoryProviderUnsafe(provider: CodexHistoryProvider, stateDbP
           AND model_provider = ?
           AND source = ?
           AND has_user_event = ?
-          AND first_user_message = ?
+          AND first_user_message IS ?
           AND trim(coalesce(first_user_message, '')) != ''
       `);
       // CAS only the rows that were recorded in this manifest. A thread inserted after the
       // snapshot must stay native rather than becoming an untracked bare routed row.
       for (const row of openaiRows) {
-        const targetEvent = row.first_user_message.trim() ? 1 : row.has_user_event;
+        const targetEvent = hasFirstUserMessage(row.first_user_message) ? 1 : row.has_user_event;
         const result = routeOpenai.run(
           targetEvent,
           row.id,
@@ -1302,7 +1319,7 @@ function restoreCodexHistoryProvider(stateDbPath: string, backupPath: string): C
           AND model_provider = ?
           AND source = ?
           AND has_user_event = ?
-          AND first_user_message = ?
+          AND first_user_message IS ?
       `);
       for (const entry of entries) {
         const before = snapshots.get(entry.id);
@@ -1375,9 +1392,18 @@ function restoreCodexHistoryProvider(stateDbPath: string, backupPath: string): C
       if (error instanceof CodexHistoryIntegrityError) {
         throw new CodexHistoryIntegrityError(error.message, { rows: entries.length, files });
       }
-      // Once exact targets were written, even a permission/I/O failure while consuming the
-      // manifest is an applied-but-not-converged state. Preserve that progress instead of
-      // reporting a zero-change permission failure that invites an unsafe blind retry.
+      const failureReason = classifyRecoverableHistoryError(error);
+      if (failureReason) {
+        return {
+          rows: entries.length,
+          files,
+          failed: true,
+          failureReason,
+        };
+      }
+      // Once exact targets were written, an unclassified finalization failure is an
+      // applied-but-not-converged integrity state. Preserve that progress instead of
+      // reporting a zero-change failure that invites an unsafe blind retry.
       throw new CodexHistoryIntegrityError("history_backup_finalization_failed", {
         rows: entries.length,
         files,
@@ -1468,7 +1494,9 @@ export function snapshotCodexHistoryNoop(
     if (dataVersionBefore === null) {
       return { kind: "unknown", pendingRows: null, backupEntries: null, ...base, reason: "database-query" };
     }
-    const pending = countPendingOpencodexHistory(stateDbPath, backupPath);
+    const pending = countPendingOpencodexHistory(stateDbPath, backupPath, {
+      validateRestoreTargets: false,
+    });
     if (pending.failed) {
       return { kind: "unknown", pendingRows: null, backupEntries: null, ...base, reason: "database-query" };
     }
@@ -1520,11 +1548,14 @@ export interface PendingHistoryCount {
  * Read-only migration progress probe for the guardian and `ocx doctor`. Opens sqlite
  * readonly with a SHORT busy timeout so a locked DB cannot stall a daemon tick. Only a
  * valid, database-bound backup manifest is actionable work; bare routed rows remain
- * untouched because their original provider is not known.
+ * untouched because their original provider is not known. Operator diagnostics keep the
+ * default deep rollout validation. Recurring no-op probes explicitly opt out because any
+ * nonempty manifest already prevents a no-op and the mutation path always preflights files.
  */
 export function countPendingOpencodexHistory(
   stateDbPath = resolveCodexStateDbPath(),
   backupPath = historyBackupPathFor(stateDbPath),
+  opts: { validateRestoreTargets?: boolean } = {},
 ): PendingHistoryCount {
   const backup = readBackupStrict(backupPath, stateDbPath);
   if (backup.kind === "unknown") {
@@ -1554,7 +1585,11 @@ export function countPendingOpencodexHistory(
           SELECT id, rollout_path, model_provider, source, has_user_event, first_user_message
           FROM threads WHERE id = ?
         `);
-        preflightRestoreTargets(id => current.get(id), entries);
+        if (opts.validateRestoreTargets === false) {
+          preflightRestoreRows(id => current.get(id), entries);
+        } else {
+          preflightRestoreTargets(id => current.get(id), entries);
+        }
       }
       return { pendingRows: 0, backupEntries };
     } finally {

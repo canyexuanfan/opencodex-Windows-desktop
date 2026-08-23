@@ -36,7 +36,7 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
   },
   {
     name: "recover-history",
-    usage: "ocx recover-history --legacy-openai",
+    usage: "ocx recover-history --legacy-openai --yes",
     summary: "Force all user-message opencodex rows to OpenAI for legacy recovery.",
   },
   {

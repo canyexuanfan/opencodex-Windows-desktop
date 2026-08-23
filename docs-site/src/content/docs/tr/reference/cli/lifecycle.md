@@ -74,7 +74,7 @@ ocx restore back
 ocx eject back
 ```
 
-### `ocx recover-history --legacy-openai`
+### `ocx recover-history --legacy-openai --yes`
 
 Tersine çevrilebilir yedekleme desteği var olmadan önce Codex App geçmişini
 yeniden eşleyen eski geliştirme derlemeleri için açık kurtarma. Geçmiş

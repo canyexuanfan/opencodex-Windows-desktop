@@ -98,10 +98,10 @@ test("the failure wording names the real reason instead of always blaming the Co
     message: "database is locked",
     historyFailureReason: "busy",
   } as const;
-  expect(describeHistoryJobFailure(workerBusy, "apply", false)).toContain("history DB is locked");
+  expect(describeHistoryJobFailure(workerBusy, "apply", false)).toContain("history state is busy");
   expect(describeHistoryJobFailure(workerBusy, "apply", false)).toContain("retried automatically");
-  expect(describeHistoryJobFailure(workerBusy, "restore")).toContain("holding the history database");
-  expect(describeHistoryJobFailure(workerBusy, "recover-legacy")).toContain("locked");
+  expect(describeHistoryJobFailure(workerBusy, "restore")).not.toContain("holding the history database");
+  expect(describeHistoryJobFailure(workerBusy, "recover-legacy")).toContain("history state is busy");
 
   const unsafe = { kind: "blocked", reason: "unsafe-path" } as const;
   const unsafeText = describeHistoryJobFailure(unsafe, "apply");
@@ -131,6 +131,13 @@ test("the failure wording names the real reason instead of always blaming the Co
   const partialIntegrity = { ...integrity, rows: 1, files: 1 } as const;
   expect(describeHistoryJobFailure(partialIntegrity, "restore")).toContain("partial restore");
   expect(describeHistoryJobFailure(partialIntegrity, "restore")).toContain("manifest was retained");
+
+  const partialPermission = { ...permission, rows: 1, files: 1 } as const;
+  expect(describeHistoryJobFailure(partialPermission, "apply")).toContain("changed but did not converge");
+  expect(describeHistoryJobFailure(partialPermission, "apply")).toContain("manifest was retained");
+  const partialBusy = { ...workerBusy, rows: 1, files: 1 } as const;
+  expect(describeHistoryJobFailure(partialBusy, "restore")).toContain("changed but did not converge");
+  expect(describeHistoryJobFailure(partialBusy, "restore")).toContain("manifest was retained");
 
   const workerError = { kind: "failed", reason: "worker-error", message: "unable to open database file" } as const;
   expect(describeHistoryJobFailure(workerError, "apply")).toContain("unable to open database file");

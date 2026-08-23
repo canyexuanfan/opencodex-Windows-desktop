@@ -212,7 +212,7 @@ yeniden eşlenmesi gerekmez. Sync ve restore yalnızca eşleşen bir yedek manif
 uygular ve her iş parçacığının özgün provider, source ve event marker değerlerini
 tam olarak geri yükler. Manifesti olmayan bir `opencodex` satırı değişmeden kalır;
 legacy yeniden etiketlemeyi açıkça zorlamak istediğinizde yalnızca
-`ocx recover-history --legacy-openai` kullanın. Bu komut bilinçli olarak geniş kapsamlıdır:
+`ocx recover-history --legacy-openai --yes` kullanın. Bu komut bilinçli olarak geniş kapsamlıdır:
 kullanıcı iletisi bulunan ve şu anda `opencodex` olarak etiketlenmiş her thread'i `openai`
 olarak yeniden etiketler, `exec` değerini `cli` olarak normalleştirir ve event marker'ı ayarlar;
 geçerli dedicated-provider geçmişi de buna dahildir. Durumu yedekleyin ve yalnızca bu kapsamın

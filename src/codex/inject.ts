@@ -1348,9 +1348,13 @@ function failedHistoryRestore(
     files,
     ejectedRows: 0,
     message: reason === "permission"
-      ? "Codex resume history could NOT be restored because permission was denied."
+      ? changed
+        ? "Codex resume history changed but did NOT converge because permission was denied while finalizing the backup manifest; the manifest was retained for review and safe retry."
+        : "Codex resume history could NOT be restored because permission was denied."
       : reason === "busy"
-        ? "Codex resume history could NOT be restored — the Codex app appears to be holding the history database."
+        ? changed
+          ? "Codex resume history changed but did NOT converge because backup-manifest finalization remained busy; the manifest was retained for review and safe retry."
+          : detail ?? "Codex resume history could NOT be restored — the Codex app appears to be holding the history database."
         : reason === "integrity"
           ? changed
             ? "Codex resume history changed but did NOT converge because the backup or target changed; the manifest was retained for review and safe retry."
@@ -1376,9 +1380,15 @@ export function failedHistoryRestoreFromOutcome(
   outcome: Extract<CodexHistoryJobOutcome, { kind: "blocked" | "failed" }>,
 ): CodexRestoreHistoryResult {
   if (outcome.kind === "blocked" && outcome.reason === "busy") return failedHistoryRestore("busy");
-  if (outcome.kind === "failed" && outcome.historyFailureReason === "busy") return failedHistoryRestore("busy");
+  if (outcome.kind === "failed" && outcome.historyFailureReason === "busy") {
+    return failedHistoryRestore(
+      "busy",
+      describeHistoryJobFailure(outcome, "restore"),
+      { rows: outcome.rows, files: outcome.files },
+    );
+  }
   if (outcome.kind === "failed" && outcome.historyFailureReason === "permission") {
-    return failedHistoryRestore("permission");
+    return failedHistoryRestore("permission", undefined, { rows: outcome.rows, files: outcome.files });
   }
   if (outcome.kind === "failed" && outcome.historyFailureReason === "integrity") {
     return failedHistoryRestore("integrity", undefined, { rows: outcome.rows, files: outcome.files });
@@ -1689,7 +1699,7 @@ export function restoreNativeCodex(options: { skipHistory?: boolean; revalidateD
       ? failedHistoryRestore(rawHistory.failureReason, undefined, rawHistory)
       : {
           state: "ok",
-          changed: rawHistory.rows > 0 || (rawHistory.ejectedRows ?? 0) > 0,
+          changed: rawHistory.rows > 0 || rawHistory.files > 0 || (rawHistory.ejectedRows ?? 0) > 0,
           rows: rawHistory.rows,
           files: rawHistory.files,
           ejectedRows: rawHistory.ejectedRows ?? 0,

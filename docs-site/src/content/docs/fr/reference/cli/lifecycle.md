@@ -47,7 +47,7 @@ ocx restore back
 ocx eject back
 ```
 
-### `ocx recover-history --legacy-openai`
+### `ocx recover-history --legacy-openai --yes`
 
 Récupération explicite destinée aux anciennes versions de développement qui remappaient l’historique de Codex App avant l’ajout des sauvegardes réversibles. Fermez d’abord Codex si sa base de données d’historique est verrouillée.
 

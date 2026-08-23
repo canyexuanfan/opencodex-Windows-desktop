@@ -47,7 +47,7 @@ ocx restore back
 ocx eject back
 ```
 
-### `ocx recover-history --legacy-openai`
+### `ocx recover-history --legacy-openai --yes`
 
 为更早期的开发构建提供显式恢复，这些构建在可逆备份支持存在之前就重映射了 Codex App 历史记录。如果其历史数据库已被锁定，请先关闭 Codex。
 

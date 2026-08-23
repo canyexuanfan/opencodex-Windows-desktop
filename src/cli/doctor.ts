@@ -1097,7 +1097,7 @@ export async function runDoctor(args: string[] = []): Promise<void> {
   const pending = countPendingOpencodexHistory();
   if (pending.failed) {
     if (pending.failureReason === "busy") {
-      console.log("  --     state DB is busy — exact metadata restore is pending");
+      console.log("  --     history database, backup manifest, or rollout file is busy — exact metadata restore is pending");
     } else if (pending.failureReason === "permission") {
       console.log("  --     state DB or backup manifest access was denied — restore state unknown");
     } else {

@@ -24,7 +24,7 @@ Usage:
   ocx stop                    Stop the proxy AND restore native Codex (plain codex works again)
   ocx restore                 Restore native Codex without stopping (alias: eject)
   ocx restore back            Re-point codex at the running proxy (undo restore)
-  ocx recover-history --legacy-openai
+  ocx recover-history --legacy-openai --yes
                                Force all user-message opencodex rows to OpenAI (legacy recovery)
   ocx uninstall               Remove service/shim/config and restore native Codex (alias: remove)
   ocx service [sub]           Run as a background service (default: install/update/start)

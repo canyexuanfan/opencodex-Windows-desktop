@@ -75,7 +75,7 @@ function makeFixture({ includeExec = false, includeLegacy = false } = {}) {
       rollout_path TEXT NOT NULL,
       model_provider TEXT NOT NULL,
       source TEXT NOT NULL,
-      first_user_message TEXT NOT NULL,
+      first_user_message TEXT,
       has_user_event INTEGER NOT NULL DEFAULT 0
     )
   `);
@@ -111,6 +111,28 @@ describe("Codex history provider sync", () => {
     expect(db.query("SELECT has_user_event FROM threads WHERE id = 'thread-1'").get()).toEqual({ has_user_event: 1 });
     db.close();
     expect(latestSessionMetaPayload(rollout).model_provider).toBe("opencodex");
+  });
+
+  test("routes and exactly restores a resumable row with a null first-user message", () => {
+    const fixture = makeFixture();
+    const db = new Database(fixture.dbPath);
+    db.run("UPDATE threads SET first_user_message = NULL, has_user_event = 0 WHERE id = 'thread-1'");
+    db.close();
+
+    expect(syncCodexHistoryProvider("opencodex", fixture.dbPath, fixture.backupPath))
+      .toEqual({ rows: 1, files: 1 });
+    const routed = new Database(fixture.dbPath, { readonly: true });
+    expect(routed.query("SELECT model_provider, first_user_message, has_user_event FROM threads WHERE id = 'thread-1'").get())
+      .toEqual({ model_provider: "opencodex", first_user_message: null, has_user_event: 0 });
+    routed.close();
+
+    expect(syncCodexHistoryProvider("openai", fixture.dbPath, fixture.backupPath))
+      .toEqual({ rows: 1, files: 1 });
+    const restored = new Database(fixture.dbPath, { readonly: true });
+    expect(restored.query("SELECT model_provider, source, first_user_message, has_user_event FROM threads WHERE id = 'thread-1'").get())
+      .toEqual({ model_provider: "openai", source: "vscode", first_user_message: null, has_user_event: 0 });
+    restored.close();
+    expect(existsSync(fixture.backupPath)).toBe(false);
   });
 
   test("does not route a new database row that was not captured in the manifest snapshot", () => {
@@ -607,7 +629,7 @@ describe("Codex history provider sync", () => {
     expect(latestSessionMetaPayload(fixture.rollout).model_provider).toBe("custom");
   });
 
-  test("reports applied progress when finalization fails after exact target writes", () => {
+  test("reports applied permission progress when manifest finalization is denied", () => {
     const fixture = makeFixture();
     syncCodexHistoryProvider("opencodex", fixture.dbPath, fixture.backupPath);
     setBeforeHistoryBackupConsumeForTests(() => {
@@ -615,12 +637,36 @@ describe("Codex history provider sync", () => {
     });
 
     expect(syncCodexHistoryProvider("openai", fixture.dbPath, fixture.backupPath))
-      .toMatchObject({ rows: 1, files: 1, failed: true, failureReason: "integrity" });
+      .toMatchObject({ rows: 1, files: 1, failed: true, failureReason: "permission" });
     expect(existsSync(fixture.backupPath)).toBe(true);
     const db = new Database(fixture.dbPath, { readonly: true });
     expect(db.query("SELECT model_provider FROM threads WHERE id = 'thread-1'").get())
       .toEqual({ model_provider: "openai" });
     db.close();
+  });
+
+  test("reports applied busy progress when manifest finalization cannot complete", () => {
+    const fixture = makeFixture();
+    syncCodexHistoryProvider("opencodex", fixture.dbPath, fixture.backupPath);
+    setBeforeHistoryBackupConsumeForTests(() => {
+      throw Object.assign(new Error("finalization busy"), { code: "EBUSY" });
+    });
+
+    expect(syncCodexHistoryProvider("openai", fixture.dbPath, fixture.backupPath))
+      .toMatchObject({ rows: 1, files: 1, failed: true, failureReason: "busy" });
+    expect(existsSync(fixture.backupPath)).toBe(true);
+  });
+
+  test("reports applied integrity progress for an unclassified finalization failure", () => {
+    const fixture = makeFixture();
+    syncCodexHistoryProvider("opencodex", fixture.dbPath, fixture.backupPath);
+    setBeforeHistoryBackupConsumeForTests(() => {
+      throw new Error("finalization failed without a recoverable code");
+    });
+
+    expect(syncCodexHistoryProvider("openai", fixture.dbPath, fixture.backupPath))
+      .toMatchObject({ rows: 1, files: 1, failed: true, failureReason: "integrity" });
+    expect(existsSync(fixture.backupPath)).toBe(true);
   });
 
   test("explicitly recovers legacy opencodex user rows to openai", () => {
@@ -777,6 +823,7 @@ describe("Design B migration helpers", () => {
       { name: "missing rolloutPath", mutate: manifest => { delete manifest.entries["thread-1"].rolloutPath; } },
       { name: "blank rolloutPath", mutate: manifest => { manifest.entries["thread-1"].rolloutPath = ""; } },
       { name: "relative rolloutPath", mutate: manifest => { manifest.entries["thread-1"].rolloutPath = "rollout.jsonl"; } },
+      { name: "missing modelProvider", mutate: manifest => { delete manifest.entries["thread-1"].modelProvider; } },
       { name: "mistyped modelProvider", mutate: manifest => { manifest.entries["thread-1"].modelProvider = 7; } },
       { name: "unsupported modelProvider", mutate: manifest => { manifest.entries["thread-1"].modelProvider = "other"; } },
       { name: "missing source", mutate: manifest => { delete manifest.entries["thread-1"].source; } },
@@ -956,6 +1003,18 @@ describe("Design B migration helpers", () => {
     }) + "\n");
     expect(countPendingOpencodexHistory(rolloutFixture.dbPath, rolloutFixture.backupPath))
       .toEqual({ pendingRows: 0, backupEntries: 1, failed: true, failureReason: "integrity" });
+    expect(countPendingOpencodexHistory(
+      rolloutFixture.dbPath,
+      rolloutFixture.backupPath,
+      { validateRestoreTargets: false },
+    )).toEqual({ pendingRows: 0, backupEntries: 1 });
+    const canonicalBackupPath = historyBackupPathFor(rolloutFixture.dbPath);
+    noopSnapshotArtifacts.add(canonicalBackupPath);
+    writeFileSync(canonicalBackupPath, readFileSync(rolloutFixture.backupPath));
+    expect(snapshotCodexHistoryNoop(rolloutFixture.dbPath, canonicalBackupPath))
+      .toMatchObject({ kind: "work-pending", pendingRows: 0, backupEntries: 1 });
+    expect(syncCodexHistoryProvider("openai", rolloutFixture.dbPath, rolloutFixture.backupPath))
+      .toMatchObject({ rows: 0, files: 0, failed: true, failureReason: "integrity" });
   });
 
   test("countPendingOpencodexHistory returns zeros for a missing DB", () => {

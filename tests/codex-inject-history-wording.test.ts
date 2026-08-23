@@ -59,7 +59,14 @@ test("restore blames the Codex app only for genuine busy reasons", () => {
     message: "database is locked",
     historyFailureReason: "busy",
   } as const;
-  expect(failedHistoryRestoreFromOutcome(workerBusy).message).toContain("holding the history database");
+  expect(failedHistoryRestoreFromOutcome(workerBusy).message).toContain("history state is busy");
+  expect(failedHistoryRestoreFromOutcome(workerBusy).message).not.toContain("holding the history database");
+  const partialBusy = failedHistoryRestoreFromOutcome({ ...workerBusy, rows: 1, files: 1 });
+  expect(partialBusy.changed).toBe(true);
+  expect(partialBusy.rows).toBe(1);
+  expect(partialBusy.files).toBe(1);
+  expect(partialBusy.message).toContain("finalization remained busy");
+  expect(partialBusy.message).toContain("manifest was retained");
 });
 
 test("restore names other reasons instead of a lock", () => {
@@ -75,6 +82,12 @@ test("restore names other reasons instead of a lock", () => {
     historyFailureReason: "permission",
   } as const;
   expect(failedHistoryRestoreFromOutcome(permission).message).toContain("permission was denied");
+  const partialPermission = failedHistoryRestoreFromOutcome({ ...permission, rows: 1, files: 1 });
+  expect(partialPermission.changed).toBe(true);
+  expect(partialPermission.rows).toBe(1);
+  expect(partialPermission.files).toBe(1);
+  expect(partialPermission.message).toContain("permission was denied");
+  expect(partialPermission.message).toContain("manifest was retained");
 
   const workerError = { kind: "failed", reason: "worker-error", message: "unable to open database file" } as const;
   const workerMessage = failedHistoryRestoreFromOutcome(workerError).message;
@@ -101,6 +114,7 @@ test("restore names other reasons instead of a lock", () => {
 });
 
 test("success and no-op surfaces describe exact manifest restoration without provider assumptions", () => {
+  expect(injectSource).toContain("changed: rawHistory.rows > 0 || rawHistory.files > 0");
   expect(injectSource).toContain("restored original provider metadata for ${migratedRows} manifest-backed thread(s)");
   expect(injectSource).toContain("original providers preserved");
   expect(injectSource).toContain("No backed-up resume-history metadata was pending; untracked routed history was left unchanged.");
@@ -111,7 +125,7 @@ test("success and no-op surfaces describe exact manifest restoration without pro
 test("doctor distinguishes zero, pending, retryable, and integrity restore states", () => {
   expect(doctorSource).toContain("no manifest-backed provider metadata pending; untracked routed history is unchanged");
   expect(doctorSource).toContain("backup manifest entr${pending.backupEntries === 1 ? \"y\" : \"ies\"} pending exact metadata restore");
-  expect(doctorSource).toContain("state DB is busy — exact metadata restore is pending");
+  expect(doctorSource).toContain("history database, backup manifest, or rollout file is busy — exact metadata restore is pending");
   expect(doctorSource).toContain("backup manifest or restore target failed integrity checks — manual review required");
   expect(doctorSource).toContain("do not repeatedly run 'ocx sync' until the mismatch is understood");
   expect(doctorSource).toContain("Untracked routed history is not relabeled.");

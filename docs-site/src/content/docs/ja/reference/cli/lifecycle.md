@@ -47,7 +47,7 @@ ocx restore back
 ocx eject back
 ```
 
-### `ocx recover-history --legacy-openai`
+### `ocx recover-history --legacy-openai --yes`
 
 可逆バックアップ サポートが存在する前に Codex App 履歴を再マップした古い開発ビルドの明示的なリカバリ。履歴データベースがロックされている場合は、まず Codex を閉じてください。
 
