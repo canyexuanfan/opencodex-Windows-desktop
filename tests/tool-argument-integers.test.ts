@@ -341,6 +341,12 @@ describe("native u64 fields advertised as number (#2316)", () => {
       schema,
       "wait",
     )).toBe('{"yield_time_ms":20000,"max_tokens":5000,"priority":2}');
+    const priorityOnly = '{"priority":2.0}';
+    expect(coerceIntegerToolArguments(
+      priorityOnly,
+      schema,
+      "wait",
+    )).toBe(priorityOnly);
     const other = {
       type: "object",
       properties: { yield_time_ms: { type: "number" }, priority: { type: "number" } },
