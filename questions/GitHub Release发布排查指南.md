@@ -76,3 +76,15 @@
   - 经验：以后普通 fast-forward 推 main 时这些 paths 工作流会正常触发；
     若届时不想部署文档站（fork 未开 Pages），需在推送后取消 deploy-docs 运行，
     或提前在 fork 中禁用该 workflow。
+
+- ✅ 2026-08-23：v2.31.0 发布全程顺利（复用 v2.22.0 流程）：
+  - tag 重建：本地 v2.31.0 又是 fetch 上游带入的指针（6ae83b1f1），删除重建指向
+    本 fork 构建提交 fe8c28654 后推送 —— 此坑已成惯例，每次同步后发布都会遇到；
+  - draft + 上传（119MB，网络慢但未超时）+ --draft=false --latest 一次通过；
+  - 端到端验证用运行中的 2.31.0 实例 /api/update/check：installer=desktop、
+    asset 精确匹配、大小一致、当前/最新 buildRevision 均为 1 → 正确判定已是最新；
+  - main 同步：这次是 fast-forward（08773f4 → fe8c286），正常触发 5 个 paths
+    工作流；Deploy Docs 因 fork 未启用 Pages 必失败，推送后立即取消（run
+    32611791861）；cleanup-orphaned 本次未触发（其 paths 未变）；
+    Cross-platform CI / React Doctor / Service lifecycle / Issue quality 放行，
+    作为合并的真实 CI 验证。
