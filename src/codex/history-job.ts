@@ -109,7 +109,8 @@ export type CodexHistoryJobOutcome =
   | { readonly kind: "skipped" }
   | { readonly kind: "blocked"; readonly reason: "busy" | "database" | "unsafe-path" | "desired_disabled" | "desired_enabled" }
   | { readonly kind: "failed"; readonly reason: "worker-error" | "worker-died" | "timeout";
-      readonly message: string; readonly historyFailureReason?: CodexHistoryFailureReason };
+      readonly message: string; readonly historyFailureReason?: CodexHistoryFailureReason;
+      readonly rows?: number; readonly files?: number };
 
 /**
  * Derive the durable history operation from admitted intent.
@@ -174,7 +175,14 @@ function isPlausibleWorkerResult(
         || message.reason === "desired_disabled" || message.reason === "desired_enabled";
     case "error":
       return typeof message.message === "string"
-        && (message.reason === undefined || message.reason === "busy" || message.reason === "permission");
+        && (message.rows === undefined || (Number.isSafeInteger(message.rows) && Number(message.rows) >= 0))
+        && (message.files === undefined || (Number.isSafeInteger(message.files) && Number(message.files) >= 0))
+        && ((message.rows === undefined && message.files === undefined)
+          || (message.rows !== undefined && message.files !== undefined))
+        && (message.reason === undefined
+          || message.reason === "busy"
+          || message.reason === "permission"
+          || message.reason === "integrity");
     default:
       return false;
   }
@@ -241,6 +249,11 @@ export function describeHistoryJobFailure(
   if (outcome.historyFailureReason === "permission") {
     return "permission was denied while writing Codex history; this is not a Codex app lock. Run 'ocx doctor'.";
   }
+  if (outcome.historyFailureReason === "integrity") {
+    return (outcome.rows ?? 0) > 0 || (outcome.files ?? 0) > 0
+      ? "the history backup or its restore target changed after a partial restore; the manifest was retained for review and safe retry. Run 'ocx doctor'."
+      : "the history backup or its restore target failed integrity checks; no unverified provider metadata was applied. Run 'ocx doctor'.";
+  }
   switch (outcome.reason) {
     case "worker-error":
       return `the history worker failed (${outcome.message}). Run 'ocx doctor'.`;
@@ -277,11 +290,19 @@ function classifyWorkerResult(result: HistoryWorkerResult): CodexHistoryJobOutco
       reason: "worker-error",
       message: redactWorkerMessage(result.message),
       ...(result.reason ? { historyFailureReason: result.reason } : {}),
+      ...(result.rows !== undefined && result.files !== undefined
+        ? { rows: result.rows, files: result.files }
+        : {}),
     };
   }
   return result.outcome === "skipped"
     ? { kind: "skipped" }
     : { kind: "converged", rows: result.rows, files: result.files, ...(result.proof ? { proof: result.proof } : {}) };
+}
+
+/** Test seam for the parent-side Worker result classification contract. */
+export function classifyWorkerResultForTests(result: HistoryWorkerResult): CodexHistoryJobOutcome {
+  return classifyWorkerResult(result);
 }
 
 /**

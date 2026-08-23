@@ -50,6 +50,8 @@ ocx eject back
 
 針對在可逆備份支援存在前、重新對應 Codex App 歷史的舊開發組建進行明確復原。若其歷史資料庫被鎖定，請先關閉 Codex。
 
+這是範圍很廣且具破壞性的重新標記：所有含有使用者訊息且目前標記為 `opencodex` 的 thread 都會改標為 `openai`，`exec` 會正規化為 `cli`，並設定 event marker。正常的專用 provider 歷史也包含在內。請先備份狀態，而且只有在確實需要這個完整範圍時才執行。
+
 ### `ocx uninstall` · `ocx remove`
 
 停止服務與代理、移除服務與 Codex shim、還原原生 Codex，然後僅在所有還原步驟成功時移除 opencodex 本機設定。`remove` 是 `uninstall` 的別名。設定清理需要由全新安裝建立的擁有權中繼資料；舊版或共享目錄會被原樣保留。

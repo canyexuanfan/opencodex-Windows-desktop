@@ -37,7 +37,7 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
   {
     name: "recover-history",
     usage: "ocx recover-history --legacy-openai",
-    summary: "Explicitly recover pre-backup syncResumeHistory rows.",
+    summary: "Force all user-message opencodex rows to OpenAI for legacy recovery.",
   },
   {
     name: "uninstall",

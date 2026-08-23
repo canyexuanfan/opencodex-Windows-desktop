@@ -32,6 +32,8 @@ runs helper features around provider requests.
 
 If an older development build changed resume-history metadata before backup support existed, run
 `ocx recover-history --legacy-openai` to force native-provider recovery.
+It force-relabels every user-message `opencodex` row, including legitimate dedicated-provider
+history; review the full-scope warning in the lifecycle reference before running it.
 
 ## Remote access
 

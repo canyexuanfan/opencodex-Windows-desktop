@@ -32,6 +32,7 @@ exécute des fonctionnalités d'assistance autour des demandes du fournisseur.
 
 Si une ancienne version de développement a modifié les métadonnées de l'historique de reprise avant que la prise en charge de la sauvegarde n'existe, exécutez
 `ocx recover-history --legacy-openai` pour forcer la récupération du fournisseur natif.
+La commande réétiquette chaque ligne `opencodex` contenant un message utilisateur, y compris l'historique légitime d'un fournisseur dédié ; consultez l'avertissement sur la portée complète dans la référence du cycle de vie avant de l'exécuter.
 
 ## Accès à distance
 

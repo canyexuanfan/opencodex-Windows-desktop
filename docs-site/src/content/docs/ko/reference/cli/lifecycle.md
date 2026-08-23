@@ -67,6 +67,10 @@ ocx eject back
 역방향 복구 지원이 생기기 전, 초기 개발 빌드에서 Codex App 기록을 재매핑하던 오래된 빌드를 위한
 명시적 복구 명령입니다. 기록 데이터베이스가 잠겨 있으면 먼저 Codex를 종료해 주세요.
 
+이 명령은 광범위하고 파괴적인 재태깅입니다. 사용자 메시지가 있고 현재 `opencodex`로 표시된 모든
+thread를 `openai`로 바꾸고, `exec`를 `cli`로 정규화하며 event marker를 설정합니다. 정상적인
+dedicated-provider history도 포함됩니다. 상태를 백업하고 이 전체 범위를 의도한 경우에만 실행하세요.
+
 ### `ocx uninstall` · `ocx remove`
 
 서비스와 프록시를 중지하고, 서비스와 Codex shim을 제거한 뒤, 기본 Codex를 복원합니다. 그 다음

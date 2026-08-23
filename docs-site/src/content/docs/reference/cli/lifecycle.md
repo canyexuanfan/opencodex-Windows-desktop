@@ -68,6 +68,11 @@ ocx eject back
 Explicit recovery for older development builds that remapped Codex App history before reversible
 backup support existed. Close Codex first if its history database is locked.
 
+This is a broad, destructive relabel: every user-message thread currently tagged `opencodex` is
+changed to `openai`, `exec` is normalized to `cli`, and the event marker is set. That includes
+legitimate dedicated-provider history. Back up the state and run it only when that full scope is
+intended.
+
 ### `ocx uninstall` · `ocx remove`
 
 Stop the service and proxy, remove the service and Codex shim, restore native Codex, then remove
