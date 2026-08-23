@@ -167,11 +167,6 @@ const residueFixtures: Array<{
     })),
   },
   {
-    name: "history database row",
-    surface: "history",
-    arrange: () => createHistoryDatabase("opencodex"),
-  },
-  {
     name: "history backup entry",
     surface: "history-backup",
     arrange: () => {
@@ -202,6 +197,16 @@ for (const fixture of residueFixtures) {
     });
   });
 }
+
+test("a bare routed history row and its matching rollout are not managed residue", () => {
+  createHistoryDatabase("opencodex");
+
+  expect(classifyNativeRoutedResidue()).toEqual({ kind: "clean" });
+  expect(readCodexTransitionState()).toMatchObject({
+    kind: "ready",
+    state: { nativeGeneration: 0, currentTxId: null },
+  });
+});
 
 test("an OpenCodex atomic-write artifact is indeterminate", () => {
   writeFileSync(pathInCodexHome("config.toml.ocx.123.1.tmp"), "partial");
@@ -829,6 +834,70 @@ test("a missing manifest-referenced rollout is indeterminate", () => {
     path: pathInCodexHome("missing-rollout.jsonl"),
   });
 });
+
+type MutableHistoryBackupFixture = {
+  version: number;
+  stateDbPath?: unknown;
+  entries: Record<string, {
+    id?: unknown;
+    rolloutPath?: unknown;
+    modelProvider?: unknown;
+    source?: unknown;
+    hasUserEvent?: unknown;
+  }>;
+};
+
+const invalidHistoryBackupFixtures: Array<{
+  name: string;
+  mutate: (manifest: MutableHistoryBackupFixture) => void;
+}> = [
+  { name: "missing state database identity", mutate: manifest => { delete manifest.stateDbPath; } },
+  { name: "blank state database identity", mutate: manifest => { manifest.stateDbPath = ""; } },
+  { name: "relative state database identity", mutate: manifest => { manifest.stateDbPath = "state.sqlite"; } },
+  { name: "mismatched entry id", mutate: manifest => { manifest.entries["thread-1"].id = "thread-2"; } },
+  { name: "missing rollout path", mutate: manifest => { delete manifest.entries["thread-1"].rolloutPath; } },
+  { name: "blank rollout path", mutate: manifest => { manifest.entries["thread-1"].rolloutPath = ""; } },
+  { name: "relative rollout path", mutate: manifest => { manifest.entries["thread-1"].rolloutPath = "rollout.jsonl"; } },
+  { name: "missing model provider", mutate: manifest => { delete manifest.entries["thread-1"].modelProvider; } },
+  { name: "mistyped model provider", mutate: manifest => { manifest.entries["thread-1"].modelProvider = 7; } },
+  { name: "unsupported model provider", mutate: manifest => { manifest.entries["thread-1"].modelProvider = "other"; } },
+  { name: "missing source", mutate: manifest => { delete manifest.entries["thread-1"].source; } },
+  { name: "mistyped source", mutate: manifest => { manifest.entries["thread-1"].source = 7; } },
+  { name: "invalid provider/source tuple", mutate: manifest => { manifest.entries["thread-1"].modelProvider = "opencodex"; } },
+  { name: "missing event marker", mutate: manifest => { delete manifest.entries["thread-1"].hasUserEvent; } },
+  { name: "mistyped event marker", mutate: manifest => { manifest.entries["thread-1"].hasUserEvent = "1"; } },
+  { name: "non-boolean event marker", mutate: manifest => { manifest.entries["thread-1"].hasUserEvent = 2; } },
+];
+
+for (const fixture of invalidHistoryBackupFixtures) {
+  test(`a history backup with ${fixture.name} is indeterminate and not adopted`, () => {
+    writeFileSync(pathInCodexHome("rollout.jsonl"), sessionMeta("thread-1", "opencodex") + "\n");
+    const manifest: MutableHistoryBackupFixture = {
+      version: 1,
+      stateDbPath: join(realpathSync.native(codexHome), "state_5.sqlite"),
+      entries: {
+        "thread-1": {
+          id: "thread-1",
+          rolloutPath: pathInCodexHome("rollout.jsonl"),
+          modelProvider: "openai",
+          source: "cli",
+          hasUserEvent: 1,
+        },
+      },
+    };
+    fixture.mutate(manifest);
+    writeFileSync(historyBackupPath(), JSON.stringify(manifest));
+
+    expect(classifyNativeRoutedResidue()).toMatchObject({
+      kind: "indeterminate",
+      surface: "history-backup",
+    });
+    expect(readCodexTransitionState()).toEqual({
+      kind: "legacy-ambiguous",
+      message: "A missing coordinator row cannot be initialized while native Codex routing residue exists.",
+    });
+  });
+}
 
 const indeterminateFixtures: Array<{
   name: string;

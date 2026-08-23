@@ -351,9 +351,9 @@ function runNpmSelfUpdate() {
     }
     if (historyRestoreIncomplete()) {
       console.warn(
-        "opencodex: WARNING — Codex resume history was NOT restored (history DB locked; Codex app/IDE open?).\n" +
-        "  Routed threads stay hidden in the native Codex app until restored.\n" +
-        "  After the update: close the Codex app, then run 'ocx stop' once to restore.",
+        "opencodex: WARNING — Codex resume-history metadata restore is incomplete (a backup manifest remains).\n" +
+        "  The DB may be busy or the manifest/target may need review; untracked routed history is intentionally unchanged.\n" +
+        "  After the update: close the Codex app, run 'ocx doctor', then run 'ocx stop' once to retry.",
       );
     }
   }

@@ -267,9 +267,9 @@ export async function runUpdate(): Promise<void> {
     }
     if (historyRestoreIncomplete()) {
       console.warn(
-        "⚠️  Codex resume history was NOT restored (history DB locked — Codex app/IDE open?).\n" +
-        "    Your routed threads stay hidden in the native Codex app until restored.\n" +
-        "    After the update: close the Codex app, then run 'ocx stop' once to restore.",
+        "⚠️  Codex resume-history metadata restore is incomplete (a backup manifest remains).\n" +
+        "    The DB may be busy or the manifest/target may need review; untracked routed history is intentionally unchanged.\n" +
+        "    After the update: close the Codex app, run 'ocx doctor', then run 'ocx stop' once to retry.",
       );
     }
   }
