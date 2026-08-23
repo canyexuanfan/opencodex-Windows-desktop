@@ -126,3 +126,10 @@
     更新器模拟解析正确（2.31.0 build 3，资产精确匹配）。
   - 残余风险：匿名 API 限流窗口内（共享代理 IP 403），运行实例的更新检查会
     报 unavailable，限流重置后自愈；改进方向已在上一条记录。
+
+- ✅ 2026-08-23：根治匿名 API 限流导致的「无法从 GitHub 读取最新桌面版发布」：
+  fetchDesktopInstallerRelease 新增 latest 通道回退 —— API 失败时改走
+  github.com/<repo>/releases/latest 的 302 重定向解析 tag（网页路径不占
+  API 配额），HEAD 探测资产存在性。实测限流期间连续 3 次匿名调用均正确
+  解析 v2.31.0-build.3。限流头部确认法：curl -D - 看 X-RateLimit-Remaining
+  与 X-RateLimit-Reset（epoch，与 date +%s 相减得剩余秒数）。
