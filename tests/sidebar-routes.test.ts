@@ -129,8 +129,9 @@ describe("GET /api/github/star", () => {
       expect(status).toBe(200);
       const star = body as Record<string, unknown>;
       expect(["starred", "not-starred", "unauthenticated"]).toContain(star.state);
-      expect(star.repo).toBe("lidge-jun/opencodex");
-      expect(star.url).toBe("https://github.com/lidge-jun/opencodex");
+      // This fork's sidebar stars this fork's repo, not upstream's.
+      expect(star.repo).toBe("canyexuanfan/opencodex-Windows-desktop");
+      expect(star.url).toBe("https://github.com/canyexuanfan/opencodex-Windows-desktop");
     });
     expect(calls).toEqual([["auth", "status", "--hostname", "github.com"]]);
   });

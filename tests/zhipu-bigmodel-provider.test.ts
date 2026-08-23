@@ -44,12 +44,13 @@ describe("Zhipu BigModel provider", () => {
       adapter: "openai-chat",
       authKind: "key",
       dashboardUrl: "https://bigmodel.cn/apikey/platform",
-      defaultModel: "glm-5.2",
+      defaultModel: "glm-5.3",
       jawcodeBundle: "zai",
     });
 
     // Without this the catalog falls back to a generic 128k window and Codex compacts
     // ~76,800 tokens early on the default model.
+    expect(entry?.modelContextWindows?.["glm-5.3"]).toBe(1_000_000);
     expect(entry?.modelContextWindows?.["glm-5.2"]).toBe(1_000_000);
     expect(entry?.modelContextWindows?.["glm-5-turbo"]).toBe(200_000);
     expect(entry?.modelContextWindows?.["glm-5v-turbo"]).toBe(200_000);
@@ -64,6 +65,7 @@ describe("Zhipu BigModel provider", () => {
 
     // A live-discovery claim we have not seen answer would produce an empty picker at runtime.
     expect(entry?.liveModels).toBeUndefined();
+    expect(entry?.models).toContain("glm-5.3");
     expect(entry?.models).toContain("glm-5.2");
     expect(entry?.models).toContain("glm-5-turbo");
     expect(entry?.models).toContain("glm-5v-turbo");
@@ -120,13 +122,13 @@ describe("Zhipu BigModel provider", () => {
       adapter: "openai-chat",
       baseUrl: BASE_URL,
       dashboardUrl: "https://bigmodel.cn/apikey/platform",
-      defaultModel: "glm-5.2",
+      defaultModel: "glm-5.3",
     });
     expect(KEY_LOGIN_PROVIDERS["zhipu-bigmodel"]).not.toHaveProperty("liveModels");
     expect(deriveProviderPresets().find(preset => preset.id === "zhipu-bigmodel")).toMatchObject({
       auth: "key",
       dashboardUrl: "https://bigmodel.cn/apikey/platform",
-      defaultModel: "glm-5.2",
+      defaultModel: "glm-5.3",
     });
     expect(deriveJawcodeAliases()["zhipu-bigmodel"]).toBe("zai");
   });

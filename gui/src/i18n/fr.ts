@@ -2089,7 +2089,7 @@ export const fr: Record<TKey, string> = {
   "dash.start": "Démarrer le proxy",
   "dash.starting": "Démarrage…",
   "dash.startFailed": "Impossible de démarrer le proxy.",
-  "dash.updateBuild": "(build {revision})",
+  "dash.updateBuild": "(build n° {revision})",
   "dash.updateDesktopInstaller": "Programme d’installation Windows",
   "dash.updateDesktopInstallerHint": "La mise à jour du bureau télécharge et lance le programme d’installation Windows depuis le dépôt du fork ; fermez OpenCodex si demandé.",
   "dash.updateDownloadInstaller": "Télécharger le programme d’installation",
