@@ -133,3 +133,10 @@
   API 配额），HEAD 探测资产存在性。实测限流期间连续 3 次匿名调用均正确
   解析 v2.31.0-build.3。限流头部确认法：curl -D - 看 X-RateLimit-Remaining
   与 X-RateLimit-Reset（epoch，与 date +%s 相减得剩余秒数）。
+
+- ✅ 2026-08-23：Build 4（v2.31.0-build.4）发布 —— 限流回退机制进入安装包：
+  - 回退修复 CI（run 32629954862）全绿后打包；
+  - 发布验证在 API 仍 403 限流的状态下完成：新代码匿名调用正确解析
+    v2.31.0-build.4 b4 —— 即生产环境目标场景本身；
+  - 打包/发布过程中 TLS 抖动三次（electron-builder 下载、draft 创建 EOF、
+    分支推送 SSL），全部重试解决；共享代理网络下发布流程需预期重试。
