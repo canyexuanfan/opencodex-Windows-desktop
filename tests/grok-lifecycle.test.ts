@@ -90,10 +90,17 @@ describe("Grok fence lifecycle wiring", () => {
   });
 
   test("ensure repairs marker-owned Codex routing when autostart is disabled or startup fails", () => {
+    // Since upstream v2.31 the repair moved out of handleEnsure into
+    // findProxyOwnerBeforeJournalRecovery: journal reconciliation (which restores
+    // marker-owned Codex routing) runs BEFORE the autostart-disabled early return,
+    // covering both the disabled and the failed-start cases at one layer.
     const ensureFn = sliceFn(CLI_SOURCE, "async function handleEnsure(", "async function handleTrayProxyStart(");
-    expect(ensureFn).toContain("if (isCodexRoutingInjected())");
-    expect(ensureFn).toContain("const restored = restoreNativeCodex();");
-    expect(ensureFn).toContain("Proxy did not become healthy; ${restored.message}");
+    expect(ensureFn.indexOf("findProxyOwnerBeforeJournalRecovery(")).toBeGreaterThanOrEqual(0);
+    expect(ensureFn.indexOf("findProxyOwnerBeforeJournalRecovery(")).toBeLessThan(
+      ensureFn.indexOf("codexAutoStartEnabled(config)"),
+    );
+    const ownerFn = sliceFn(CLI_SOURCE, "async function findProxyOwnerBeforeJournalRecovery(", "async function handleStart(");
+    expect(ownerFn).toContain("if (!currentExternalCodexModelProvider()) reconcileJournal()");
   });
 
   test("handleStop gates shared teardown on ownership but still reverts system env", () => {
