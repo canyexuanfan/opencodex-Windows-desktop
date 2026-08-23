@@ -73,12 +73,13 @@
   min-height: var(--control-md);
 }
 
+/* Fork: explicit hover feedback on the rail filter control (user-wide UX rule). */
+.pws-filter-btn:hover { color: var(--text); background: var(--hover); border-color: var(--faint); }
+
 .pws-filter-btn--active {
   color: var(--text);
   border-color: var(--text);
 }
-
-.pws-filter-btn:hover { color: var(--text); background: var(--hover); border-color: var(--faint); }
 
 .pws-filter-dot {
   position: absolute;
@@ -154,12 +155,13 @@
   color: var(--muted);
 }
 
+/* Fork: explicit hover feedback on the rail sort control (user-wide UX rule). */
+.pws-sort-btn:hover { color: var(--text); background: var(--hover); border-color: var(--faint); }
+
 .pws-sort-btn--active {
   color: var(--text);
   border-color: var(--text);
 }
-
-.pws-sort-btn:hover { color: var(--text); background: var(--hover); border-color: var(--faint); }
 
 .pws-filter-footer {
   margin-top: 8px;
@@ -248,29 +250,11 @@
   position: relative;
 }
 
-.pws-rail-row-actions {
+.pws-rail-row-remove {
   position: absolute;
   right: var(--space-2);
   top: 50%;
   transform: translateY(-50%);
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px;
-  border-radius: var(--radius-xs);
-  /* Opaque so the status dot underneath does not show through. */
-  background: var(--surface);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--motion-fast), background var(--motion-fast);
-}
-
-.pws-rail-row-actions--default {
-  background: transparent;
-  opacity: 1;
-}
-
-.pws-rail-row-remove {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -280,38 +264,23 @@
   appearance: none;
   border: none;
   border-radius: var(--radius-xs);
-  background: transparent;
+  /* Opaque so the status dot underneath does not show through. */
+  background: var(--surface);
   color: var(--red);
   cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
   transition: opacity var(--motion-fast), background var(--motion-fast);
 }
 
-.pws-rail-row-actions--default .pws-rail-row-remove {
-  width: 0;
-  opacity: 0;
-  overflow: hidden;
-}
-
-.pws-rail-row-wrap:hover .pws-rail-row-actions,
-.pws-rail-row-wrap:focus-within .pws-rail-row-actions {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.pws-rail-row-wrap:hover .pws-rail-row-actions--default,
-.pws-rail-row-wrap:focus-within .pws-rail-row-actions--default {
-  background: var(--surface);
-}
-
-.pws-rail-row-wrap:hover .pws-rail-row-actions .pws-rail-row-remove,
-.pws-rail-row-wrap:focus-within .pws-rail-row-actions .pws-rail-row-remove {
-  width: 24px;
+.pws-rail-row-wrap:hover .pws-rail-row-remove,
+.pws-rail-row-wrap:focus-within .pws-rail-row-remove {
   opacity: 1;
   pointer-events: auto;
 }
 
 /* Keep it legible above the selected row's tinted background. */
-.pws-rail-row-wrap:hover .providers-workspace-rail-row--selected ~ .pws-rail-row-actions {
+.pws-rail-row-wrap:hover .providers-workspace-rail-row--selected ~ .pws-rail-row-remove {
   background: var(--raised);
 }
 
@@ -332,7 +301,7 @@
 @media (hover: none) {
   /* Touch devices have no hover state, so this accelerator would either never appear
      or appear permanently. Those users take the detail-header delete control. */
-  .pws-rail-row-actions {
+  .pws-rail-row-remove {
     display: none;
   }
 }
@@ -440,11 +409,6 @@
 .pwi-default-star {
   color: var(--amber);
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 24px;
-  border-radius: var(--radius-xs);
 }
 
 .providers-workspace-rail-status {
@@ -981,7 +945,6 @@
   cursor: pointer;
   text-align: left;
 }
-
 .pws-model-expand:hover { color: var(--accent); text-decoration: underline; }
 
 .pws-model-chip {
