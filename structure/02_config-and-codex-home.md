@@ -200,10 +200,12 @@ openai_base_url = "http://127.0.0.1:10100/v1"
 ```
 
 Codex keeps the native `openai` provider id, so new threads stay under that identity instead of
-being re-tagged. History that an earlier legacy injection re-tagged as `opencodex` is migrated back
-to `openai` once, as restore machinery — a no-op when there is nothing to migrate. A user-owned root
-`openai_base_url` is preserved instead of overwritten, and that case also blocks managed sub-agent
-defaults rather than fighting the user for ownership.
+being re-tagged. History restore is manifest-authoritative: only rows whose original provider,
+source, and event marker were backed up for the same state database are restored exactly. A bare
+`opencodex` row is never assumed to have originated at OpenAI; it stays unchanged unless the user
+explicitly runs legacy OpenAI recovery. A user-owned root `openai_base_url` is preserved instead of
+overwritten, and that case also blocks managed sub-agent defaults rather than fighting the user for
+ownership.
 
 **API auth header (non-loopback).** The built-in `openai` provider cannot carry the
 `x-opencodex-api-key` env header, so this form re-tags the root provider and appends the table:
@@ -232,10 +234,10 @@ overwritten. Disabling the option and fallback restore remove only marker-owned 
 restore must preserve later user edits while stripping those managed values.
 
 If the root config selects a provider other than `openai` or `opencodex`, injection must leave the
-config byte-for-byte unchanged and skip profile creation/updates and history migration. External
+config byte-for-byte unchanged and skip profile creation/updates and history metadata restoration. External
 provider managers own that routing configuration, and replacing their provider id can hide
 otherwise intact Codex sessions. This ownership check must run before catalog/cache refresh,
-journal creation, and the background history migration guardian.
+journal creation, and the background history restoration guardian.
 
 `ocx sync` and `ocx restore back` run the injector's non-writing preflight before provider
 discovery or catalog/cache replacement. Deterministic config and ownership refusals therefore
