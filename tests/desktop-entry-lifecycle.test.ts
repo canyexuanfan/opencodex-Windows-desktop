@@ -23,7 +23,7 @@ describe("desktop-owned proxy lifecycle wiring", () => {
     expect(SOURCE).not.toContain('import { findLiveProxy } from "../server/proxy-liveness"');
     expect(main).not.toContain("findLiveProxy()");
     expect(main).not.toContain("holdTimer");
-    expect(main.indexOf("reconcileJournal()")).toBeLessThan(main.indexOf("startServer(0"));
+    expect(main.indexOf("reconcileJournal()")).toBeLessThan(main.indexOf("server = startServer("));
   });
 
   test("startup mirrors the ordinary daemon lifecycle for an owned listener", () => {
@@ -43,7 +43,7 @@ describe("desktop-owned proxy lifecycle wiring", () => {
       expect(main).toContain(call);
     }
 
-    expect(main.indexOf("scheduleCatalogPrewarm()")).toBeGreaterThan(main.indexOf("startServer(0"));
+    expect(main.indexOf("scheduleCatalogPrewarm()")).toBeGreaterThan(main.indexOf("server = startServer("));
     expect(main.indexOf("scheduleCatalogPrewarm()")).toBeLessThan(main.indexOf("writePid(process.pid)"));
     expect(main.indexOf("installCrashGuards()")).toBeLessThan(main.indexOf("writePid(process.pid)"));
     expect(main.indexOf("buildDesktop3pRegistry(")).toBeLessThan(main.indexOf('await import("../grok/sync")'));
@@ -54,7 +54,7 @@ describe("desktop-owned proxy lifecycle wiring", () => {
   test("history migration and route ownership use the actual loopback desktop lease", () => {
     const main = sliceBetween("async function main()", "if (import.meta.main)");
 
-    expect(main).toContain("const config = { ...loadConfig(), hostname: DESKTOP_HOSTNAME }");
+    expect(main).toContain("const config = { ...diskConfig, hostname: DESKTOP_HOSTNAME }");
     expect(main).toContain("codexRoutingOwned = !currentExternalCodexModelProvider() && isCodexRoutingInjected()");
     expect(main).toContain("codexRoutingOwned\n      && !shouldInjectApiAuthHeader(config)");
     expect(main).toContain("&& config.syncResumeHistory !== false");

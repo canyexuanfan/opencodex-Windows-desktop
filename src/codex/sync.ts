@@ -114,7 +114,7 @@ export async function syncModelsToCodex(
   }
   activeCodexSyncs += 1;
   try {
-    return await syncModelsToCodexInner(port, config, log, deps);
+    return await syncModelsToCodexInner(port, config, log, deps, options);
   } finally {
     activeCodexSyncs -= 1;
   }
@@ -125,6 +125,7 @@ async function syncModelsToCodexInner(
   config: OcxConfig = loadConfig(),
   log: Pick<Console, "log" | "error"> | null = console,
   deps: CodexSyncDeps = defaultDeps,
+  options: CodexSyncOptions = {},
 ): Promise<CodexSyncResult> {
   // `config` can be the server's startup object. The decision, however, is a
   // durable user switch and must be read again at this production boundary: a
