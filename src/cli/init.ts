@@ -180,9 +180,20 @@ export async function runInit(): Promise<void> {
 
     const injectAnswer = await prompt.ask("Inject into Codex config.toml? [Y/n]: ");
     if (injectAnswer.trim().toLowerCase() !== "n") {
-      console.log("Fetching available models from provider...");
-      const result = await injectCodexConfig(port, config);
-      console.log(result.success ? `✅ ${result.message}` : `⚠️  ${result.message}`);
+      // Health gate (fork, ad9d1682a): never inject routing that points at a dead
+      // listener. Upstream injects unconditionally; a fresh init has no proxy
+      // running yet, so the injected route would be dead until the next `ocx start`.
+      const { findLiveProxy } = await import("../server/proxy-liveness");
+      const live = await findLiveProxy({
+        configFn: () => ({ port: config.port, hostname: config.hostname }),
+      });
+      if (!live) {
+        console.log("⚠️  Proxy is not running; Codex routing was not injected. Run 'ocx start' first, then 'ocx sync'.");
+      } else {
+        console.log(`Fetching available models from provider on live port ${live.port}...`);
+        const result = await injectCodexConfig(live.port, config);
+        console.log(result.success ? `✅ ${result.message}` : `⚠️  ${result.message}`);
+      }
     }
 
     const shimAnswer = await prompt.ask("Install Codex autostart shim? [Y/n]: ");

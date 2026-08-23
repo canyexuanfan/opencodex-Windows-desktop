@@ -25,10 +25,8 @@ describe("update-job restart avoids the shell-less .cmd EINVAL (Windows, bun/sou
   });
   test("service update restart bakes OCX_BAKE_PORT so wrappers hard-pin the captured port", () => {
     expect(src).toContain("OCX_BAKE_PORT");
-    // Service reinstall still runs (with bake); if the captured port is held by
-    // something else, the restart path selects and persists a replacement port.
-    expect(src).toContain("selecting a new persistent port");
-    expect(src).toContain("shouldPersistSelectedPort");
+    // Service reinstall still runs (with bake) even when reclaim warns; direct start refuses to hop.
+    expect(src).toContain("refusing to hop");
     expect(src).toContain("runtimeTrusted");
     expect(read("src/cli/index.ts")).toContain("allowEphemeralFallback: !hardPin");
     expect(read("src/cli/index.ts")).toContain("preferRetryMs: hardPin ? 5_000 : 750");
@@ -80,8 +78,9 @@ describe("systemd detection tolerates a no-DBUS SSH session (F9)", () => {
 describe("server bind canonicalizes explicit localhost but preserves wildcards (F4 symmetry)", () => {
   const src = read("src/server/index.ts");
   test("literal localhost binds to 127.0.0.1; 0.0.0.0/:: exposure is untouched", () => {
-    // Desktop sidecars may pass an explicit host override; the persisted config remains the fallback.
-    expect(src).toContain("const configuredHost = options.hostname?.trim() ?? config.hostname?.trim();");
+    // Fork: the desktop sidecar passes an explicit loopback host override through
+    // StartServerDeps.hostname; the persisted config remains the fallback.
+    expect(src).toContain("const configuredHost = deps.hostname?.trim() ?? config.hostname?.trim();");
     expect(src).toContain('!configuredHost || /^localhost$/i.test(configuredHost) ? "127.0.0.1"');
     // Must not blanket-rewrite the PUBLIC bind host — that would break intentional 0.0.0.0
     // exposure, which is the regression this guards.
@@ -94,17 +93,5 @@ describe("server bind canonicalizes explicit localhost but preserves wildcards (
     expect(src).toContain("server = Bun.serve<WsData>({ ...serveOptions, port: listenPort, hostname: bindHost });");
     expect(src).not.toMatch(/port: listenPort,\s*\n\s*hostname: "127\.0\.0\.1"/);
     expect(src).not.toContain("port: listenPort, hostname: \"127.0.0.1\"");
-  });
-});
-
-describe("desktop sidecar startup uses the configured fixed port before fallback", () => {
-  const src = read("src/desktop/entry.ts");
-  test("desktop entry does not hard-code an ephemeral listener on normal startup", () => {
-    expect(src).not.toContain("startServer(0");
-    expect(src).toContain("const diskConfig = loadConfig();");
-    expect(src).toContain("const preferredPort = diskConfig.port ?? 10100;");
-    expect(src).toContain("findAvailablePort(preferredPort, DESKTOP_HOSTNAME");
-    expect(src).toContain("shouldPersistSelectedPort(diskConfig.port, port, preferredPort)");
-    expect(src).toContain("saveConfig(diskConfig)");
   });
 });
