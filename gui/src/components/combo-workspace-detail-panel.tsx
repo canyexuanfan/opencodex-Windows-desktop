@@ -14,6 +14,7 @@ import { Notice } from "../ui";
 import type { ModelOption, ProviderOption } from "./combo-workspace-types";
 import { ComboCapabilities, EffortSelect, StrategySeg, TargetEditor } from "./combo-workspace-controls";
 import { clampedNumberInput } from "./combo-workspace-utils";
+import { handleRovingTabKey } from "../roving-tabs";
 
 type DetailTab = "config" | "about";
 
@@ -64,17 +65,7 @@ export function DetailPanel({
    * ordinary tab stops, which is not what a `tablist` role promises.
    */
   const onDetailTabKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
-    let next: number;
-    if (event.key === "ArrowRight") next = (index + 1) % DETAIL_TABS.length;
-    else if (event.key === "ArrowLeft") next = (index - 1 + DETAIL_TABS.length) % DETAIL_TABS.length;
-    else if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = DETAIL_TABS.length - 1;
-    else return;
-    event.preventDefault();
-    setTab(DETAIL_TABS[next]!);
-    event.currentTarget.parentElement
-      ?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]
-      ?.focus();
+    handleRovingTabKey(event, index, DETAIL_TABS.length, next => setTab(DETAIL_TABS[next]!));
   }, []);
   const [draft, setDraft] = useState<ComboItem>(baseline);
   const [busy, setBusy] = useState(false);
