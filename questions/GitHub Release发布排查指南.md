@@ -88,3 +88,23 @@
     32611791861）；cleanup-orphaned 本次未触发（其 paths 未变）；
     Cross-platform CI / React Doctor / Service lifecycle / Issue quality 放行，
     作为合并的真实 CI 验证。
+
+- ✅ 2026-08-23：v2.31.0 Build 2 发布（同版本构建更新首次实战）。新坑与经验：
+  - ❌ `gh release create --target a1c4035de`（短 SHA）再次被拒（Release.target_commitish
+    is invalid）——老坑重现，必须用完整 40 位 SHA。
+  - ❌ 同版本构建 tag 打成 `v2.31.0+2`：desktopReleaseIdentityFromTag 的约定后缀是
+    `-build.N`（正则 `(?:-build\.(\d+))?`），`+2` 无法匹配，buildRevision 静默落回
+    默认值 1 —— 已装 Build 1 的用户会被判定"已是最新"，永远收不到更新。
+    ✅ 修正：gh release delete + 删远端/本地 tag，按约定重建 v2.31.0-build.2。
+    经验：发布同版本构建前必须先跑
+    `desktopReleaseIdentityFromTag(tag)` 验证解析结果与预期一致。
+  - ❌ 网络抖动期 `gh release upload` 报 exit=0 但资产实际未上传（TLS 超时被吞）。
+    ✅ 上传后必须验证资产：draft 无法按 tag 查询（by-tag 对 draft 返回 404 ≠ 不存在），
+    要用 release ID（上传 URL 里的数字）走 /releases/<id> 查 assets。
+  - ⚠️ 更新器 fetchDesktopInstallerRelease 用匿名 GitHub API（60 次/小时/IP）。
+    代理共享出口 IP（本轮 134.195.101.180）极易 403 → 更新检查报
+    desktop_release_unavailable。改进方向（未做）：改走 github.com HTML 重定向
+    解析 latest tag（不受 API 限流），或本地缓存上次结果。验证期可用
+    gh auth token 注入 Authorization 模拟更新器逻辑。
+  - ✅ Cross-platform CI 首跑暴露 6 类失败（详见上游v2.22.0同步合并排查指南附录），
+    修复后 Build 2 重打包（desktop/package.json buildRevision 1→2 为构建号来源）。
