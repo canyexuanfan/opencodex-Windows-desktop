@@ -10,6 +10,8 @@ export function desktopSetupAssetName(version: string): string {
 type FetchLike = (input: string, init?: RequestInit) => Promise<{
   ok: boolean;
   status: number;
+  /** Present on real fetch responses; mocks without redirects may omit it. */
+  headers?: { get(name: string): string | null };
   json(): Promise<unknown>;
 }>;
 
@@ -110,19 +112,71 @@ export async function fetchDesktopInstallerRelease(
       "User-Agent": "opencodex-desktop-update-check",
     },
   });
-  if (!response.ok) return null;
-  const release = selectRelease(await response.json(), channel);
-  if (!release) return null;
-  const identity = releaseIdentity(release);
+  if (response.ok) {
+    const release = selectRelease(await response.json(), channel);
+    if (!release) return null;
+    const identity = releaseIdentity(release);
+    if (!identity) return null;
+    const releaseTag = typeof release.tag_name === "string" ? release.tag_name : "";
+    const asset = setupAsset(release, identity.version);
+    return {
+      latestVersion: identity.version,
+      buildRevision: identity.buildRevision,
+      releaseTag,
+      releaseNotesUrl: releaseUrl(release),
+      downloadUrl: asset?.downloadUrl ?? null,
+      assetName: asset?.name ?? null,
+    };
+  }
+  // The anonymous REST API allows 60 requests/hour per IP. Behind a shared proxy
+  // exit that budget evaporates and every update check reports "release
+  // unavailable". The web redirect is NOT part of the API budget, so the latest
+  // channel falls back to resolving github.com/<repo>/releases/latest → its
+  // redirect target names the tag, and the asset URL is verified with a HEAD.
+  if (channel !== "latest") return null;
+  return resolveLatestReleaseViaWebRedirect(fetchFn);
+}
+
+const DESKTOP_RELEASES_PAGE_URL = `https://github.com/${DESKTOP_RELEASE_REPO}/releases/latest`;
+
+async function resolveLatestReleaseViaWebRedirect(fetchFn: FetchLike): Promise<DesktopInstallerRelease | null> {
+  let location: string | null = null;
+  try {
+    const probe = await fetchFn(DESKTOP_RELEASES_PAGE_URL, {
+      redirect: "manual",
+      headers: { "User-Agent": "opencodex-desktop-update-check" },
+    });
+    if (probe.status >= 300 && probe.status < 400) {
+      location = probe.headers?.get("location") ?? null;
+    }
+  } catch {
+    location = null;
+  }
+  if (!location) return null;
+  const match = /\/releases\/tag\/([^/?#]+)/.exec(location);
+  if (!match) return null;
+  const releaseTag = decodeURIComponent(match[1]!);
+  const identity = desktopReleaseIdentityFromTag(releaseTag);
   if (!identity) return null;
-  const releaseTag = typeof release.tag_name === "string" ? release.tag_name : "";
-  const asset = setupAsset(release, identity.version);
+  const assetName = desktopSetupAssetName(identity.version);
+  const downloadUrl = `https://github.com/${DESKTOP_RELEASE_REPO}/releases/download/${releaseTag}/${assetName}`;
+  try {
+    const assetProbe = await fetchFn(downloadUrl, {
+      method: "HEAD",
+      redirect: "manual",
+      headers: { "User-Agent": "opencodex-desktop-update-check" },
+    });
+    // 3xx: the download redirect chain exists; 200: something served it inline.
+    if (assetProbe.status < 200 || assetProbe.status >= 400) return null;
+  } catch {
+    return null;
+  }
   return {
     latestVersion: identity.version,
     buildRevision: identity.buildRevision,
     releaseTag,
-    releaseNotesUrl: releaseUrl(release),
-    downloadUrl: asset?.downloadUrl ?? null,
-    assetName: asset?.name ?? null,
+    releaseNotesUrl: `https://github.com/${DESKTOP_RELEASE_REPO}/releases/tag/${releaseTag}`,
+    downloadUrl,
+    assetName,
   };
 }

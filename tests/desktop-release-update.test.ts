@@ -79,3 +79,41 @@ describe("desktop installer release update check", () => {
     });
   });
 });
+
+describe("desktop installer release update check — anonymous API rate-limit fallback", () => {
+  test("latest channel falls back to the web redirect when the API is rate-limited", async () => {
+    const release = await fetchDesktopInstallerRelease("latest", async (url, init) => {
+      if (url.includes("api.github.com")) return { ok: false, status: 403 };
+      if (init?.method === "HEAD") return { ok: true, status: 302 };
+      return {
+        ok: false,
+        status: 302,
+        headers: { get: (name: string) => name.toLowerCase() === "location" ? "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/tag/v2.31.0-build.3" : null },
+      };
+    });
+    expect(release).not.toBeNull();
+    expect(release?.latestVersion).toBe("2.31.0");
+    expect(release?.buildRevision).toBe(3);
+    expect(release?.releaseTag).toBe("v2.31.0-build.3");
+    expect(release?.assetName).toBe("OpenCodex-Setup-2.31.0-x64.exe");
+    expect(release?.downloadUrl).toBe("https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/download/v2.31.0-build.3/OpenCodex-Setup-2.31.0-x64.exe");
+  });
+
+  test("fallback reports null when the tagged asset is missing", async () => {
+    const release = await fetchDesktopInstallerRelease("latest", async (url, init) => {
+      if (url.includes("api.github.com")) return { ok: false, status: 403 };
+      if (init?.method === "HEAD") return { ok: false, status: 404 };
+      return {
+        ok: false,
+        status: 302,
+        headers: { get: () => "https://github.com/canyexuanfan/opencodex-Windows-desktop/releases/tag/v2.31.0-build.3" },
+      };
+    });
+    expect(release).toBeNull();
+  });
+
+  test("preview channel does not use the web fallback", async () => {
+    const release = await fetchDesktopInstallerRelease("preview", async () => ({ ok: false, status: 403 }));
+    expect(release).toBeNull();
+  });
+});
