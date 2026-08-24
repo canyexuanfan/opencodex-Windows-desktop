@@ -187,6 +187,47 @@ parallel test runner must not land before the runtime fixes. The suite already
 has load-sensitive tests; increasing contention before the fixes are verified
 would make exactly this ambiguity worse.
 
+## `dev` is protected: wp1 landed as PR #2487
+
+The planned `git push origin dev` was rejected:
+
+```
+remote: - Changes must be made through a pull request.
+ ! [remote rejected]     dev -> dev (push declined due to repository rule violations)
+```
+
+Branch protection is now configured on `dev` — `AGENTS.md` still describes the
+approval policy as "enforced by convention until branch protection is
+configured," so that note is out of date. The operation was unchanged; only its
+delivery moved. The rebased commit went to `codex/v2321-hotfix-train-roadmap`
+and landed through **PR #2487**.
+
+### CI outcome, and two flakes worth naming
+
+Every required check went green, but two jobs failed first and both were
+re-runs, not fixes. A documentation-only commit on top of `main` cannot break a
+service installer or a coordinator timer, and each was checked rather than
+waved through:
+
+| Job | First result | Cause | Resolution |
+|-----|--------------|-------|------------|
+| `storage policy` | **SUCCESS** first try | — | The three local full-suite failures never reproduced in CI's dedicated job, exactly as predicted above |
+| `macos-launchd` | FAILURE | `Service installed, but no proxy answered on port 10199 within 20s` — a launchd timing bound, no assertion failure | Re-run: pass |
+| `macos` (full suite) | FAILURE | `Codex reset-credit recovery coordinator > expires an abort-ignoring revalidation without dispatch` — one timing-sensitive test | Re-run: pass |
+
+Evidence that neither is ours: `Service lifecycle` and `Cross-platform CI` both
+succeeded on `main` at 10:00 UTC the same day, on the identical tree this branch
+rebases onto; and `bun test tests/codex-reset-credit-recovery.test.ts` on the
+unchanged `c44e43f00` baseline worktree returns 68 pass / 0 fail.
+
+Recording them because they are the same class of problem as the local
+storage-policy failures — load- and timing-sensitive tests that fail under
+contention — and because that pattern is the direct argument for keeping #2427
+last. Three separate flake families surfaced while landing a docs-only commit;
+adding parallel execution before the runtime fixes are verified would make
+attribution materially harder.
+
+
 
 ## Accept criteria
 
