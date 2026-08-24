@@ -4,6 +4,14 @@ import { collectResponsesToolGroups } from "./tool-groups";
 export interface RoutedNamespaceToolIdentity {
   namespace: string;
   name: string;
+  /**
+   * The kind the tool was DECLARED as. Restoration and `tool_choice` matching both
+   * need it: a wire name identifies which tool, not which kind of call may carry it,
+   * so without this a tool declared `function` could be selected by a `custom`
+   * selector and come back as a `custom_tool_call` — the same name/kind mismatch
+   * that motivated narrowing the alias map in the first place.
+   */
+  kind: "function" | "custom";
 }
 
 export type RoutedNamespaceToolAliases = ReadonlyMap<string, RoutedNamespaceToolIdentity>;
@@ -138,7 +146,10 @@ function buildRewritePlan(groups: readonly unknown[][]): NamespaceRewritePlan {
         addSelector(selectors, `${parsed.namespace}.${childName}`, wireName);
         addSelector(selectors, childName, wireName);
         if (parsed.namespace !== BUILTIN_FUNCTIONS_NAMESPACE) {
-          aliases.set(wireName, { namespace: parsed.namespace, name: childName });
+          // A child declared `custom` stays custom; everything else lowers to a
+          // function, which is how `buildTools` flattens it upstream.
+          const kind = child.type === "custom" ? "custom" : "function";
+          aliases.set(wireName, { namespace: parsed.namespace, name: childName, kind });
         }
       }
     }
@@ -239,6 +250,55 @@ function rewriteToolChoice(value: unknown, plan: NamespaceRewritePlan): unknown 
   return changed ? { ...value, tools } : value;
 }
 
+/**
+ * Keep response restoration inside the caller's per-turn tool authorization boundary. The
+ * upstream sees every flattened declaration even when `tool_choice` narrows the tools it may call,
+ * so its output cannot be trusted merely because a wire name appeared in that catalog.
+ */
+function authorizedAliases(
+  aliases: Map<string, RoutedNamespaceToolIdentity>,
+  toolChoice: unknown,
+): Map<string, RoutedNamespaceToolIdentity> {
+  if (toolChoice === undefined || toolChoice === "auto" || toolChoice === "required") return aliases;
+  if (toolChoice === "none" || !isPlainObject(toolChoice)) return new Map();
+
+  // name -> the kind the selector claimed. A selector authorizes a tool only when it
+  // names it AND agrees about what kind of tool it is.
+  let authorized: Map<string, "function" | "custom">;
+  if (
+    (toolChoice.type === "function" || toolChoice.type === "custom")
+    && typeof toolChoice.name === "string"
+  ) {
+    authorized = new Map([[toolChoice.name, toolChoice.type]]);
+  } else if (toolChoice.type === "allowed_tools" && Array.isArray(toolChoice.tools)) {
+    authorized = new Map();
+    for (const tool of toolChoice.tools) {
+      // Match the top-level branch above: only a function/custom selector can
+      // authorize a client namespace call. `allowed_tools` entries are typed
+      // `{type: string}` by the schema, so the accepted set is open-ended and
+      // an allowlist is the only closure that also covers kinds added later.
+      // Without this, `{type: "file_search", name: "<wire-name>"}` keeps the
+      // alias, and an upstream `function_call` carrying that name is restored
+      // into a namespace call the caller never permitted.
+      if (!isPlainObject(tool)) continue;
+      if (tool.type !== "function" && tool.type !== "custom") continue;
+      if (typeof tool.name !== "string") continue;
+      authorized.set(tool.name, tool.type);
+    }
+  } else {
+    // An explicit selector for another tool kind does not authorize a client namespace call.
+    return new Map();
+  }
+
+  // The kind must agree too. A wire name says WHICH tool, not what kind of call may
+  // carry it, so a `custom` selector naming a tool declared `function` is the same
+  // name/kind mismatch as a `file_search` selector naming it — narrower, but the
+  // same class, and `allowed_tools[].type` accepts any string so both are reachable.
+  return new Map(
+    [...aliases].filter(([wireName, identity]) => authorized.get(wireName) === identity.kind),
+  );
+}
+
 function rewriteInputItem(item: unknown, plan: NamespaceRewritePlan, emitted: Set<string>): unknown {
   if (!isPlainObject(item)) return item;
   if (item.type === "additional_tools" && Array.isArray(item.tools)) {
@@ -292,7 +352,7 @@ export function rewriteRoutedNamespaceToolsForUpstream(body: unknown): {
       ...(input !== body.input ? { input } : {}),
       ...(toolChoice !== body.tool_choice ? { tool_choice: toolChoice } : {}),
     },
-    aliases: plan.aliases,
+    aliases: authorizedAliases(plan.aliases, toolChoice),
   };
 }
 
