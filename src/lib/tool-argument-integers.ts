@@ -77,11 +77,15 @@ function declaresString(schema: SchemaNode): boolean {
 // against it. It gets its own change when it gets its own reproduction.
 const U64_NUMBER_FIELDS = new Set(["timeout_ms"]);
 
-// Issue #2443: Codex Desktop's bare `wait` tool has the same schema/runtime split
-// for `yield-time_ms` and `max_tokens`. Scope these names to that bare tool so a
+// Issue #2443 / #2451: Codex Desktop's bare `wait` tool has the same schema/runtime
+// split for `yield_time_ms` and `max_tokens`. Scope these names to that bare tool so a
 // third-party or namespaced tool can still use fractional values legitimately.
+// #2448 allowlisted the hyphenated `yield-time_ms`; live Grok 4.6 calls and the
+// advertised wait schema both use the underscore form, so that name is the one
+// with a captured u64 rejection. Cursor still uses the same underscore name on a
+// namespaced tool; the wait-only map keeps that path byte-identical.
 const U64_NUMBER_FIELDS_BY_TOOL = new Map<string, ReadonlySet<string>>([
-  ["wait", new Set(["yield-time_ms", "max_tokens"])],
+  ["wait", new Set(["yield_time_ms", "max_tokens"])],
 ]);
 
 /** True when the node accepts a JSON number (`integer` or `number`), so a numeric

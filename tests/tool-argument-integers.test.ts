@@ -325,15 +325,34 @@ describe("native u64 fields advertised as number (#2316)", () => {
       .toBe('{"timeout_ms":"120000"}');
   });
 
-  test("Cursor's sibling field stays unchanged even with wait identity", () => {
-    // Cursor uses yield_time_ms (underscore), not wait's yield-time_ms (hyphen).
-    // Keep this explicit scope proof from #2316: field names are never broadened globally.
-    const others = {
+  test("bare wait repairs yield_time_ms and leaves unrelated number fields alone", () => {
+    // Live Codex Desktop wait uses the underscore form (#2451). Wait identity
+    // repairs that field and max_tokens, but never a generic number field.
+    const schema = {
+      type: "object",
+      properties: {
+        yield_time_ms: { type: "number" },
+        max_tokens: { type: "number" },
+        priority: { type: "number" },
+      },
+    };
+    expect(coerceIntegerToolArguments(
+      '{"yield_time_ms":20000.0,"max_tokens":5000.0,"priority":2.0}',
+      schema,
+      "wait",
+    )).toBe('{"yield_time_ms":20000,"max_tokens":5000,"priority":2}');
+    const priorityOnly = '{"priority":2.0}';
+    expect(coerceIntegerToolArguments(
+      priorityOnly,
+      schema,
+      "wait",
+    )).toBe(priorityOnly);
+    const other = {
       type: "object",
       properties: { yield_time_ms: { type: "number" }, priority: { type: "number" } },
     };
     const raw = '{"yield_time_ms":60000.0,"priority":2.0}';
-    expect(coerceIntegerToolArguments(raw, others, "wait")).toBe(raw);
+    expect(coerceIntegerToolArguments(raw, other, "other_tool")).toBe(raw);
   });
 
   test("the namespaced wait_agent call is repaired through the real bridge", async () => {
@@ -367,7 +386,7 @@ describe("native u64 fields advertised as number (#2316)", () => {
 const CODEX_DESKTOP_WAIT_SCHEMA = {
   type: "object",
   properties: {
-    "yield-time_ms": { type: "number" },
+    "yield_time_ms": { type: "number" },
     max_tokens: { type: "number" },
   },
 };
@@ -384,26 +403,26 @@ const WAIT_SCOPE_NAMESPACE_MAP = new Map([
 
 const WAIT_SCOPE_EVENTS: AdapterEvent[] = [
   { type: "tool_call_start", id: "call_wait", name: "wait" },
-  { type: "tool_call_delta", arguments: '{"yield-time_ms":120000.0,"max_tokens":8000.0}' },
+  { type: "tool_call_delta", arguments: '{"yield_time_ms":120000.0,"max_tokens":8000.0}' },
   { type: "tool_call_end", id: "call_wait" },
   { type: "tool_call_start", id: "call_fractional", name: "wait" },
-  { type: "tool_call_delta", arguments: '{"yield-time_ms":1.5,"max_tokens":1.5}' },
+  { type: "tool_call_delta", arguments: '{"yield_time_ms":1.5,"max_tokens":1.5}' },
   { type: "tool_call_end", id: "call_fractional" },
   { type: "tool_call_start", id: "call_other", name: "other_tool" },
-  { type: "tool_call_delta", arguments: '{"yield-time_ms":120000.0,"max_tokens":8000.0}' },
+  { type: "tool_call_delta", arguments: '{"yield_time_ms":120000.0,"max_tokens":8000.0}' },
   { type: "tool_call_end", id: "call_other" },
   { type: "tool_call_start", id: "call_namespaced", name: "cursor_wait" },
-  { type: "tool_call_delta", arguments: '{"yield-time_ms":120000.0,"max_tokens":8000.0}' },
+  { type: "tool_call_delta", arguments: '{"yield_time_ms":120000.0,"max_tokens":8000.0}' },
   { type: "tool_call_end", id: "call_namespaced" },
   { type: "done" },
 ];
 
-describe("Codex Desktop wait native integers (#2443)", () => {
+describe("Codex Desktop wait native integers (#2443 / #2451)", () => {
   const expectedCalls = [
-    { name: "wait", namespace: undefined, arguments: '{"yield-time_ms":120000,"max_tokens":8000}' },
-    { name: "wait", namespace: undefined, arguments: '{"yield-time_ms":1.5,"max_tokens":1.5}' },
-    { name: "other_tool", namespace: undefined, arguments: '{"yield-time_ms":120000.0,"max_tokens":8000.0}' },
-    { name: "wait", namespace: "cursor", arguments: '{"yield-time_ms":120000.0,"max_tokens":8000.0}' },
+    { name: "wait", namespace: undefined, arguments: '{"yield_time_ms":120000,"max_tokens":8000}' },
+    { name: "wait", namespace: undefined, arguments: '{"yield_time_ms":1.5,"max_tokens":1.5}' },
+    { name: "other_tool", namespace: undefined, arguments: '{"yield_time_ms":120000.0,"max_tokens":8000.0}' },
+    { name: "wait", namespace: "cursor", arguments: '{"yield_time_ms":120000.0,"max_tokens":8000.0}' },
   ];
 
   test("streaming bridge scopes the repair to the bare wait tool", async () => {
