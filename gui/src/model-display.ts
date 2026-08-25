@@ -4,7 +4,7 @@
  * 5.6 trio is instantly distinguishable. No emoji — Lucide-style SVG only.
  */
 import { createElement, type ReactNode } from "react";
-import { IconSun, IconGlobe, IconMoon } from "./icons";
+import { IconSun, IconGlobe, IconMoon, IconLock } from "./icons";
 
 type IconComponent = typeof IconSun;
 
@@ -12,6 +12,9 @@ const MODEL_ICON_MAP: Record<string, IconComponent> = {
   "gpt-5.6-sol": IconSun,
   "gpt-5.6-terra": IconGlobe,
   "gpt-5.6-luna": IconMoon,
+  "gpt-daybreak-blue-latest": IconSun,
+  "daybreak-blue-latest": IconSun,
+  "daybreak-red-latest": IconLock,
 };
 
 const ICON_STYLE = { width: 14, height: 14, flexShrink: 0, verticalAlign: "text-bottom" as const };
