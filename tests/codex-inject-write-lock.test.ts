@@ -15,7 +15,7 @@ import {
   resolveCodexCoordinatorDatabasePath,
   resolveEffectiveUserIdentity,
 } from "../src/codex/user-identity";
-import { STABLE_ZERO_BYTE_COORDINATOR_AGE_MS } from "../src/codex/inject-coordination";
+import { boundProvenanceEntries, STABLE_ZERO_BYTE_COORDINATOR_AGE_MS } from "../src/codex/inject-coordination";
 import { SPAWN_BUDGET_MS } from "./helpers/test-budget";
 
 const repoRoot = join(import.meta.dir, "..");
@@ -163,6 +163,11 @@ describe("the lock is on the production path", () => {
 
   test("a clean first apply coordinates and records a transition", () => {
     seedNative();
+    mkdirSync(join(opencodexHome, "integrations"), { recursive: true });
+    writeFileSync(join(opencodexHome, "integrations", "codex.json"), JSON.stringify({
+      version: 1,
+      futureSection: { owner: "newer-writer" },
+    }));
     const result = runInject(10100);
     expect(result.success).toBeTrue();
 
@@ -184,6 +189,61 @@ describe("the lock is on the production path", () => {
     // Guessing null passes on a fresh machine and fails on a real one, so the
     // id being present is part of the claim.
     expect(typeof row.state?.currentTxId).toBe("string");
+
+    const record = JSON.parse(
+      readFileSync(join(opencodexHome, "integrations", "codex.json"), "utf8"),
+    ) as {
+      futureSection?: unknown;
+      provenance?: { entries?: Array<{ txId?: string; artifact?: { kind?: string } }> };
+    };
+    expect(record.futureSection).toEqual({ owner: "newer-writer" });
+    const matching = record.provenance?.entries?.filter(entry =>
+      entry.txId === row.state?.currentTxId) ?? [];
+    expect(matching.map(entry => entry.artifact?.kind).sort()).toEqual([
+      "config",
+      "generated-profile",
+      "injection-journal",
+    ]);
+  });
+
+  test("a provenance append failure does not undo an admitted transaction", () => {
+    seedNative();
+    expect(runInject(10100).success).toBeTrue();
+
+    const readTransition = () => parseChildJson<{
+      kind?: string;
+      state?: { nativeGeneration?: number; currentTxId?: string | null };
+    }>(runChild(["--eval", `
+      const { readCodexTransitionState } = require("./src/codex/transition-state");
+      console.log(JSON.stringify(readCodexTransitionState()));
+    `], {
+      ...process.env,
+      CODEX_HOME: codexHome,
+      OPENCODEX_HOME: opencodexHome,
+    }), "read transition state around failed provenance append");
+    const admitted = readTransition();
+    expect(typeof admitted.state?.currentTxId).toBe("string");
+
+    writeFileSync(join(opencodexHome, "integrations", "codex.json"), "{ malformed", "utf8");
+    const append = parseChildJson<{ kind?: string }>(runChild(["--eval", `
+      const {
+        captureCodexPreImages,
+        recordCodexNativeTransactionProvenance,
+      } = require("./src/codex/inject-coordination");
+      console.log(JSON.stringify(recordCodexNativeTransactionProvenance(
+        captureCodexPreImages(),
+        process.env.OCX_TEST_TX_ID,
+      )));
+    `], {
+      ...process.env,
+      CODEX_HOME: codexHome,
+      OPENCODEX_HOME: opencodexHome,
+      OCX_TEST_TX_ID: admitted.state!.currentTxId!,
+    }), "failed provenance append");
+    expect(append.kind).toBe("invalid");
+    expect(readTransition()).toEqual(admitted);
+    expect(readFileSync(join(opencodexHome, "integrations", "codex.json"), "utf8"))
+      .toBe("{ malformed");
   });
 
   /**
@@ -404,5 +464,48 @@ describe("the transition is resolved, not left pending", () => {
     // Opt-out is a completed decision, not a failure: converged, never blocked,
     // and never left pending for a job that chose to do nothing.
     expect(row.state?.history?.status).toBe("converged");
+  });
+});
+
+/**
+ * The ledger is evidence, not an archive (#2622).
+ *
+ * Each admitted transaction appends three entries, and a `present` baseline carries the artifact's
+ * exact bytes as base64 — a 25 KB `config.toml` is roughly 100 KB per transaction. Unbounded, a
+ * machine that syncs on every start grows this file forever, and since the record is re-read and
+ * re-serialized on every append, the cost is quadratic rather than merely large.
+ */
+describe("provenance ledger bound", () => {
+  const entry = (txId: string, kind: "config" | "generated-profile" | "injection-journal") => ({
+    artifact: { kind },
+    baseline: { kind: "absent" as const },
+    postImage: null,
+    txId,
+    at: "2026-08-26T00:00:00.000Z",
+  });
+  const transaction = (txId: string) => [
+    entry(txId, "config"),
+    entry(txId, "generated-profile"),
+    entry(txId, "injection-journal"),
+  ];
+
+  test("keeps the newest transactions and drops the oldest whole", () => {
+    const entries = Array.from({ length: 20 }, (_, i) => transaction(`tx-${i}`)).flat();
+    const bounded = boundProvenanceEntries(entries, 16);
+
+    const kept = [...new Set(bounded.map(e => e.txId))];
+    expect(kept).toHaveLength(16);
+    expect(kept[0]).toBe("tx-4");
+    expect(kept.at(-1)).toBe("tx-19");
+    // Whole transactions only. A half-trimmed transaction would claim it touched two artifacts
+    // when it touched three, which reads as complete and is worse than dropping it.
+    for (const txId of kept) {
+      expect(bounded.filter(e => e.txId === txId)).toHaveLength(3);
+    }
+  });
+
+  test("a ledger within the window is returned unchanged", () => {
+    const entries = Array.from({ length: 16 }, (_, i) => transaction(`tx-${i}`)).flat();
+    expect(boundProvenanceEntries(entries, 16)).toBe(entries);
   });
 });
