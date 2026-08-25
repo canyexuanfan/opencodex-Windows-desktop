@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useT } from "../i18n/shared";
+import { useKeyedClientResource } from "../client-resource";
 import { readOpenBrowserPref, writeOpenBrowserPref } from "../oauth-open-browser-pref";
 
 /**
@@ -16,30 +17,30 @@ import { readOpenBrowserPref, writeOpenBrowserPref } from "../oauth-open-browser
  */
 export function OpenBrowserPrefToggle({ apiBase }: { apiBase?: string }) {
   const t = useT();
-  // No local preference means "follow the server", so the box starts by
-  // reflecting the persisted setting rather than asserting a default of its own.
-  const [open, setOpen] = useState(() => readOpenBrowserPref() ?? true);
-  const [seeded, setSeeded] = useState(() => readOpenBrowserPref() !== undefined);
+  // A local preference wins outright; otherwise the box mirrors the persisted
+  // setting, so the checkbox and the config file never disagree on screen.
+  const localPref = readOpenBrowserPref();
+  const [choice, setChoice] = useState<boolean | undefined>(localPref);
 
-  useEffect(() => {
-    if (seeded || !apiBase) return;
-    let alive = true;
-    void (async () => {
-      try {
-        const res = await fetch(`${apiBase}/api/settings`);
-        if (!res.ok) return;
-        const data = await res.json() as { oauthOpenBrowser?: boolean };
-        if (!alive || typeof data.oauthOpenBrowser !== "boolean") return;
-        // Still no local preference: mirror the server rather than override it.
-        if (readOpenBrowserPref() === undefined) setOpen(data.oauthOpenBrowser);
-      } catch {
-        // A failed read leaves the historical default on screen.
-      } finally {
-        if (alive) setSeeded(true);
-      }
-    })();
-    return () => { alive = false; };
-  }, [apiBase, seeded]);
+  // The server default is a fetched RESOURCE, not component state, so it does
+  // not need a post-await setState — which is both the react-doctor rule and
+  // the honest model: this component owns the operator's choice, not the
+  // server's setting.
+  const serverPref = useKeyedClientResource(
+    `oauth-open-browser:${apiBase ?? ""}`,
+    [apiBase],
+    async (signal) => {
+      if (!apiBase) return true;
+      const res = await fetch(`${apiBase}/api/settings`, { signal });
+      if (!res.ok) return true;
+      const data = await res.json() as { oauthOpenBrowser?: boolean };
+      return typeof data.oauthOpenBrowser === "boolean" ? data.oauthOpenBrowser : true;
+    },
+  );
+
+  // Until this operator chooses, follow the server; a failed read leaves the
+  // historical auto-open on screen.
+  const open = choice ?? serverPref.data ?? true;
 
   return (
     <label className="open-browser-pref">
@@ -48,7 +49,7 @@ export function OpenBrowserPrefToggle({ apiBase }: { apiBase?: string }) {
         checked={!open}
         onChange={e => {
           const next = !e.target.checked;
-          setOpen(next);
+          setChoice(next);
           writeOpenBrowserPref(next);
         }}
       />
