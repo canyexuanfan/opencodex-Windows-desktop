@@ -38,9 +38,11 @@ import { removeCodexAccountCredential, saveCodexAccountCredential } from "../src
 import {
   clearAccountNeedsReauth,
   clearAccountQuota,
+  getAccountQuota,
   handleCodexAuthAPI,
   isAccountNeedsReauth,
   parseUsageQuota,
+  setAccountQuotaFromParsed,
   updateAccountQuota,
 } from "../src/codex/auth-api";
 import { CODEX_UNKNOWN_USAGE_SCORE, isCodexQuotaExhausted } from "../src/codex/quota";
@@ -1251,6 +1253,55 @@ describe("codex routing", () => {
       monthlyPercent: 30,
       weeklyResetAt: 2,
       monthlyResetAt: 3,
+    });
+  });
+
+  test("WHAM preserves the 5h, weekly, and Spark weekly windows", () => {
+    expect(parseUsageQuota({
+      rate_limit: {
+        primary_window: { used_percent: 11, reset_at: 1, limit_window_seconds: 5 * 60 * 60 },
+        secondary_window: { used_percent: 22, reset_at: 2, limit_window_seconds: 7 * 24 * 60 * 60 },
+      },
+      additional_rate_limits: [{
+        limit_name: "GPT-5.3-Codex-Spark",
+        metered_feature: "codex_bengalfox",
+        rate_limit: {
+          primary_window: { used_percent: 33, reset_at: 3, limit_window_seconds: 7 * 24 * 60 * 60 },
+        },
+      }],
+    })).toEqual({
+      shortPercent: 11,
+      shortResetAt: 1,
+      shortWindowSeconds: 5 * 60 * 60,
+      weeklyPercent: 22,
+      weeklyResetAt: 2,
+      customWindows: [{ label: "GPT-5.3-Codex-Spark Weekly", percent: 33, resetAt: 3 }],
+    });
+  });
+
+  test("a Spark-only WHAM snapshot preserves the stored monthly window", () => {
+    setAccountQuotaFromParsed("a", {
+      monthlyPercent: 44,
+      monthlyResetAt: 4,
+      monthlyIsPrimaryWindow: true,
+    });
+    const sparkOnly = parseUsageQuota({
+      additional_rate_limits: [{
+        limit_name: "GPT-5.3-Codex-Spark",
+        metered_feature: "codex_bengalfox",
+        rate_limit: {
+          primary_window: { used_percent: 33, reset_at: 3, limit_window_seconds: 7 * 24 * 60 * 60 },
+        },
+      }],
+    });
+
+    setAccountQuotaFromParsed("a", sparkOnly);
+
+    expect(getAccountQuota("a")).toMatchObject({
+      monthlyPercent: 44,
+      monthlyResetAt: 4,
+      monthlyIsPrimaryWindow: true,
+      customWindows: [{ label: "GPT-5.3-Codex-Spark Weekly", percent: 33, resetAt: 3 }],
     });
   });
 
