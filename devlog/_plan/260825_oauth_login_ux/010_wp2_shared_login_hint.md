@@ -23,7 +23,13 @@ string and never sets `deviceCode`.
 ### 1. `gui/src/components/login-url-block.tsx` → a full hint component
 
 Keep `LoginUrlBlock` as-is (it has three callers and a clean contract) and add
-a sibling in the same file that composes it:
+a sibling in the same file that composes it.
+
+**Naming, as landed:** `ProviderAuthPanel` already imports a `LoginHint`
+*type* from `./types` (the `{ provider, url, instructions, deviceCode }`
+shape). The new component therefore has to be aliased at that one call site —
+`import { LoginHint as LoginHintView }` — or the identifier collides. Renaming
+the existing type would touch more files than the feature does.
 
 ```tsx
 export type LoginHintData = {
@@ -67,14 +73,33 @@ a device flow with no URL still has a code to show. Guard on
 +const data = await res.json() as { url?: string; instructions?: string; deviceCode?: string; error?: string };
 -if (data.url) { setOauthUrl(data.url, providerId); setOauthMsg(t("modal.waitingLogin")); }
 -else { setOauthMsg(data.instructions || t("modal.loggingIn")); }
-+setOauthHint({ url: data.url, deviceCode: data.deviceCode, instructions: data.instructions }, providerId);
-+setOauthMsg(data.url || data.deviceCode ? t("modal.waitingLogin") : (data.instructions || t("modal.loggingIn")));
++setOauthUrl(data.url ?? "", providerId, data.deviceCode, data.instructions);
++if (data.url || data.deviceCode) setOauthMsg(t("modal.waitingLogin"));
++else setOauthMsg(data.instructions || t("modal.loggingIn"));
 ```
 
-The reducer in `add-provider-modal-reducer.ts` carries `oauthUrl` +
-`oauthUrlProvider` today; widen to an `oauthHint` object with the same
-provider tag so a stale hint from a cancelled provider still cannot leak into
-another provider's pane.
+**Reducer, as landed.** The plan first proposed replacing `oauthUrl` with an
+`oauthHint` object. That was rejected during implementation: `set-oauth-url`
+already carries the provider tag and the "switched away" guard, and swapping
+the slot for an object would have rewritten that guard for no behavioral gain.
+
+What shipped instead is the smaller change — two sibling fields beside the
+existing one, carried by the same action and cleared by the same three cases:
+
+```diff
+   oauthUrl: string;
++  oauthDeviceCode: string;
++  oauthInstructions: string;
+   oauthUrlProvider: string | null;
+
+-  | { type: "set-oauth-url"; url: string; providerId: string }
++  | { type: "set-oauth-url"; url: string; providerId: string; deviceCode?: string; instructions?: string }
+```
+
+The leak guard is unchanged and still load-bearing: `set-oauth-url` returns
+`state` untouched when `state.preset?.oauthProvider !== action.providerId`,
+and `choose-preset` / `back` / `use-api-key-instead` clear all three fields
+together. A hint for one provider cannot render under another.
 
 ### 3. `src/oauth/kimi.ts:212`
 
@@ -125,13 +150,17 @@ what is *displayed*, not what is *executed*.
 
 - `add-provider-oauth-pane.tsx:59-99` — replace `LoginUrlBlock` + the inline
   paste block with one `<LoginHint hint={hint} paste={…} />`.
-- `ProviderAuthPanel.tsx:392-402` — replace the inline device-code block and
-  `LoginUrlBlock` with `<LoginHint>`, **and pass `paste`**. This is the
-  first time the workspace panel can accept a pasted code; it needs the same
-  `submitManualCode` the modal already has, pointed at
+- `provider-workspace/ProviderAuthPanel.tsx:392-402` — replace the inline
+  device-code block and `LoginUrlBlock` with the aliased `<LoginHintView>`,
+  **and pass `paste`**. This is the first time the workspace panel can accept
+  a pasted code; it gets its own `submitManualCode` pointed at
   `/api/oauth/login/code`.
 - `add-codex-account-waiting-step.tsx:38-69` — same swap. Its submit goes to
-  `/api/codex-auth/login/code`, so `paste.onSubmit` stays caller-owned.
+  `/api/codex-auth/login/code`, so `paste.onSubmit` stays caller-owned —
+  sharing a renderer does not merge two backends.
+
+**Still not covered by this phase:** the add-provider Accounts-tab rows render
+no hint at all. That is WP3's whole subject (`020`), not an omission here.
 
 ## i18n
 
