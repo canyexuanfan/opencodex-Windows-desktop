@@ -867,6 +867,9 @@ const configSchema = z.object({
   defaultProvider: z.string().min(1).default("openai"),
   // A retry can be billable, so absence and malformed hand edits both stay off.
   emptyCompletionRetry: z.boolean().optional().catch(false),
+  // A malformed hand edit must not silently stop opening the browser: fall back
+  // to undefined, which resolves to the historical auto-open behavior.
+  oauthOpenBrowser: z.boolean().optional().catch(undefined),
   openaiProviderTierVersion: z.union([z.literal(1), z.literal(2)]).optional(),
   // Invalid hand edits must not discard an otherwise usable config.
   googleAntigravityStaticCatalogVersion: z.union([z.literal(1), z.literal(2)]).optional().catch(undefined),
@@ -2052,6 +2055,14 @@ function emptyCompletionRetryError(value: unknown): string | null {
   return "schema_invalid: emptyCompletionRetry: must be a boolean or omitted";
 }
 
+function oauthOpenBrowserError(value: unknown): string | null {
+  const raw = rawConfigRecord(value);
+  if (!raw || !Object.hasOwn(raw, "oauthOpenBrowser")) return null;
+  const enabled = raw.oauthOpenBrowser;
+  if (enabled === undefined || typeof enabled === "boolean") return null;
+  return "schema_invalid: oauthOpenBrowser: must be a boolean or omitted";
+}
+
 /** Validate an in-memory config candidate without touching disk. Used by headless CLI import/set. */
 /**
  * Reject a loopback-listener port that collides with the proxy port (#1102).
@@ -2101,6 +2112,7 @@ export function validateConfigCandidate(value: unknown): { ok: true; config: Ocx
     ?? codexAccountPrioritiesError(value)
     ?? codexAccountPickerEnabledError(value)
     ?? emptyCompletionRetryError(value)
+    ?? oauthOpenBrowserError(value)
     ?? loopbackListenerPortError(value);
   if (boundaryError) return { ok: false, error: boundaryError };
   const result = configSchema.safeParse(value);

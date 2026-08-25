@@ -759,6 +759,9 @@ export function safeConfigDTO(config: OcxConfig): unknown {
     defaultProvider: config.defaultProvider,
     codexAutoStart: codexAutoStartEnabled(config),
     websockets: config.websockets,
+    // The GUI's browser-open toggle reads and writes this; absent means the
+    // historical auto-open behavior.
+    oauthOpenBrowser: config.oauthOpenBrowser !== false,
     providers,
   };
 }

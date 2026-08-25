@@ -374,6 +374,8 @@ export const zh: Record<TKey, string> = {
   "prov.waitingBrowser": "等待浏览器…",
   "prov.didntOpen": "没有打开？点击这里",
   "prov.copyLink": "复制链接",
+  "prov.dontOpenBrowser": "不要在运行代理的机器上打开浏览器",
+  "prov.dontOpenBrowserHint": "适用于使用其他浏览器配置文件登录，或仪表板与代理不在同一台机器上。",
   "prov.linkCopied": "已复制",
   "prov.linkCopyUnavailable": "剪贴板不可用",
   "prov.deviceCode": "设备验证码",

@@ -382,6 +382,8 @@ export const tr: Record<TKey, string> = {
   "prov.waitingBrowser": "Tarayıcı bekleniyor…",
   "prov.didntOpen": "Açılmadı mı? Buraya tıklayın",
   "prov.copyLink": "Bağlantıyı kopyala",
+  "prov.dontOpenBrowser": "Proxy makinesinde tarayıcı açma",
+  "prov.dontOpenBrowserHint": "Farklı bir tarayıcı profili için ya da pano proxy'nin makinesinde değilken kullanışlıdır.",
   "prov.linkCopied": "Kopyalandı",
   "prov.linkCopyUnavailable": "Pano kullanılamıyor",
   "prov.deviceCode": "Cihaz kodu",
