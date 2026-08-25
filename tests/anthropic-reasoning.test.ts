@@ -40,6 +40,28 @@ describe("anthropic extended-thinking gate", () => {
     expect(b.top_p).toBe(0.8);
   });
 
+  test("modelDefaultReasoningEfforts supplies reasoning when caller omits it", async () => {
+    const b = await bodyOf(parsed(undefined, { temperature: 0.5, topP: 0.8 }, "always-thinking-model"), {
+      ...provider,
+      modelDefaultReasoningEfforts: { "always-thinking-model": "high" },
+    });
+    const thinking = b.thinking as { type: string; budget_tokens: number } | undefined;
+    expect(thinking?.type).toBe("enabled");
+    expect(typeof thinking?.budget_tokens).toBe("number");
+    expect(b.temperature).toBeUndefined();
+    expect(b.top_p).toBeUndefined();
+  });
+
+  test("explicit reasoning overrides modelDefaultReasoningEfforts", async () => {
+    const b = await bodyOf(parsed("low", {}, "always-thinking-model"), {
+      ...provider,
+      modelDefaultReasoningEfforts: { "always-thinking-model": "high" },
+    });
+    const thinking = b.thinking as { type: string; budget_tokens: number } | undefined;
+    expect(thinking?.type).toBe("enabled");
+    expect(thinking?.budget_tokens).toBe(4096);
+  });
+
   test("reasoning 'high' enables thinking and drops sampling (extended-thinking rule)", async () => {
     const b = await bodyOf(parsed("high", { temperature: 0.3, topP: 0.9 }));
     const thinking = b.thinking as { type: string; budget_tokens: number } | undefined;
@@ -463,5 +485,45 @@ describe("Claude Desktop classifier round trip (#545)", () => {
     expect(body.thinking).toEqual({ type: "disabled" });
     expect(body.max_tokens).toBe(64);
     expect(body.stop_sequences).toEqual(["</block>"]);
+  });
+});
+
+describe("provider default reasoning effort (#2494)", () => {
+  const withDefault = (model: string, effort: string) => ({
+    ...(provider as unknown as Record<string, unknown>),
+    modelDefaultReasoningEfforts: { [model]: effort },
+  } as unknown as OcxProviderConfig);
+
+  test("a configured default applies when the caller omits reasoning", async () => {
+    const model = "anthropic/claude-sonnet-4.5";
+    const b = await bodyOf(parsed(undefined, {}, model), withDefault(model, "high"));
+    expect((b.thinking as { type?: string } | undefined)?.type).toBe("enabled");
+    expect((b.thinking as { budget_tokens?: number }).budget_tokens).toBe(16384);
+  });
+
+  test("an explicit caller effort still wins over the configured default", async () => {
+    const model = "anthropic/claude-sonnet-4.5";
+    const b = await bodyOf(parsed("none", {}, model), withDefault(model, "high"));
+    expect(b.thinking).toBeUndefined();
+  });
+
+  // The sentinel means "send no reasoning field". Treating it as an effort put
+  // output_config.effort: "__omit__" on the wire for adaptive models and turned
+  // budget thinking ON for the rest — the opposite of the request.
+  test("the __omit__ sentinel never becomes an effort value", async () => {
+    const adaptive = "anthropic/claude-fable-5";
+    const a = await bodyOf(parsed(undefined, {}, adaptive), withDefault(adaptive, "__omit__"));
+    expect(a.output_config).toBeUndefined();
+    expect(a.thinking).toBeUndefined();
+
+    const budget = "anthropic/claude-sonnet-4.5";
+    const b = await bodyOf(parsed(undefined, {}, budget), withDefault(budget, "__omit__"));
+    expect(b.thinking).toBeUndefined();
+  });
+
+  test("a blank default is ignored rather than treated as an effort", async () => {
+    const model = "anthropic/claude-sonnet-4.5";
+    const b = await bodyOf(parsed(undefined, {}, model), withDefault(model, "   "));
+    expect(b.thinking).toBeUndefined();
   });
 });

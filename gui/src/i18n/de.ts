@@ -368,6 +368,8 @@ export const de: Record<TKey, string> = {
   "prov.waitingBrowser": "Warten auf Browser…",
   "prov.didntOpen": "Hat sich nicht geöffnet? Hier klicken",
   "prov.copyLink": "Link kopieren",
+  "prov.dontOpenBrowser": "Keinen Browser auf dem Proxy-Rechner öffnen",
+  "prov.dontOpenBrowserHint": "Nützlich für ein anderes Browser-Profil oder wenn das Dashboard nicht auf dem Proxy-Rechner läuft.",
   "prov.linkCopied": "Kopiert",
   "prov.linkCopyUnavailable": "Zwischenablage nicht verfügbar",
   "prov.deviceCode": "Gerätecode",

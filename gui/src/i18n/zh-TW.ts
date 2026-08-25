@@ -269,6 +269,8 @@ export const zhTW: Record<TKey, string> = {
   "prov.waitingBrowser": "等待瀏覽器…",
   "prov.didntOpen": "沒有開啟？點選這裡",
   "prov.copyLink": "複製連結",
+  "prov.dontOpenBrowser": "不要在執行代理的機器上開啟瀏覽器",
+  "prov.dontOpenBrowserHint": "適用於使用其他瀏覽器設定檔登入，或儀表板與代理不在同一台機器上。",
   "prov.linkCopied": "已複製",
   "prov.linkCopyUnavailable": "剪貼簿不可用",
   "prov.deviceCode": "裝置驗證碼",
