@@ -123,10 +123,10 @@ gates its browser-open on that exact field:
 if (authUrl && !deviceCode) { openUrl(authUrl); }
 ```
 
-Today Kimi sets no `deviceCode`, so the proxy auto-opens
-`device.verificationUriComplete` — a **provider-supplied** URL. Setting
-`deviceCode` means Kimi stops being auto-opened, exactly like Nous and
-Copilot already are.
+Before this change Kimi set no `deviceCode`, so the proxy auto-opened
+`device.verificationUriComplete` — a **provider-supplied** URL. Setting the
+field means Kimi stops being auto-opened, exactly like Nous and Copilot
+already are.
 
 That is the correct direction on both counts. It ends an inconsistency where
 two device providers are treated as device flows and the third is not, and it
@@ -164,28 +164,37 @@ no hint at all. That is WP3's whole subject (`020`), not an omission here.
 
 ## i18n
 
-`prov.deviceCode` exists. New keys, added to **all** locale files under
-`gui/src/i18n/` (en, ko, ja, zh, zh-TW, de, fr, ru, tr):
-
-- `prov.deviceCodeHint` — "Enter this code after opening the link."
-
-English is the source; a locale that has no translation yet falls back through
-the existing mechanism rather than shipping an English string in a translated
-file.
+**No new keys were needed.** `prov.deviceCode`, `prov.copyCode`,
+`prov.codeCopied`, `prov.pasteRedirect`, `prov.pasteRedirectHint`,
+`prov.pasteSubmit`, and `prov.pasteSubmitting` already exist in all nine
+locale files, because both halves of this component already shipped — just on
+different surfaces. Unifying them is a wiring change, not a copy change, so no
+locale is left with an untranslated English string.
 
 ## Test
 
-`tests/oauth-login-hint.test.ts` (new):
+Two new files, split by what they lock:
 
-1. `loginKimi` calls `onAuth` with `deviceCode` equal to the user code —
-   fake the device-authorization fetch, assert the field. This is the one
-   assertion that would have caught the original gap.
-2. Re-assert the same for `loginNous` and `loginGithubCopilot` so the
-   contract is enforced for every device provider, not just the one being
-   fixed.
-3. Route-level: with `deviceCode` present, `POST /api/oauth/login` does not
-   call the opener; with a browser flow it does. This locks the consequence
-   described above so it can never regress silently in either direction.
+`tests/oauth-device-code-contract.test.ts` — `loginKimi` calls `onAuth`
+with `deviceCode` equal to the user code, against a faked
+device-authorization response. This is the assertion that would have caught
+the original gap. It was driven red against the pre-fix `kimi.ts` before
+being accepted, so it is not vacuous. `loginNous` and
+`loginGithubCopilot` already have equivalent `onAuth` assertions in
+`tests/nous-oauth.test.ts` and `tests/github-copilot-oauth.test.ts`, so
+re-asserting them here would duplicate rather than protect.
+
+`tests/oauth-login-open-browser.test.ts` — the route consequence, both
+directions: with `deviceCode` present, `POST /api/oauth/login` does not call
+the opener and still returns the URL and code; with a plain browser flow it
+opens exactly as before. The second case is the compatibility guard.
+
+Two existing seam tests were **updated, not relaxed**:
+`tests/provider-workspace-auth.test.ts` still demands a device-code widget,
+now pointed at its new owner, and gains an assertion that the workspace can
+reach `/api/oauth/login/code`; `tests/codex-auth-modal-status.test.ts` still
+locks the same four-part submit guard and the distinct submitting copy, now as
+props rather than a JSX string.
 
 GUI rendering is verified by screenshot in the PR; this repo has no component
 test harness and this phase is not the place to introduce one.
