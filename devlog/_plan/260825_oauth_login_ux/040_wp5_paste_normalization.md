@@ -1,8 +1,28 @@
-# 040 — WP5: a pasted redirect that looks right must not be silently refused
+# 040 — WP5: read a redirect's fragment, not only its query
 
-**Issue:** bug report. **PR base:** `dev`. **Screenshot:** not required.
+**Issue:** feature proposal (parser hardening — not a reported failure).
+**PR base:** `dev`. **Screenshot:** not required.
 
-## The defect
+## Honest classification, first
+
+**No provider in this repository can currently produce the input this fixes.**
+That was checked, not assumed: every `OAuthCallbackFlow` subclass — ChatGPT,
+xAI, Antigravity, Anthropic — requests `response_type=code` and none sets
+`response_mode=fragment`, so an authorization-code response lands in the
+query. Cursor, Kiro, Copilot, Kimi and Nous are not this class at all (poll,
+device, or token-paste flows). Anthropic's copyable `code#state` is the *raw*
+branch, not a URL fragment, which is why `exchangeToken` still splits on
+`#`.
+
+So this is **defensive parser hardening**, not a fix for a failure users are
+hitting today. The first draft of this doc told a story about an operator
+pasting their address bar and being told it contained no code. That story is
+not reachable with the current provider set, and shipping it as a bug report
+would have been a small lie in a changelog. The change is still worth making —
+the cost is four lines and the parser is the one place a future
+fragment-returning provider would land — but it ships described as what it is.
+
+## The gap
 
 `parseCallbackInput` (`callback-server.ts:273-300`) tries three shapes in
 order: a parseable URL, a string containing `code=`, then a raw code with an
@@ -19,20 +39,17 @@ return {
 };
 ```
 
-A redirect that returns its parameters in the **fragment** —
-`http://localhost:1455/callback#code=abc&state=xyz` — parses as a valid URL,
+A redirect that returned its parameters in the **fragment** —
+`http://127.0.0.1:<port>/callback#code=abc&state=xyz` — parses as a valid URL,
 yields no `code`, and is rejected by `submitManualLoginCode:1345` with
-"no authorization code found in input".
+"no authorization code found in input". The hint text asks the operator to
+"copy the full URL from its address bar", so that rejection would be
+particularly hard to act on if a provider ever did this.
 
-From the operator's chair this is the worst possible failure: they pasted the
-entire address bar, exactly as the hint text instructed
-(`prov.pasteRedirectHint`: "copy the full URL from its address bar"), and were
-told their paste contains no code.
-
-Note the asymmetry that makes this a bug rather than a limitation: the **raw**
-branch already understands `code#state`, and the **query** branch already
-strips a leading `#` (`value.replace(/^[?#]/, "")`). Fragments are understood
-everywhere except the one shape most likely to be pasted.
+Note the asymmetry that makes it worth closing: the **raw** branch already
+understands `code#state`, and the **query** branch already strips a leading
+`#` (`value.replace(/^[?#]/, "")`). Fragments are understood everywhere
+except in a full URL.
 
 ## The change
 
@@ -95,7 +112,15 @@ supported. Add it.
 
 ## Acceptance
 
-- A fragment-carried redirect URL completes a login.
-- A fragment-carried redirect with a bad state is refused, with the specific
-  state-mismatch message.
+- `parseCallbackInput` reads `code` and `state` from a URL fragment when the
+  query does not carry them, and keeps `kind: "url"` so state stays mandatory.
+- A fragment-carried paste with a missing or mismatched state is refused
+  end-to-end through `submitManualLoginCode`, with the same messages a
+  query-carried one gets. This is the assertion that proves the convenience did
+  not become a CSRF hole.
+- A token fragment yields no code.
+- No existing accepted paste changes meaning: query wins when both are present.
 - `bun run typecheck`, `bun run test` green.
+
+Note what is deliberately **not** claimed: that a real login was failing. See
+the classification at the top of this doc.
