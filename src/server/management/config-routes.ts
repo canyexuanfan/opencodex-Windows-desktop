@@ -298,6 +298,9 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       streamMode: config.streamMode ?? "auto",
       appOwnedMemoryBudgetMb: config.appOwnedMemoryBudgetMb ?? 256,
       codexAccountPickerEnabled: codexAccountPickerEnabled(config),
+      // Absent means the historical auto-open, so the GUI can render the toggle
+      // without having to know that `undefined` and `true` mean the same thing.
+      oauthOpenBrowser: config.oauthOpenBrowser !== false,
       startupHealth: await readStartupHealth(config),
       codexRuntime: {
         path: displayCodexRuntimePath(resolved.runtime.command),
@@ -382,15 +385,20 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       streamMode?: unknown;
       appOwnedMemoryBudgetMb?: unknown;
       codexAccountPickerEnabled?: unknown;
+      oauthOpenBrowser?: unknown;
     };
     if (body.codexAutoStart === undefined
       && body.streamMode === undefined
       && body.appOwnedMemoryBudgetMb === undefined
-      && body.codexAccountPickerEnabled === undefined) {
-      return jsonResponse({ error: "provide codexAutoStart, streamMode, appOwnedMemoryBudgetMb, or codexAccountPickerEnabled" }, 400);
+      && body.codexAccountPickerEnabled === undefined
+      && body.oauthOpenBrowser === undefined) {
+      return jsonResponse({ error: "provide codexAutoStart, streamMode, appOwnedMemoryBudgetMb, codexAccountPickerEnabled, or oauthOpenBrowser" }, 400);
     }
     if (body.codexAutoStart !== undefined && typeof body.codexAutoStart !== "boolean") {
       return jsonResponse({ error: "codexAutoStart boolean is required" }, 400);
+    }
+    if (body.oauthOpenBrowser !== undefined && typeof body.oauthOpenBrowser !== "boolean") {
+      return jsonResponse({ error: "oauthOpenBrowser boolean is required" }, 400);
     }
     if (body.streamMode !== undefined && !isStreamMode(body.streamMode)) {
       return jsonResponse({ error: "streamMode must be auto, legacy-tee, or eager-relay" }, 400);
@@ -418,6 +426,8 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       hasCodexAccountNamespaces: Object.hasOwn(config, "codexAccountNamespaces"),
       codexAccountPickerEnabled: config.codexAccountPickerEnabled,
       hasCodexAccountPickerEnabled: Object.hasOwn(config, "codexAccountPickerEnabled"),
+      oauthOpenBrowser: config.oauthOpenBrowser,
+      hasOauthOpenBrowser: Object.hasOwn(config, "oauthOpenBrowser"),
     };
     const pickerWasEnabled = codexAccountPickerEnabled(config);
     let pickerIsEnabled = pickerWasEnabled;
@@ -441,6 +451,9 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       } else if (body.codexAccountPickerEnabled === false) {
         config.codexAccountPickerEnabled = false;
       }
+      if (typeof body.oauthOpenBrowser === "boolean") {
+        config.oauthOpenBrowser = body.oauthOpenBrowser;
+      }
       pickerIsEnabled = codexAccountPickerEnabled(config);
       (deps.saveConfigPreservingClaudeCode ?? saveConfigPreservingClaudeCode)(config);
     } catch (error) {
@@ -457,6 +470,9 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       if (previousSettings.hasCodexAccountPickerEnabled) {
         config.codexAccountPickerEnabled = previousSettings.codexAccountPickerEnabled;
       } else delete config.codexAccountPickerEnabled;
+      if (previousSettings.hasOauthOpenBrowser) {
+        config.oauthOpenBrowser = previousSettings.oauthOpenBrowser;
+      } else delete config.oauthOpenBrowser;
       throw error;
     }
     if (typeof body.appOwnedMemoryBudgetMb === "number") {
@@ -476,6 +492,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       streamMode: config.streamMode ?? "auto",
       appOwnedMemoryBudgetMb: config.appOwnedMemoryBudgetMb ?? 256,
       codexAccountPickerEnabled: pickerIsEnabled,
+      oauthOpenBrowser: config.oauthOpenBrowser !== false,
       catalogRefreshPending,
       startupHealth: await readStartupHealth(config),
     });
@@ -665,9 +682,18 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
 
     if (body.webSearch) {
       const pairTouched = body.webSearch.model !== undefined || body.webSearch.backend !== undefined;
-      const effectiveBackend = body.webSearch.backend === "anthropic"
-        ? "anthropic"
-        : body.webSearch.backend === "openai" || body.webSearch.backend === null
+      // Validate against the backend the caller SUBMITTED, across the whole
+      // union — not just openai/anthropic (#2457). The union check above has
+      // already refused unknown literals, so a surviving string is a member;
+      // Array.includes does not narrow, hence the cast. Falling back to the
+      // stored backend for xai/gemini/exa both rejected legal pairs and
+      // accepted illegal ones: a submitted gemini was checked against a stored
+      // openai. null means "unset the backend", and unset resolves to openai.
+      const submittedBackend = body.webSearch.backend;
+      const effectiveBackend = typeof submittedBackend === "string"
+        && WEB_SEARCH_BACKENDS_UNION.includes(submittedBackend as never)
+        ? submittedBackend as typeof WEB_SEARCH_BACKENDS_UNION[number]
+        : submittedBackend === null
           ? "openai"
           : config.webSearchSidecar?.backend ?? "openai";
       const effectiveModel = typeof body.webSearch.model === "string"

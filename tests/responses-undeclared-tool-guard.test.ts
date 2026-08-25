@@ -8,11 +8,13 @@ import { describe, expect, test } from "bun:test";
 import {
   collectDeclaredNamelessClientCallTypes,
   collectDeclaredWireToolNames,
+  collectProviderExecutedCallTypes,
   createUndeclaredToolCallGuardBlockRewrite,
   currentTurnWireToolCatalogBody,
   hasExplicitWireToolCatalog,
   undeclaredToolCallNameInResponse,
   UNDECLARED_TOOL_CALL_ERROR_CODE,
+  type ProviderExecutedCallType,
 } from "../src/server/responses-undeclared-tool-guard";
 import { relaySseWithBlockRewrite } from "../src/server/sse-payload-rewrite";
 import { handleResponses } from "../src/server/responses";
@@ -1246,5 +1248,169 @@ describe("undeclaredToolCallNameInResponse", () => {
       new Set(),
       new Set(["computer_call"]),
     )).toBeUndefined();
+  });
+
+  test("accepts legacy shell bridge names when the catalog declares unified exec", () => {
+    // Codex 0.149 declares the code-mode shell tool as `exec`; routed models (DeepSeek)
+    // sometimes echo the nested helper name `exec_command` instead. The guard must accept
+    // it when the request catalog declares `exec` and does not itself declare the legacy
+    // name — but must still refuse it when the legacy name is a real declared tool.
+    const response = {
+      output: [
+        { type: "function_call", name: "exec_command" },
+        { type: "function_call", name: "shell_command" },
+      ],
+    };
+
+    expect(undeclaredToolCallNameInResponse(response, new Set(["exec"]))).toBeUndefined();
+    expect(undeclaredToolCallNameInResponse(response, new Set(["exec", "exec_command"]))).toBe(
+      "shell_command",
+    );
+    expect(undeclaredToolCallNameInResponse(response, new Set(["exec_command"]))).toBe(
+      "shell_command",
+    );
+    expect(undeclaredToolCallNameInResponse(response, new Set())).toBe("exec_command");
+  });
+
+  test("never legacy-normalizes a namespaced shell bridge call", () => {
+    // A namespaced call (e.g. an MCP server advertising its own exec_command) must be
+    // matched by its full wire name only — never normalized to bare `exec`.
+    const namespaced = {
+      output: [
+        { type: "function_call", name: "exec_command", namespace: "mcp__server" },
+        { type: "function_call", name: "exec_command" },
+      ],
+    };
+
+    expect(undeclaredToolCallNameInResponse(namespaced, new Set(["exec"]))).toBe(
+      "exec_command",
+    );
+    expect(undeclaredToolCallNameInResponse(namespaced, new Set(["exec", "mcp__server__exec_command"]))).toBeUndefined();
+  });
+});
+
+/**
+ * xAI runs hosted `x_search` itself and reports the activity as a `custom_tool_call` whose name
+ * is absent from the request catalog. Probed 2026-08-23 against the OAuth CLI destination: the
+ * provider's hosted calls carry an `xs_call-` call-id prefix. Observed names were
+ * `x_keyword_search`, `x_semantic_search`, and `x_user_search`, so authorization keys on the
+ * declaration, item type, and call-id prefix, never on the name.
+ */
+describe("provider-executed hosted calls", () => {
+  const declared = new Set(["shell"]);
+  const nameless = new Set<string>();
+  const xSearchAuthorized = collectProviderExecutedCallTypes({
+    tools: [{ type: "function", name: "shell" }, { type: "x_search" }],
+  });
+
+  function hostedCall(name: string) {
+    return { output: [{ type: "custom_tool_call", name, call_id: "xs_call-1" }] };
+  }
+
+  test("authorizes the provider's hosted call under any of its observed names", () => {
+    expect(collectProviderExecutedCallTypes({ tools: [{ type: "x_search" }] }))
+      .toEqual(new Set([{ itemType: "custom_tool_call", callIdPrefix: "xs_call-" }]));
+    for (const name of ["x_keyword_search", "x_semantic_search", "x_user_search"]) {
+      expect(undeclaredToolCallNameInResponse(
+        hostedCall(name), declared, nameless, xSearchAuthorized,
+      )).toBeUndefined();
+    }
+  });
+
+  test("without the x_search declaration the same item is still refused", () => {
+    const noHostedDeclaration = collectProviderExecutedCallTypes({
+      tools: [{ type: "function", name: "shell" }],
+    });
+    expect(noHostedDeclaration.size).toBe(0);
+    expect(undeclaredToolCallNameInResponse(
+      hostedCall("x_keyword_search"), declared, nameless, noHostedDeclaration,
+    )).toBe("x_keyword_search");
+  });
+
+  test("the caller gates on destination: an empty authorization set refuses the same item", () => {
+    // core.ts passes an empty set unless the route actually terminates at xAI, so a declaration
+    // alone cannot buy the exemption on an upstream that never serves the hosted tool.
+    expect(undeclaredToolCallNameInResponse(
+      hostedCall("x_keyword_search"), declared, nameless, new Set<ProviderExecutedCallType>(),
+    )).toBe("x_keyword_search");
+  });
+
+  test("#1700 still holds: an undeclared client tool is refused inside an authorized turn", () => {
+    expect(undeclaredToolCallNameInResponse(
+      { output: [{ type: "custom_tool_call", name: "apply_patch", call_id: "call_patch" }] },
+      declared, nameless, xSearchAuthorized,
+    )).toBe("apply_patch");
+  });
+
+  test("a declared client tool is unaffected", () => {
+    expect(undeclaredToolCallNameInResponse(
+      { output: [{ type: "function_call", name: "shell", call_id: "c1" }] },
+      declared, nameless, xSearchAuthorized,
+    )).toBeUndefined();
+  });
+});
+
+describe("xAI hosted-call authorization through handleResponses", () => {
+  const hostedCall = {
+    type: "custom_tool_call",
+    id: "ctc_search",
+    call_id: "xs_call-1",
+    name: "x_keyword_search",
+    input: "{}",
+    status: "completed",
+  };
+
+  async function post(baseUrl: string): Promise<Response> {
+    const config = {
+      port: 0,
+      defaultProvider: "fixture",
+      providers: {
+        fixture: {
+          adapter: "openai-responses",
+          baseUrl,
+          authMode: "key",
+          apiKey: "fixture-key",
+        },
+      },
+    } as OcxConfig;
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => Response.json({
+      id: "resp_search",
+      status: "completed",
+      output: [hostedCall],
+    })) as typeof fetch;
+    try {
+      return await handleResponses(new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "fixture/grok-4.6",
+          stream: false,
+          input: [{ role: "user", content: [{ type: "input_text", text: "search" }] }],
+          tools: [
+            { type: "function", name: "shell", parameters: { type: "object" } },
+            { type: "x_search" },
+          ],
+        }),
+      }), config, { model: "", provider: "" });
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  }
+
+  test("accepts the measured xs_call shape for an exact xAI destination", async () => {
+    const response = await post("https://api.x.ai/v1");
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { output: Array<Record<string, unknown>> };
+    expect(body.output[0]).toMatchObject(hostedCall);
+  });
+
+  test("rejects the identical item for a lookalike destination", async () => {
+    const response = await post("https://api.x.ai.evil.test/v1");
+
+    expect(response.status).toBe(502);
+    const body = await response.json() as { error: { message: string } };
+    expect(body.error.message).toContain('undeclared client tool "x_keyword_search"');
   });
 });

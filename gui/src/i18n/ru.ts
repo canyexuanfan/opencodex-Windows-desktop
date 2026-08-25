@@ -379,6 +379,8 @@ export const ru: Record<TKey, string> = {
   "prov.waitingBrowser": "Ожидание браузера…",
   "prov.didntOpen": "Не открылось? Нажмите здесь",
   "prov.copyLink": "Копировать ссылку",
+  "prov.dontOpenBrowser": "Не открывать браузер на машине с прокси",
+  "prov.dontOpenBrowserHint": "Полезно для другого профиля браузера или когда панель управления не на машине с прокси.",
   "prov.linkCopied": "Скопировано",
   "prov.linkCopyUnavailable": "Буфер обмена недоступен",
   "prov.deviceCode": "Код устройства",

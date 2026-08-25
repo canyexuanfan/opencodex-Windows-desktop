@@ -324,7 +324,21 @@ describe("release helper", () => {
 
     const auditIndex = findCallIndex(calls, "bun", call => call.args.join(" ") === "run audit:high");
     const typecheckIndex = findCallIndex(calls, "bun", call => call.args.join(" ") === "x tsc --noEmit");
-    const testIndex = findCallIndex(calls, "bun", call => call.args.join(" ") === "test --isolate tests");
+    // The suite runs in CI's two groups, not as one directory sweep: the general
+    // files with the Worker-heavy harnesses ignored, then those harnesses one at
+    // a time. Assert the grouping, not just that "a test command ran" — the whole
+    // point of the change is WHICH processes the files land in.
+    const testIndex = findCallIndex(calls, "bun", call =>
+      call.args[0] === "test"
+      && call.args.includes("tests")
+      && call.args.some(arg => arg.startsWith("--path-ignore-patterns=") && arg.includes("api-usage")),
+    );
+    const isolatedUsageIndex = findCallIndex(calls, "bun", call =>
+      call.args.join(" ") === "test --isolate ./tests/api-usage.test.ts",
+    );
+    const isolatedStorageIndex = findCallIndex(calls, "bun", call =>
+      call.args.join(" ") === "test --isolate ./tests/api-storage.test.ts",
+    );
     const privacyIndex = findCallIndex(calls, "bun", call => call.args.join(" ") === "run privacy:scan");
     const versionIndex = findCallIndex(calls, "npm", call => call.args.join(" ") === "version 9.9.9 --no-git-tag-version");
     const dispatchIndex = findCallIndex(calls, "gh", call =>
@@ -338,7 +352,10 @@ describe("release helper", () => {
     expect(auditIndex).toBeGreaterThanOrEqual(0);
     expect(typecheckIndex).toBeGreaterThan(auditIndex);
     expect(testIndex).toBeGreaterThan(typecheckIndex);
-    expect(privacyIndex).toBeGreaterThan(testIndex);
+    // Every excluded harness is still executed, in its own process.
+    expect(isolatedUsageIndex).toBeGreaterThan(testIndex);
+    expect(isolatedStorageIndex).toBeGreaterThan(testIndex);
+    expect(privacyIndex).toBeGreaterThan(isolatedUsageIndex);
     expect(versionIndex).toBeGreaterThan(privacyIndex);
     expect(dispatchIndex).toBeGreaterThan(versionIndex);
   });
