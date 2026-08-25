@@ -66,16 +66,35 @@ Same treatment for the Codex path at `src/codex/auth-api.ts:1844`.
 
 ### 3. GUI
 
-Two surfaces, both small:
+**The checkbox sits on the control that STARTS a login**, not in the waiting
+state. By the time the hint renders, `openUrl` has already run — a toggle there
+would be advice for next time rather than a control.
 
-- **A checkbox in the login-hint component (WP2).** "Don't open a browser on
-  the proxy host" — checked state is remembered in `localStorage` and sent as
-  `openBrowser: false` on the next login start. This is the affordance the
-  operator actually asked for: start the login, copy the link, open it wherever
-  they want.
-- **A persisted toggle** in the providers settings area writing
-  `oauthOpenBrowser` through the existing config route, for an operator who
-  never wants the proxy touching a browser.
+`OpenBrowserPrefToggle` is rendered beside the login button in the
+add-provider OAuth pane and the workspace auth panel. The choice is remembered
+in `localStorage`, because it belongs to where the human is sitting: the same
+proxy can be driven from a laptop that wants the auto-open and through a tunnel
+where it is useless.
+
+**The stored preference is tri-state, and that is load-bearing.** `undefined`
+means "no preference", and the request then omits `openBrowser` entirely so the
+persisted setting decides. A GUI that always sent a boolean would make
+`oauthOpenBrowser: false` dead on arrival, since the request always wins — the
+config file could never be obeyed. The checkbox seeds itself from
+`GET /api/settings` while no local preference exists, so the two layers agree
+on screen.
+
+### 3b. The persisted setting round-trips through `/api/settings`
+
+`PUT /api/config` is 405; operator booleans live on `/api/settings`. Every
+place that has to change or the toggle silently fails to survive a restart:
+
+- `src/types/config.ts` — the field.
+- `src/config.ts` — schema entry, `oauthOpenBrowserError`, and its slot in
+  `validateConfigCandidate` so the CLI import/set path validates it too.
+- `src/server/auth-cors.ts` — `safeConfigDTO`, for `GET /api/config`.
+- `src/server/management/config-routes.ts` — the GET body, the PUT accept
+  list, the type guard, the write, **and the rollback block**.
 
 ### 4. Deliberately not changing `open-url.ts`
 
@@ -96,6 +115,22 @@ cycle does not relitigate it.
 - `openUrl`'s `^https?://` guard at `open-url.ts:12` is untouched.
 - The management route already requires the session/admin gate; the new field
   changes nothing about admission.
+
+### What declining does and does not buy
+
+Worth stating precisely, because the two cases are not equally solved:
+
+- **A different browser profile on the same machine** works with the link
+  alone. Copy it, open it in the profile you want, and the loopback callback on
+  `127.0.0.1` still completes the flow.
+- **A browser on a different machine** needs the paste fallback as well. The
+  `redirect_uri` is still `http://127.0.0.1:<port>/callback` on the proxy host,
+  so a remote browser cannot reach it — the operator finishes the login there
+  and pastes the redirect URL back, which is what WP2 put on every surface.
+
+Nothing about completion depends on `openUrl` having run: the loopback
+listener is bound by `startLoginFlow`, and `/api/oauth/login/code` already
+exists. Declining only reduces a process spawn.
 
 ## Test
 

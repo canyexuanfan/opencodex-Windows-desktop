@@ -15,3 +15,10 @@
 .login-hint-paste { display: flex; flex-direction: column; gap: 6px; }
 .login-hint-paste-row { display: flex; gap: 8px; }
 .login-hint-paste-input { flex: 1; }
+
+/* The browser-open choice, shown beside whichever control starts a login.
+   No selector is shared with the block above, so the two tails simply
+   coexist — dropping either one silently unstyles that feature. */
+.open-browser-pref { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; margin: 2px 0; }
+.open-browser-pref input { margin-top: 2px; flex-shrink: 0; }
+.open-browser-pref-copy { display: flex; flex-direction: column; gap: 2px; }

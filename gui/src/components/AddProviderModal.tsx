@@ -275,6 +275,7 @@ export default function AddProviderModal({
           preset.auth === "oauth" && form.authMode === "oauth" ? (
             <AddProviderOAuthPane
               preset={preset}
+              apiBase={apiBase}
               oauthSupported={oauthSupported}
               oauthBusy={oauthBusy}
               oauthMsg={oauthMsg}

@@ -19,6 +19,7 @@ import {
 import CodexAccountPool from "../CodexAccountPool";
 import AnthropicAccountPoolSettings from "./AnthropicAccountPoolSettings";
 import { LoginHint as LoginHintView } from "../login-url-block";
+import { OpenBrowserPrefToggle } from "../open-browser-pref-toggle";
 import QuotaBars from "../QuotaBars";
 import type { CodexAccountPoolController } from "../../hooks/useCodexAccountPool";
 import { Switch } from "../../ui";
@@ -409,6 +410,7 @@ export default function ProviderAuthPanel({
                 )}
               </span>
             </div>
+            {!busy && <OpenBrowserPrefToggle apiBase={apiBase} />}
             {busy && hintForThis && (
               <div className="pwi-auth-wait">
                 <span className="pwi-spin-inline" aria-hidden="true" />

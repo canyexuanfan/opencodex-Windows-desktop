@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import type { TFn } from "../i18n/shared";
 import { readJsonIfOk } from "../fetch-json";
+import { openBrowserRequestField } from "../oauth-open-browser-pref";
 
 export const OAUTH_LOGIN_POLL_INTERVAL_MS = 2_000;
 
@@ -39,7 +40,7 @@ export function useAddProviderOAuth({
       const res = await fetch(`${apiBase}/api/oauth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: providerId }),
+        body: JSON.stringify({ provider: providerId, ...openBrowserRequestField() }),
       });
       if (!aliveRef.current) return;
       if (!res.ok) {
