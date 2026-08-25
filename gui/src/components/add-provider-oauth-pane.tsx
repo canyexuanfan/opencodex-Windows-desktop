@@ -6,7 +6,6 @@ import type { CatalogPreset } from "./provider-catalog/provider-presets";
 
 export function AddProviderOAuthPane({
   preset,
-  apiBase,
   oauthSupported,
   oauthBusy,
   oauthMsg,
@@ -25,7 +24,6 @@ export function AddProviderOAuthPane({
   onBack,
 }: {
   preset: CatalogPreset;
-  apiBase: string;
   oauthSupported: string[];
   oauthBusy: boolean;
   oauthMsg: string;
@@ -54,7 +52,7 @@ export function AddProviderOAuthPane({
             style={{ width: "100%", padding: "12px 16px" }}>
             <IconLock />{oauthBusy ? t("modal.waitingBrowser") : t("modal.logInWith", { label: preset.label })}
           </button>
-          {!oauthBusy && <OpenBrowserPrefToggle apiBase={apiBase} />}
+          {!oauthBusy && <OpenBrowserPrefToggle />}
         </>
       ) : (
         <div className="text-control" style={{ color: "var(--amber)", background: "var(--amber-soft)", border: "1px solid var(--amber)", borderRadius: "var(--radius-sm)", padding: "10px 12px" }}>

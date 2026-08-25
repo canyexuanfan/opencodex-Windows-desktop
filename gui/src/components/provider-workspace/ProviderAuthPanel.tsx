@@ -410,7 +410,7 @@ export default function ProviderAuthPanel({
                 )}
               </span>
             </div>
-            {!busy && <OpenBrowserPrefToggle apiBase={apiBase} />}
+            {!busy && <OpenBrowserPrefToggle />}
             {busy && hintForThis && (
               <div className="pwi-auth-wait">
                 <span className="pwi-spin-inline" aria-hidden="true" />

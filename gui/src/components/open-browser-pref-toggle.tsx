@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useT } from "../i18n/shared";
-import { useKeyedClientResource } from "../client-resource";
 import { readOpenBrowserPref, writeOpenBrowserPref } from "../oauth-open-browser-pref";
 
 /**
@@ -15,32 +14,22 @@ import { readOpenBrowserPref, writeOpenBrowserPref } from "../oauth-open-browser
  * nothing is spawned on the proxy's machine, so the operator opens the link
  * wherever they actually want to be signed in.
  */
-export function OpenBrowserPrefToggle({ apiBase }: { apiBase?: string }) {
+/**
+ * `serverDefault` is the persisted `oauthOpenBrowser` when the caller already
+ * has it. This component deliberately does **not** fetch it: an auth panel that
+ * quietly issued its own `/api/settings` request would make every surrounding
+ * surface's request accounting wrong, and it did — it broke the account-import
+ * tests, which assert exactly how many calls a selection makes.
+ *
+ * Not fetching costs nothing that matters. With no local preference the request
+ * omits `openBrowser` entirely, so the persisted setting still governs what the
+ * proxy actually does; only the initial checkbox rendering falls back to the
+ * historical auto-open.
+ */
+export function OpenBrowserPrefToggle({ serverDefault = true }: { serverDefault?: boolean }) {
   const t = useT();
-  // A local preference wins outright; otherwise the box mirrors the persisted
-  // setting, so the checkbox and the config file never disagree on screen.
-  const localPref = readOpenBrowserPref();
-  const [choice, setChoice] = useState<boolean | undefined>(localPref);
-
-  // The server default is a fetched RESOURCE, not component state, so it does
-  // not need a post-await setState — which is both the react-doctor rule and
-  // the honest model: this component owns the operator's choice, not the
-  // server's setting.
-  const serverPref = useKeyedClientResource(
-    `oauth-open-browser:${apiBase ?? ""}`,
-    [apiBase],
-    async (signal) => {
-      if (!apiBase) return true;
-      const res = await fetch(`${apiBase}/api/settings`, { signal });
-      if (!res.ok) return true;
-      const data = await res.json() as { oauthOpenBrowser?: boolean };
-      return typeof data.oauthOpenBrowser === "boolean" ? data.oauthOpenBrowser : true;
-    },
-  );
-
-  // Until this operator chooses, follow the server; a failed read leaves the
-  // historical auto-open on screen.
-  const open = choice ?? serverPref.data ?? true;
+  const [choice, setChoice] = useState<boolean | undefined>(readOpenBrowserPref);
+  const open = choice ?? serverDefault;
 
   return (
     <label className="open-browser-pref">
