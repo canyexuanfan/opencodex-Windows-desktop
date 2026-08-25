@@ -7,6 +7,7 @@ import { setTrustedWindowsElevationExecutablesForTests } from "../src/lib/window
 import {
   afterCatalogWriteHandleAppServers,
   attachStaleAppServerHint,
+  CATALOG_STATE_MAX_STALE_MS,
   catalogStateTtlMs,
   collectCodexAppServerCatalogState,
   collectCodexAppServerCatalogStateForRequest,
@@ -1061,5 +1062,210 @@ describe("platform termination ladder", () => {
 
     expect(execCalls).toEqual([]);
     expect(signals).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
+  });
+});
+
+describe("request-path catalog state serves stale while revalidating (#2499)", () => {
+  // The suite's other command-line fixture is scoped to its own describe block.
+  const APP_SERVER_COMMAND_LINE = "/usr/local/bin/codex app-server";
+  const APP_SERVER = [{ pid: 42, commandLine: APP_SERVER_COMMAND_LINE }];
+
+  /**
+   * A probe that never settles on its own. Every test here needs to observe what a
+   * caller gets back WHILE an enumeration is still running, which is the whole point:
+   * on Windows this probe costs ~0.4s per candidate process and routinely outlives
+   * the 5s TTL, so before this change one turn per window paid for it on the request
+   * path.
+   */
+  function makeIo(clock: { ms: number }) {
+    const releases: Array<(snapshots: Array<{ pid: number; commandLine: string }>) => void> = [];
+    const io = {
+      platform: "win32" as const,
+      now: () => clock.ms,
+      listSnapshotsAsync: () =>
+        new Promise<Array<{ pid: number; commandLine: string }>>(resolve => {
+          releases.push(resolve);
+        }),
+      readStartMsBatchAsync: async (pids: number[]) => new Map(pids.map(pid => [pid, 2_000] as const)),
+      catalogMtimeMs: () => 1_000,
+    };
+    return { io, releases, enumerations: () => releases.length };
+  }
+
+  /**
+   * Yield until the released refresh has stored its result, or give up loudly.
+   *
+   * A fixed sleep would be a bet on how many turns the refresh's continuation
+   * needs, and losing that bet on a slow runner looks like a product bug rather
+   * than a slow machine. This waits for the condition instead of for a duration.
+   */
+  async function drainUntil(predicate: () => boolean, what: string) {
+    for (let attempt = 0; attempt < 1_000; attempt += 1) {
+      if (predicate()) return;
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    throw new Error(`timed out waiting for ${what}`);
+  }
+  /** Did *promise* settle without the pending probe being released? */
+  async function settledWithoutTheProbe<T>(promise: Promise<T> | T): Promise<T | "waited"> {
+    return Promise.race([
+      Promise.resolve(promise),
+      new Promise<"waited">(resolve => setTimeout(() => resolve("waited"), 25)),
+    ]);
+  }
+
+  beforeEach(() => {
+    resetCodexAppServerCatalogStateCache();
+  });
+
+  test("the first turn waits, later turns do not, and N turns cost one enumeration", async () => {
+    const clock = { ms: 1_000_000 };
+    const { io, releases, enumerations } = makeIo(clock);
+
+    // Cold: nothing cached, so this one has to wait for the probe.
+    const cold = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(cold)).toBe("waited");
+    releases[0]([...APP_SERVER]);
+    await expect(cold).resolves.toMatchObject({ state: "fresh" });
+    expect(enumerations()).toBe(1);
+
+    // Past the TTL. The reading is expired, and the refresh it triggers is still
+    // running -- the caller must get the previous reading now, not wait for it.
+    clock.ms += catalogStateTtlMs("fresh") + 1;
+    const warm = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(warm)).toMatchObject({ state: "fresh" });
+    expect(enumerations()).toBe(2);
+
+    // Three more turns while that refresh is still in flight: still served, and the
+    // in-flight dedup means none of them starts another enumeration.
+    for (let turn = 0; turn < 3; turn += 1) {
+      clock.ms += 10;
+      const next = collectCodexAppServerCatalogStateForRequest(io);
+      expect(await settledWithoutTheProbe(next)).toMatchObject({ state: "fresh" });
+    }
+    expect(enumerations()).toBe(2);
+  });
+
+  test("the refresh it triggers is what makes the next reading current", async () => {
+    const clock = { ms: 2_000_000 };
+    const { io, releases } = makeIo(clock);
+
+    const cold = collectCodexAppServerCatalogStateForRequest(io);
+    releases[0]([...APP_SERVER]);
+    await expect(cold).resolves.toMatchObject({ state: "fresh" });
+
+    clock.ms += catalogStateTtlMs("fresh") + 1;
+    // Served from the expired entry, and the refresh that call started is what the
+    // rest of this test is about.
+    const served = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(served)).toMatchObject({ state: "fresh" });
+
+    // The background refresh finds the machine empty now.
+    let refreshed = false;
+    served.then(() => {}).catch(() => {});
+    releases[1]([]);
+    // The refresh has landed once a read at the same instant reports the new
+    // state; before that it still answers from the entry it is replacing.
+    await drainUntil(() => {
+      void collectCodexAppServerCatalogStateForRequest(io).then(seen => {
+        if (seen.state === "not_running") refreshed = true;
+      });
+      return refreshed;
+    }, "the background refresh to store not_running");
+
+    // Served from the refreshed entry, still without waiting.
+    clock.ms += 1;
+    const after = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(after)).toMatchObject({ state: "not_running" });
+  });
+
+  test("a reading older than the bound is not served -- the caller waits for a real one", async () => {
+    const clock = { ms: 3_000_000 };
+    const { io, releases } = makeIo(clock);
+
+    const cold = collectCodexAppServerCatalogStateForRequest(io);
+    releases[0]([...APP_SERVER]);
+    await expect(cold).resolves.toMatchObject({ state: "fresh" });
+
+    // One tick inside the bound, which runs from expiry rather than from when the
+    // reading was taken: still served, still without waiting.
+    clock.ms += catalogStateTtlMs("fresh") + CATALOG_STATE_MAX_STALE_MS - 1;
+    const last = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(last)).toMatchObject({ state: "fresh" });
+
+    // One tick past it, where the reading stops being evidence about the machine.
+    // That call joins the refresh the previous one started rather than waiting on a
+    // second enumeration, so releasing that one probe is what settles it.
+    clock.ms += 1;
+    const tooOld = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(tooOld)).toBe("waited");
+    releases[1]([...APP_SERVER]);
+    await expect(tooOld).resolves.toMatchObject({ state: "fresh" });
+  });
+
+  test("a failed refresh does not evict the reading it was refreshing", async () => {
+    const clock = { ms: 5_000_000 };
+    const releases: Array<(snapshots: Array<{ pid: number; commandLine: string }>) => void> = [];
+    const rejects: Array<(reason: Error) => void> = [];
+    const io = {
+      platform: "win32" as const,
+      now: () => clock.ms,
+      listSnapshotsAsync: () =>
+        new Promise<Array<{ pid: number; commandLine: string }>>((resolve, reject) => {
+          releases.push(resolve);
+          rejects.push(reject);
+        }),
+      readStartMsBatchAsync: async (pids: number[]) => new Map(pids.map(pid => [pid, 2_000] as const)),
+      catalogMtimeMs: () => 1_000,
+    };
+
+    const cold = collectCodexAppServerCatalogStateForRequest(io);
+    releases[0]([{ pid: 42, commandLine: APP_SERVER_COMMAND_LINE }]);
+    await expect(cold).resolves.toMatchObject({ state: "fresh" });
+
+    // Expire it, take the stale answer, and let the refresh it started fail.
+    clock.ms += catalogStateTtlMs("fresh") + 1;
+    const served = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(served)).toMatchObject({ state: "fresh" });
+    rejects[1](new Error("windows_enum_incomplete"));
+    await drainUntil(() => rejects.length === 2, "the failing refresh to be started");
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    // The transient failure must not have replaced the observation. Caching
+    // `unknown` over it would take the answer away from the next caller: `unknown`
+    // is not servable, so that caller would wait for a probe instead of being
+    // handed the reading it would otherwise have had.
+    clock.ms += 1;
+    const after = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(after)).toMatchObject({ state: "fresh" });
+  });
+
+  test("`unknown` is never served stale -- a failure to observe is not an observation", async () => {
+    const clock = { ms: 4_000_000 };
+    const releases: Array<(value: never[]) => void> = [];
+    const rejects: Array<(reason: Error) => void> = [];
+    const io = {
+      platform: "win32" as const,
+      now: () => clock.ms,
+      listSnapshotsAsync: () =>
+        new Promise<never[]>((resolve, reject) => {
+          releases.push(resolve);
+          rejects.push(reject);
+        }),
+      readStartMsBatchAsync: async (pids: number[]) => new Map(pids.map(pid => [pid, 2_000] as const)),
+      catalogMtimeMs: () => 1_000,
+    };
+
+    const cold = collectCodexAppServerCatalogStateForRequest(io);
+    rejects[0](new Error("windows_enum_incomplete"));
+    await expect(cold).resolves.toMatchObject({ state: "unknown" });
+
+    // Its own short window has passed. Handing `unknown` back again would keep
+    // guidance suppressed on the strength of a reading that never observed anything.
+    clock.ms += catalogStateTtlMs("unknown") + 1;
+    const next = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(next)).toBe("waited");
+    releases[1]([]);
+    await expect(next).resolves.toMatchObject({ state: "not_running" });
   });
 });
