@@ -284,15 +284,22 @@ export function parseCallbackInput(input: string): { kind: "url" | "query" | "ra
     // place a fragment-returning provider would land, and the raw branch below
     // already understands `code#state`.
     //
-    // Query wins when both are present: it is the authorization-code response
-    // location, so no paste that works today changes meaning. Only `code` and
-    // `state` are read — never a token. This repo does not implement the
-    // implicit grant and a paste field must not become the place it appears.
+    // The query wins as a WHOLE when it carries the response, and the two
+    // fields are never mixed across collections. Reading `code` and `state`
+    // independently would accept `?state=<expected>#code=<other>` — one
+    // response assembled from two sources — which is exactly the confusion a
+    // state check exists to prevent. An authorization response arrives in one
+    // place; treat it that way.
+    //
+    // Only `code` and `state` are read — never a token. This repo does not
+    // implement the implicit grant and a paste field must not become the place
+    // it appears.
     const fragment = new URLSearchParams(url.hash.replace(/^#/, ""));
+    const source = url.searchParams.has("code") ? url.searchParams : fragment;
     return {
       kind: "url",
-      code: url.searchParams.get("code") ?? fragment.get("code") ?? undefined,
-      state: url.searchParams.get("state") ?? fragment.get("state") ?? undefined,
+      code: source.get("code") ?? undefined,
+      state: source.get("state") ?? undefined,
     };
   } catch {
     // Not a URL - check for query string format

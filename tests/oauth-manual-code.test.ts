@@ -72,6 +72,25 @@ describe("parseCallbackInput kinds", () => {
     });
   });
 
+  test("code and state are never mixed across the query and the fragment", () => {
+    // `?state=<expected>#code=<other>` used to parse as one response assembled
+    // from two collections: a state the user's own login supplied, paired with
+    // a code from somewhere else. PKCE limits what that buys an attacker, but
+    // pairing them at all defeats the check state exists to perform.
+    //
+    // The query wins as a WHOLE or not at all. Here it carries no code, so the
+    // fragment is the response — and it brought no state, which
+    // submitManualLoginCode then rejects.
+    expect(parseCallbackInput("http://127.0.0.1:56121/callback?state=expected#code=other")).toEqual({
+      kind: "url", code: "other", state: undefined,
+    });
+    // The mirror image: the query owns the response, so a fragment state is
+    // never borrowed to complete it.
+    expect(parseCallbackInput("http://127.0.0.1:56121/callback?code=q#state=borrowed")).toEqual({
+      kind: "url", code: "q", state: undefined,
+    });
+  });
+
   test("a fragment code without state stays kind url, so state stays mandatory", () => {
     // kind must NOT degrade to raw: that is what would exempt it from the CSRF
     // check and turn a convenience into a hole.

@@ -130,6 +130,39 @@ deny-by-default.
 
 You can also start OAuth from the [web dashboard](/guides/web-dashboard/).
 
+### Logging in from another browser profile, or another machine
+
+When a login starts, the proxy opens the authorization URL on **its own** machine, using the OS
+default browser — and therefore the default profile. That is the right behavior for a local
+desktop and the wrong one in two common cases: you need a different browser profile (a work
+identity, a second account), or the dashboard is open against a proxy running somewhere else.
+
+Every login surface shows the authorization URL with a copy button, the device code when the
+provider issues one, and a field to paste the redirect URL or authorization code back. So you can
+always finish a login by hand.
+
+To stop the proxy from opening a browser at all, tick **Don't open a browser on the proxy machine**
+beside the login button, or set it permanently:
+
+```json
+{ "oauthOpenBrowser": false }
+```
+
+Absent and `true` both open, so nothing changes for an existing install; only an explicit
+`false` declines. `POST /api/oauth/login` and `POST /api/codex-auth/login` also accept a
+per-request `openBrowser` boolean that overrides the stored setting for that login.
+
+Two cases behave differently, and it is worth knowing which you are in:
+
+- **A different browser profile on the same machine** works with the copied link alone. The
+  loopback callback on `127.0.0.1` still completes the flow.
+- **A browser on a different machine** also needs the paste fallback, because the redirect URI is
+  still `http://127.0.0.1:<port>/callback` on the proxy's host. Finish the login there, then paste
+  the redirect URL (or just the code) back into the dashboard or `ocx account code`.
+
+Device-code providers never open a browser from the proxy in either case: they show a code and a
+verification URL to open wherever you are signed in.
+
 ### Multiple OAuth accounts
 
 OAuth providers whose credentials include a stable account id or email can keep more than one
