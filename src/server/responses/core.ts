@@ -203,6 +203,7 @@ import {
   applySubagentModelFallback,
   maybePrimeSubagentQuota,
   recordSubagentQuotaFailureForThreadSpawn,
+  type SubagentPoolAccountPreview,
 } from "../../codex/subagent-model-fallback";
 import { isNativeMainTrafficBlocked } from "../../codex/native-profile-startup";
 import {
@@ -2366,7 +2367,7 @@ async function handleResponsesInner(
   };
   let selectedForwardHeaders = req.headers;
   let subagentFallbackAccountId = config.activeCodexAccountId ?? null;
-  let subagentFallbackPreviewAccountId: string | null | undefined;
+  let subagentFallbackAccountPreview: SubagentPoolAccountPreview | undefined;
   let subagentQuotaFailureModel = parsed.modelId;
   const parentThreadId = req.headers.get("x-codex-parent-thread-id")?.trim() ?? null;
   const poolAffinityKey = codexPoolAffinityKey(req.headers) ?? null;
@@ -2389,23 +2390,25 @@ async function handleResponsesInner(
     // so the preview must read the same scope slot — an undefined scope would map to the
     // "legacy" affinity bucket and never find a binding made under "shared" or a native
     // model scope, making the preview diverge from the account that actually authenticates.
-    const previewAccountId = previewCodexAccountForRequest(
+    const fallbackNow = Date.now();
+    subagentFallbackAccountPreview = (modelId, previewNow) => previewCodexAccountForRequest(
       poolAffinityKey,
       config,
-      Date.now(),
-      codexQuotaScopeForModel(route.modelId),
+      previewNow,
+      codexQuotaScopeForModel(modelId),
       previewSelectionOptions,
     );
-    subagentFallbackPreviewAccountId = previewAccountId;
+    const previewAccountId = subagentFallbackAccountPreview(route.modelId, fallbackNow);
     subagentFallbackAccountId = previewAccountId ?? config.activeCodexAccountId ?? null;
     const fallback = applySubagentModelFallback(
       parsed,
       req.headers,
       config,
       previewAccountId,
-      Date.now(),
+      fallbackNow,
       unreadableEncryptedAgentTask,
       previewSelectionOptions,
+      subagentFallbackAccountPreview,
     );
     if (fallback) {
       (logCtx as unknown as Record<string, unknown>).subagentModelFallbackFrom = fallback.from;
@@ -2488,15 +2491,37 @@ async function handleResponsesInner(
           // The ciphertext-only pass intentionally excludes routed candidates. Once recovery
           // makes the assignment readable, run selection again with the full configured chain
           // and keep the route in sync with any newly selected fallback.
-          const fallback = applySubagentModelFallback(
-            parsed,
-            req.headers,
-            config,
-            subagentFallbackPreviewAccountId,
-            Date.now(),
-            false,
-            previewSelectionOptions,
-          );
+          const recoverySelectionAdmission = codexAccountSelectionForTurn(options.turnAdmissionLease)?.();
+          const fallback = (() => {
+            try {
+              const recoveryNativeMainBlocked = isNativeMainTrafficBlocked();
+              const recoverySelectionOptions = {
+                nativeMainSelectionOnly: !recoveryNativeMainBlocked
+                  && recoverySelectionAdmission?.mainProfileDraining === true,
+              };
+              const recoveryNow = Date.now();
+              subagentFallbackAccountPreview = (modelId, previewNow) => previewCodexAccountForRequest(
+                poolAffinityKey,
+                config,
+                previewNow,
+                codexQuotaScopeForModel(modelId),
+                recoverySelectionOptions,
+              );
+              const recoveryPreviewAccountId = subagentFallbackAccountPreview(parsed.modelId, recoveryNow);
+              return applySubagentModelFallback(
+                parsed,
+                req.headers,
+                config,
+                recoveryPreviewAccountId,
+                recoveryNow,
+                false,
+                recoverySelectionOptions,
+                subagentFallbackAccountPreview,
+              );
+            } finally {
+              recoverySelectionAdmission?.release();
+            }
+          })();
           if (fallback) {
             (logCtx as unknown as Record<string, unknown>).subagentModelFallbackFrom = fallback.from;
             (logCtx as unknown as Record<string, unknown>).subagentModelFallbackTo = fallback.to;
