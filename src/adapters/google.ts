@@ -49,6 +49,43 @@ const GOOGLE_BREVITY_INSTRUCTION = [
 ].join("\n");
 
 /**
+ * Documented output ceiling for a Google-surface model, or `undefined` when the id is not
+ * recognized.
+ *
+ * Unknown ids return `undefined` deliberately. An earlier revision returned a 16,384 floor for
+ * anything unmatched, which silently truncated aliases, gateway ids, and any model added after
+ * this table was written — the operator asked for N tokens and got 16,384 with no signal. A cap
+ * we cannot justify is worse than no cap: `structure/02_config-and-codex-home.md` is explicit
+ * that an explicit request value wins, so an unrecognized model passes through untouched and the
+ * upstream remains the authority on its own limit.
+ *
+ * Matching is prefix/family based rather than substring based for the same reason: `includes("pro")`
+ * matched any id containing "pro" (`my-prototype-model`), and `includes("oss")` matched any id
+ * containing "oss" (`crossover-v2`).
+ */
+export function maxOutputTokensForGoogleModel(modelId: string): number | undefined {
+  const lower = modelId.toLowerCase().trim();
+  if (lower.startsWith("gemini")) {
+    // Pro tops out one token below the flash/other Gemini ceiling; both are documented values.
+    return /(^|[-.])pro([-.]|$)/.test(lower) ? 65535 : 65536;
+  }
+  if (lower.startsWith("claude")) return 64000;
+  if (lower.startsWith("gpt-oss")) return 32768;
+  return undefined;
+}
+
+export function clampGoogleMaxOutputTokens(
+  modelId: string,
+  requestedTokens?: number,
+): number | undefined {
+  if (requestedTokens === undefined || requestedTokens <= 0) return undefined;
+  const modelMax = maxOutputTokensForGoogleModel(modelId);
+  // Unknown model: honour the request as-is rather than inventing a ceiling for it.
+  if (modelMax === undefined) return requestedTokens;
+  return Math.min(requestedTokens, modelMax);
+}
+
+/**
  * Some Google direct deployments expose current Gemini Flash generations with a `-tiered`
  * wire suffix (`gemini-3.7-flash` -> `gemini-3.7-flash-tiered`). Keep the picker-visible id
  * stable and make the mapping configurable for deployments that still serve the bare id.
@@ -650,7 +687,8 @@ export function createGoogleAdapter(provider: OcxProviderConfig): ProviderAdapte
       if (toolConfig) body.toolConfig = toolConfig;
 
       const generationConfig: Record<string, unknown> = {};
-      if (parsed.options.maxOutputTokens) generationConfig.maxOutputTokens = parsed.options.maxOutputTokens;
+      const clampedMaxOutputTokens = clampGoogleMaxOutputTokens(identityModelId, parsed.options.maxOutputTokens);
+      if (clampedMaxOutputTokens !== undefined) generationConfig.maxOutputTokens = clampedMaxOutputTokens;
       if (parsed.options.temperature !== undefined) generationConfig.temperature = parsed.options.temperature;
       if (parsed.options.topP !== undefined) generationConfig.topP = parsed.options.topP;
       if (parsed.options.stopSequences) generationConfig.stopSequences = parsed.options.stopSequences;
