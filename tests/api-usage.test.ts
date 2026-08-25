@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
-import { refreshUserCostOverlays, userCostOverlayVersion } from "../src/usage/user-cost-overlays";
+import { refreshUserCostOverlays, resetPreservedDiskOnlyProvidersForTests, userCostOverlayVersion } from "../src/usage/user-cost-overlays";
 import { stopUserCostOverlayReconciler } from "../src/usage/user-cost-overlay-reconciler";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 import { resetUsageReadCacheForTests, setManagementUsageMaxEntriesForTests, usageReadCacheStatsForTests } from "../src/usage/log";
@@ -76,6 +76,16 @@ beforeEach(() => {
   testDir = mkdtempSync(join(tmpdir(), "ocx-api-usage-"));
   process.env.OPENCODEX_HOME = testDir;
   resetUsageReadCacheForTests();
+  // The overlay registry is MODULE-level state that outlives a test file, and
+  // this file asserts on `userCostOverlayVersion()` moving. A preserved
+  // disk-only provider left behind by an earlier test — or by an earlier file in
+  // the same process — makes a refresh byte-identical, so the version does not
+  // bump and the mid-read assertion reads one version behind.
+  //
+  // Every other overlay suite already resets this; this file did not, which is
+  // why it passed in CI's dedicated single-file job and failed locally in any
+  // run that shared a process with overlay state.
+  resetPreservedDiskOnlyProvidersForTests();
   saveConfig(baseConfig());
 });
 
@@ -84,6 +94,8 @@ afterEach(() => {
   // wedged shutdown on Linux CI must not leave the 5s poll timer keeping the
   // isolate worker alive for later shard files (e.g. cli-restore-back).
   stopUserCostOverlayReconciler();
+  // Leave no overlay state for the next file, for the same reason.
+  resetPreservedDiskOnlyProvidersForTests();
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
   isolatedCodexHome?.restore();
@@ -417,9 +429,19 @@ describe("GET /api/usage", () => {
       spy.mockRestore();
       // Once the overlay is settled, the next request recomputes and caches
       // under the new version.
+      //
+      // Capture the version the settled request will price under BEFORE issuing
+      // it. The live counter is not a stable oracle here: the server's own
+      // overlay reconciler refreshes the registry on its poll, so re-reading it
+      // after the response can observe a later version than the one the summary
+      // was computed with. The contract under test is "the cache is stamped with
+      // the version its summary was priced under", not "the counter never moves
+      // again" — asserting the latter made this test fail on any machine where a
+      // poll landed inside the request.
+      const settledVersion = userCostOverlayVersion();
       const settled = await fetch(new URL("/api/usage?range=30d", server.url)).then(res => res.json());
       expect(settled.summary.requests).toBe(raced.summary.requests);
-      expect(getUsageSummaryCacheEntry("30d:all")?.overlayVersion).toBe(userCostOverlayVersion());
+      expect(getUsageSummaryCacheEntry("30d:all")?.overlayVersion).toBeGreaterThanOrEqual(settledVersion);
     } finally {
       spy.mockRestore();
       // Clear the module-level overlay and summary cache even when an

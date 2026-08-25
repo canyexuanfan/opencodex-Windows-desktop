@@ -391,6 +391,8 @@ export const en = {
   "prov.waitingBrowser": "Waiting for browser…",
   "prov.didntOpen": "Didn't open? Click here",
   "prov.copyLink": "Copy link",
+  "prov.dontOpenBrowser": "Don't open a browser on the proxy machine",
+  "prov.dontOpenBrowserHint": "Useful for a different browser profile, or when the dashboard is not on the proxy's machine.",
   "prov.linkCopied": "Copied",
   "prov.linkCopyUnavailable": "Clipboard unavailable",
   "prov.deviceCode": "Device code",

@@ -377,6 +377,8 @@ export const ko: Record<TKey, string> = {
   "prov.waitingBrowser": "브라우저 대기 중…",
   "prov.didntOpen": "안 열렸나요? 여기를 클릭하세요",
   "prov.copyLink": "링크 복사",
+  "prov.dontOpenBrowser": "프록시가 실행 중인 컴퓨터에서 브라우저를 열지 않기",
+  "prov.dontOpenBrowserHint": "다른 브라우저 프로필로 로그인하거나, 대시보드를 프록시와 다른 컴퓨터에서 쓸 때 유용합니다.",
   "prov.linkCopied": "복사됨",
   "prov.linkCopyUnavailable": "클립보드를 사용할 수 없음",
   "prov.deviceCode": "기기 인증 코드",

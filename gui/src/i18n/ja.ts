@@ -379,6 +379,8 @@ export const ja: Record<TKey, string> = {
   "prov.waitingBrowser": "ブラウザを待機中…",
   "prov.didntOpen": "開きませんか? ここをクリック",
   "prov.copyLink": "リンクをコピー",
+  "prov.dontOpenBrowser": "プロキシのマシンでブラウザーを開かない",
+  "prov.dontOpenBrowserHint": "別のブラウザープロファイルでログインする場合や、ダッシュボードがプロキシと別のマシンにある場合に使います。",
   "prov.linkCopied": "コピーしました",
   "prov.linkCopyUnavailable": "クリップボードを使用できません",
   "prov.deviceCode": "デバイスコード",
