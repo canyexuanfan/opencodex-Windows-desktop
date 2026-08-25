@@ -21,11 +21,20 @@ function freePort(): Promise<number> {
 }
 
 async function waitForProxy(port: number): Promise<boolean> {
-  const deadline = Date.now() + 15_000;
+  // A cold detached proxy takes ~2s locally, but this test runs inside a CI
+  // batch of twelve files on a shared runner, where the same boot has been
+  // observed to blow a 15s budget and fail the whole shard. The test's own
+  // Bun timeout is 60s, so the readiness wait may use most of that: this
+  // deadline exists to stop a hung proxy, not to assert a boot deadline the
+  // suite never intended to enforce.
+  const deadline = Date.now() + 45_000;
   while (Date.now() < deadline) {
     try {
       const response = await fetch(`http://127.0.0.1:${port}/healthz`, {
-        signal: AbortSignal.timeout(500),
+        // A loaded runner can exceed 500ms on the very first connection while
+        // the process is still binding; a short per-probe timeout there reads
+        // as "not ready" for a proxy that is merely slow to accept.
+        signal: AbortSignal.timeout(2_000),
       });
       if (response.ok) return true;
     } catch { /* detached proxy is still starting */ }
