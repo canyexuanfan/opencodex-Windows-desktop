@@ -14,6 +14,7 @@ import OAuthTosWarningModal from "./OAuthTosWarningModal";
 import ProviderCatalog from "./provider-catalog/ProviderCatalog";
 import type { AccountLoginRow, AccountLoginStatus } from "./provider-catalog/ProviderCatalog";
 import type { CatalogPreset } from "./provider-catalog/provider-presets";
+import type { CatalogLoginHint } from "./provider-catalog/login-hint-visibility";
 import { baseUrlForChoice, matchChoiceId, resolvedBaseUrlForChoice } from "../base-url-choice";
 import { AddProviderOAuthPane } from "./add-provider-oauth-pane";
 import { AddProviderFormPane } from "./add-provider-form-pane";
@@ -29,7 +30,8 @@ type Preset = CatalogPreset;
 
 export default function AddProviderModal({
   apiBase, existingNames, onClose, onAdded, initialTier, initialCustom = false,
-  accountRows, accountStatus, accountBusy, onAccountLogin, onAccountCancelLogin, onAccountLogout, onAccountManage, onOpen,
+  accountRows, accountStatus, accountBusy, accountLoginHint = null,
+  onAccountLogin, onAccountCancelLogin, onAccountLogout, onAccountManage, onOpen,
 }: {
   apiBase: string;
   existingNames: string[];
@@ -40,6 +42,8 @@ export default function AddProviderModal({
   accountRows?: AccountLoginRow[];
   accountStatus?: Record<string, AccountLoginStatus>;
   accountBusy?: string | null;
+  /** Login hint for an Accounts-tab login in flight, owned by the providers page. */
+  accountLoginHint?: CatalogLoginHint | null;
   onAccountLogin?: (provider: string, addAccount?: boolean) => void;
   onAccountCancelLogin?: (provider: string) => void;
   onAccountLogout?: (provider: string) => void;
@@ -257,6 +261,15 @@ export default function AddProviderModal({
             onCancelLogin={onAccountCancelLogin}
             onLogout={onAccountLogout}
             onManage={onAccountManage}
+            loginHint={accountLoginHint}
+            paste={{
+              value: manualCode,
+              busy: manualCodeBusy,
+              message: manualCodeMsg,
+              ok: manualCodeOk,
+              onChange: code => dispatch({ type: "set-manual-code", code }),
+              onSubmit: providerId => { void submitManualCode(providerId); },
+            }}
           />
         ) : form && (
           preset.auth === "oauth" && form.authMode === "oauth" ? (
