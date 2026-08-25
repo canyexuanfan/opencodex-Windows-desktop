@@ -1,0 +1,169 @@
+# 010 — WP2: one login-hint component on every surface
+
+**Issue:** feature proposal. **PR base:** `dev`. **Screenshot:** required.
+
+## The defect
+
+Four GUI surfaces render a login-in-progress. Each renders a different subset
+of what the server sent:
+
+| Surface | URL | Device code | Paste |
+|---------|-----|-------------|-------|
+| `ProviderAuthPanel` | yes | yes | **no** |
+| `AddProviderOAuthPane` | yes | **no** | yes |
+| `ProviderCatalog` account row | **no** | **no** | **no** |
+| `AddCodexAccountWaitingStep` | yes | **no** | yes |
+
+No surface has all three. A Kimi login shows an empty box on every one of
+them, because `kimi.ts:212` puts the user code in a prose `instructions`
+string and never sets `deviceCode`.
+
+## The change
+
+### 1. `gui/src/components/login-url-block.tsx` → a full hint component
+
+Keep `LoginUrlBlock` as-is (it has three callers and a clean contract) and add
+a sibling in the same file that composes it:
+
+```tsx
+export type LoginHintData = {
+  url?: string;
+  deviceCode?: string;
+  instructions?: string;
+};
+
+export function LoginHint({ hint, paste }: {
+  hint: LoginHintData;
+  paste?: {
+    value: string;
+    busy: boolean;
+    message: string;
+    ok: boolean;
+    onChange: (v: string) => void;
+    onSubmit: () => void;
+  };
+}) { … }
+```
+
+Render order, which is the UX decision this phase is actually making:
+
+1. **Device code first when present.** It is the thing the human has to type,
+   and it is short. Copy button beside it, reusing `useCopyFeedback` and the
+   existing `.pwi-device-code` styles lifted into
+   `gui/src/styles/login-url-block.css`.
+2. **Then the URL**, via the existing `LoginUrlBlock` — selectable text, copy,
+   and the "didn't open?" external link.
+3. **Then `instructions`**, if the provider sent prose.
+4. **Then the paste row**, when the caller supplies `paste`.
+
+`LoginUrlBlock` returns `null` on an empty URL today; `LoginHint` must not —
+a device flow with no URL still has a code to show. Guard on
+"nothing at all to render" instead.
+
+### 2. `gui/src/components/use-add-provider-oauth.ts:53`
+
+```diff
+-const data = await res.json() as { url?: string; instructions?: string; error?: string };
++const data = await res.json() as { url?: string; instructions?: string; deviceCode?: string; error?: string };
+-if (data.url) { setOauthUrl(data.url, providerId); setOauthMsg(t("modal.waitingLogin")); }
+-else { setOauthMsg(data.instructions || t("modal.loggingIn")); }
++setOauthHint({ url: data.url, deviceCode: data.deviceCode, instructions: data.instructions }, providerId);
++setOauthMsg(data.url || data.deviceCode ? t("modal.waitingLogin") : (data.instructions || t("modal.loggingIn")));
+```
+
+The reducer in `add-provider-modal-reducer.ts` carries `oauthUrl` +
+`oauthUrlProvider` today; widen to an `oauthHint` object with the same
+provider tag so a stale hint from a cancelled provider still cannot leak into
+another provider's pane.
+
+### 3. `src/oauth/kimi.ts:212`
+
+```diff
+-ctrl.onAuth?.({ url: device.verificationUriComplete, instructions: `Enter code: ${device.userCode}` });
++ctrl.onAuth?.({
++  url: device.verificationUriComplete,
++  instructions: `Enter code: ${device.userCode}`,
++  deviceCode: device.userCode,
++});
+```
+
+Matches `nous.ts:660-663` and `github-copilot.ts:396-400`, and `instructions`
+is unchanged so the CLI keeps printing what it printed.
+
+**This is not purely additive, and the PR must say so.** The management route
+gates its browser-open on that exact field:
+
+```ts
+// oauth-account-routes.ts:170
+if (authUrl && !deviceCode) { openUrl(authUrl); }
+```
+
+Today Kimi sets no `deviceCode`, so the proxy auto-opens
+`device.verificationUriComplete` — a **provider-supplied** URL. Setting
+`deviceCode` means Kimi stops being auto-opened, exactly like Nous and
+Copilot already are.
+
+That is the correct direction on both counts. It ends an inconsistency where
+two device providers are treated as device flows and the third is not, and it
+stops handing a server-supplied URI to a local process spawn — the very thing
+`github-copilot.ts:392-394` refuses to do. The operator does not lose access
+to the link: WP2 is the phase that puts that URL on screen with a copy button
+on every surface, which is strictly more reach than an auto-open into whatever
+profile happens to be default.
+
+It still must be **stated in the PR description as a behavior change**, with
+the before/after in the Summary section, rather than buried under "additive".
+A reviewer who reads only the diff to `kimi.ts` will not see the route.
+
+**Not in this phase:** allowlisting `verificationUriComplete` before it
+reaches `onAuth` at all, for Kimi and Nous. That is a separate security
+change with its own issue (`002`). Note the ordering benefit: after WP2, no
+device provider's server-supplied URL reaches `openUrl`, so that issue governs
+what is *displayed*, not what is *executed*.
+
+### 4. Call sites
+
+- `add-provider-oauth-pane.tsx:59-99` — replace `LoginUrlBlock` + the inline
+  paste block with one `<LoginHint hint={hint} paste={…} />`.
+- `ProviderAuthPanel.tsx:392-402` — replace the inline device-code block and
+  `LoginUrlBlock` with `<LoginHint>`, **and pass `paste`**. This is the
+  first time the workspace panel can accept a pasted code; it needs the same
+  `submitManualCode` the modal already has, pointed at
+  `/api/oauth/login/code`.
+- `add-codex-account-waiting-step.tsx:38-69` — same swap. Its submit goes to
+  `/api/codex-auth/login/code`, so `paste.onSubmit` stays caller-owned.
+
+## i18n
+
+`prov.deviceCode` exists. New keys, added to **all** locale files under
+`gui/src/i18n/` (en, ko, ja, zh, zh-TW, de, fr, ru, tr):
+
+- `prov.deviceCodeHint` — "Enter this code after opening the link."
+
+English is the source; a locale that has no translation yet falls back through
+the existing mechanism rather than shipping an English string in a translated
+file.
+
+## Test
+
+`tests/oauth-login-hint.test.ts` (new):
+
+1. `loginKimi` calls `onAuth` with `deviceCode` equal to the user code —
+   fake the device-authorization fetch, assert the field. This is the one
+   assertion that would have caught the original gap.
+2. Re-assert the same for `loginNous` and `loginGithubCopilot` so the
+   contract is enforced for every device provider, not just the one being
+   fixed.
+3. Route-level: with `deviceCode` present, `POST /api/oauth/login` does not
+   call the opener; with a browser flow it does. This locks the consequence
+   described above so it can never regress silently in either direction.
+
+GUI rendering is verified by screenshot in the PR; this repo has no component
+test harness and this phase is not the place to introduce one.
+
+## Acceptance
+
+- A Kimi login shows a copyable code on all three surfaces.
+- The workspace panel accepts a pasted redirect URL for the first time.
+- `bun run typecheck`, `bun run test`, `bun run lint:gui` green.
+- Screenshot of the waiting state with a device code visible.
