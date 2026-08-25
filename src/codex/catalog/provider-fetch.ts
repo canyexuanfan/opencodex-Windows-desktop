@@ -38,7 +38,7 @@ import {
   serviceTierSupportFromPolicy,
 } from "../../providers/service-tier";
 import type { FastPolicyAuthority } from "../../providers/fastwire";
-import { effectiveGoogleMode, getProviderRegistryEntry, providerMatchesRegistryTransport } from "../../providers/registry";
+import { effectiveGoogleMode, getProviderRegistryEntry, providerMatchesRegistryTransport, registryEntryForProviderDestination } from "../../providers/registry";
 import { parseAntigravityAvailableModels, registerAntigravityDiscoveredWireModels } from "../../providers/antigravity-models";
 import { applyProviderContextCap, providerContextCap, resolveUnknownRoutedContextWindow } from "../../providers/context-cap";
 import { clampAutoCompactTokenLimit } from "../../providers/auto-compact-budget";
@@ -577,6 +577,7 @@ function providerCatalogFingerprint(name: string, prov: OcxProviderConfig): Reco
     re: prov.modelReasoningEfforts ?? null,
     defRe: prov.modelDefaultReasoningEfforts ?? null,
     rsSum: prov.modelSupportsReasoningSummaries ?? null,
+    verbosity: prov.modelSupportsVerbosity ?? null,
     rsDel: prov.modelReasoningSummaryDelivery ?? null,
     serviceTier: prov.modelSupportsServiceTier ?? null,
     noVis: [...(prov.noVisionModels ?? [])].sort(),
@@ -645,8 +646,22 @@ function configuredReasoningSummarySupport(prov: OcxProviderConfig | undefined, 
   return modelRecordValue(prov.modelReasoningSummaryDelivery, id) !== undefined ? true : undefined;
 }
 
+function configuredVerbositySupport(name: string, prov: OcxProviderConfig | undefined, id: string): boolean | undefined {
+  const explicit = prov ? modelRecordValue(prov.modelSupportsVerbosity, id) : undefined;
+  if (explicit !== undefined) return explicit;
+  if (!prov) return undefined;
+  const entry = (providerMatchesRegistryTransport(name, prov) ? getProviderRegistryEntry(name) : undefined)
+    ?? registryEntryForProviderDestination(prov);
+  if (!entry) return undefined;
+  const perModel = modelRecordValue(entry.modelSupportsVerbosity, id);
+  if (perModel !== undefined) return perModel;
+  // Provider-wide fallback. `modelSupportsVerbosity` only enumerates the ids present when the
+  // registry row was written, so a live-discovered model used to fall through here and
+  // re-advertise a control the upstream accepts and ignores. A per-model entry still wins.
+  return entry.supportsVerbosity;
+}
+
 export function applyProviderConfigHints(name: string, prov: OcxProviderConfig, model: CatalogModel, providerCap?: number): CatalogModel {
-  void name;
   const configuredCap = configuredContextWindow(prov, model.id);
   const configuredMaxInput = configuredMaxInputTokens(prov, model.id);
   const configuredAutoCompact = configuredAutoCompactTokenLimit(prov, model.id);
@@ -662,6 +677,7 @@ export function applyProviderConfigHints(name: string, prov: OcxProviderConfig, 
   const reasoningEfforts = configuredReasoningEfforts(prov, model.id);
   const defaultReasoningEffort = modelRecordValue(prov.modelDefaultReasoningEfforts, model.id) ?? model.defaultReasoningEffort;
   const supportsReasoningSummaries = configuredReasoningSummarySupport(prov, model.id);
+  const supportsVerbosity = configuredVerbositySupport(name, prov, model.id);
   const fastPolicy = fastPolicyForModel(prov, model.id, name);
   const supportsServiceTier = serviceTierSupportFromPolicy(fastPolicy);
   const {
@@ -690,11 +706,11 @@ export function applyProviderConfigHints(name: string, prov: OcxProviderConfig, 
       : {}),
     ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
     ...(typeof supportsReasoningSummaries === "boolean" ? { supportsReasoningSummaries } : {}),
+    ...(typeof supportsVerbosity === "boolean" ? { supportsVerbosity } : {}),
     ...(typeof supportsServiceTier === "boolean" ? { supportsServiceTier } : {}),
     ...(supportsServiceTier === true && fastPolicy.fastTierDescription !== undefined
       ? { fastTierDescription: fastPolicy.fastTierDescription }
       : {}),
-    ...(prov.adapter === "kiro" ? { supportsVerbosity: false } : {}),
     // Default-on for openai-chat providers (explicit false opts out); other adapters
     // advertise only on explicit opt-in.
     ...(prov.parallelToolCalls === true || (prov.adapter === "openai-chat" && prov.parallelToolCalls !== false)
