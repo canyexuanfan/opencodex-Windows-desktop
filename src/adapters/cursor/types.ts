@@ -28,6 +28,13 @@ export interface CursorRunRequest {
    * suppressing that default. Codex-identified sessions keep the absent-field behavior.
    */
   suppressDefaultCursorToolCatalog?: boolean;
+  /**
+   * Corrective active-turn text for the single envelope-echo retry (devlog 260826 gap-10).
+   * When set on an external tool-result continuation, buildPreparedCursorRunRequest uses it as
+   * the userMessageAction text instead of the standard continuation text; rawMessages stay
+   * untouched so history replay is unchanged.
+   */
+  echoRetryContinuationText?: string;
   conversationId: string;
   system: string[];
   messages: CursorRequestMessage[];

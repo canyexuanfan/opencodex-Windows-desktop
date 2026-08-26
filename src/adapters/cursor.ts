@@ -30,6 +30,11 @@ import { estimateTokens } from "../lib/token-estimate";
 import { rememberCursorThreadConversation } from "./cursor/thread-continuity";
 import { runCursorTurnWithRetry } from "./cursor/transport-retry";
 import {
+  CURSOR_ECHO_RETRY_CONTINUATION_TEXT,
+  CursorEnvelopeEchoSniffer,
+  CursorToolResultEchoError,
+} from "./cursor/envelope-echo";
+import {
   createDisabledCursorTransport,
   CursorTransportDisabledError,
   type CursorTransportFactory,
@@ -211,6 +216,26 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
         };
 
         const runOnce = async (activeRequest: ReturnType<typeof createCursorRequest>) => {
+          // Envelope echo quarantine (devlog 260826 gap-10): external full-replay continuations
+          // whose trailing input is a tool result sometimes ECHO the replayed "[Tool Result]"
+          // envelope as assistant text (kimi-k3 ~30-40% of multi-round probes). Hold the first
+          // text deltas until they provably diverge from the markers; a completed marker turns
+          // the turn into a retryable semantic failure BEFORE any client-visible delta escapes.
+          // Armed for ANY external turn whose replayed history contains a tool result — echo
+          // priming was observed live on user-action rounds too (the envelope lives in the
+          // flattened history regardless of which role ends the input).
+          const armEchoSniffer =
+            isCursorExternalWireModel(activeRequest.modelId)
+            && (_parsed.context.messages ?? []).some(message => message.role === "toolResult");
+          const echoSniffer = armEchoSniffer ? new CursorEnvelopeEchoSniffer() : undefined;
+          let echoHeld: AdapterEvent[] = [];
+          const releaseEchoHeld = () => {
+            for (const held of echoHeld) {
+              if (held.type !== "heartbeat") emittedOutput = true;
+              emit(held);
+            }
+            echoHeld = [];
+          };
           await runCursorTurnWithRetry(
             makeTransport,
             {
@@ -236,13 +261,39 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
                 if (captured !== lastTransport?.captured) capturedAfterClientTool = emittedClientTool;
                 lastTransport = { captured };
               }
-              const events = mapCursorServerMessage(message, {
-                kv,
-                writeClient: clientMessage => {
-                  void activeTransport.writeClient(clientMessage);
-                },
-              });
-              for (const event of events) {
+             const events = mapCursorServerMessage(message, {
+               kv,
+               writeClient: clientMessage => {
+                 void activeTransport.writeClient(clientMessage);
+               },
+             });
+             for (const event of events) {
+                if (echoSniffer && !echoSniffer.settled) {
+                  if (event.type === "text_delta") {
+                    const decision = echoSniffer.feed(event.text);
+                    if (decision.kind === "echo") {
+                      echoHeld = [];
+                      throw new CursorToolResultEchoError(decision.marker);
+                    }
+                    if (decision.kind === "hold") {
+                      echoHeld.push(event);
+                      continue;
+                    }
+                    // flush: release everything held, then fall through to emit this event.
+                    releaseEchoHeld();
+                  } else if (event.type === "thinking_delta" || event.type === "heartbeat") {
+                    // Reasoning/liveness before first text never decides the echo question;
+                    // hold thinking in order, pass heartbeats through.
+                    if (event.type === "thinking_delta") {
+                      echoHeld.push(event);
+                      continue;
+                    }
+                  } else {
+                    // A tool call, done, or error settles it: not an echo. Release and disarm.
+                    echoSniffer.finish();
+                    releaseEchoHeld();
+                  }
+                }
                 if (event.type !== "heartbeat") emittedOutput = true;
                 if (event.type === "done") {
                   commitCapturedCheckpoint(activeRequest);
@@ -274,37 +325,71 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
         try {
           await runOnce(request);
         } catch (err) {
-          // One-shot fallback for external-model Connect invalid_argument before any
-          // non-heartbeat output. Retries apply only to safe plain-user turns; tool-result
-          // resumes, local exec/MCP side effects, and already-emitted output fail closed.
+          // One-shot corrective retry for an echoed tool-result envelope (devlog 260826 gap-10).
+          // The sniffer guarantees no client-visible delta escaped, so a fresh-conversation
+          // full replay with a corrective active turn is safe. A second echo propagates as an
+          // error rather than looping.
           if (
-            !isCursorInvalidArgumentError(err)
-            || !isCursorExternalWireModel(request.modelId)
-            || lastRawIsToolResult
-            || emittedOutput
-            || replayUnsafe
-            || incoming.abortSignal?.aborted
+            err instanceof CursorToolResultEchoError
+            && !emittedOutput
+            && !replayUnsafe
+            && !incoming.abortSignal?.aborted
           ) {
-            throw err;
+            debugProviderDiagnostic("cursor", "envelope-echo-retry", {
+              wireModel: request.modelId,
+              conversationHash: request.conversationId.slice(0, 16),
+            });
+            const echoedConversationId = request.conversationId;
+            lastTransport = undefined;
+            _parsed._cursorConversationId = undefined;
+            request = {
+              ...createCursorRequest(_parsed, { forceFreshConversation: true }),
+              echoRetryContinuationText: CURSOR_ECHO_RETRY_CONTINUATION_TEXT,
+            };
+            rekeyContextUsage(echoedConversationId, request.conversationId);
+            _parsed._cursorConversationId = request.conversationId;
+            const echoThreadOwner = cursorClientThreadOwner(_parsed);
+            if (echoThreadOwner && _parsed._cursorIsolateConversation !== true) {
+              rememberCursorThreadConversation(
+                echoThreadOwner,
+                request.conversationId,
+                _parsed._cursorIdentityScope,
+              );
+            }
+            await runOnce(request);
+          } else {
+            // One-shot fallback for external-model Connect invalid_argument before any
+            // non-heartbeat output. Retries apply only to safe plain-user turns; tool-result
+            // resumes, local exec/MCP side effects, and already-emitted output fail closed.
+            if (
+              !isCursorInvalidArgumentError(err)
+              || !isCursorExternalWireModel(request.modelId)
+              || lastRawIsToolResult
+              || emittedOutput
+              || replayUnsafe
+              || incoming.abortSignal?.aborted
+            ) {
+              throw err;
+            }
+            const failedConversationId = request.conversationId;
+            lastTransport = undefined;
+            _parsed._cursorConversationId = undefined;
+            request = createCursorRequest(_parsed, { forceFreshConversation: true });
+            rekeyContextUsage(failedConversationId, request.conversationId);
+            _parsed._cursorConversationId = request.conversationId;
+            // Persist recovery for store:false clients that send any stable Cursor thread owner, so
+            // the next turn does not recompute the stale deterministic thread hash. Isolated helper /
+            // compaction turns must not park their throwaway id under the parent or Desktop owner.
+            const threadOwner = cursorClientThreadOwner(_parsed);
+            if (threadOwner && _parsed._cursorIsolateConversation !== true) {
+              rememberCursorThreadConversation(
+                threadOwner,
+                request.conversationId,
+                _parsed._cursorIdentityScope,
+              );
+            }
+            await runOnce(request);
           }
-          const failedConversationId = request.conversationId;
-          lastTransport = undefined;
-          _parsed._cursorConversationId = undefined;
-          request = createCursorRequest(_parsed, { forceFreshConversation: true });
-          rekeyContextUsage(failedConversationId, request.conversationId);
-          _parsed._cursorConversationId = request.conversationId;
-          // Persist recovery for store:false clients that send any stable Cursor thread owner, so
-          // the next turn does not recompute the stale deterministic thread hash. Isolated helper /
-          // compaction turns must not park their throwaway id under the parent or Desktop owner.
-          const threadOwner = cursorClientThreadOwner(_parsed);
-          if (threadOwner && _parsed._cursorIsolateConversation !== true) {
-            rememberCursorThreadConversation(
-              threadOwner,
-              request.conversationId,
-              _parsed._cursorIdentityScope,
-            );
-          }
-          await runOnce(request);
         }
         if (
           request.checkpointInvalidationReason
