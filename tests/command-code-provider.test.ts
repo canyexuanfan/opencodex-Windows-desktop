@@ -87,8 +87,6 @@ describe("Command Code provider", () => {
     const oauth = PROVIDER_REGISTRY.find(row => row.id === "command-code");
     const apiKey = PROVIDER_REGISTRY.find(row => row.id === "commandcode");
     const verifiedImageModels = [
-      "stealth/ox-alpha",
-      "openai/ox-alpha",
       "deepseek/deepseek-v4-flash-vision-exp",
       "gpt-5.6-luna",
       "gpt-5.6-sol",
