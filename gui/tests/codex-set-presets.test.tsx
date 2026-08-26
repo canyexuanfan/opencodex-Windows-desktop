@@ -64,7 +64,15 @@ afterEach(() => {
   }
 });
 
-interface Call { url: string; method: string; body: any }
+/**
+ * The request body, typed rather than `any`.
+ *
+ * Every assertion below reads `body.layers[].id`, so `any` bought nothing and
+ * cost the repository's lint gate. `revision` is optional because only the
+ * write calls carry one.
+ */
+interface CallBody { layers?: { id: string; title: string; body: string }[]; revision?: string; enabled?: boolean }
+interface Call { url: string; method: string; body: CallBody }
 function stubRoutes(handler: (call: Call) => Response) {
   const calls: Call[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

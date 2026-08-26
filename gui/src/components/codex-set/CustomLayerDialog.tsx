@@ -26,6 +26,7 @@ export default function CustomLayerDialog({
   seed,
   others,
   busy,
+  navigation,
   onSave,
   onClose,
 }: {
@@ -36,6 +37,20 @@ export default function CustomLayerDialog({
   others: readonly CustomLayerDto[];
   /** True while a write is in flight, so Save cannot be pressed twice. */
   busy: boolean;
+  /**
+   * Moving between saved layers without leaving the editor. Absent for a new
+   * layer, and absent when there is nothing to move between.
+   *
+   * This changes the EDIT TARGET only. Custom layers are not mutually exclusive -
+   * every enabled one composes into the projection together - so navigating must
+   * never toggle which layer is active.
+   */
+  navigation?: {
+    position: number;
+    total: number;
+    onPrev: () => void;
+    onNext: () => void;
+  };
   onSave: (draft: Draft) => void;
   onClose: () => void;
 }) {
@@ -43,6 +58,41 @@ export default function CustomLayerDialog({
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [title, setTitle] = useState(layer?.title ?? seed?.title ?? "");
   const [body, setBody] = useState(layer?.body ?? seed?.body ?? "");
+
+  /**
+   * Unsaved edits, keyed by layer id, held while the user moves between layers.
+   *
+   * Navigation inside an editor is a new way to destroy someone's typing. Blocking
+   * navigation whenever the draft is dirty would avoid the loss and make the
+   * feature useless; keeping the drafts is what lets someone compare two layers
+   * mid-edit, which is the whole point of moving between them.
+   */
+  const draftsRef = useRef(new Map<string, { title: string; body: string }>());
+  const editingId = layer?.id ?? null;
+  const lastIdRef = useRef(editingId);
+
+  /**
+   * The live draft, mirrored into a ref by its own effect.
+   *
+   * The park effect needs the OUTGOING title/body, but naming them as deps would
+   * re-park on every keystroke. A ref carries them across without widening those
+   * deps - and the write happens in an effect, not during render, because
+   * mutating a ref while rendering is exactly what React Compiler rejects.
+   */
+  const liveRef = useRef({ title, body });
+  useEffect(() => { liveRef.current = { title, body }; }, [title, body]);
+
+  useEffect(() => {
+    if (lastIdRef.current === editingId) return;
+    // Park the outgoing draft before adopting the incoming one.
+    if (lastIdRef.current !== null) {
+      draftsRef.current.set(lastIdRef.current, liveRef.current);
+    }
+    lastIdRef.current = editingId;
+    const parked = editingId === null ? undefined : draftsRef.current.get(editingId);
+    setTitle(parked?.title ?? layer?.title ?? "");
+    setBody(parked?.body ?? layer?.body ?? "");
+  }, [editingId, layer]);
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const titleId = "codex-set-custom-dialog";
 
@@ -94,6 +144,34 @@ export default function CustomLayerDialog({
       <div className="modal-card codex-set-custom-dialog" onClick={event => event.stopPropagation()} role="document">
         <div className="modal-head">
           <h3 id={titleId}>{layer ? t("codexSet.custom.editTitle") : t("codexSet.custom.newTitle")}</h3>
+          {navigation && (
+            // Arrows alone lose the user: every reference implementation pairs
+            // movement with an explicit position. "3 / 7" is what makes prev/next
+            // navigable rather than a guess.
+            <span className="codex-set-custom-dialog__nav">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                aria-label={t("codexSet.custom.prevLayer")}
+                disabled={navigation.position <= 1 || busy}
+                onClick={navigation.onPrev}
+              >
+                &larr;
+              </button>
+              <span className="codex-set-custom-dialog__nav-pos">
+                {t("codexSet.custom.navPosition", { position: navigation.position, total: navigation.total })}
+              </span>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                aria-label={t("codexSet.custom.nextLayer")}
+                disabled={navigation.position >= navigation.total || busy}
+                onClick={navigation.onNext}
+              >
+                &rarr;
+              </button>
+            </span>
+          )}
         </div>
 
         <label className="field">

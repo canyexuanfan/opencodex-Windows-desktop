@@ -67,7 +67,15 @@ afterEach(() => {
   }
 });
 
-interface Call { url: string; method: string; body: any }
+/**
+ * The request body, typed rather than `any`.
+ *
+ * Every assertion below reads `body.layers[].id`, so `any` bought nothing and
+ * cost the repository's lint gate. `revision` is optional because only the
+ * write calls carry one.
+ */
+interface CallBody { layers?: { id: string; title: string; body: string }[]; revision?: string; enabled?: boolean }
+interface Call { url: string; method: string; body: CallBody }
 function stubRoutes(handler: (call: Call) => Response) {
   const calls: Call[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -201,7 +209,7 @@ test("4. toggling a custom layer PUTs with enabled flipped", async () => {
     return json(snapshot({ custom: [layer()] }));
   });
   const { container, root } = await mount();
-  const sw = customRow(container, "aaaaaa")!.querySelector("input[role=\"switch\"]") as HTMLInputElement;
+  const sw = customRow(container, "aaaaaa")!.querySelector("button[role=\"switch\"]") as HTMLInputElement;
   await act(async () => { sw.click(); });
   const put = calls.find(c => c.method === "PUT")!;
   expect(put.body.layers[0].enabled).toBe(false);
@@ -241,7 +249,7 @@ test("6+7. reorder PUTs the new order and works from the keyboard", async () => 
   expect(up.disabled).toBe(false);
   await act(async () => { up.click(); });
   const put = calls.find(c => c.method === "PUT")!;
-  expect(put.body.layers.map((l: any) => l.id)).toEqual(["bbbbbb", "aaaaaa"]);
+  expect(put.body.layers.map(l => l.id)).toEqual(["bbbbbb", "aaaaaa"]);
   await act(async () => { root.unmount(); });
 });
 
@@ -308,11 +316,11 @@ test("11. a rejected PUT restores the previous list", async () => {
     return json(snapshot({ custom: [layer()] }));
   });
   const { container, root } = await mount();
-  const sw = customRow(container, "aaaaaa")!.querySelector("input[role=\"switch\"]") as HTMLInputElement;
+  const sw = customRow(container, "aaaaaa")!.querySelector("button[role=\"switch\"]") as HTMLInputElement;
   await act(async () => { sw.click(); });
   expect(container.querySelector("[role=\"alert\"]")).not.toBeNull();
-  const after = customRow(container, "aaaaaa")!.querySelector("input[role=\"switch\"]") as HTMLInputElement;
-  expect(after.checked).toBe(true);
+  const after = customRow(container, "aaaaaa")!.querySelector("button[role=\"switch\"]") as HTMLInputElement;
+  expect(after.getAttribute("aria-checked")).toBe("true");
   expect(calls.filter(c => c.method === "PUT")).toHaveLength(1);
   await act(async () => { root.unmount(); });
 });
@@ -370,10 +378,10 @@ test("13. a stale revision re-reads instead of retrying blindly", async () => {
     return json(snapshot({ custom: [layer()], revision: gets > 1 ? "sha256:fresh" : "sha256:one" }));
   });
   const { container, root } = await mount();
-  await act(async () => { (customRow(container, "aaaaaa")!.querySelector("input[role=\"switch\"]") as HTMLInputElement).click(); });
+  await act(async () => { (customRow(container, "aaaaaa")!.querySelector("button[role=\"switch\"]") as HTMLInputElement).click(); });
   expect(calls.filter(c => c.method === "PUT")).toHaveLength(1);
   // The refreshed revision must be INSTALLED: the next write has to carry it.
-  await act(async () => { (customRow(container, "aaaaaa")!.querySelector("input[role=\"switch\"]") as HTMLInputElement).click(); });
+  await act(async () => { (customRow(container, "aaaaaa")!.querySelector("button[role=\"switch\"]") as HTMLInputElement).click(); });
   const puts = calls.filter(c => c.method === "PUT");
   expect(puts).toHaveLength(2);
   expect(puts[1]!.body.revision).toBe("sha256:fresh");
@@ -549,7 +557,7 @@ test("an unreadable config refuses custom writes too, not only built-in switches
   const { container, root } = await mount();
   expect(addTrigger(container)!.disabled).toBe(true);
   const row = customRow(container, "aaaaaa")!;
-  expect((row.querySelector("input[role=\"switch\"]") as HTMLInputElement).disabled).toBe(true);
+  expect((row.querySelector("button[role=\"switch\"]") as HTMLInputElement).disabled).toBe(true);
   expect((row.querySelector(".codex-set-custom__delete") as HTMLButtonElement).disabled).toBe(true);
   for (const button of row.querySelectorAll(".codex-set-custom__reorder button")) {
     expect((button as HTMLButtonElement).disabled).toBe(true);
