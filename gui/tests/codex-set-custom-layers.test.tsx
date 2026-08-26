@@ -42,6 +42,9 @@ function snapshot(over: Record<string, unknown> = {}) {
     extensionLayersEnumerable: false,
     custom: [],
     modelInstructionsFile: null,
+    baseVariants: [],
+    baseSelection: { kind: "default" as const },
+    maxBaseVariants: 2,
     ...over,
   };
 }

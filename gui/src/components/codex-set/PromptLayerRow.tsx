@@ -29,6 +29,8 @@ export default function PromptLayerRow({
   busy,
   writesRefused,
   onToggle,
+  onSelectBase,
+  baseSelection,
   onOpen,
 }: {
   descriptor: LayerDescriptorDto;
@@ -40,6 +42,19 @@ export default function PromptLayerRow({
   busy: boolean;
   writesRefused: boolean;
   onToggle: (id: string, enabled: boolean) => void;
+  /**
+   * The base row's switch. A SEPARATE prop from `onToggle` on purpose: base is not a
+   * boolean key in config.toml, it is a variant selection, and `isToggleId` still
+   * returns false for it. Reusing onToggle would let a future edit route this through
+   * the toggle endpoint, which refuses the id - correctly, but only after the click.
+   *
+   * `on` means Codex's own base prompt; `off` means the selected variant replaces it.
+   * Base cannot be EMPTIED - a model with no base prompt is not a working agent - so
+   * the switch substitutes rather than removes, and the dialog says so.
+   */
+  onSelectBase?: (useDefault: boolean) => void;
+  /** Which base prompt is live, so the switch can show the truth. */
+  baseSelection?: { kind: "default" } | { kind: "variant"; id: string } | { kind: "external"; path: string };
   onOpen: (id: string) => void;
 }) {
   const t = useT();
@@ -52,6 +67,9 @@ export default function PromptLayerRow({
   // never claims to be unconditional.
   const conditionKey = LAYER_CONDITION_KEYS[descriptor.id];
   const checked = toggle?.defaultedUserValue ?? descriptor.default ?? true;
+  // `external` counts as NOT default: something outside opencodex replaced the base
+  // prompt, and showing the switch as on would claim Codex's own prompt is in force.
+  const baseUsesDefault = baseSelection?.kind === "default";
 
   return (
     <li className="codex-set-prompt__row" data-layer-id={descriptor.id} data-layer-class={descriptor.class}>
@@ -85,7 +103,22 @@ export default function PromptLayerRow({
         </span>
       )}
 
-      {descriptor.class === "config-toggle" ? (
+      {descriptor.class === "base" && onSelectBase ? (
+        // A REAL switch, because after the variant work base genuinely has an
+        // off-position. The class rule above is honoured rather than relaxed: a layer
+        // with no off-switch gets no control, and this one now has one.
+        <button
+          type="button"
+          role="switch"
+          className={`toggle ${baseUsesDefault ? "on" : ""}`}
+          aria-checked={baseUsesDefault}
+          aria-label={label}
+          disabled={busy || writesRefused || baseSelection?.kind === "external"}
+          onClick={() => { onSelectBase(!baseUsesDefault); }}
+        >
+          <span className="toggle-knob" />
+        </button>
+      ) : descriptor.class === "config-toggle" ? (
         // The dashboard's switch is a button with a knob, not a checkbox. A raw
         // <input type="checkbox"> renders as an actual checkbox here because the
         // .switch class it was reaching for styles a different element.

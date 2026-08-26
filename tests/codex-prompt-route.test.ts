@@ -22,6 +22,7 @@ const roots: string[] = [];
 interface Fixture {
   configPath: string;
   storePath: string;
+  baseVariantDir: string;
   decoyConfig: string;
   decoyStore: string;
   decoyHome: string;
@@ -39,7 +40,16 @@ function fixture(configBytes?: string, storeBytes?: string): Fixture {
   const decoyStore = join(decoy, "opencodex-prompt.json");
   writeFileSync(decoyConfig, "model = \"sentinel\"\n", "utf8");
   writeFileSync(decoyStore, "{\"layers\":[]}", "utf8");
-  return { configPath, storePath, decoyConfig, decoyStore, decoyHome: decoy };
+  return {
+    configPath,
+    storePath,
+    // Injected like the other two, so no route test can reach a developer's real
+    // variant directory.
+    baseVariantDir: join(root, "opencodex-prompt-base"),
+    decoyConfig,
+    decoyStore,
+    decoyHome: decoy,
+  };
 }
 
 function storeJson(layers: unknown[]): string {
@@ -89,7 +99,7 @@ async function call(
   let res: Response | null;
   try {
     res = await handleManagementAPI(req, url, config, {
-      codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath },
+      codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath, baseVariantDir: fx.baseVariantDir },
     }, principal);
   } finally {
     if (previousHome === undefined) delete process.env.CODEX_HOME;
@@ -532,7 +542,7 @@ describe("020 coverage completions", () => {
       body: JSON.stringify({ id: "apps", enabled: false, revision: rev }),
     });
     const res = await handleManagementAPI(req, url, config, {
-      codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath },
+      codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath, baseVariantDir: fx.baseVariantDir },
     });
     expect(res).not.toBeNull();
     expect(res!.status).toBe(403);
@@ -591,7 +601,7 @@ describe("020 coverage completions", () => {
         body: "{not json",
       });
       const res = await handleManagementAPI(req, url, config, {
-        codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath },
+        codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath, baseVariantDir: fx.baseVariantDir },
       }, "gui-session");
       expect(res!.status).toBe(400);
     }
@@ -602,9 +612,94 @@ describe("020 coverage completions", () => {
       body: "{not json",
     });
     const res = await handleManagementAPI(req, url, config, {
-      codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath },
+      codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath, baseVariantDir: fx.baseVariantDir },
     }, "gui-session");
     expect(res!.status).toBe(400);
+  });
+
+  test("the base-variant routes refuse what only the server can refuse", async () => {
+    // Each of these is a rule the GUI also enforces, which is exactly why the route has
+    // to enforce it independently: a route that trusts its client is not a boundary.
+    const fx = fixture("model = \"x\"\n");
+    const before = read(fx.configPath);
+    const rev0 = await revision(fx);
+
+    // `external` is a state the API REPORTS; asking for it would mean writing a path we
+    // do not own.
+    const external = await call("PUT", "/api/codex-prompt/base/select", fx, { kind: "external", revision: rev0 });
+    expect(external.status).toBe(400);
+    expect(external.body.code).toBe("invalid_body");
+
+    // The default has no stored body, so neither verb has a target.
+    const editDefault = await call("PUT", "/api/codex-prompt/base", fx, {
+      id: "default", title: "x", body: "y", revision: rev0,
+    });
+    expect(editDefault.status).toBe(400);
+    expect(editDefault.body.code).toBe("unknown_layer");
+
+    // An unknown variant would leave the key naming a file Codex cannot read.
+    const unknown = await call("PUT", "/api/codex-prompt/base/select", fx, {
+      kind: "variant", id: "zzzzzz", revision: rev0,
+    });
+    // 400, the status unknown_layer already carries everywhere else in this route: the
+    // caller named something that does not exist, which is a bad request rather than a
+    // conflict with the file's current state.
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.code).toBe("unknown_layer");
+
+    // Every refusal above left the file byte-identical.
+    expect(read(fx.configPath)).toBe(before);
+  });
+
+  test("a variant round-trips through the routes and the default clears the key", async () => {
+    const fx = fixture("model = \"x\"\n");
+
+    const created = await call("PUT", "/api/codex-prompt/base", fx, {
+      id: null, title: "Terse", body: "Be brief.", revision: await revision(fx),
+    });
+    expect(created.status).toBe(200);
+
+    const listed = await call("GET", "/api/codex-prompt", fx);
+    expect(listed.body.baseVariants).toHaveLength(1);
+    expect(listed.body.baseVariants[0].title).toBe("Terse");
+    expect(listed.body.baseSelection).toEqual({ kind: "default" });
+    expect(listed.body.maxBaseVariants).toBeGreaterThan(0);
+    const id = listed.body.baseVariants[0].id as string;
+
+    const selected = await call("PUT", "/api/codex-prompt/base/select", fx, {
+      kind: "variant", id, revision: await revision(fx),
+    });
+    expect(selected.status).toBe(200);
+    expect((await call("GET", "/api/codex-prompt", fx)).body.baseSelection).toEqual({ kind: "variant", id });
+    expect(read(fx.configPath)!).toContain("model_instructions_file");
+
+    const back = await call("PUT", "/api/codex-prompt/base/select", fx, {
+      kind: "default", revision: await revision(fx),
+    });
+    expect(back.status).toBe(200);
+    // Removed rather than emptied, and the user's own key is untouched.
+    expect(read(fx.configPath)!).not.toContain("model_instructions_file");
+    expect(read(fx.configPath)!).toContain("model = \"x\"");
+  });
+
+  test("a hand-set model_instructions_file is reported as external, never as default", async () => {
+    // The plan-audit blocker, at the API boundary: the GUI can only be honest here if
+    // the DTO is.
+    const fx = fixture("model_instructions_file = \"/etc/somebody-elses.md\"\n");
+    const res = await call("GET", "/api/codex-prompt", fx);
+    expect(res.body.baseSelection).toEqual({ kind: "external", path: "/etc/somebody-elses.md" });
+
+    // And the route will not silently retarget it.
+    const created = await call("PUT", "/api/codex-prompt/base", fx, {
+      id: null, title: "Mine", body: "b", revision: await revision(fx),
+    });
+    expect(created.status).toBe(200);
+    const id = (await call("GET", "/api/codex-prompt", fx)).body.baseVariants[0].id as string;
+    const hijack = await call("PUT", "/api/codex-prompt/base/select", fx, {
+      kind: "variant", id, revision: await revision(fx),
+    });
+    expect(hijack.status).toBe(409);
+    expect(hijack.body.code).toBe("developer_instructions_not_owned");
   });
 
   test("an admin token can read the prompt stack but not rewrite it", async () => {

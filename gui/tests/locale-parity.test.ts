@@ -46,6 +46,9 @@ const ZH_TW_KEEP_ENGLISH: ReadonlySet<string> = new Set([
   // "{position} / {total}" is punctuation and two placeholders, identical in
   // every locale that ships it - there are no words to render in Chinese.
   "codexSet.custom.navPosition",
+  // "{position} / {total}" - a numeric position, identical in every language for the
+  // same reason navPosition above is.
+  "codexSet.base.position",
   "provider.name.volcengineAgentPlan",
   "provider.name.volcengineCodingPlan",
   // Backend/brand names

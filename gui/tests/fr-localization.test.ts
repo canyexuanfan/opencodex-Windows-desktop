@@ -28,6 +28,10 @@ const INTENTIONAL_ENGLISH = new Set<TKey>([
   // "{position} / {total}" is punctuation and two placeholders - no words to
   // translate. A French-specific variant would have to invent a difference.
   "codexSet.custom.navPosition",
+  // Same string, same reason, in the base-variant picker. Listing it here rather
+  // than writing a French spelling of "1 / 2" keeps the check meaningful for keys
+  // that really do carry prose.
+  "codexSet.base.position",
   // "Instructions" is the same word in French. Inventing a synonym to make this
   // check happy would be worse copy for a French reader.
   "codexSet.custom.bodyLabel",

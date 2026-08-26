@@ -44,6 +44,9 @@ function snapshot(over: Record<string, unknown> = {}) {
     extensionLayersEnumerable: false,
     custom: [],
     modelInstructionsFile: null,
+    baseVariants: [],
+    baseSelection: { kind: "default" as const },
+    maxBaseVariants: 2,
     ...over,
   };
 }
@@ -114,14 +117,19 @@ test("1. every inventory entry renders a row, state layers before transition not
   await act(async () => { root.unmount(); });
 });
 
-test("2. every non-config-toggle class renders NO switch element at all", async () => {
+test("2. every layer Codex cannot suppress renders NO switch element at all", async () => {
   // Ask item 9. Not a disabled checkbox and not a greyed toggle: a disabled
   // control claims the capability exists and is temporarily unavailable, which
   // is false. Table-driven over the inventory, so a new upstream layer is
   // covered the day WP1 lists it.
+  //
+  // `base` is no longer in this set. It used to be, correctly: there was no way to
+  // substitute the base prompt, so a control would have been a lie. Now there is one,
+  // so the rule is satisfied by giving it a REAL switch rather than by relaxing the
+  // rule - which is the same reasoning that keeps every row below bare.
   stubRoutes(() => json(snapshot()));
   const { container, root } = await mount();
-  const locked = INVENTORY.filter(d => d.class !== "config-toggle");
+  const locked = INVENTORY.filter(d => d.class !== "config-toggle" && d.class !== "base");
   expect(locked.length).toBeGreaterThan(0);
   for (const descriptor of locked) {
     const el = row(container, descriptor.id);
@@ -133,6 +141,11 @@ test("2. every non-config-toggle class renders NO switch element at all", async 
   for (const descriptor of INVENTORY.filter(d => d.class === "config-toggle")) {
     expect(row(container, descriptor.id)!.querySelector("button[role=\"switch\"]"), descriptor.id).not.toBeNull();
   }
+  // Base carries one too, and it starts ON: a fresh fixture is on the default, which
+  // means Codex's own base prompt is in force.
+  const baseSwitch = row(container, "base-instructions")!.querySelector("button[role=\"switch\"]");
+  expect(baseSwitch).not.toBeNull();
+  expect(baseSwitch!.getAttribute("aria-checked")).toBe("true");
   await act(async () => { root.unmount(); });
 });
 
@@ -153,7 +166,10 @@ test("3. a feature-gated row names its governing key and is not called always-on
     expect(el.querySelector(".link-btn"), d.id).not.toBeNull();
   }
   // And every row that genuinely has no off-switch anywhere does carry the label.
-  for (const d of INVENTORY.filter(x => x.class === "base" || x.class === "runtime-conditional")) {
+  // `base` is excluded now: after the variant work it has a real off-position, so it
+  // gets a switch instead of a locked label. Every runtime-conditional row still has
+  // no off-switch anywhere in Codex.
+  for (const d of INVENTORY.filter(x => x.class === "runtime-conditional")) {
     expect(row(container, d.id)!.querySelector(".codex-set-prompt__note--locked"), d.id).not.toBeNull();
   }
   await act(async () => { root.unmount(); });
@@ -221,10 +237,14 @@ test("9. the dialog names WHY text is missing rather than omitting it silently",
   // input list, so the old "no API exists" claim was wrong. What remains true is
   // that a body can still be absent - unread, unrendered on this turn, or carried
   // outside the printable list - and each case has its own sentence.
+  //
+  // Driven through `personality` rather than `base-instructions`: base now opens the
+  // variant picker instead of the read-only dialog, and both are absent from the
+  // probe's tag map, so the case under test is unchanged.
   stubRoutes(() => json(snapshot()));
   const { container, root } = await mount();
   await act(async () => {
-    (row(container, "base-instructions")!.querySelector("button") as HTMLButtonElement).click();
+    (row(container, "personality")!.querySelector("button") as HTMLButtonElement).click();
   });
   const dialog = document.querySelector("dialog.modal-overlay")!;
   const notice = dialog.querySelector(".codex-set-layer-dialog__no-text");
@@ -315,7 +335,9 @@ test("10. an unreadable config refuses writes on every switch", async () => {
   stubRoutes(() => json(snapshot({ readable: false })));
   const { container, root } = await mount();
   const switches = [...container.querySelectorAll("button[role=\"switch\"]")] as HTMLButtonElement[];
-  expect(switches).toHaveLength(5);
+  // Five config toggles plus the base-prompt switch. Counted rather than sampled,
+  // because a refusal that misses one control is the whole failure mode here.
+  expect(switches).toHaveLength(6);
   for (const input of switches) expect(input.disabled).toBe(true);
   await act(async () => { root.unmount(); });
 });
@@ -431,10 +453,12 @@ test("a row with a condition shows it instead of \"Always on\"", async () => {
     expect((note.textContent ?? "").length, id).toBeGreaterThan(0);
   }
 
-  // base-instructions genuinely IS always on: no condition, no off-switch anywhere. If
-  // this drifted the test above would pass for the wrong reason.
-  const base = row(container, "base-instructions")!.querySelector(".codex-set-prompt__note--locked")!;
-  expect(base.textContent).toBe("Always on");
+  // The negative half, so the loop above cannot pass by labelling everything with a
+  // condition. `environments-instructions` is feature-gated: no condition line, and it
+  // is not called always-on either, because it IS disableable through [features].
+  const gated = row(container, "environments-instructions")!;
+  expect(gated.querySelector(".codex-set-prompt__note--locked")).toBeNull();
+  expect(gated.textContent).toContain("features.deferred_executor");
 
   await act(async () => { root.unmount(); });
 });

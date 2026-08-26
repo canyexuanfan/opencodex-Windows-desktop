@@ -1,7 +1,23 @@
-# ocx-run — remote long-job runner (installed on `lidge`)
+# ocx-run — remote long-job runner
 
-`~/bin/ocx-run`. Use it for anything that takes minutes: suites, typechecks,
-builds, long probes.
+`~/bin/ocx-run` on the remote box. Use it for anything that takes minutes:
+suites, typechecks, builds, long probes.
+
+The ssh alias is `lidge-ai` (`~/.ssh/config`); plain `lidge` does not resolve.
+The examples below use the short name for readability — substitute the alias your
+config actually defines.
+
+**Install is a copy, not a rewrite.** `~/bin/ocx-run` is not preinstalled on every
+host, and a fresh box reports `No such file or directory` rather than anything that
+looks like a PATH problem. Check first, and if it is missing, copy this repository's
+`scripts/ocx-run` to `~/bin/ocx-run` and `chmod +x` it:
+
+```bash
+ssh <host> 'ls -l ~/bin/ocx-run' || {
+  scp scripts/ocx-run <host>:bin/ocx-run
+  ssh <host> 'chmod +x ~/bin/ocx-run'
+}
+```
 
 ## Why
 
