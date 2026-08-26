@@ -69,3 +69,15 @@ design review, option A):
 tool call first (premature final on a fresh conversation with zero replay
 history). That is model nondeterminism on instruction-following, not a replay
 artifact; no adapter change targets it.
+
+## v3 probe round (post detection+retry, trailing-toolResult arming only)
+
+8 runs: 5 pass, 3 fail — 2 envelope leaks happened on USER-action rounds
+(round prompt sent after a completed prior round), which the initial arming
+condition (`lastRawIsToolResult`) did not cover; the envelope lives in the
+flattened history regardless of the trailing role. Arming widened to any
+external turn whose history contains a toolResult; user-action retries append
+the corrective note to the active user text instead of replacing it.
+One additional fail was a 30s zero-output R1 timeout (fresh conversation,
+no replay) — tracked separately with the zero-output watch item (gap-10
+candidate list), not an echo.

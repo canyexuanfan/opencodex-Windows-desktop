@@ -156,4 +156,31 @@ describe("cursor envelope echo detection + corrective retry (devlog 260826 gap-1
     const text = events.filter(e => e.type === "text_delta").map(e => (e as { text: string }).text).join("");
     expect(text).toContain("[Tool Result]");
   });
+
+  test("user-action round with a replayed toolResult in history arms the sniffer and retries", async () => {
+    const { factory, runRequests, attempts } = echoingThenHealthyTransportFactory();
+    const adapter = createCursorAdapter({ ...provider, apiKey: "cursor-token" }, { createTransport: factory as never });
+    const events: AdapterEvent[] = [];
+    const body = {
+      modelId: "cursor/kimi-k3",
+      context: {
+        messages: [
+          { role: "user", content: "run the probe", timestamp: 1 },
+          { role: "assistant", content: "Running it.", timestamp: 2 },
+          { role: "toolResult", toolCallId: "call_1", toolName: "run_cmd", content: "R1=A17", isError: false, timestamp: 3 },
+          { role: "assistant", content: "STATE A17", timestamp: 4 },
+          { role: "user", content: "Round 2. continue", timestamp: 5 },
+        ],
+      },
+      stream: false,
+      options: {},
+      _cursorConversationId: "cursor_echo_user_round",
+      _cursorIdentityScope: "acct-echo",
+    } as OcxParsedRequest;
+    await adapter.runTurn?.(body, { headers: new Headers() }, event => events.push(event));
+    expect(attempts()).toBe(2);
+    const text = events.filter(e => e.type === "text_delta").map(e => (e as { text: string }).text).join("");
+    expect(text).toBe("STATE A17");
+    expect(runRequests[1]?.echoRetryContinuationText).toBeDefined();
+  });
 });

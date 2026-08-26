@@ -221,9 +221,12 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
           // envelope as assistant text (kimi-k3 ~30-40% of multi-round probes). Hold the first
           // text deltas until they provably diverge from the markers; a completed marker turns
           // the turn into a retryable semantic failure BEFORE any client-visible delta escapes.
+          // Armed for ANY external turn whose replayed history contains a tool result — echo
+          // priming was observed live on user-action rounds too (the envelope lives in the
+          // flattened history regardless of which role ends the input).
           const armEchoSniffer =
             isCursorExternalWireModel(activeRequest.modelId)
-            && lastRawIsToolResult;
+            && (_parsed.context.messages ?? []).some(message => message.role === "toolResult");
           const echoSniffer = armEchoSniffer ? new CursorEnvelopeEchoSniffer() : undefined;
           let echoHeld: AdapterEvent[] = [];
           const releaseEchoHeld = () => {
