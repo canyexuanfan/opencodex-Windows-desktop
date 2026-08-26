@@ -139,7 +139,10 @@ test("3. a feature-gated row names its governing key and is not called always-on
     const el = row(container, d.id)!;
     expect(el.textContent, d.id).toContain(d.key!);
     expect(el.querySelector(".codex-set-prompt__note--locked"), d.id).toBeNull();
-    expect(el.querySelector("a"), d.id).not.toBeNull();
+    // The destination, not the tag: it is a `link-btn` button that routes through
+    // navigateHash, because nothing in the document carries an
+    // `id="integrations/codex"` for a bare fragment href to find.
+    expect(el.querySelector(".link-btn"), d.id).not.toBeNull();
   }
   // And every row that genuinely has no off-switch anywhere does carry the label.
   for (const d of INVENTORY.filter(x => x.class === "base" || x.class === "runtime-conditional")) {

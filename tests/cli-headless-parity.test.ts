@@ -258,6 +258,10 @@ describe("headless GUI parity CLI", () => {
       ["/api/logs", "ocx observe"],
       ["/api/lab", "ocx lab"],
       ["/api/config", "ocx config"],
+      // The prompt composer is a GUI-first surface: it reads Codex's own layer
+      // inventory and writes one config key. There is no headless equivalent
+      // today, and claiming one would be worse than saying so here.
+      ["/api/codex-prompt", "(none — GUI prompt-layer surface; keys live in config.toml)"],
       ["/api/settings", "ocx system"],
       // Routing Intelligence (RI-04..RI-10): profiles + dry-run are mirrored by
       // `ocx route policy`. Analytics is GUI-first for now; the same request

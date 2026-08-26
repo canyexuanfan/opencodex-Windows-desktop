@@ -1,4 +1,5 @@
 import { useT } from "../../i18n/shared";
+import { navigateHash } from "../../hash-routing";
 import type { LayerDescriptorDto, ToggleStateDto } from "../../pages/codex-set-prompt";
 import { LAYER_LABEL_KEYS } from "./prompt-layer-copy";
 
@@ -72,7 +73,19 @@ export default function PromptLayerRow({
         // and the link is what turns that from a dead end into a destination.
         <span className="codex-set-prompt__note">
           {t("codexSet.row.featureGated")}{" "}
-          <a className="link-btn" href="#integrations/codex">{t("codexSet.row.openFeatures")}</a>
+          {/*
+            A button through `navigateHash`, not a bare fragment href. Nothing in
+            the document carries `id="integrations/codex"` - it is a route, so the
+            anchor pointed at a target that does not exist and the app router had
+            to rescue the click.
+          */}
+          <button
+            type="button"
+            className="link-btn"
+            onClick={() => navigateHash("integrations/codex")}
+          >
+            {t("codexSet.row.openFeatures")}
+          </button>
         </span>
       ) : (
         // base and runtime-conditional: no off-switch exists anywhere in Codex.
