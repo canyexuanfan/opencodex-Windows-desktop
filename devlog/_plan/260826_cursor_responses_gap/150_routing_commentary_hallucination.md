@@ -59,3 +59,12 @@ not a useful repair: the model ignored the existing exact instruction.
   - Adversarial raw Responses batch seeded the prior assistant history with the
     false blocked/switching sentence: 10/10 HTTP 200, each returned one real
     exec custom tool call, zero leaked Read/Grep/Shell failure commentary.
+
+## Independent review closure
+
+- Reviewer found that a failure claim split as “Shell was blocked” + newline +
+  “Switching to exec_command” could flush after the first line. The sniffer now
+  holds an incomplete first-line failure claim for one additional line.
+- Reviewer found a context-free request redirection sentence could match without
+  naming a native tool. Detection now requires at least one unavailable native
+  tool name in addition to the failure claim. Both cases have direct tests.

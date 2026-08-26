@@ -121,12 +121,16 @@ export class CursorRoutingCommentarySniffer {
       this.done = true;
       return { kind: "hallucination" };
     }
-    const firstLineComplete = /\r?\n/u.test(this.buffered);
+    const lineBreakCount = (this.buffered.match(/\n/gu) ?? []).length;
     const hasRoutingHint = ROUTING_TOOL_HINT.test(this.buffered) || ROUTING_FAILURE_CLAIM.test(this.buffered);
+    const pendingFailureClaim =
+      ROUTING_TOOL_HINT.test(this.buffered)
+      && ROUTING_FAILURE_CLAIM.test(this.buffered)
+      && lineBreakCount < 2;
     if (
       this.byteCount < MAX_ROUTING_COMMENTARY_BYTES
       && this.buffered.length < MAX_HOLD_BYTES
-      && !firstLineComplete
+      && (lineBreakCount === 0 || pendingFailureClaim)
       && (hasRoutingHint || this.byteCount < 64)
     ) {
       return { kind: "hold" };
@@ -146,6 +150,7 @@ export class CursorRoutingCommentarySniffer {
     const nativeTools = new Set(
       [...this.buffered.matchAll(ROUTING_NATIVE_TOOL_NAME)].map(match => match[1]?.toLowerCase()),
     );
+    if (nativeTools.size === 0) return false;
     return ROUTING_REDIRECT_CLAIM.test(this.buffered) || nativeTools.size >= 2;
   }
 }

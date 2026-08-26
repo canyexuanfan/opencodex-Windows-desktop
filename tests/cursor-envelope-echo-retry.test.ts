@@ -86,9 +86,17 @@ describe("cursor external output quarantine + corrective retry (devlog 260826 ga
     const multiToolClaim = new CursorRoutingCommentarySniffer();
     expect(multiToolClaim.feed("Read와 Grep이 모두 blocked 상태입니다.").kind).toBe("hallucination");
 
+    const multiline = new CursorRoutingCommentarySniffer();
+    expect(multiline.feed("Shell was blocked.\n").kind).toBe("hold");
+    expect(multiline.feed("Switching to exec_command.").kind).toBe("hallucination");
+
     const legitimate = new CursorRoutingCommentarySniffer();
     expect(legitimate.feed("Shell is unavailable on this operating system.").kind).toBe("hold");
     expect(legitimate.finish().kind).toBe("flush");
+
+    const contextFree = new CursorRoutingCommentarySniffer();
+    expect(contextFree.feed("The request was blocked and redirected to exec_command.").kind).toBe("hold");
+    expect(contextFree.finish().kind).toBe("flush");
   });
 
   test("external tool-result echo retries once with the corrective action text and no leaked envelope", async () => {
