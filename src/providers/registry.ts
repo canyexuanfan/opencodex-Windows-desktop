@@ -1409,6 +1409,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       [OPENCODE_OX_ALPHA_FREE_MODEL]: ["text", "image"],
       // Experimental DeepSeek vision preview — expected to merge into deepseek-v4-flash later.
       [DEEPSEEK_VISION_PREVIEW_MODEL]: ["text", "image"],
+      // Muse Spark 1.2 Contributor is natively multimodal on Zen Go: it accepts input_image
+      // parts over /responses (probed 2026-08-26). Without this declaration the catalog
+      // advertises it text-only and the Codex app blocks image attachments client-side with
+      // "This model does not support image inputs" before the request ever reaches the proxy.
+      "muse-spark-1.2-contributor": ["text", "image"],
     },
     modelReasoningEfforts: {
       "gpt-5.6-luna": OPENAI_API_GPT56_REASONING_EFFORTS,
