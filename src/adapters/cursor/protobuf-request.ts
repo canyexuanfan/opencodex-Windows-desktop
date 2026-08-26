@@ -56,6 +56,7 @@ import {
   buildCursorToolDefinitions,
   cursorRequestHasShellAlias,
   CURSOR_SHELL_ALIAS_SYSTEM_NOTE,
+  CURSOR_TOOL_RESULT_ENVELOPE_GUARD_NOTE,
   OCX_RESPONSES_TOOL_PROVIDER,
 } from "./tool-definitions";
 
@@ -228,6 +229,7 @@ function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobR
   let collapsedRepeats = 0;
   let maxRunLength = 1;
   let currentRun = 1;
+  let replayedToolResultCount = 0;
   const pushDeduped = (
     payload: { role: string; content: [{ type: "text"; text: string }] },
     role: RootBlobCandidate["role"],
@@ -296,7 +298,18 @@ function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobR
       const prefix = normalizedToolResult(message, contentToText(message.content)).isError ? "[Tool Error]" : "[Tool Result]";
       const text = `${prefix}\n${toolResultToText(message)}`;
       pushDeduped(toolResultRootPayload(text), "toolResult", { messageIndex: i, text }, text);
+      replayedToolResultCount++;
     }
+  }
+  // Envelope echo guard (devlog 260826 gap-10): external full-replay renders tool results as
+  // assistant-role "[Tool Result]" text, and ~2/7 kimi-k3 probe runs mimicked that envelope as
+  // the model's OWN reply (echo priming) instead of acting on the content. When any tool result
+  // was replayed, state once — imperatively — that the envelope is environment-generated.
+  if (externalModel && replayedToolResultCount > 0) {
+    entries.push(rootBlobCandidate({
+      role: "user",
+      content: [{ type: "text", text: CURSOR_TOOL_RESULT_ENVELOPE_GUARD_NOTE }],
+    }, "user", {}));
   }
   // Severe repetition: tell the model ONCE, imperatively, to change strategy.
   if (externalModel && maxRunLength >= 3) {
