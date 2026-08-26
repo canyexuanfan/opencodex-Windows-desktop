@@ -7,6 +7,7 @@
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
+import { readFileSync } from "node:fs";
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import { LanguageProvider } from "../src/i18n/provider";
@@ -337,4 +338,24 @@ test("a layer this build has no copy for is named, never blank", async () => {
   expect(dialog.querySelector("h3")!.textContent).toBe("future-layer");
   expect((dialog.querySelector("p")!.textContent ?? "").length).toBeGreaterThan(20);
   await act(async () => { root.unmount(); });
+});
+
+/**
+ * The dialog body must WRAP, not scroll sideways.
+ *
+ * `.api-code` in styles.css sets `white-space: pre`, and both it and the
+ * dialog rule are single-class selectors - a specificity tie that source order
+ * decides. styles.css loads later, so `pre` won and a 307-byte permissions body
+ * rendered as two clipped lines with a horizontal scrollbar. Asserting on the
+ * stylesheet is the only honest check here: happy-dom applies no cascade, so a
+ * computed-style assertion would pass against the broken rule too.
+ */
+test("the layer-text rule outranks .api-code so long bodies wrap", () => {
+  const css = readFileSync(new URL("../src/styles-codex-set.css", import.meta.url), "utf8");
+  const rule = /\.codex-set-layer-dialog__text\.api-code\s*\{([^}]*)\}/.exec(css);
+  // Chained with .api-code: the unchained selector loses the tie to styles.css.
+  expect(rule).not.toBeNull();
+  expect(rule![1]).toContain("white-space: pre-wrap");
+  expect(rule![1]).toContain("overflow-wrap: anywhere");
+  expect(rule![1]).toContain("overflow-x: hidden");
 });

@@ -105,12 +105,21 @@
 }
 
 /* The real prompt text. Scrollable rather than clipped: some layers are 15 KB. */
-.codex-set-layer-dialog__text {
+/*
+ * Chained with .api-code deliberately. Both rules are single-class selectors, so
+ * they tie on specificity and source order decides - and styles.css loads after
+ * this file, so its `white-space: pre` won. The prompt body then scrolled
+ * sideways one long line at a time, which is exactly the "readable layer body"
+ * this dialog exists to provide. The chained selector outranks it outright.
+ */
+.codex-set-layer-dialog__text.api-code {
   margin-top: 8px;
   max-height: 320px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  word-break: normal;
   font-size: 12px;
   line-height: 1.5;
 }
