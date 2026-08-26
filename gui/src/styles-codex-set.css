@@ -156,3 +156,67 @@
 .codex-set-custom__adopt-refusal {
   margin-top: 8px;
 }
+
+/* Preset picker ----------------------------------------------------------- */
+
+.codex-set-preset {
+  margin-left: auto;
+  position: relative;
+}
+
+.codex-set-preset > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.codex-set-preset > summary::-webkit-details-marker {
+  display: none;
+}
+
+.codex-set-preset__menu {
+  position: absolute;
+  right: 0;
+  z-index: 10;
+  min-width: 280px;
+  max-width: 380px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.codex-set-preset__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.codex-set-preset__item:hover:not(:disabled) {
+  background: var(--bg-subtle, rgba(127, 127, 127, 0.08));
+}
+
+.codex-set-preset__desc,
+.codex-set-preset__provenance {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* The preview is the full body, so it is scrollable rather than clipped. */
+.codex-set-preset__preview {
+  margin-top: 4px;
+  max-height: 120px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  color: var(--muted);
+}

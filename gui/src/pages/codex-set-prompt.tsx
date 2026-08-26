@@ -9,6 +9,7 @@ import type { LayerId } from "../components/codex-set/prompt-layer-copy";
 import type { TKey } from "../i18n/en";
 import CustomLayerRow from "../components/codex-set/CustomLayerRow";
 import CustomLayerDialog from "../components/codex-set/CustomLayerDialog";
+import PresetPicker from "../components/codex-set/PresetPicker";
 import { MAX_LAYERS, moveLayer, newLayerId, type Draft } from "../components/codex-set/custom-layer-state";
 
 /**
@@ -113,6 +114,12 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
    */
   const [adoptRefusal, setAdoptRefusal] = useState<{ path?: string; line?: number | null; rawLine?: string | null } | null>(null);
   const [repairBusy, setRepairBusy] = useState(false);
+  /**
+   * A preset chosen from the picker seeds the ordinary editor. It is a starting
+   * point, not a locked artifact, so it travels as a draft rather than being saved
+   * directly.
+   */
+  const [presetSeed, setPresetSeed] = useState<{ title: string; body: string } | null>(null);
 
   const load = useCallback(async (signal: AbortSignal): Promise<PromptSnapshotDto> => {
     const res = await fetch(apiBase + "/api/codex-prompt", { signal });
@@ -397,17 +404,14 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
           <div className="row">
             <strong>{t("codexSet.custom.heading")}</strong>
             {snapshot.developerInstructionsState !== "external" ? (
-              <button
-                type="button"
-                className="btn btn-sm codex-set-custom__add"
+              <PresetPicker
                 // Same refusal as the built-in switches. Offering an editor over a
                 // file we cannot read only trades a disabled control for a server
                 // rejection after the user has typed.
                 disabled={snapshot.custom.length >= MAX_LAYERS || busyId !== null || !snapshot.readable}
-                onClick={() => setEditing("new")}
-              >
-                {t("codexSet.custom.add")}
-              </button>
+                onBlank={() => { setPresetSeed(null); setEditing("new"); }}
+                onPreset={(body, title) => { setPresetSeed({ body, title }); setEditing("new"); }}
+              />
             ) : null}
           </div>
 
@@ -514,10 +518,11 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
       {editing && snapshot && (
         <CustomLayerDialog
           layer={editing === "new" ? null : snapshot.custom.find(l => l.id === editing) ?? null}
+          seed={editing === "new" ? presetSeed : null}
           others={snapshot.custom}
           busy={busyId !== null}
           onSave={saveDraft}
-          onClose={() => setEditing(null)}
+          onClose={() => { setEditing(null); setPresetSeed(null); }}
         />
       )}
     </div>

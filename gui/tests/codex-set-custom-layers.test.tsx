@@ -95,7 +95,14 @@ async function mount(): Promise<{ root: Root; container: HTMLElement }> {
 }
 
 function dialog(): HTMLElement { return document.querySelector("dialog.modal-overlay") as HTMLElement; }
-function addButton(c: HTMLElement) { return c.querySelector(".codex-set-custom__add") as HTMLButtonElement | null; }
+/**
+ * WP6 turned + into a picker: the blank option is its first menu item. These tests
+ * are about the custom-layer flow rather than the menu, so they take the shortest
+ * path to an empty editor.
+ */
+function addButton(c: HTMLElement) {
+  return c.querySelector(".codex-set-preset__item") as HTMLButtonElement | null;
+}
 function customRow(c: HTMLElement, id: string) { return c.querySelector("[data-custom-id=\"" + id + "\"]"); }
 
 /**

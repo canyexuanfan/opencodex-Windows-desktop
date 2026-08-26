@@ -23,6 +23,7 @@ import {
  */
 export default function CustomLayerDialog({
   layer,
+  seed,
   others,
   busy,
   onSave,
@@ -30,6 +31,8 @@ export default function CustomLayerDialog({
 }: {
   /** null means a new layer. */
   layer: CustomLayerDto | null;
+  /** Pre-fills a NEW layer from a preset. Fully editable afterwards. */
+  seed?: { title: string; body: string } | null;
   others: readonly CustomLayerDto[];
   /** True while a write is in flight, so Save cannot be pressed twice. */
   busy: boolean;
@@ -38,8 +41,8 @@ export default function CustomLayerDialog({
 }) {
   const t = useT();
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const [title, setTitle] = useState(layer?.title ?? "");
-  const [body, setBody] = useState(layer?.body ?? "");
+  const [title, setTitle] = useState(layer?.title ?? seed?.title ?? "");
+  const [body, setBody] = useState(layer?.body ?? seed?.body ?? "");
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const titleId = "codex-set-custom-dialog";
 
