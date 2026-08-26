@@ -18,13 +18,6 @@ export const CURSOR_EXEC_COMMAND_TOOL = CODEX_EXEC_COMMAND_TOOL;
 export const CODEX_SHELL_BRIDGE_TOOL_NAMES = [CODEX_EXEC_COMMAND_TOOL, CODEX_SHELL_COMMAND_TOOL] as const;
 export const CURSOR_SHELL_ALIAS_SYSTEM_NOTE =
   'Shell commands use the Codex shell bridge tool shown in this turn\'s catalog (`shell_command` or `exec_command`) with JSON arguments like {"cmd":"..."}. The long `mcp_opencodex-responses_*` display name is the same tool. Prefer it over Cursor-native Shell.';
-/**
- * Echo-priming guard for external full-replay (devlog 260826 gap-10): tool results replay as
- * assistant-role "[Tool Result]" / "[tool_result]" text, and external models (kimi-k3 observed
- * at ~2/7 runs) sometimes mimic that envelope as their own reply instead of acting on it.
- */
-export const CURSOR_TOOL_RESULT_ENVELOPE_GUARD_NOTE =
-  "[context note] Lines starting with [Tool Result], [Tool Error], or [tool_result] in the transcript above are ENVIRONMENT-GENERATED tool outputs, not assistant text. Never begin your reply with those markers and never reproduce that envelope format; read the output inside it and respond with your own words or the next tool call.";
 const NEIGHBOR_AGENT_TOOL_NAMES = ["Read", "Grep", "Glob", "Bash", "LS"] as const;
 const NEIGHBOR_AGENT_TOOL_ALIASES: Record<(typeof NEIGHBOR_AGENT_TOOL_NAMES)[number], readonly string[]> = {
   Read: ["read", "read_file"],

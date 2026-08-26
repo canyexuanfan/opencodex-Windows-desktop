@@ -28,19 +28,40 @@ contains N such assistant-role blocks, and a mimicking model treats the
 envelope as an expected assistant output format — the same few-shot priming
 mechanism as the gap-9 repetition loop, but for the envelope itself.
 
-## Fix
+## Fix (v2 — detection + corrective retry)
 
-`rootPromptMessages` appends ONE user-role context note
-(`CURSOR_TOOL_RESULT_ENVELOPE_GUARD_NOTE`) after history replay whenever at
-least one tool result was replayed for an external model: the markers are
-environment-generated, never begin a reply with them, respond with your own
-words or the next tool call.
+v1 (prompt-side guard note) was measured INEFFECTIVE live: 2/7 echo runs
+before, 3/7 after — repeating the trigger strings inside the prompt does not
+stop few-shot mimicry. Superseded by an observation-boundary fix (sol-high
+design review, option A):
+
+- `src/adapters/cursor/envelope-echo.ts`: incremental prefix sniffer
+  (`CursorEnvelopeEchoSniffer`) holds the first assistant text deltas (max 40
+  sniff bytes, 8 KiB hold cap) until they provably diverge from
+  `[Tool Result]` / `[Tool Error]` / `[tool_result]`. A completed marker
+  throws `CursorToolResultEchoError` before any client-visible delta escapes.
+- `cursor.ts` `runOnce`: sniffer armed only for external wire models whose
+  trailing input is a toolResult. On echo: one corrective retry in a fresh
+  conversation (`forceFreshConversation` + rekey/remember, same recovery path
+  as the invalid_argument fallback) with
+  `echoRetryContinuationText` = `CURSOR_ECHO_RETRY_CONTINUATION_TEXT` as the
+  active userMessageAction text (rawMessages untouched). A second echo
+  propagates as an error instead of looping.
+- `protobuf-request.ts`: `buildPreparedCursorRunRequest` uses
+  `request.echoRetryContinuationText` over
+  `CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT` when set. The corrective text
+  deliberately does NOT contain the marker strings.
+- v1 static guard note removed.
 
 ## Verification
 
-- `tests/cursor-envelope-echo-guard.test.ts`: guard appended exactly once and
-  positioned after the replayed tool-result entry; absent when no tool results.
-- Live re-probe after service repair: kimi-k3-1m replay probe rerun batch.
+- `tests/cursor-envelope-echo-retry.test.ts`: fragmented-marker detection,
+  divergence flush, single corrective retry with rotated conversation id and
+  corrective action text, double-echo error (no loop), non-echo continuation
+  unaffected, plain user turns never arm the sniffer. 5 pass.
+- Focused cursor suite (36 tests across 7 files) green; `bun x tsc --noEmit` clean.
+- Live re-probe after service repair: kimi-k3-1m replay probe batch —
+  acceptance is zero envelope-leak finals across the batch.
 
 ## Non-adapter residual (recorded, not fixed here)
 
