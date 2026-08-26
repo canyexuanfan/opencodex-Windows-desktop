@@ -42,3 +42,18 @@ tool-suspended checkpoints (gap-3) engaging in real app threads so history
 stops replaying the old pattern. Until the stack lands and sessions turn
 over, existing threads keep echoing it. Re-probe after service repair
 recorded below.
+
+## Re-probe after service repair (7b3dbdd55)
+
+- rp1 (10-tool scenario, fresh codex exec): 10 separate bridge execs,
+  narration grep = 0. Tool-selection-commentary suppression holding in
+  fresh sessions.
+- rp2 (file-edit scenario): content correct, but the model still wrote
+  result.md via `printf > ` — apply_patch was NOT used. Signature check:
+  0 apply_patch mentions in the transcript, meaning the codex exec
+  session's advertised catalog exposes the bridge exec but the model
+  never considered the edit path despite the new note. Disposition:
+  guidance alone insufficient for write-routing in exec-style sessions;
+  candidate follow-up is server-side detection of redirection-writes with
+  a redirect-to-apply_patch tool error (deferred — aggressive, needs its
+  own cycle and risk review; recorded as open).
