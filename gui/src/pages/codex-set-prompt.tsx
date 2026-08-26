@@ -319,9 +319,15 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
   };
   // Assembly order, so the list reads the way the prompt is actually built.
   // Every class renders; the row decides what each one gets.
+  //
+  // A null order means the position is registration-order dependent rather than fixed
+  // in world_state.rs - an extension-contributed section. Those sort AFTER every known
+  // position instead of collapsing to 0, which would have put them at the very top and
+  // claimed they are assembled first. The stable fallback keeps two such layers in
+  // inventory order relative to each other rather than swapping unpredictably.
   const rows = [...(snapshot?.inventory ?? [])]
     .filter(d => d.class !== "extension-unknown")
-    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    .sort((a, b) => (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER));
 
   /**
    * Two kinds of layer, split by what they ARE rather than by a scope flag.

@@ -359,3 +359,82 @@ test("the layer-text rule outranks .api-code so long bodies wrap", () => {
   expect(rule![1]).toContain("overflow-wrap: anywhere");
   expect(rule![1]).toContain("overflow-x: hidden");
 });
+
+/**
+ * The layer `ext/git-attribution` contributes.
+ *
+ * Three things have to be true at once, and each would be wrong on its own: it appears
+ * at all, it has NO switch, and it does not claim to be "always on". The last is the
+ * one a reader is most likely to get wrong - the account can turn attribution off, and
+ * when it does Codex sends the opposite instruction rather than sending nothing, so
+ * neither "always on" nor "sometimes absent" describes it.
+ */
+test("git-attribution renders as a conditional row with no switch", async () => {
+  stubRoutes(() => json(snapshot()));
+  const { container, root } = await mount();
+
+  const el = row(container, "git-attribution");
+  expect(el).not.toBeNull();
+  // No switch anywhere in the row: not a disabled one either, which would claim a
+  // capability Codex does not expose.
+  expect(el!.querySelector("[role=\"switch\"]")).toBeNull();
+  // The locked note, not the feature-gated one - there is no [features] key to link to.
+  expect(el!.querySelector(".codex-set-prompt__note--locked")).not.toBeNull();
+  // No [features] link INSIDE the note. Querying `.link-btn` across the whole row would
+  // always find one: the row's own name is a link-btn button that opens the dialog.
+  expect(el!.querySelector(".codex-set-prompt__note .link-btn")).toBeNull();
+  // No key chip: the descriptor carries key: null because enablement is account-derived.
+  expect(el!.querySelector(".codex-set-prompt__key")).toBeNull();
+
+  // A registration-order layer sorts after every fixed position rather than to the top,
+  // and shows the neutral marker instead of inventing a number.
+  //
+  // Scoped to the STATE list: the transition notices render in their own list below, so
+  // "last in the document" would be a claim about the split rather than about ordering.
+  const stateList = container.querySelectorAll(".codex-set-prompt__rows")[0]!;
+  const stateIds = [...stateList.querySelectorAll("[data-layer-id]")].map(n => n.getAttribute("data-layer-id"));
+  expect(stateIds[stateIds.length - 1]).toBe("git-attribution");
+  // And specifically NOT first, which is where a null order collapsing to 0 would put it.
+  expect(stateIds[0]).toBe("base-instructions");
+  expect(el!.querySelector(".codex-set-prompt__pos")!.textContent).toBe("\u00b7");
+
+  // The dialog states the real condition.
+  await act(async () => {
+    (el!.querySelector("button") as HTMLButtonElement).click();
+  });
+  const dialog = document.querySelector("dialog.modal-overlay")!;
+  expect(dialog.textContent ?? "").toContain("attribution policy");
+  await act(async () => { root.unmount(); });
+});
+
+/**
+ * A conditional row must not claim to be unconditional.
+ *
+ * Caught by rendering the real page in a browser rather than by a unit test: the DOM
+ * showed `git-attribution` and `plugins` both labelled "Always on" while their dialogs
+ * described a condition. The condition map existed and only the dialog read it, so the
+ * two surfaces disagreed about the same layer.
+ *
+ * Table-driven over every layer that HAS a condition, so the next one added is covered
+ * without a new test - and the negative half proves the assertion is not vacuous.
+ */
+test("a row with a condition shows it instead of \"Always on\"", async () => {
+  stubRoutes(() => json(snapshot()));
+  const { container, root } = await mount();
+
+  // Conditions live on runtime-conditional layers; the transition notices are excluded
+  // because "it fires on a change" is their own distinct wording.
+  const conditional = ["plugins", "agents-md", "git-attribution"];
+  for (const id of conditional) {
+    const note = row(container, id)!.querySelector(".codex-set-prompt__note--locked")!;
+    expect(note.textContent, id).not.toBe("Always on");
+    expect((note.textContent ?? "").length, id).toBeGreaterThan(0);
+  }
+
+  // base-instructions genuinely IS always on: no condition, no off-switch anywhere. If
+  // this drifted the test above would pass for the wrong reason.
+  const base = row(container, "base-instructions")!.querySelector(".codex-set-prompt__note--locked")!;
+  expect(base.textContent).toBe("Always on");
+
+  await act(async () => { root.unmount(); });
+});

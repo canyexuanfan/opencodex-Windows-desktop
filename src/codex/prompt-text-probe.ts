@@ -60,6 +60,13 @@ const UNMAPPED_LAYER_IDS = [
   "personality",
   "realtime",
   "collaboration",
+  // The Rust source names a <git_attribution> marker pair, but a world-state section is
+  // DIFF-rendered: it emits nothing on a turn where its state has not changed. Live
+  // `codex debug prompt-input` (codex-cli 0.145.0, 32978 bytes) showed no such block and
+  // no attribution text. Listing the id here reports "not exposed" honestly instead of
+  // claiming a tag this extractor has never actually matched - the same mistake the
+  // header above records for permissions.
+  "git-attribution",
 ] as const;
 
 export interface LayerText {

@@ -100,6 +100,24 @@ export const LAYER_INVENTORY: readonly LayerDescriptor[] = Object.freeze([
   { id: "tools", class: "feature-gated", key: "features.deferred_tool_world_state", default: false, order: 12 },
   { id: "skills", class: "config-toggle", key: "skills.include_instructions", default: true, order: 13 },
   { id: "multi-agent-mode", class: "feature-gated", key: "features.multi_agent_v2.enabled", default: false, order: 14 },
+  /**
+   * Commit and pull-request attribution, contributed by `ext/git-attribution` rather
+   * than by a world_state.rs section — which is why it is absent from the order list
+   * above and carries `order: null`: it registers through
+   * `extensions.context_contributors()` (`core/src/session/world_state.rs:64-66`),
+   * whose position is registration-order dependent.
+   *
+   * `runtime-conditional`, NOT feature-gated. `ext/git-attribution/src/lib.rs:33-80`
+   * resolves enablement from the AUTH SERVER via `resolve_attribution_policy`, caches
+   * it on the thread store, and falls back to disabled when the lookup fails.
+   * `features/src/lib.rs:277` records the old config flag as removed, so there is no
+   * key for this GUI to write and nothing in [features] to point a user at.
+   *
+   * Both states emit text: enabled sends the `Co-authored-by: Codex` trailer plus the
+   * `Generated with Codex.` PR marker, disabled sends an explicit countermand. So the
+   * row's condition line must name the policy rather than claiming "always on".
+   */
+  { id: "git-attribution", class: "runtime-conditional", key: null, default: null, order: null },
 ] as const);
 
 /**
