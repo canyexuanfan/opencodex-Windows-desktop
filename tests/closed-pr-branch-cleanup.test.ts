@@ -10,8 +10,12 @@
  */
 import { describe, expect, test } from "bun:test";
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const cleanup = require("../.github/scripts/closed-pr-branch-cleanup.cjs") as {
+/**
+ * Dynamic import rather than `require`: the repo's other CommonJS-helper tests reach for
+ * `await import(...)` (ci-workflows.test.ts:5030), and a `no-require-imports` suppression
+ * here would be a new lint suppression for a problem that has a supported spelling.
+ */
+interface CleanupModule {
   DEFAULT_GRACE_DAYS: number;
   KEEP_REASONS: Record<string, string>;
   PROTECTED_BRANCHES: string[];
@@ -22,9 +26,15 @@ const cleanup = require("../.github/scripts/closed-pr-branch-cleanup.cjs") as {
     now?: number;
     graceDays?: number;
   }) => { deletions: { branch: string; pullRequests: number[] }[]; keeps: { branch: string; reason: string }[] };
-};
+}
 
-const { KEEP_REASONS, planClosedPrBranchDeletions } = cleanup;
+const cleanup = await import("../.github/scripts/closed-pr-branch-cleanup.cjs") as unknown as CleanupModule & { default?: CleanupModule };
+// A .cjs module reached through ESM interop may arrive under `default`; taking whichever
+// carries the planner keeps the test honest about what it is calling.
+const api: CleanupModule = typeof cleanup.planClosedPrBranchDeletions === "function"
+  ? cleanup
+  : cleanup.default!;
+const { KEEP_REASONS, planClosedPrBranchDeletions } = api;
 
 const NOW = Date.parse("2026-08-27T00:00:00Z");
 const LONG_AGO = new Date(NOW - 90 * 24 * 60 * 60 * 1000).toISOString();
