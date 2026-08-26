@@ -206,6 +206,26 @@ describe("runExaWebSearch key hygiene (canary)", () => {
     }
   });
 
+  test("a response body timeout keeps the timeout outcome", async () => {
+    let cancelled = false;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
+      pull() {
+        // Stay pending until the linked deadline expires.
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }), { status: 200 })) as typeof fetch;
+    try {
+      const out = await runExaWebSearch("q", "key-1", { model: "m", reasoning: "low", timeoutMs: 5, describeImages: false });
+      expect(out.error).toBe("Timeout elapsed");
+      expect(cancelled).toBe(true);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   test("request carries x-api-key, manual redirect, pinned url; empty key fails closed with no fetch", async () => {
     const captured: Array<{ url: string; init: RequestInit }> = [];
     const realFetch = globalThis.fetch;

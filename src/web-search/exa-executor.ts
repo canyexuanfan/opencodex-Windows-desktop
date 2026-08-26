@@ -57,6 +57,10 @@ export async function runExaWebSearch(
           signal: linkedSignal.signal,
         });
       } catch {
+        const reason = linkedSignal.signal.reason;
+        if (linkedSignal.signal.aborted && reason instanceof Error && reason.name === "TimeoutError") {
+          throw reason;
+        }
         // Preserve the previous status-only/shapeless fallback for body read
         // failures; fetch/header failures are still classified by the outer catch.
       }
