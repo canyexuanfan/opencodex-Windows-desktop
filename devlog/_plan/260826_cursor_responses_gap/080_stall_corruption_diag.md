@@ -22,6 +22,30 @@ subagent. Honest scope: diagnostics capture, not a behavior fix.
 
 ## Accept criteria
 
+## Implementation notes (wpF, 2026-08-26)
+
+- Item 1 (diagnostics) was already satisfied by the baseline: the
+  run-request diagnostic logs continuationMode +
+  checkpointInvalidationReason + rootBlobs/rootBytes
+  (protobuf-request.ts:934-949). No change needed.
+- Item 2 landed as a serve-time digest check in native-exec.ts
+  getBlobArgs: blobs are content-addressed (SHA-256 id), so a served
+  payload whose digest mismatches its raw 32-byte id is in-store
+  corruption — the splice signature. Emits
+  `blob-integrity-mismatch` debug diagnostic (key prefix + byte length
+  only; no payload).
+
+## G2 stall capture procedure (next occurrence)
+
+1. Reproduce with the SAME thread in the Codex app; note wall-clock time.
+2. Mirror the request via curl (session log has the request id):
+   `curl -N http://localhost:10100/v1/responses -H 'Content-Type: application/json' --data-binary @req.json | tee stall.sse`
+3. Enable debug diagnostics (OCX debug env) and capture the
+   run-request + checkpoint-continuation lines for the stalling turn.
+4. Evidence to file here: last SSE event before silence, whether
+   response.completed arrived, continuationMode of the turn, and any
+   blob-integrity-mismatch lines.
+
 - Diagnostic line appears for cursor turns under debug flag (test with
   debug seam).
 - Integrity check triggers on an injected mutated blob (unit test with
