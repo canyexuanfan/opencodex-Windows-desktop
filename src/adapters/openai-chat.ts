@@ -1290,7 +1290,7 @@ function toolsToChatFormatForProvider(parsed: OcxParsedRequest, provider: OcxPro
     const parameters = azureChat
       ? sanitizeAzureChatToolParameters(functionDef.parameters ?? {})
       : ensureZenRootObjectSchema(functionDef.parameters ?? {});
-    const nextFunction = { ...functionDef, parameters };
+    const nextFunction: Record<string, unknown> = { ...functionDef, parameters };
     // strict: true plus a flattened schema is rejected by Gemini-in-the-pool routers.
     if (azureChat) delete nextFunction.strict;
     return {
