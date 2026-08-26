@@ -41,7 +41,7 @@ export interface ActiveTurnLease extends AdmissionLease {
 }
 const activeTurns = new Map<AbortController, ActiveTurnLease>();
 const admittedTurns = new Set<ActiveTurnLease>();
-const activeSessionLanes = new Set<string>();
+const activeSessionLaneRefCounts = new Map<string, number>();
 let sessionLanePeak = 0;
 let sessionLaneAdmitted = 0;
 let sessionLaneRejected = 0;
@@ -156,7 +156,7 @@ export function resetLifecycleDrainStateForTests(): void {
   temporaryDrainOwners.clear();
   nativeMainDrainOwners.clear();
   nativeMainTurns.clear();
-  activeSessionLanes.clear();
+  activeSessionLaneRefCounts.clear();
   sessionLanePeak = 0;
   sessionLaneAdmitted = 0;
   sessionLaneRejected = 0;
@@ -173,16 +173,21 @@ export function tryAdmitTurn(sessionLaneId?: string): ActiveTurnLease | null {
   const opaqueSessionLaneId = sessionLaneId
     ? createHash("sha256").update(sessionLaneId).digest("hex").slice(0, SESSION_LANE_ID_BYTES)
     : undefined;
-  if (opaqueSessionLaneId && (activeSessionLanes.has(opaqueSessionLaneId) || activeSessionLanes.size >= MAX_ACTIVE_SESSION_LANES)) {
+  const sessionLaneRefCount = opaqueSessionLaneId
+    ? activeSessionLaneRefCounts.get(opaqueSessionLaneId) ?? 0
+    : 0;
+  if (opaqueSessionLaneId && sessionLaneRefCount === 0 && activeSessionLaneRefCounts.size >= MAX_ACTIVE_SESSION_LANES) {
     sessionLaneRejected += 1;
     return null;
   }
   const gateLease = turnGate.tryAcquire();
   if (!gateLease) return null;
   if (opaqueSessionLaneId) {
-    activeSessionLanes.add(opaqueSessionLaneId);
-    sessionLaneAdmitted += 1;
-    sessionLanePeak = Math.max(sessionLanePeak, activeSessionLanes.size);
+    activeSessionLaneRefCounts.set(opaqueSessionLaneId, sessionLaneRefCount + 1);
+    if (sessionLaneRefCount === 0) {
+      sessionLaneAdmitted += 1;
+      sessionLanePeak = Math.max(sessionLanePeak, activeSessionLaneRefCounts.size);
+    }
   }
   const controllers = new Set<AbortController>();
   let active = true;
@@ -234,7 +239,13 @@ export function tryAdmitTurn(sessionLaneId?: string): ActiveTurnLease | null {
       }
       controllers.clear();
       nativeMainTurns.delete(lease);
-      if (opaqueSessionLaneId) activeSessionLanes.delete(opaqueSessionLaneId);
+      if (opaqueSessionLaneId) {
+        const currentRefCount = activeSessionLaneRefCounts.get(opaqueSessionLaneId);
+        if (currentRefCount === 1) activeSessionLaneRefCounts.delete(opaqueSessionLaneId);
+        else if (currentRefCount && currentRefCount > 1) {
+          activeSessionLaneRefCounts.set(opaqueSessionLaneId, currentRefCount - 1);
+        }
+      }
       gateLease.release();
     },
   };
@@ -294,11 +305,11 @@ export interface SessionLaneMetrics {
 }
 export function sessionLaneMetrics(): SessionLaneMetrics {
   return {
-    active: activeSessionLanes.size,
+    active: activeSessionLaneRefCounts.size,
     peak: sessionLanePeak,
     admitted: sessionLaneAdmitted,
     rejected: sessionLaneRejected,
-    retainedBytes: activeSessionLanes.size * SESSION_LANE_ID_BYTES,
+    retainedBytes: activeSessionLaneRefCounts.size * SESSION_LANE_ID_BYTES,
   };
 }
 export function getNativeMainProfileRequestCount(): number {
