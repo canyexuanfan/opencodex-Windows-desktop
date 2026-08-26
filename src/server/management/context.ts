@@ -6,6 +6,7 @@ import type { StartupHealth } from "../../codex/autostart-health";
 import type { StartupInstallAction } from "../startup-action-control";
 import type { ManagementPrincipal } from "../management-auth";
 import type { CatalogModel } from "../../codex/catalog";
+import type { Paths as CodexPromptPaths } from "../../codex/prompt-layers";
 import type { injectGrokConfig } from "../../grok/inject";
 import type { removeDesktop3pStandardPivot, writeDesktop3pConfig } from "../../claude/desktop-3p";
 import type { RuntimePortState } from "../../config/process-state";
@@ -87,6 +88,14 @@ export interface ManagementApiDeps {
    * state inside their temporary Codex home.
    */
   codexLogGuardMaintenanceDeps?: CodexLogGuardMaintenanceDeps;
+  /**
+   * Prompt-layer path seam. Production leaves this unset and
+   * `src/codex/prompt-layers.ts` resolves the real CODEX_HOME. A route test
+   * that could not inject paths would read AND WRITE the developer's live
+   * ~/.codex/config.toml — the same class of incident
+   * `saveConfigPreservingClaudeCode` above exists to prevent.
+   */
+  codexPromptPaths?: CodexPromptPaths;
 }
 
 
