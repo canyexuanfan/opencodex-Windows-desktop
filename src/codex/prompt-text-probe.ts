@@ -22,20 +22,25 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { resolveCodexHomeDir } from "./home";
 
-/** Section id in the DTO -> the tag `world_state` renders it under. */
+/**
+ * Layer id -> the tag Codex actually renders it under.
+ *
+ * Every entry here was read off live `codex debug prompt-input` output across the
+ * feature flags that enable each section. None is inferred from the Rust section
+ * `ID` constants: those are identifiers for diffing, not wrapper tags, and an
+ * earlier guess from them mapped `permissions` to the wrong name while the real
+ * tag - `permissions instructions`, with a space - went unmatched.
+ *
+ * A layer absent from this map is reported as unsupported, never as silent.
+ */
 const LAYER_SECTION_TAGS: Record<string, string> = {
   skills: "skills_instructions",
   apps: "apps_instructions",
   plugins: "plugins_instructions",
   environment: "environment_context",
-  // Verified against live output, not guessed from the Rust section IDs: the
-  // rendered tag carries a space.
   permissions: "permissions instructions",
-  collaboration: "collaboration_mode",
+  // Synthetic: the project doc carries no tag of its own (see extractSections).
   "agents-md": "__agents_md",
-  // Synthetic key: the project doc has no tag of its own (see extractSections).
-  personality: "personality",
-  realtime: "realtime",
 };
 
 /**
@@ -49,6 +54,12 @@ const UNMAPPED_LAYER_IDS = [
   "environments-instructions",
   "tools",
   "multi-agent-mode",
+  // Confirmed absent from live output under their own feature flags, so the
+  // previous `personality` / `realtime` guesses reported these as silent when the
+  // truth is that this extractor has no verified tag for them.
+  "personality",
+  "realtime",
+  "collaboration",
 ] as const;
 
 export interface LayerText {
@@ -142,10 +153,15 @@ function extractSections(raw: string): Map<string, string> {
     // AGENTS.md is NOT tagged: it arrives as a plain `# AGENTS.md instructions
     // for <path>` block among the tagged sections. Matching only on tags would
     // report the layer as unrendered while its text sits in the same message.
-    const projectDoc = /(^|\n)(# AGENTS\.md instructions for [\s\S]*)$/.exec(
-      text.replace(/<([a-zA-Z_][a-zA-Z0-9_ -]*)>[\s\S]*?<\/\1>/g, ""),
-    );
-    if (projectDoc) sections.set("__agents_md", projectDoc[2]!.trim());
+    //
+    // Bounded at both ends. Capturing to end-of-message swept up any unrelated
+    // untagged prose that happened to follow, and stripping tag-shaped blocks
+    // first also deleted XML-like text the user had written INSIDE their own
+    // AGENTS.md. Codex wraps the body in <INSTRUCTIONS>, so that is the boundary.
+    // No line anchor: the block is concatenated directly onto the previous
+    // section's closing tag, so requiring a newline before it never matched.
+    const projectDoc = /# AGENTS\.md instructions for [^\n]*\n+<INSTRUCTIONS>\n?([\s\S]*?)\n?<\/INSTRUCTIONS>/.exec(text);
+    if (projectDoc) sections.set("__agents_md", projectDoc[1]!.trim());
   }
   return sections;
 }

@@ -22,7 +22,8 @@ describe("section extraction", () => {
   });
 
   test("AGENTS.md is found even though it carries no tag of its own", () => {
-    const raw = message("<skills_instructions>S</skills_instructions>\n# AGENTS.md instructions for /home/u/.codex\n\nBe brief.");
+    // Codex wraps the body in <INSTRUCTIONS>; the fixture matches live output.
+    const raw = message("<skills_instructions>S</skills_instructions># AGENTS.md instructions for /home/u/.codex\n\n<INSTRUCTIONS>\nBe brief.\n</INSTRUCTIONS>");
     const sections = extractSectionsForTests(raw);
     expect(sections.get("skills_instructions")).toBe("S");
     expect(sections.get("__agents_md")).toContain("Be brief.");
@@ -39,5 +40,31 @@ describe("section extraction", () => {
     const sections = extractSectionsForTests(message("<apps_instructions>line one\nline two</apps_instructions>"));
     expect(sections.get("apps_instructions")).toBe("line one\nline two");
   });
-});
 
+  test("AGENTS.md is bounded by its own INSTRUCTIONS wrapper", () => {
+    // Capturing to end-of-message swept up whatever untagged prose followed. The
+    // body is delimited, so the delimiter is the boundary.
+    const raw = message(
+      "</recommended_plugins># AGENTS.md instructions for /home/u/.codex\n\n<INSTRUCTIONS>\nBe brief.\n</INSTRUCTIONS><environment_context>\n  <cwd>/tmp</cwd>\n</environment_context>",
+    );
+    const sections = extractSectionsForTests(raw);
+    expect(sections.get("__agents_md")).toBe("Be brief.");
+    // The section that follows is its own entry, not swallowed into the doc.
+    expect(sections.get("environment_context")).toContain("<cwd>/tmp</cwd>");
+  });
+
+  test("XML-like prose a user wrote inside AGENTS.md survives", () => {
+    // Stripping tag-shaped blocks before extraction deleted the user's own text.
+    const raw = message(
+      "# AGENTS.md instructions for /home/u/.codex\n\n<INSTRUCTIONS>\nUse <angle> brackets freely.\n</INSTRUCTIONS>",
+    );
+    expect(extractSectionsForTests(raw).get("__agents_md")).toBe("Use <angle> brackets freely.");
+  });
+
+  test("a tag-shaped fragment inside prose does not become its own section", () => {
+    const raw = message("# AGENTS.md instructions for /x\n\n<INSTRUCTIONS>\nPrefer <div> over <span>.\n</INSTRUCTIONS>");
+    const sections = extractSectionsForTests(raw);
+    expect(sections.has("div")).toBe(false);
+    expect(sections.get("__agents_md")).toContain("<div>");
+  });
+});
