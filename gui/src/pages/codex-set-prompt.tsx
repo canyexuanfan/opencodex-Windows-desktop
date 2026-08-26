@@ -69,7 +69,12 @@ export interface PromptSnapshotDto {
   modelInstructionsFile: string | null;
 }
 
-export function codexPromptResourceKey(apiBase: string): string {
+/**
+ * Module-private: exporting it broke the Fast Refresh rule this repository
+ * lints for, and nothing outside this file ever called it. The exported types
+ * above are erased at build time, so they do not trip the same rule.
+ */
+function codexPromptResourceKey(apiBase: string): string {
   return "codex-prompt:" + apiBase;
 }
 

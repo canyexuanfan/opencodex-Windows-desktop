@@ -29,10 +29,14 @@ export default function CodexSet({ apiBase }: { apiBase: string }) {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  useEffect(() => {
-    if (tab === "prompt") setPromptMounted(true);
-    if (tab === "multiauth") setMultiauthMounted(true);
-  }, [tab]);
+  // Latch during render, not in an effect. Setting state from a prop/state change
+  // costs an extra render pass and is what React Compiler flags; the latch is
+  // pure - it only ever goes false -> true - so computing it here is both
+  // cheaper and the same value.
+  const showPrompt = promptMounted || tab === "prompt";
+  const showMultiauth = multiauthMounted || tab === "multiauth";
+  if (showPrompt !== promptMounted) setPromptMounted(true);
+  if (showMultiauth !== multiauthMounted) setMultiauthMounted(true);
 
   return (
     <>
@@ -65,7 +69,7 @@ export default function CodexSet({ apiBase }: { apiBase: string }) {
         </button>
       </div>
 
-      {promptMounted && (
+      {showPrompt && (
         <div
           role="tabpanel"
           id="codex-set-panel-prompt"
@@ -76,7 +80,7 @@ export default function CodexSet({ apiBase }: { apiBase: string }) {
         </div>
       )}
 
-      {multiauthMounted && (
+      {showMultiauth && (
         <div
           role="tabpanel"
           id="codex-set-panel-multiauth"
