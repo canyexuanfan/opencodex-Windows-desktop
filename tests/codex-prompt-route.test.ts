@@ -438,9 +438,15 @@ describe("dispatch and safety", () => {
     // typecheck property of Record<WriteError, number>. This asserts the values.
     const { WRITE_ERROR_STATUS_FOR_TESTS } = await import("../src/server/management/codex-prompt-routes");
     const statuses = Object.values(WRITE_ERROR_STATUS_FOR_TESTS);
-    expect(statuses.length).toBeGreaterThanOrEqual(9);
+    expect(statuses.length).toBeGreaterThanOrEqual(10);
     for (const status of statuses) expect(status).toBeGreaterThanOrEqual(400);
-    for (const status of statuses) expect(status).toBeLessThan(500);
+    // write_failed is the one 5xx: the filesystem refused a write that passed every
+    // precondition, so the caller did nothing wrong and retrying it unchanged will
+    // fail identically. Every OTHER error stays 4xx.
+    for (const [error, status] of Object.entries(WRITE_ERROR_STATUS_FOR_TESTS)) {
+      if (error === "write_failed") expect(status).toBe(500);
+      else expect(status).toBeLessThan(500);
+    }
   });
 
   test("22. the injected paths are honored on every verb", async () => {
@@ -567,6 +573,7 @@ describe("020 coverage completions", () => {
       store_unreadable: 409,
       invalid_characters: 400,
       write_superseded: 409,
+      write_failed: 500,
       recovery_required: 409,
       locked: 409,
     });

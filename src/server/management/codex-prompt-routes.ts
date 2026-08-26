@@ -72,6 +72,10 @@ const WRITE_ERROR_STATUS: Record<WriteError, number> = {
   store_unreadable: 409,
   invalid_characters: 400,
   write_superseded: 409,
+  // Not the caller's fault and not a race: the filesystem refused the write and the
+  // transaction rolled itself back. 500 rather than 409 — retrying the same request
+  // unchanged will fail the same way until the disk or the path is fixed.
+  write_failed: 500,
   recovery_required: 409,
   locked: 409,
 };
