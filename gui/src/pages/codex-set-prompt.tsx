@@ -6,6 +6,9 @@ import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surfa
 import PromptLayerRow from "../components/codex-set/PromptLayerRow";
 import PromptLayerDialog from "../components/codex-set/PromptLayerDialog";
 import type { LayerId } from "../components/codex-set/prompt-layer-copy";
+import CustomLayerRow from "../components/codex-set/CustomLayerRow";
+import CustomLayerDialog from "../components/codex-set/CustomLayerDialog";
+import { MAX_LAYERS, moveLayer, newLayerId, type Draft } from "../components/codex-set/custom-layer-state";
 
 /**
  * The Prompt panel of Codex Set (WP3).
@@ -84,6 +87,10 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [openLayerId, setOpenLayerId] = useState<string | null>(null);
+  // null = closed, "new" = the + flow, otherwise the id being edited.
+  const [editing, setEditing] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  const [adoptPreview, setAdoptPreview] = useState<{ rawLine: string | null; decodedBody: string | null } | null>(null);
 
   const load = useCallback(async (signal: AbortSignal): Promise<PromptSnapshotDto> => {
     const res = await fetch(apiBase + "/api/codex-prompt", { signal });
@@ -130,6 +137,91 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
     }
   };
 
+
+  /**
+   * Full-replacement write. The route is shaped that way on purpose: order is
+   * composition order, so a reorder needs no separate verb and a delete is just
+   * the remaining list.
+   */
+  const writeCustom = async (layers: CustomLayerDto[], busyKey: string) => {
+    if (!snapshot) return;
+    setBusyId(busyKey);
+    setError("");
+    const previous = snapshot.custom;
+    try {
+      const res = await fetch(apiBase + "/api/codex-prompt/custom", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ layers, revision: snapshot.revision }),
+      });
+      const body = await res.json() as { ok?: boolean; code?: string; message?: string; snapshot?: PromptSnapshotDto };
+      if (!res.ok || !body.ok || !body.snapshot) {
+        if (body.code === "stale_revision") {
+          resource.refresh();
+          setError(t("codexSet.prompt.staleRevision"));
+          return;
+        }
+        setError(body.message ?? t("codexSet.prompt.writeFailed"));
+        // Restore the previous list rather than leaving the UI showing an edit
+        // the file never accepted.
+        setClientResourceData(resourceKey, { ...snapshot, custom: previous });
+        resource.refresh();
+        return;
+      }
+      setClientResourceData(resourceKey, body.snapshot);
+    } catch {
+      setError(t("codexSet.prompt.writeFailed"));
+      resource.refresh();
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const saveDraft = (draft: Draft) => {
+    if (!snapshot) return;
+    const existing = snapshot.custom;
+    const next = draft.id === null
+      ? [...existing, { id: newLayerId(existing), title: draft.title, body: draft.body, enabled: true }]
+      // Editing keeps the id: it is stable across edits, which is what lets the
+      // store and the projection stay in agreement.
+      : existing.map(l => (l.id === draft.id ? { ...l, title: draft.title, body: draft.body } : l));
+    setEditing(null);
+    void writeCustom(next, draft.id ?? "new");
+  };
+
+  const adopt = async (confirm: boolean) => {
+    if (!snapshot) return;
+    setBusyId("adopt");
+    setError("");
+    try {
+      const res = await fetch(apiBase + "/api/codex-prompt/adopt", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(confirm ? { confirm: true, revision: snapshot.revision } : { confirm: false }),
+      });
+      const body = await res.json() as {
+        ok?: boolean; code?: string; message?: string;
+        snapshot?: PromptSnapshotDto;
+        preview?: { rawLine: string | null; decodedBody: string | null };
+      };
+      if (!res.ok || !body.ok) {
+        setError(body.message ?? t("codexSet.custom.adoptRefused"));
+        setAdoptPreview(null);
+        return;
+      }
+      if (body.snapshot) {
+        setClientResourceData(resourceKey, body.snapshot);
+        setAdoptPreview(null);
+        return;
+      }
+      // Preview only: nothing has been written, and the user still has to confirm.
+      setAdoptPreview(body.preview ?? null);
+    } catch {
+      setError(t("codexSet.prompt.writeFailed"));
+    } finally {
+      setBusyId(null);
+    }
+  };
   // Assembly order, so the list reads the way the prompt is actually built.
   // Every class renders; the row decides what each one gets.
   const rows = [...(snapshot?.inventory ?? [])]
@@ -204,6 +296,121 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
           descriptor={openDescriptor}
           toggle={snapshot?.toggles.find(s => s.id === openDescriptor.id)}
           onClose={() => setOpenLayerId(null)}
+        />
+      )}
+
+      {/*
+        Custom layers compose into developer_instructions, NEVER into
+        model_instructions_file: that key REPLACES the entire base prompt, so
+        wiring + to it would delete Codex's own instructions on first save.
+        devlog 000 records this as the deliberate deviation from the literal ask.
+      */}
+      {snapshot && (
+        <section className="codex-set-custom">
+          <div className="row">
+            <strong>{t("codexSet.custom.heading")}</strong>
+            {snapshot.developerInstructionsOwned || snapshot.custom.length > 0 ? (
+              <button
+                type="button"
+                className="btn btn-sm codex-set-custom__add"
+                disabled={snapshot.custom.length >= MAX_LAYERS || busyId !== null}
+                onClick={() => setEditing("new")}
+              >
+                {t("codexSet.custom.add")}
+              </button>
+            ) : null}
+          </div>
+
+          {snapshot.custom.length >= MAX_LAYERS && (
+            <p className="muted small">{t("codexSet.custom.limitReached", { max: MAX_LAYERS })}</p>
+          )}
+
+          {/*
+            An externally authored key is not ours to rewrite. Rather than telling
+            the user to go delete their own instructions by hand, the panel offers
+            to import them - previewed first, written only on confirmation.
+          */}
+          {!snapshot.developerInstructionsOwned && snapshot.modelInstructionsFile === null && (
+            <div className="codex-set-custom__adopt">
+              <p className="muted small">{t("codexSet.custom.notOwned")}</p>
+              {adoptPreview ? (
+                <>
+                  <pre className="api-code codex-set-custom__adopt-preview">{adoptPreview.decodedBody}</pre>
+                  <div className="modal-actions">
+                    <button type="button" className="btn btn-primary btn-sm" disabled={busyId !== null} onClick={() => { void adopt(true); }}>
+                      {t("codexSet.custom.adoptConfirm")}
+                    </button>
+                    <button type="button" className="btn btn-sm" onClick={() => setAdoptPreview(null)}>
+                      {t("common.cancel")}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <button type="button" className="btn btn-sm" disabled={busyId !== null} onClick={() => { void adopt(false); }}>
+                  {t("codexSet.custom.adopt")}
+                </button>
+              )}
+            </div>
+          )}
+
+          {/*
+            model_instructions_file is reported, never written: it replaces the base
+            prompt outright, so the panel states that something outside opencodex
+            has taken it over.
+          */}
+          {snapshot.modelInstructionsFile !== null && (
+            <p className="muted small codex-set-custom__replaced">
+              {t("codexSet.custom.baseReplaced", { path: snapshot.modelInstructionsFile })}
+            </p>
+          )}
+
+          <ul className="codex-set-prompt__rows">
+            {snapshot.custom.map((layer, index) => (
+              <CustomLayerRow
+                key={layer.id}
+                layer={layer}
+                index={index}
+                total={snapshot.custom.length}
+                busy={busyId !== null}
+                onToggle={(id, enabled) => {
+                  void writeCustom(snapshot.custom.map(l => (l.id === id ? { ...l, enabled } : l)), id);
+                }}
+                onEdit={setEditing}
+                onDelete={setConfirmingDelete}
+                onMove={(id, delta) => { void writeCustom(moveLayer(snapshot.custom, id, delta), id); }}
+              />
+            ))}
+          </ul>
+
+          {confirmingDelete && (
+            // Confirm first: a body can be long and there is no undo.
+            <div className="notice codex-set-custom__confirm" role="alertdialog">
+              <span>{t("codexSet.custom.deleteConfirm")}</span>
+              <button
+                type="button"
+                className="btn btn-danger btn-sm"
+                onClick={() => {
+                  const id = confirmingDelete;
+                  setConfirmingDelete(null);
+                  void writeCustom(snapshot.custom.filter(l => l.id !== id), id);
+                }}
+              >
+                {t("common.delete")}
+              </button>
+              <button type="button" className="btn btn-sm" onClick={() => setConfirmingDelete(null)}>
+                {t("common.cancel")}
+              </button>
+            </div>
+          )}
+        </section>
+      )}
+
+      {editing && snapshot && (
+        <CustomLayerDialog
+          layer={editing === "new" ? null : snapshot.custom.find(l => l.id === editing) ?? null}
+          others={snapshot.custom}
+          onSave={saveDraft}
+          onClose={() => setEditing(null)}
         />
       )}
     </div>

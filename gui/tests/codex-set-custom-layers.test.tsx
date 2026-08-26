@@ -1,0 +1,380 @@
+/**
+ * Custom layers and the compatibility linter (devlog 050 + the rule table in 060).
+ *
+ * Case 12 re-asserts ask item 6 from the custom side: adding delete to one row
+ * family must not leak it into the other.
+ */
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { Window } from "happy-dom";
+import { act } from "react";
+import type { Root } from "react-dom/client";
+import { LanguageProvider } from "../src/i18n/provider";
+import { clearClientResourceStoresForTests } from "../src/client-resource";
+import CodexSetPrompt from "../src/pages/codex-set-prompt";
+import { LAYER_INVENTORY } from "../../src/codex/prompt-layers";
+import { lintPromptLayer } from "../src/components/codex-set/prompt-lint";
+import { moveLayer, normalizeBody, validateDraft } from "../src/components/codex-set/custom-layer-state";
+
+const globals = ["document", "window", "navigator", "localStorage", "IS_REACT_ACT_ENVIRONMENT"] as const;
+let previousGlobals: Record<(typeof globals)[number], unknown>;
+let testWindow: Window;
+const originalFetch = globalThis.fetch;
+const INVENTORY = LAYER_INVENTORY.map(d => ({ ...d }));
+
+function layer(over: Record<string, unknown> = {}) {
+  return { id: "aaaaaa", title: "House rules", body: "Be brief.", enabled: true, ...over };
+}
+
+function snapshot(over: Record<string, unknown> = {}) {
+  return {
+    configPath: "/tmp/config.toml",
+    storePath: "/tmp/opencodex-prompt.json",
+    configExists: true,
+    readable: true,
+    developerInstructionsOwned: true,
+    drift: null,
+    revision: "sha256:one",
+    inventory: INVENTORY,
+    toggles: INVENTORY.filter(d => d.class === "config-toggle").map(d => ({
+      id: d.id, key: d.key as string, userFileValue: null, defaultedUserValue: true, default: true,
+    })),
+    extensionLayersEnumerable: false,
+    custom: [],
+    modelInstructionsFile: null,
+    ...over,
+  };
+}
+
+beforeEach(() => {
+  previousGlobals = Object.fromEntries(globals.map(key => [key, Reflect.get(globalThis, key)])) as typeof previousGlobals;
+  testWindow = new Window({ url: "http://localhost/#codex-set/prompt" });
+  Object.defineProperties(globalThis, {
+    document: { configurable: true, value: testWindow.document },
+    window: { configurable: true, value: testWindow },
+    navigator: { configurable: true, value: testWindow.navigator },
+    localStorage: { configurable: true, value: testWindow.localStorage },
+  });
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  clearClientResourceStoresForTests();
+});
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+  testWindow.close();
+  for (const key of globals) {
+    Object.defineProperty(globalThis, key, { configurable: true, value: previousGlobals[key] });
+  }
+});
+
+interface Call { url: string; method: string; body: any }
+function stubRoutes(handler: (call: Call) => Response) {
+  const calls: Call[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const call: Call = { url: String(input), method: init?.method ?? "GET", body: init?.body ? JSON.parse(String(init.body)) : undefined };
+    calls.push(call);
+    return handler(call);
+  }) as typeof fetch;
+  return calls;
+}
+
+function json(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
+}
+
+async function mount(): Promise<{ root: Root; container: HTMLElement }> {
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+  let root!: Root;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(<LanguageProvider><CodexSetPrompt apiBase="" /></LanguageProvider>);
+  });
+  return { root, container };
+}
+
+function dialog(): HTMLElement { return document.querySelector("dialog.modal-overlay") as HTMLElement; }
+function addButton(c: HTMLElement) { return c.querySelector(".codex-set-custom__add") as HTMLButtonElement | null; }
+function customRow(c: HTMLElement, id: string) { return c.querySelector("[data-custom-id=\"" + id + "\"]"); }
+
+/**
+ * React tracks the previous value on the DOM node, so assigning `.value` directly
+ * makes it skip the change as a no-op. The native setter is what a real keystroke
+ * goes through.
+ */
+function typeInto(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+  const proto = el instanceof testWindow.HTMLTextAreaElement
+    ? testWindow.HTMLTextAreaElement.prototype
+    : testWindow.HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+  setter?.call(el, value);
+  el.dispatchEvent(new testWindow.Event("input", { bubbles: true }));
+  el.dispatchEvent(new testWindow.Event("change", { bubbles: true }));
+}
+
+test("1. + opens an empty editor", async () => {
+  stubRoutes(() => json(snapshot()));
+  const { container, root } = await mount();
+  await act(async () => { addButton(container)!.click(); });
+  const input = dialog().querySelector("input[type=\"text\"]") as HTMLInputElement;
+  const textarea = dialog().querySelector("textarea") as HTMLTextAreaElement;
+  expect(input.value).toBe("");
+  expect(textarea.value).toBe("");
+  await act(async () => { root.unmount(); });
+});
+
+test("2. Save PUTs the full list with the new layer appended", async () => {
+  const calls = stubRoutes(call => {
+    if (call.method === "PUT") return json({ ok: true, changed: true, snapshot: snapshot({ custom: [layer()] }) });
+    return json(snapshot());
+  });
+  const { container, root } = await mount();
+  await act(async () => { addButton(container)!.click(); });
+  const input = dialog().querySelector("input[type=\"text\"]") as HTMLInputElement;
+  const textarea = dialog().querySelector("textarea") as HTMLTextAreaElement;
+  await act(async () => {
+    typeInto(input, "House rules");
+    typeInto(textarea, "Be brief.");
+  });
+  const save = [...dialog().querySelectorAll("button")].find(b => (b.textContent ?? "").includes("Save"))!;
+  await act(async () => { save.click(); });
+  const put = calls.find(c => c.method === "PUT")!;
+  expect(put.url).toBe("/api/codex-prompt/custom");
+  expect(put.body.layers).toHaveLength(1);
+  expect(put.body.layers[0].title).toBe("House rules");
+  expect(put.body.layers[0].body).toBe("Be brief.");
+  expect(put.body.layers[0].id).toMatch(/^[a-z0-9]{6}$/);
+  expect(put.body.revision).toBe("sha256:one");
+  await act(async () => { root.unmount(); });
+});
+
+test("3. editing changes title and body but keeps the id", async () => {
+  const calls = stubRoutes(call => {
+    if (call.method === "PUT") return json({ ok: true, changed: true, snapshot: snapshot({ custom: [layer({ title: "Renamed" })] }) });
+    return json(snapshot({ custom: [layer()] }));
+  });
+  const { container, root } = await mount();
+  await act(async () => { (customRow(container, "aaaaaa")!.querySelector("button") as HTMLButtonElement).click(); });
+  const input = dialog().querySelector("input[type=\"text\"]") as HTMLInputElement;
+  expect(input.value).toBe("House rules");
+  await act(async () => {
+    typeInto(input, "Renamed");
+  });
+  const save = [...dialog().querySelectorAll("button")].find(b => (b.textContent ?? "").includes("Save"))!;
+  await act(async () => { save.click(); });
+  const put = calls.find(c => c.method === "PUT")!;
+  expect(put.body.layers[0].id).toBe("aaaaaa");
+  expect(put.body.layers[0].title).toBe("Renamed");
+  await act(async () => { root.unmount(); });
+});
+
+test("4. toggling a custom layer PUTs with enabled flipped", async () => {
+  const calls = stubRoutes(call => {
+    if (call.method === "PUT") return json({ ok: true, changed: true, snapshot: snapshot({ custom: [layer({ enabled: false })] }) });
+    return json(snapshot({ custom: [layer()] }));
+  });
+  const { container, root } = await mount();
+  const sw = customRow(container, "aaaaaa")!.querySelector("input[role=\"switch\"]") as HTMLInputElement;
+  await act(async () => { sw.click(); });
+  const put = calls.find(c => c.method === "PUT")!;
+  expect(put.body.layers[0].enabled).toBe(false);
+  expect(put.body.layers[0].id).toBe("aaaaaa");
+  await act(async () => { root.unmount(); });
+});
+
+test("5. delete confirms first, then PUTs without the row", async () => {
+  const calls = stubRoutes(call => {
+    if (call.method === "PUT") return json({ ok: true, changed: true, snapshot: snapshot({ custom: [] }) });
+    return json(snapshot({ custom: [layer()] }));
+  });
+  const { container, root } = await mount();
+  const del = customRow(container, "aaaaaa")!.querySelector(".codex-set-custom__delete") as HTMLButtonElement;
+  await act(async () => { del.click(); });
+  // A body can be long and there is no undo, so nothing is written yet.
+  expect(calls.filter(c => c.method === "PUT")).toHaveLength(0);
+  const confirm = container.querySelector(".codex-set-custom__confirm .btn-danger") as HTMLButtonElement;
+  await act(async () => { confirm.click(); });
+  expect(calls.find(c => c.method === "PUT")!.body.layers).toHaveLength(0);
+  await act(async () => { root.unmount(); });
+});
+
+test("6+7. reorder PUTs the new order and works from the keyboard", async () => {
+  const two = [layer(), layer({ id: "bbbbbb", title: "Second", body: "Then this." })];
+  const calls = stubRoutes(call => {
+    if (call.method === "PUT") return json({ ok: true, changed: true, snapshot: snapshot({ custom: [two[1]!, two[0]!] }) });
+    return json(snapshot({ custom: two }));
+  });
+  const { container, root } = await mount();
+  // Buttons, not a drag handle: a drag-only affordance is not reachable.
+  const up = customRow(container, "bbbbbb")!.querySelectorAll(".codex-set-custom__reorder button")[0] as HTMLButtonElement;
+  expect(up.disabled).toBe(false);
+  await act(async () => { up.click(); });
+  const put = calls.find(c => c.method === "PUT")!;
+  expect(put.body.layers.map((l: any) => l.id)).toEqual(["bbbbbb", "aaaaaa"]);
+  await act(async () => { root.unmount(); });
+});
+
+test("8+9. Escape asks when dirty and closes immediately when clean", async () => {
+  stubRoutes(() => json(snapshot({ custom: [layer()] })));
+  const { container, root } = await mount();
+  await act(async () => { (customRow(container, "aaaaaa")!.querySelector("button") as HTMLButtonElement).click(); });
+  // Clean: closes at once.
+  await act(async () => { dialog().dispatchEvent(new testWindow.Event("cancel", { cancelable: true })); });
+  expect(document.querySelector("dialog.modal-overlay")).toBeNull();
+
+  await act(async () => { (customRow(container, "aaaaaa")!.querySelector("button") as HTMLButtonElement).click(); });
+  const textarea = dialog().querySelector("textarea") as HTMLTextAreaElement;
+  await act(async () => {
+    typeInto(textarea, "Changed.");
+  });
+  await act(async () => { dialog().dispatchEvent(new testWindow.Event("cancel", { cancelable: true })); });
+  // Dirty: still open, asking. A textarea someone typed into is not a glance.
+  expect(document.querySelector("dialog.modal-overlay")).not.toBeNull();
+  expect(dialog().querySelector(".codex-set-custom-dialog__discard")).not.toBeNull();
+  await act(async () => { root.unmount(); });
+});
+
+test("10. each validation rule disables Save with its message", async () => {
+  stubRoutes(() => json(snapshot()));
+  const { container, root } = await mount();
+  await act(async () => { addButton(container)!.click(); });
+  const input = dialog().querySelector("input[type=\"text\"]") as HTMLInputElement;
+  const textarea = dialog().querySelector("textarea") as HTMLTextAreaElement;
+  const save = () => [...dialog().querySelectorAll("button")].find(b => (b.textContent ?? "").includes("Save")) as HTMLButtonElement;
+  // Empty title.
+  expect(save().disabled).toBe(true);
+  const cases: Array<[string, string]> = [
+    ["x".repeat(81), "ok"],
+    ["fine", "a\u0007b"],
+  ];
+  for (const [title, body] of cases) {
+    await act(async () => {
+    typeInto(input, title);
+    typeInto(textarea, body);
+    });
+    expect(save().disabled).toBe(true);
+    expect(dialog().querySelector("[role=\"alert\"]")).not.toBeNull();
+  }
+  await act(async () => { root.unmount(); });
+});
+
+test("11. a rejected PUT restores the previous list", async () => {
+  const calls = stubRoutes(call => {
+    if (call.method === "PUT") return json({ ok: false, code: "developer_instructions_not_owned", message: "refused" }, 409);
+    return json(snapshot({ custom: [layer()] }));
+  });
+  const { container, root } = await mount();
+  const sw = customRow(container, "aaaaaa")!.querySelector("input[role=\"switch\"]") as HTMLInputElement;
+  await act(async () => { sw.click(); });
+  expect(container.querySelector("[role=\"alert\"]")).not.toBeNull();
+  const after = customRow(container, "aaaaaa")!.querySelector("input[role=\"switch\"]") as HTMLInputElement;
+  expect(after.checked).toBe(true);
+  expect(calls.filter(c => c.method === "PUT")).toHaveLength(1);
+  await act(async () => { root.unmount(); });
+});
+
+test("12. built-in rows still have no delete control", async () => {
+  // Ask item 6 from the custom side: adding delete to one row family must not
+  // leak it into the other.
+  stubRoutes(() => json(snapshot({ custom: [layer()] })));
+  const { container, root } = await mount();
+  for (const d of INVENTORY) {
+    const el = container.querySelector("[data-layer-id=\"" + d.id + "\"]");
+    if (!el) continue;
+    expect(el.querySelector(".codex-set-custom__delete"), d.id).toBeNull();
+  }
+  expect(customRow(container, "aaaaaa")!.querySelector(".codex-set-custom__delete")).not.toBeNull();
+  await act(async () => { root.unmount(); });
+});
+
+test("14+15+16. an unowned key hides + and offers a previewed Adopt", async () => {
+  const calls = stubRoutes(call => {
+    if (call.url.includes("/adopt")) {
+      if (call.body?.confirm === true) {
+        return json({ ok: true, changed: true, snapshot: snapshot({ custom: [layer({ title: "Imported from config.toml" })] }) });
+      }
+      return json({ ok: true, changed: false, preview: { rawLine: "developer_instructions = \"Answer in Korean.\"", decodedBody: "Answer in Korean." } });
+    }
+    return json(snapshot({ developerInstructionsOwned: false }));
+  });
+  const { container, root } = await mount();
+  expect(addButton(container)).toBeNull();
+  const adopt = container.querySelector(".codex-set-custom__adopt button") as HTMLButtonElement;
+  await act(async () => { adopt.click(); });
+  // Preview writes nothing and shows the user their own text first.
+  expect(container.querySelector(".codex-set-custom__adopt-preview")!.textContent).toBe("Answer in Korean.");
+  expect(calls.filter(c => c.body?.confirm === true)).toHaveLength(0);
+  const confirm = container.querySelector(".codex-set-custom__adopt .btn-primary") as HTMLButtonElement;
+  await act(async () => { confirm.click(); });
+  expect(calls.filter(c => c.body?.confirm === true)).toHaveLength(1);
+  await act(async () => { root.unmount(); });
+});
+
+test("17+18+19. bodies round-trip, tabs and CRLF normalize, control chars are refused", async () => {
+  expect(normalizeBody("a\tb\r\nc")).toBe("a    b\nc");
+  expect(normalizeBody("quote \" and back\\slash")).toBe("quote \" and back\\slash");
+  const bad = validateDraft({ id: null, title: "t", body: "ok\u0007bad", enabled: true }, []);
+  expect(bad).toEqual({ kind: "invalid-character", position: 2 });
+  expect(validateDraft({ id: null, title: "t", body: "fine", enabled: true }, [])).toBeNull();
+});
+
+test("13. a stale revision re-reads instead of retrying blindly", async () => {
+  let gets = 0;
+  const calls = stubRoutes(call => {
+    if (call.method === "PUT") return json({ ok: false, code: "stale_revision" }, 409);
+    gets += 1;
+    return json(snapshot({ custom: [layer()], revision: gets > 1 ? "sha256:fresh" : "sha256:one" }));
+  });
+  const { container, root } = await mount();
+  await act(async () => { (customRow(container, "aaaaaa")!.querySelector("input[role=\"switch\"]") as HTMLInputElement).click(); });
+  expect(calls.filter(c => c.method === "PUT")).toHaveLength(1);
+  // The refreshed revision must be INSTALLED: the next write has to carry it.
+  await act(async () => { (customRow(container, "aaaaaa")!.querySelector("input[role=\"switch\"]") as HTMLInputElement).click(); });
+  const puts = calls.filter(c => c.method === "PUT");
+  expect(puts).toHaveLength(2);
+  expect(puts[1]!.body.revision).toBe("sha256:fresh");
+  await act(async () => { root.unmount(); });
+});
+
+test("21+22+23. the linter flags each rule, spans the right text, and stays quiet on clean prose", async () => {
+  const identity = lintPromptLayer("You are Claude, a helpful assistant.");
+  expect(identity.map(f => f.rule)).toContain("identity");
+  // The span covers the matched phrase itself, "You are Claude" - 14 characters,
+  // not the sentence - so highlighting points at the claim rather than the line.
+  expect(identity[0]!.span).toEqual([0, 14]);
+  expect("You are Claude, a helpful assistant.".slice(0, 14)).toBe("You are Claude");
+
+  expect(lintPromptLayer("Use the Read tool first.").map(f => f.rule)).toContain("foreign-tool");
+  expect(lintPromptLayer("Run ${{ tools.by_kind.edit }} now.").map(f => f.rule)).toContain("placeholder");
+  expect(lintPromptLayer("apply_patch must be used for edits.").map(f => f.rule)).toContain("apply-patch");
+  expect(lintPromptLayer("Use acceptEdits when unsure.").map(f => f.rule)).toContain("approval-vocab");
+  expect(lintPromptLayer("Your cwd is /tmp.").map(f => f.rule)).toContain("environment");
+
+  // Behavioral text - the shape every preset takes - produces nothing.
+  expect(lintPromptLayer("Answer in Korean. Keep replies short and state the plan first.")).toEqual([]);
+
+  // Advisory, never a warning: the 8 KB cap is opencodex policy, not an upstream limit.
+  const big = lintPromptLayer("x".repeat(8 * 1024 + 1));
+  expect(big).toHaveLength(1);
+  expect(big[0]!.level).toBe("info");
+});
+
+test("24. no rule throws on empty, whitespace, or a 64 KiB body", () => {
+  expect(() => lintPromptLayer("")).not.toThrow();
+  expect(() => lintPromptLayer("   \n\n  ")).not.toThrow();
+  expect(() => lintPromptLayer("y".repeat(64 * 1024))).not.toThrow();
+  // A second lint of the same text must find the same things: a shared /g regex
+  // carries lastIndex between calls and would miss the first match.
+  const once = lintPromptLayer("You are Claude.");
+  const twice = lintPromptLayer("You are Claude.");
+  expect(twice).toEqual(once);
+});
+
+test("moveLayer reorders without mutating its input", () => {
+  const layers = [layer(), layer({ id: "bbbbbb" }), layer({ id: "cccccc" })];
+  const moved = moveLayer(layers, "cccccc", -1);
+  expect(moved.map(l => l.id)).toEqual(["aaaaaa", "cccccc", "bbbbbb"]);
+  expect(layers.map(l => l.id)).toEqual(["aaaaaa", "bbbbbb", "cccccc"]);
+  // Edges are no-ops rather than errors.
+  expect(moveLayer(layers, "aaaaaa", -1).map(l => l.id)).toEqual(["aaaaaa", "bbbbbb", "cccccc"]);
+});

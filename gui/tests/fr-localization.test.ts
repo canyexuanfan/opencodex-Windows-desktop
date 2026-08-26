@@ -25,6 +25,9 @@ const INTENTIONAL_ENGLISH = new Set<TKey>([
   // and translating "Plugins" would invent a difference French does not have.
   "codexSet.layer.agents-md",
   "codexSet.layer.plugins",
+  // "Instructions" is the same word in French. Inventing a synonym to make this
+  // check happy would be worse copy for a French reader.
+  "codexSet.custom.bodyLabel",
   "common.ok",
   "nav.api",
   "nav.grok",
