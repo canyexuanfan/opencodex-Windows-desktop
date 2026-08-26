@@ -1394,6 +1394,8 @@ export function bridgeToResponsesSSE(
 
       const startStream = () => {
         emit("response.created", { response: responseSnapshot("in_progress", []) });
+        // Responses spec parity: clients expect an explicit in_progress frame after created.
+        emit("response.in_progress", { response: responseSnapshot("in_progress", []) });
         // The default ReadableStream strategy has HWM=1. Once one event's frames fill that
         // queue, pull stepping pauses; no custom FIFO or queuing strategy is layered on top.
         gated = true;

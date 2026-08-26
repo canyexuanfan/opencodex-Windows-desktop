@@ -10,6 +10,7 @@ import type {
 import { isAllowedToolChoice, namespacedToolName, toolChoiceAliases, type OcxTool, type OcxToolChoice } from "../../types";
 import type { CursorRequestMessage, CursorRequestedModelParameter, CursorRunRequest } from "./types";
 import { cursorCheckpointModelAffinityId, cursorWireModelSelection, type CursorRoutingLevel } from "./discovery";
+import { decodeCursorCallId } from "./call-id";
 import { cursorEffortSuffix, cursorRequestWireModelIdWithEffort } from "./effort-map";
 import {
   cursorMcpToolEncodedSize,
@@ -226,7 +227,7 @@ function contentPartToText(part: OcxContentPart | OcxAssistantContentPart): stri
 function toolResultToText(message: OcxToolResultMessage): string {
   return [
     "[tool_result]",
-    `call_id: ${message.toolCallId}`,
+    `call_id: ${decodeCursorCallId(message.toolCallId)}`,
     `name: ${namespacedToolName(message.toolNamespace, message.toolName)}`,
     `is_error: ${message.isError}`,
     "output:",
