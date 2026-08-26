@@ -25,7 +25,7 @@ export default function PromptLayerDialog({
   descriptor: LayerDescriptorDto;
   toggle: ToggleStateDto | undefined;
   /** Rendered source text for this layer, when the probe could read it. */
-  text: { text: string | null; reason: string; bytes: number } | undefined;
+  text: { text: string | null; reason: string; bytes: number; sourcePath?: string } | undefined;
   busy: boolean;
   onToggle: (id: string, enabled: boolean) => void;
   onClose: () => void;
@@ -147,11 +147,16 @@ export default function PromptLayerDialog({
           // Each absent case has a different cause, and saying which one is the
           // difference between a limit and a bug.
           <p className="muted small codex-set-layer-dialog__no-text">
-            {text?.reason === "not-rendered"
-              ? t("codexSet.dialog.notRendered")
-              : text?.reason === "not-exposed"
-                ? t("codexSet.dialog.notExposed")
-                : t("codexSet.dialog.textUnavailable")}
+            {text?.reason === "empty-source"
+              // An existing but empty file is a fourth state. Reporting it as
+              // "sent nothing" would describe the layer as idle when the real
+              // answer is that the file the user wrote is blank.
+              ? t("codexSet.dialog.emptySource", { path: text.sourcePath ?? "" })
+              : text?.reason === "not-rendered"
+                ? t("codexSet.dialog.notRendered")
+                : text?.reason === "not-exposed"
+                  ? t("codexSet.dialog.notExposed")
+                  : t("codexSet.dialog.textUnavailable")}
           </p>
         )}
       </div>

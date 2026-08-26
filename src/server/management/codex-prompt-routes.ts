@@ -273,9 +273,11 @@ export async function handleCodexPromptRoutes(ctx: ManagementContext): Promise<R
     // `codex debug prompt-input` renders the model-visible input list, and this
     // reads it. Bounded and fail-soft - an unavailable probe degrades to "we could
     // not read it", never to an error page.
+    // No caller-supplied directory: the probe reads CODEX_HOME and nothing else.
+    // A `cwd` parameter would have let any authenticated request read an arbitrary
+    // folder's AGENTS.md through this endpoint.
     const { probePromptText } = await import("../../codex/prompt-text-probe");
-    const cwd = url.searchParams.get("cwd") ?? process.cwd();
-    return jsonResponse(await probePromptText(cwd), 200, req, ctx.config);
+    return jsonResponse(await probePromptText(), 200, req, ctx.config);
   }
 
   if (url.pathname === "/api/codex-prompt/toggle" && req.method === "PUT") {
