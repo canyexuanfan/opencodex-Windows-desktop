@@ -58,7 +58,9 @@ and yours are added to them.
 :::note
 This is deliberately not `model_instructions_file`. That key REPLACES the base
 prompt rather than adding to it, so wiring **+** to it would delete Codex's own
-instructions the first time you saved a layer.
+instructions the first time you saved a layer. If replacing the base prompt is
+what you want, that is what [Base prompt variants](#base-prompt-variants) is for
+— a separate, named decision rather than a side effect of adding a layer.
 :::
 
 Custom layers are numbered among themselves because they are joined into one
@@ -91,6 +93,58 @@ placeholders nothing expands, or stating environment facts Codex generates later
 
 These are warnings and never block a save. If you mean to override Codex, you can;
 the warning only makes it a decision rather than an accident.
+
+## Commit attribution
+
+The **Commit attribution** row tells the model to add a `Co-authored-by: Codex`
+trailer to commits it writes, and a `Generated with Codex.` line to pull requests it
+opens.
+
+There is no switch for it here, and none under `[features]` either: Codex resolves it
+from your account's attribution policy. Turning it off at the account level does not
+remove the layer — Codex sends the **opposite** instruction instead, telling the model
+not to add the trailer. Either way something is sent, which is why the row is listed
+as set by your account rather than as always on.
+
+## Base prompt variants
+
+The base prompt is the one layer you cannot switch off, because a model with no
+base prompt is not a working agent. You can **substitute** it, though, and the
+switch on the **Base instructions** row is what does that.
+
+Open the row to see the picker. Move between options by swiping sideways, with the
+left and right arrow keys, or with the arrow buttons — the buttons are also what a
+screen reader announces, so the page stays operable without a touchpad.
+
+| Option | What it is | Editable |
+|---|---|---|
+| Codex's own base prompt | `model_instructions_file` is absent from your config | never |
+| Your variant | a prompt you write, stored in `~/.codex/opencodex-prompt-base/` | yes |
+| A second variant | the same, up to two | yes |
+
+The first option has nothing to edit and no **Save** button, and the dialog says why
+rather than showing greyed-out controls. The default is not a copy of Codex's prompt
+that we store — it is the **absence** of the key. So there is no text to change and
+none to delete, and choosing it simply removes `model_instructions_file` from your
+config again.
+
+:::caution
+A variant **replaces** Codex's base instructions rather than adding to them. A
+three-line variant gives you a model with three lines of instructions: no tool
+discipline, no verification habits, none of what Codex normally brings. If you want
+to *add* guidance, use a [custom layer](#custom-layers) instead — those are additive.
+:::
+
+### If something else already replaced your base prompt
+
+If `model_instructions_file` points at a file opencodex did not write, the picker
+refuses to act and says where the key points. It will not silently retarget a key
+you or another tool set. Clear it yourself first, then choose here.
+
+This is the same principle as importing `developer_instructions`: the panel reports
+what it finds, and you decide.
+
+Switching applies to newly started sessions, like every other change on this page.
 
 ## Instructions written outside opencodex
 
@@ -128,6 +182,7 @@ These live in your Codex `config.toml`, not in opencodex's own configuration.
 | `include_apps_instructions` | `true` | Apps |
 | `skills.include_instructions` | `true` | Skills |
 | `developer_instructions` | unset | Your custom layers, joined in order |
+| `model_instructions_file` | unset | Base prompt, when a variant is selected |
 
 Writes are line edits: your comments and formatting survive, and a key opencodex
 does not recognise is left alone rather than removed.
