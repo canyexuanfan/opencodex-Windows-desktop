@@ -24,12 +24,15 @@ import {
 export default function CustomLayerDialog({
   layer,
   others,
+  busy,
   onSave,
   onClose,
 }: {
   /** null means a new layer. */
   layer: CustomLayerDto | null;
   others: readonly CustomLayerDto[];
+  /** True while a write is in flight, so Save cannot be pressed twice. */
+  busy: boolean;
   onSave: (draft: Draft) => void;
   onClose: () => void;
 }) {
@@ -141,7 +144,7 @@ export default function CustomLayerDialog({
             <button
               type="button"
               className="btn btn-primary btn-sm"
-              disabled={problem !== null}
+              disabled={problem !== null || busy}
               onClick={() => onSave({ ...draft, body: normalized })}
             >
               {t("common.save")}
@@ -153,4 +156,3 @@ export default function CustomLayerDialog({
     </dialog>
   );
 }
-

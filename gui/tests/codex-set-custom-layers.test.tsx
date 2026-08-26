@@ -482,3 +482,89 @@ test("the delete confirmation names the layer it will remove", async () => {
   expect(container.querySelector(".codex-set-custom__confirm")!.textContent).toContain("Second rules");
   await act(async () => { root.unmount(); });
 });
+
+test("Save cannot be pressed twice while a write is in flight", async () => {
+  // Keeping the editor open so a refusal cannot discard a draft also left Save
+  // reachable mid-write. Two full-replacement PUTs would leave with the same
+  // revision: one lands, the other returns stale, and the user is shown an error
+  // for work that actually succeeded.
+  let release: (() => void) | null = null;
+  const calls: Call[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const call: Call = { url: String(input), method: init?.method ?? "GET", body: init?.body ? JSON.parse(String(init.body)) : undefined };
+    calls.push(call);
+    if (call.method === "PUT") {
+      await new Promise<void>(resolve => { release = resolve; });
+      return json({ ok: true, changed: true, snapshot: snapshot({ custom: [layer()] }) });
+    }
+    return json(snapshot());
+  }) as typeof fetch;
+
+  const { container, root } = await mount();
+  await act(async () => { addButton(container)!.click(); });
+  const input = dialog().querySelector("input[type=\"text\"]") as HTMLInputElement;
+  const textarea = dialog().querySelector("textarea") as HTMLTextAreaElement;
+  await act(async () => {
+    typeInto(input, "House rules");
+    typeInto(textarea, "Be brief.");
+  });
+  const save = () => [...dialog().querySelectorAll("button")].find(b => (b.textContent ?? "").includes("Save")) as HTMLButtonElement;
+  await act(async () => { save().click(); });
+
+  expect(save().disabled).toBe(true);
+  await act(async () => { save().click(); });
+  expect(calls.filter(c => c.method === "PUT")).toHaveLength(1);
+
+  await act(async () => { release!(); await new Promise(r => setTimeout(r, 0)); });
+  await act(async () => { root.unmount(); });
+});
+
+test("an unreadable config refuses custom writes too, not only built-in switches", async () => {
+  // Offering an editor over a file we cannot read trades a disabled control for a
+  // server rejection after the user has typed.
+  stubRoutes(() => json(snapshot({ readable: false, custom: [layer()] })));
+  const { container, root } = await mount();
+  expect(addButton(container)!.disabled).toBe(true);
+  const row = customRow(container, "aaaaaa")!;
+  expect((row.querySelector("input[role=\"switch\"]") as HTMLInputElement).disabled).toBe(true);
+  expect((row.querySelector(".codex-set-custom__delete") as HTMLButtonElement).disabled).toBe(true);
+  for (const button of row.querySelectorAll(".codex-set-custom__reorder button")) {
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+  }
+  await act(async () => { root.unmount(); });
+});
+
+test("a lone surrogate is refused client-side, like the server refuses it", () => {
+  // Not a Unicode scalar value, so it has no UTF-8 encoding at all. Accepting it
+  // here left Save enabled on text that could only fail after submission.
+  const lone = "ok" + String.fromCharCode(0xd800) + "bad";
+  expect(validateDraft({ id: null, title: "t", body: lone, enabled: true }, []))
+    .toEqual({ kind: "invalid-character", position: 2 });
+  // A PAIRED surrogate is an ordinary character and must still be accepted.
+  expect(validateDraft({ id: null, title: "t", body: "emoji \u{1f600} fine", enabled: true }, [])).toBeNull();
+});
+
+test("lint findings never disable Save", () => {
+  // The whole point of warn-not-block: a user who means to override Codex may.
+  const body = "You are Claude. Use the Read tool. Your cwd is /tmp.";
+  expect(lintPromptLayer(body).length).toBeGreaterThan(2);
+  expect(validateDraft({ id: null, title: "Override", body, enabled: true }, [])).toBeNull();
+});
+
+test("composed overflow and the 32-layer ceiling are both refused", async () => {
+  // The two limits case 10 could not reach through the editor: one depends on the
+  // OTHER enabled layers, the other on how many rows already exist.
+  const bulky = { id: "zzzzzz", title: "Bulky", body: "y".repeat(70 * 1024), enabled: true };
+  const draft = { id: null, title: "Another", body: "z".repeat(60 * 1024), enabled: true };
+  // Each body is under the 64 KiB per-layer cap; together they exceed 128 KiB.
+  expect(validateDraft(draft, [bulky])).toEqual({ kind: "composed-too-large", bytes: 133122 });
+  // A disabled neighbour does not count toward the projection.
+  expect(validateDraft(draft, [{ ...bulky, enabled: false }])).toBeNull();
+
+  const full = Array.from({ length: 32 }, (_, i) => layer({ id: String(i).padStart(6, "a").slice(-6) }));
+  stubRoutes(() => json(snapshot({ custom: full })));
+  const { container, root } = await mount();
+  expect(addButton(container)!.disabled).toBe(true);
+  expect(container.textContent).toContain("32");
+  await act(async () => { root.unmount(); });
+});

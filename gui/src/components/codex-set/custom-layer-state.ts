@@ -33,12 +33,20 @@ export function normalizeBody(body: string): string {
 
 export interface CharacterFinding { position: number }
 
-/** Control characters other than newline cannot be encoded safely. */
+/**
+ * Control characters other than newline cannot be encoded safely, and neither can
+ * an unpaired surrogate: it is not a Unicode scalar value, so it has no UTF-8
+ * encoding at all. The server refuses both, and mirroring it here is what keeps
+ * Save from staying enabled on text that could only fail after submission.
+ */
 export function findInvalidCharacter(body: string): CharacterFinding | null {
   let position = 0;
   for (const ch of body) {
     const cp = ch.codePointAt(0)!;
     if (ch !== "\n" && (cp < 0x20 || cp === 0x7f)) return { position };
+    // `for...of` yields a lone surrogate as its own unit; a valid pair arrives
+    // already combined, above 0xffff.
+    if (cp >= 0xd800 && cp <= 0xdfff) return { position };
     position += 1;
   }
   return null;
@@ -111,4 +119,3 @@ export function moveLayer(layers: readonly CustomLayerDto[], id: string, delta: 
   next.splice(to, 0, moved!);
   return next;
 }
-

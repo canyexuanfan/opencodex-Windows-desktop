@@ -641,11 +641,66 @@ describe("020 coverage completions", () => {
   });
 
   test("an unrecognized repair mode is refused rather than treated as adopt", async () => {
+    // developerInstructionsOwned:false covers an ABSENT key and an EXTERNAL one, and
+    // a GUI that cannot tell them apart hides its own create affordance from every
+    // first-run user. The four states must each serialize distinctly.
+    const absent = fixture("");
+    expect((await call("GET", "/api/codex-prompt", absent)).body.developerInstructionsState).toBe("absent");
+
+    const external = fixture("developer_instructions = \"hand written\"\n");
+    expect((await call("GET", "/api/codex-prompt", external)).body.developerInstructionsState).toBe("external");
+
+    const malformed = fixture(MARKER + "\ndeveloper_instructions = 'reshaped'\n");
+    expect((await call("GET", "/api/codex-prompt", malformed)).body.developerInstructionsState).toBe("owned-malformed");
+
+    const owned = fixture(ownedConfig("Be brief."), storeJson([
+      { id: "aaaaaa", title: "House rules", body: "Be brief.", enabled: true },
+    ]));
+    const ownedRes = await call("GET", "/api/codex-prompt", owned);
+    expect(ownedRes.body.developerInstructionsState).toBe("owned");
+    // The boolean still agrees with the state it was too coarse to express.
+    expect(ownedRes.body.developerInstructionsOwned).toBe(true);
+
+    // A mutation echoes the state too, so the GUI never has to re-GET to learn it.
+    const rev = ownedRes.body.revision as string;
+    const put = await call("PUT", "/api/codex-prompt/toggle", owned, { id: "apps", enabled: false, revision: rev });
+    expect(put.body.snapshot.developerInstructionsState).toBe("owned");
+  });
+
+  test("an unrecognized repair mode is refused rather than treated as adopt", async () => {
     const fx = fixture(MARKER + "\ndeveloper_instructions = 'reshaped'\n");
     const res = await call("POST", "/api/codex-prompt/repair", fx, {
       confirm: true, mode: "reset", revision: await revision(fx),
     });
     expect(res.status).toBe(400);
     expect(res.body.code).toBe("invalid_body");
+  });
+
+  test("24. every ownership state is named, not collapsed into a boolean", async () => {
+    // developerInstructionsOwned:false covers an ABSENT key and an EXTERNAL one, and
+    // a GUI that cannot tell them apart hides its own create affordance from every
+    // first-run user. The four states must each serialize distinctly.
+    const absent = fixture("");
+    expect((await call("GET", "/api/codex-prompt", absent)).body.developerInstructionsState).toBe("absent");
+
+    const external = fixture("developer_instructions = \"hand written\"\n");
+    expect((await call("GET", "/api/codex-prompt", external)).body.developerInstructionsState).toBe("external");
+
+    const malformed = fixture(MARKER + "\ndeveloper_instructions = 'reshaped'\n");
+    expect((await call("GET", "/api/codex-prompt", malformed)).body.developerInstructionsState).toBe("owned-malformed");
+
+    const owned = fixture(ownedConfig("Be brief."), storeJson([
+      { id: "aaaaaa", title: "House rules", body: "Be brief.", enabled: true },
+    ]));
+    const ownedRes = await call("GET", "/api/codex-prompt", owned);
+    expect(ownedRes.body.developerInstructionsState).toBe("owned");
+    // The boolean still agrees with the state it was too coarse to express.
+    expect(ownedRes.body.developerInstructionsOwned).toBe(true);
+
+    // A mutation echoes the state too, so the GUI never re-GETs to learn it.
+    const put = await call("PUT", "/api/codex-prompt/toggle", owned, {
+      id: "apps", enabled: false, revision: ownedRes.body.revision,
+    });
+    expect(put.body.snapshot.developerInstructionsState).toBe("owned");
   });
 });

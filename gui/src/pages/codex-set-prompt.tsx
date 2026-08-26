@@ -151,6 +151,11 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
    */
   const writeCustom = async (layers: CustomLayerDto[], busyKey: string): Promise<boolean> => {
     if (!snapshot) return false;
+    // Keeping the editor open until the write lands (so a refusal cannot discard a
+    // draft) also means Save stays reachable while a PUT is in flight. Without this
+    // guard two full-replacement writes can leave with the same revision: one lands,
+    // the other comes back stale, and the user sees an error for work that succeeded.
+    if (busyId !== null) return false;
     setBusyId(busyKey);
     setError("");
     const previous = snapshot.custom;
@@ -325,7 +330,10 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
               <button
                 type="button"
                 className="btn btn-sm codex-set-custom__add"
-                disabled={snapshot.custom.length >= MAX_LAYERS || busyId !== null}
+                // Same refusal as the built-in switches. Offering an editor over a
+                // file we cannot read only trades a disabled control for a server
+                // rejection after the user has typed.
+                disabled={snapshot.custom.length >= MAX_LAYERS || busyId !== null || !snapshot.readable}
                 onClick={() => setEditing("new")}
               >
                 {t("codexSet.custom.add")}
@@ -383,7 +391,7 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
                 layer={layer}
                 index={index}
                 total={snapshot.custom.length}
-                busy={busyId !== null}
+                busy={busyId !== null || !snapshot.readable}
                 onToggle={(id, enabled) => {
                   void writeCustom(snapshot.custom.map(l => (l.id === id ? { ...l, enabled } : l)), id);
                 }}
@@ -427,6 +435,7 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
         <CustomLayerDialog
           layer={editing === "new" ? null : snapshot.custom.find(l => l.id === editing) ?? null}
           others={snapshot.custom}
+          busy={busyId !== null}
           onSave={saveDraft}
           onClose={() => setEditing(null)}
         />
