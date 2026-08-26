@@ -453,6 +453,11 @@ export function createCursorRequest(
     ...(parsed._compactionRequest === true || parsed._contextCompactionBoundary === true ? { contextUsageReset: true } : {}),
     ...(parsed._compactionRequest === true ? { contextUsageStoreCheckpoints: false } : {}),
     ...(budget.tools.length ? { tools: budget.tools } : {}),
+    // Bare API caller (no tools, no Codex thread identity): suppress Cursor's default
+    // native tool catalog instead of paying its ~10-15K token preamble (devlog 260826 040).
+    ...(budget.tools.length === 0 && !cursorClientThreadOwner(parsed)
+      ? { suppressDefaultCursorToolCatalog: true }
+      : {}),
     ...(parsed.options.toolChoice ? { toolChoice: parsed.options.toolChoice } : {}),
     ...(parsed.options.parallelToolCalls !== undefined ? { parallelToolCalls: parsed.options.parallelToolCalls } : {}),
   };

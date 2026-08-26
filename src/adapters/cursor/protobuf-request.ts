@@ -990,7 +990,11 @@ function buildPreparedCursorRunRequest(
     // the event-state `clientToolNames` use (live-transport.ts). Advertising the raw `request.tools`
     // here would let mcp_tools expose a tool that the event state does not recognize for a generic
     // tool-count prompt, so a call to it would be rejected as an unknown Responses tool.
-    ...(mcpToolDefs.length > 0 ? { mcpTools: create(McpToolsSchema, { mcpTools: mcpToolDefs }) } : {}),
+    // An explicitly empty McpTools wrapper (bare API callers) suppresses Cursor's default
+    // native catalog; an absent field lets identified Codex sessions keep it (devlog 260826 040).
+    ...(mcpToolDefs.length > 0 || request.suppressDefaultCursorToolCatalog === true
+      ? { mcpTools: create(McpToolsSchema, { mcpTools: mcpToolDefs }) }
+      : {}),
   });
 
   const message = create(AgentClientMessageSchema, {

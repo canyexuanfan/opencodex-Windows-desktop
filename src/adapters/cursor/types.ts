@@ -15,6 +15,13 @@ export interface CursorRunRequest {
   requestedModelParameters?: readonly CursorRequestedModelParameter[];
   /** Cursor Router optimization parameter; valid only while modelId is the `default` wire model. */
   routingLevel?: CursorRoutingLevel;
+  /**
+   * Bare API callers (no caller tools, no Codex thread identity) pay a ~10-15K input-token
+   * preamble because an absent AgentRunRequest.mcp_tools field makes Cursor inject its default
+   * native tool catalog. When true, an explicitly empty McpTools wrapper is serialized instead,
+   * suppressing that default. Codex-identified sessions keep the absent-field behavior.
+   */
+  suppressDefaultCursorToolCatalog?: boolean;
   conversationId: string;
   system: string[];
   messages: CursorRequestMessage[];
