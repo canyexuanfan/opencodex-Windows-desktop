@@ -3,6 +3,8 @@ import { useT } from "../i18n/shared";
 import { useDataSurface } from "../data-surface";
 import { setClientResourceData } from "../client-resource";
 import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
+import PromptLayerRow from "../components/codex-set/PromptLayerRow";
+import PromptLayerDialog from "../components/codex-set/PromptLayerDialog";
 
 /**
  * The Prompt panel of Codex Set (WP3).
@@ -69,6 +71,7 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
   const resourceKey = codexPromptResourceKey(apiBase);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [openLayerId, setOpenLayerId] = useState<string | null>(null);
 
   const load = useCallback(async (signal: AbortSignal): Promise<PromptSnapshotDto> => {
     const res = await fetch(apiBase + "/api/codex-prompt", { signal });
@@ -115,9 +118,12 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
     }
   };
 
-  const toggleRows = (snapshot?.inventory ?? [])
-    .filter(d => d.class === "config-toggle")
+  // Assembly order, so the list reads the way the prompt is actually built.
+  // Every class renders; the row decides what each one gets.
+  const rows = [...(snapshot?.inventory ?? [])]
+    .filter(d => d.class !== "extension-unknown")
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const openDescriptor = rows.find(d => d.id === openLayerId) ?? null;
 
   return (
     <div className="panel codex-set-prompt">
@@ -159,29 +165,35 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
       {error && <div className="notice notice-err" role="alert">{error}</div>}
 
       <ul className="codex-set-prompt__rows">
-        {toggleRows.map(descriptor => {
-          const state = snapshot?.toggles.find(s => s.id === descriptor.id);
-          const checked = state?.defaultedUserValue ?? descriptor.default ?? true;
-          const label = t(("codexSet.layer." + descriptor.id) as never);
-          return (
-            <li key={descriptor.id} className="codex-set-prompt__row" data-layer-id={descriptor.id}>
-              <span className="codex-set-prompt__name">{label}</span>
-              <code className="codex-set-prompt__key">{descriptor.key}</code>
-              <label className="switch">
-                <input
-                  type="checkbox"
-                  role="switch"
-                  aria-label={label}
-                  checked={checked}
-                  disabled={busyId === descriptor.id || snapshot?.readable === false}
-                  onChange={e => { void onToggle(descriptor.id, e.target.checked); }}
-                />
-                <span className="switch-track" aria-hidden="true" />
-              </label>
-            </li>
-          );
-        })}
+        {rows.map(descriptor => (
+          <PromptLayerRow
+            key={descriptor.id}
+            descriptor={descriptor}
+            toggle={snapshot?.toggles.find(s => s.id === descriptor.id)}
+            busy={busyId === descriptor.id}
+            writesRefused={snapshot?.readable === false}
+            onToggle={(id, enabled) => { void onToggle(id, enabled); }}
+            onOpen={setOpenLayerId}
+          />
+        ))}
       </ul>
+
+      {/*
+        Third-party extension layers cannot be enumerated (devlog 001 class E), so
+        the panel says so rather than implying the list above is exhaustive. A count
+        is the honest shape: rows would claim knowledge we do not have.
+      */}
+      {snapshot && !snapshot.extensionLayersEnumerable && (
+        <p className="muted small codex-set-prompt__extensions">{t("codexSet.prompt.extensionsUnknown")}</p>
+      )}
+
+      {openDescriptor && (
+        <PromptLayerDialog
+          descriptor={openDescriptor}
+          toggle={snapshot?.toggles.find(s => s.id === openDescriptor.id)}
+          onClose={() => setOpenLayerId(null)}
+        />
+      )}
     </div>
   );
 }

@@ -1,0 +1,74 @@
+/* ============================================================================
+   codex-set — isolated stylesheet for the Codex Set prompt panel
+   Namespace: codex-set-  |  widgets: codex-set-prompt__, codex-set-layer-dialog__
+   Uses only design tokens from styles.css. No gradients.
+
+   Rows carry no switch element at all when a layer cannot be turned off, so
+   there is no disabled-control styling here on purpose: the absence is the
+   design, not something to grey out.
+   ============================================================================ */
+
+.codex-set-prompt__rows {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.codex-set-prompt__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.codex-set-prompt__row:last-child {
+  border-bottom: 0;
+}
+
+.codex-set-prompt__name {
+  flex: 0 0 auto;
+  text-align: left;
+}
+
+.codex-set-prompt__key {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Pushed right so a row without a key still aligns its trailing element. */
+.codex-set-prompt__note {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.codex-set-prompt__extensions {
+  margin-top: 12px;
+}
+
+.codex-set-layer-dialog {
+  max-width: 520px;
+}
+
+.codex-set-layer-dialog__line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.codex-set-layer-dialog__no-text {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+

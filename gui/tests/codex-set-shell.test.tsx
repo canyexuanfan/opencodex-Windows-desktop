@@ -219,21 +219,22 @@ test("7. the timing copy promises new sessions, not an immediate or restarted ap
   await act(async () => { root.unmount(); });
 });
 
-test("8. the five toggle rows render from the inventory, and no other class does", async () => {
+test("8. the five switches come from the inventory, one per config-toggle row", async () => {
   stubRoutes(() => json(snapshot()));
   const { container, root } = await mountPrompt();
   const switches = container.querySelectorAll("input[role=\"switch\"]");
   expect(switches).toHaveLength(5);
   const text = container.textContent ?? "";
   expect(text).toContain("include_apps_instructions");
-  // WP4 owns the other four classes. Their absence is the contract, so assert it
-  // over EVERY non-toggle row in the fixture rather than one hand-picked key: one
-  // exclusion would still pass if a base or runtime-conditional row leaked in.
+  // WP4 renders every class; what stays true here is that a switch appears for a
+  // config-toggle row and for nothing else. The full taxonomy, including the rule
+  // that a locked layer gets no switch ELEMENT at all, is owned by
+  // codex-set-prompt-layers.test.tsx.
   for (const descriptor of INVENTORY.filter(d => d.class !== "config-toggle")) {
-    expect(container.querySelector("[data-layer-id=\"" + descriptor.id + "\"]")).toBeNull();
-    if (descriptor.key) expect(text).not.toContain(descriptor.key);
+    const el = container.querySelector("[data-layer-id=\"" + descriptor.id + "\"]");
+    expect(el, descriptor.id).not.toBeNull();
+    expect(el!.querySelector("input"), descriptor.id).toBeNull();
   }
-  // And every toggle row IS present, by id.
   for (const descriptor of INVENTORY.filter(d => d.class === "config-toggle")) {
     expect(container.querySelector("[data-layer-id=\"" + descriptor.id + "\"]")).not.toBeNull();
   }
