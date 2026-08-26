@@ -1324,6 +1324,7 @@ export const ja: Record<TKey, string> = {
   "codexSet.custom.keepEditing": "編集を続ける",
   "codexSet.custom.delete": "{title} を削除",
 "codexSet.custom.deleteConfirm": "このレイヤーを削除しますか？元に戻せません。",
+  "codexSet.custom.layerGone": "他の場所でそのレイヤーが削除されたため、エディターを閉じました。",
   "codexSet.custom.deleteConfirmNamed": "“{title}” を削除しますか？元に戻せません。",
 "codexSet.custom.moveUp": "{title} を上へ移動",
   "codexSet.custom.prevLayer": "前のレイヤー",

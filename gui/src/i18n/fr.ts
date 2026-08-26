@@ -1364,6 +1364,7 @@ export const fr: Record<TKey, string> = {
   "codexSet.custom.keepEditing": "Continuer la modification",
   "codexSet.custom.delete": "Supprimer {title}",
 "codexSet.custom.deleteConfirm": "Supprimer cette couche ? Cette action est irréversible.",
+  "codexSet.custom.layerGone": "Cette couche a été supprimée ailleurs : l'éditeur a donc été fermé.",
   "codexSet.custom.deleteConfirmNamed": "Supprimer « {title} » ? Cette action est irréversible.",
 "codexSet.custom.moveUp": "Déplacer {title} vers le haut",
   "codexSet.custom.prevLayer": "Couche précédente",

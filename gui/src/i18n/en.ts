@@ -1391,6 +1391,7 @@ export const en = {
   "codexSet.custom.keepEditing": "Keep editing",
   "codexSet.custom.delete": "Delete {title}",
 "codexSet.custom.deleteConfirm": "Delete this layer? There is no undo.",
+  "codexSet.custom.layerGone": "That layer was removed elsewhere, so the editor was closed.",
   "codexSet.custom.deleteConfirmNamed": "Delete “{title}”? There is no undo.",
 "codexSet.custom.moveUp": "Move {title} up",
   "codexSet.custom.prevLayer": "Previous layer",

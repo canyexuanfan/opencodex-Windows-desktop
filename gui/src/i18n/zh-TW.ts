@@ -1157,6 +1157,7 @@ export const zhTW: Record<TKey, string> = {
   "codexSet.custom.keepEditing": "繼續編輯",
   "codexSet.custom.delete": "刪除 {title}",
 "codexSet.custom.deleteConfirm": "要刪除此層嗎？此操作無法復原。",
+  "codexSet.custom.layerGone": "該層已在別處被刪除，因此編輯器已關閉。",
   "codexSet.custom.deleteConfirmNamed": "要刪除“{title}”嗎？此操作無法復原。",
 "codexSet.custom.moveUp": "將 {title} 上移",
   "codexSet.custom.prevLayer": "上一層",

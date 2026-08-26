@@ -340,6 +340,29 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
   const transitionRows = rows.filter(d => TRANSITION_ONLY.has(d.id));
   const openDescriptor = rows.find(d => d.id === openLayerId) ?? null;
 
+  /**
+   * The layer under the open editor, and where it sits.
+   *
+   * A refresh can delete it out from under the dialog - another tab, a hand edit.
+   * Falling back to `null` silently turned the editor into a NEW-layer form
+   * carrying the deleted layer's text, so Save would have recreated a layer the
+   * user had just removed. Index -1 is the signal that this happened.
+   */
+  const editingIndex = editing === null || editing === "new"
+    ? -1
+    : (snapshot?.custom.findIndex(l => l.id === editing) ?? -1);
+  const editingLayer = editingIndex >= 0 ? snapshot!.custom[editingIndex]! : null;
+
+  useEffect(() => {
+    // The layer vanished while its editor was open. Keeping the dialog would let
+    // Save recreate what the user just deleted, and silently swapping to a
+    // neighbour would put someone else's text under their cursor. Close and say so.
+    if (editing !== null && editing !== "new" && snapshot !== undefined && editingIndex < 0) {
+      setEditing(null);
+      setError(t("codexSet.custom.layerGone"));
+    }
+  }, [editing, editingIndex, snapshot, t]);
+
   useEffect(() => {
     // Fetch on panel mount, not on first dialog open: size is what a user needs to
     // DECIDE with, and a prompt-budget page that hides which layer costs 15 KB is
@@ -612,20 +635,19 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
 
       {editing && snapshot && (
         <CustomLayerDialog
-          layer={editing === "new" ? null : snapshot.custom.find(l => l.id === editing) ?? null}
+          layer={editing === "new" ? null : editingLayer}
           seed={editing === "new" ? presetSeed : null}
           others={snapshot.custom}
           busy={busyId !== null}
-          navigation={editing !== "new" && snapshot.custom.length > 1 ? {
-            position: snapshot.custom.findIndex(l => l.id === editing) + 1,
+          // Navigation only exists while the edited layer is still in the list.
+          // Deriving the position from a findIndex that can return -1 produced
+          // "0 / 3" for a layer another tab had just deleted.
+          navigation={editingIndex >= 0 && snapshot.custom.length > 1 ? {
+            position: editingIndex + 1,
             total: snapshot.custom.length,
-            onPrev: () => {
-              const i = snapshot.custom.findIndex(l => l.id === editing);
-              if (i > 0) setEditing(snapshot.custom[i - 1]!.id);
-            },
+            onPrev: () => { if (editingIndex > 0) setEditing(snapshot.custom[editingIndex - 1]!.id); },
             onNext: () => {
-              const i = snapshot.custom.findIndex(l => l.id === editing);
-              if (i >= 0 && i < snapshot.custom.length - 1) setEditing(snapshot.custom[i + 1]!.id);
+              if (editingIndex < snapshot.custom.length - 1) setEditing(snapshot.custom[editingIndex + 1]!.id);
             },
           } : undefined}
           onSave={saveDraft}

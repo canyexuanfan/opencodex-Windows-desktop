@@ -1375,6 +1375,7 @@ export const ru: Record<TKey, string> = {
   "codexSet.custom.keepEditing": "Продолжить редактирование",
   "codexSet.custom.delete": "Удалить {title}",
 "codexSet.custom.deleteConfirm": "Удалить этот слой? Это действие нельзя отменить.",
+  "codexSet.custom.layerGone": "Этот слой был удалён в другом месте, поэтому редактор закрыт.",
   "codexSet.custom.deleteConfirmNamed": "Удалить “{title}”? Это действие нельзя отменить.",
 "codexSet.custom.moveUp": "Переместить {title} вверх",
   "codexSet.custom.prevLayer": "Предыдущий слой",

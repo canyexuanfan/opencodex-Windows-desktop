@@ -1382,6 +1382,7 @@ export const tr: Record<TKey, string> = {
   "codexSet.custom.keepEditing": "Düzenlemeye devam et",
   "codexSet.custom.delete": "{title} katmanını sil",
 "codexSet.custom.deleteConfirm": "Bu katman silinsin mi? Bu işlem geri alınamaz.",
+  "codexSet.custom.layerGone": "Bu katman başka bir yerde silindiği için düzenleyici kapatıldı.",
   "codexSet.custom.deleteConfirmNamed": "“{title}” silinsin mi? Bu işlem geri alınamaz.",
 "codexSet.custom.moveUp": "{title} katmanını yukarı taşı",
   "codexSet.custom.prevLayer": "Önceki katman",

@@ -923,6 +923,7 @@ export const ko: Record<TKey, string> = {
   "codexSet.custom.keepEditing": "계속 편집",
   "codexSet.custom.delete": "{title} 삭제",
 "codexSet.custom.deleteConfirm": "이 레이어를 삭제하시겠습니까? 되돌릴 수 없습니다.",
+  "codexSet.custom.layerGone": "다른 곳에서 해당 레이어가 삭제되어 편집기를 닫았습니다.",
   "codexSet.custom.deleteConfirmNamed": "“{title}” 레이어를 삭제하시겠습니까? 되돌릴 수 없습니다.",
 "codexSet.custom.moveUp": "{title} 위로 이동",
   "codexSet.custom.prevLayer": "이전 레이어",

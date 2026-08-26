@@ -897,6 +897,7 @@ export const de: Record<TKey, string> = {
   "codexSet.custom.keepEditing": "Weiter bearbeiten",
   "codexSet.custom.delete": "{title} löschen",
 "codexSet.custom.deleteConfirm": "Diese Ebene löschen? Dies kann nicht rückgängig gemacht werden.",
+  "codexSet.custom.layerGone": "Diese Ebene wurde anderswo entfernt, daher wurde der Editor geschlossen.",
   "codexSet.custom.deleteConfirmNamed": "„{title}“ löschen? Dies kann nicht rückgängig gemacht werden.",
 "codexSet.custom.moveUp": "{title} nach oben verschieben",
   "codexSet.custom.prevLayer": "Vorherige Ebene",

@@ -239,3 +239,117 @@ test("10. one layer offers no navigation at all", async () => {
   expect(dialog().querySelector(".codex-set-custom-dialog__nav")).toBeNull();
   await act(async () => { root.unmount(); });
 });
+
+test("custom layers reorder from the keyboard, not only from the buttons", async () => {
+  // W3C APG rearrangeable-listbox: Alt+Arrow moves the item without hunting for
+  // a control. The buttons stay because a shortcut nobody discovers is not an
+  // affordance.
+  const calls = stubRoutes(call => {
+    if (call.url.includes("/text")) return json({ ok: true, layers: {} });
+    if (call.method === "PUT") return json({ ok: true, changed: true, snapshot: snapshot({ custom: THREE }) });
+    return json(snapshot({ custom: THREE }));
+  });
+  const { container, root } = await mount();
+  const row = container.querySelector("[data-custom-id=\"bbbbbb\"]") as HTMLElement;
+
+  await act(async () => {
+    row.dispatchEvent(new testWindow.KeyboardEvent("keydown", { key: "ArrowUp", altKey: true, bubbles: true }));
+  });
+  const put = calls.find(c => c.method === "PUT");
+  expect(put).toBeDefined();
+  expect(put!.body.layers.map((l: any) => l.id)).toEqual(["bbbbbb", "aaaaaa", "cccccc"]);
+
+  // A bare arrow is ordinary navigation and must not reorder anything.
+  const before = calls.filter(c => c.method === "PUT").length;
+  await act(async () => {
+    row.dispatchEvent(new testWindow.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+  });
+  expect(calls.filter(c => c.method === "PUT")).toHaveLength(before);
+  await act(async () => { root.unmount(); });
+});
+
+test("4. custom layers are numbered among themselves and say they share one section", async () => {
+  // Continuing the built-in sequence would draw a fifteen-plus-n stack. They
+  // concatenate into ONE developer_instructions section, so 1..n plus a note.
+  stubRoutes(call => (call.url.includes("/text") ? json({ ok: true, layers: {} }) : json(snapshot({ custom: THREE }))));
+  const { container, root } = await mount();
+  const positions = [...container.querySelectorAll("[data-custom-id] .codex-set-prompt__pos")].map(el => el.textContent);
+  expect(positions).toEqual(["1", "2", "3"]);
+  // Not a continuation of the built-in indices, which end at 15.
+  expect(positions).not.toContain("16");
+  await act(async () => { root.unmount(); });
+});
+
+test("9. saving after navigation writes the layer you are looking at", async () => {
+  // Draft parking is only half the contract: keeping A's text but writing it
+  // to B would lose the work just as thoroughly.
+  const calls = stubRoutes(call => {
+    if (call.url.includes("/text")) return json({ ok: true, layers: {} });
+    if (call.method === "PUT") return json({ ok: true, changed: true, snapshot: snapshot({ custom: THREE }) });
+    return json(snapshot({ custom: THREE }));
+  });
+  const { container, root } = await mount();
+  await openEditor(container, "aaaaaa");
+  await act(async () => { navButtons()[1]!.click(); });
+  await act(async () => { typeInto(fields().body, "Edited beta."); });
+
+  const save = [...dialog().querySelectorAll("button")].find(b => (b.textContent ?? "").includes("Save"))!;
+  await act(async () => { save.click(); });
+  const put = calls.find(c => c.method === "PUT")!;
+  expect(put.url).toBe("/api/codex-prompt/custom");
+  expect(put.body.revision).toBe("sha256:one");
+  // The edited layer keeps its id, and its siblings survive untouched.
+  expect(put.body.layers.map((l: any) => l.id)).toEqual(["aaaaaa", "bbbbbb", "cccccc"]);
+  const edited = put.body.layers.find((l: any) => l.id === "bbbbbb");
+  expect(edited.body).toBe("Edited beta.");
+  expect(put.body.layers.find((l: any) => l.id === "aaaaaa")).toEqual(THREE[0]);
+  expect(put.body.layers.find((l: any) => l.id === "cccccc")).toEqual(THREE[2]);
+  await act(async () => { root.unmount(); });
+});
+
+test("11. a layer deleted under an open editor closes it instead of stranding it", async () => {
+  // Falling back to null turned the editor into a NEW-layer form still holding
+  // the deleted text, so Save would have recreated what the user just removed.
+  // The position indicator also read "0 / 3".
+  let gone = false;
+  stubRoutes(call => {
+    if (call.url.includes("/text")) return json({ ok: true, layers: {} });
+    if (call.method === "PUT") {
+      gone = true;
+      return json({ ok: true, changed: true, snapshot: snapshot({ custom: [THREE[0]!, THREE[2]!] }) });
+    }
+    return json(snapshot({ custom: gone ? [THREE[0]!, THREE[2]!] : THREE }));
+  });
+  const { container, root } = await mount();
+  await openEditor(container, "bbbbbb");
+  expect(document.querySelector("dialog.modal-overlay")).not.toBeNull();
+
+  // Another surface removes the layer being edited.
+  await act(async () => {
+    (container.querySelector("[data-custom-id=\"cccccc\"] .codex-set-custom__delete") as HTMLButtonElement).click();
+  });
+  await act(async () => {
+    (container.querySelector(".codex-set-custom__confirm .btn-danger") as HTMLButtonElement).click();
+  });
+
+  expect(document.querySelector("dialog.modal-overlay")).toBeNull();
+  expect(container.querySelector("[role=\"alert\"]")).not.toBeNull();
+  await act(async () => { root.unmount(); });
+});
+test("the top row does not move up, and the bottom row does not move down", async () => {
+  const calls = stubRoutes(call => {
+    if (call.url.includes("/text")) return json({ ok: true, layers: {} });
+    if (call.method === "PUT") return json({ ok: true, changed: true, snapshot: snapshot({ custom: THREE }) });
+    return json(snapshot({ custom: THREE }));
+  });
+  const { container, root } = await mount();
+  const first = container.querySelector("[data-custom-id=\"aaaaaa\"]") as HTMLElement;
+  const last = container.querySelector("[data-custom-id=\"cccccc\"]") as HTMLElement;
+  await act(async () => {
+    first.dispatchEvent(new testWindow.KeyboardEvent("keydown", { key: "ArrowUp", altKey: true, bubbles: true }));
+    last.dispatchEvent(new testWindow.KeyboardEvent("keydown", { key: "ArrowDown", altKey: true, bubbles: true }));
+  });
+  // Silently writing an unchanged list would burn a revision for nothing.
+  expect(calls.filter(c => c.method === "PUT")).toHaveLength(0);
+  await act(async () => { root.unmount(); });
+});

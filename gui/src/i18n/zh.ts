@@ -916,6 +916,7 @@ export const zh: Record<TKey, string> = {
   "codexSet.custom.keepEditing": "继续编辑",
   "codexSet.custom.delete": "删除 {title}",
 "codexSet.custom.deleteConfirm": "要删除此层吗？此操作无法撤销。",
+  "codexSet.custom.layerGone": "该层已在别处被删除，因此编辑器已关闭。",
   "codexSet.custom.deleteConfirmNamed": "要删除“{title}”吗？此操作无法撤销。",
 "codexSet.custom.moveUp": "上移 {title}",
   "codexSet.custom.prevLayer": "上一层",
