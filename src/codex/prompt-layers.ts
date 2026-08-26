@@ -26,7 +26,7 @@
  * CODEX_HOME is resolved at CALL time (the `features.ts:58-67` pattern) so tests
  * can point fixtures via env or an explicit path.
  */
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { expandUserPath } from "../config";
@@ -147,6 +147,7 @@ export function isToggleId(value: string): value is ToggleId {
 export interface Paths {
   configPath?: string;
   storePath?: string;
+  baseVariantDir?: string;
 }
 
 function activeCodexHome(): string {
@@ -166,6 +167,18 @@ export function activeConfigPath(opts?: Paths): string {
 
 export function activeStorePath(opts?: Paths): string {
   return opts?.storePath ?? join(activeCodexHome(), "opencodex-prompt.json");
+}
+
+/**
+ * Where authored base-prompt variants live, one markdown file per variant.
+ *
+ * A directory of real files rather than another JSON store, because
+ * `model_instructions_file` points Codex at a path it reads directly. Embedding the
+ * bodies in `opencodex-prompt.json` would mean materialising a temp file at selection
+ * time, which is a second write path for no gain.
+ */
+export function activeBaseVariantDir(opts?: Paths): string {
+  return opts?.baseVariantDir ?? join(activeCodexHome(), "opencodex-prompt-base");
 }
 
 function journalPathFor(storePath: string): string {
@@ -429,6 +442,32 @@ export type Drift =
   | "owned-malformed"
   | null;
 
+/** One authored base-prompt variant. `default` is never represented here. */
+export interface BaseVariant {
+  id: string;
+  title: string;
+  body: string;
+  bytes: number;
+}
+
+/**
+ * Which base prompt is in force. THREE values, not two.
+ *
+ * - `default` — `model_instructions_file` is absent, so Codex uses its own base prompt.
+ *   This is the absence of a key, not a body we store: there is nothing to edit and
+ *   nothing to delete, which is what makes the default structurally immutable rather
+ *   than merely guarded.
+ * - a variant id — the key points inside our own variant directory.
+ * - `external` — the key is set and points somewhere else.
+ *
+ * The third value is load-bearing and an audit forced it. Collapsing it into `default`
+ * would have shown a user "Codex's own base prompt" while their base prompt was in fact
+ * replaced by a file they had set by hand. The panel already ships a notice for that
+ * state in ten locales; this keeps reporting it instead of overwriting a key we do not
+ * own.
+ */
+export type BaseSelection = { kind: "default" } | { kind: "variant"; id: string } | { kind: "external"; path: string };
+
 export interface PromptLayerSnapshot {
   configPath: string;
   storePath: string;
@@ -440,6 +479,8 @@ export interface PromptLayerSnapshot {
   toggles: ToggleState[];
   custom: CustomLayer[];
   modelInstructionsFile: string | null;
+  baseVariants: BaseVariant[];
+  baseSelection: BaseSelection;
   revision: string;
 }
 
@@ -471,6 +512,78 @@ function readModelInstructionsFile(configBytes: string | null): string | null {
   return null;
 }
 
+/** Variant ids are ours to generate, so they stay in one narrow shape. */
+const BASE_VARIANT_ID = /^[a-z0-9]{6}$/;
+
+/**
+ * The variant files on disk, newest-id-last so the picker order is stable.
+ *
+ * `default.md` is SKIPPED rather than read: `default` names the absence of a key, so a
+ * file claiming that id would appear as a fourth variant whose selection could never be
+ * expressed. Anything not matching our own id shape is skipped for the same reason - we
+ * only report what we could also write.
+ */
+export function readBaseVariants(opts?: Paths): BaseVariant[] {
+  const dir = activeBaseVariantDir(opts);
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    // Absent directory is an ordinary first run, not an error.
+    return [];
+  }
+  const out: BaseVariant[] = [];
+  for (const name of names.sort()) {
+    if (!name.endsWith(".md")) continue;
+    const id = name.slice(0, -3);
+    if (!BASE_VARIANT_ID.test(id)) continue;
+    const body = readFileOrNull(join(dir, name));
+    if (body === null) continue;
+    // First line is the title when it is a markdown heading; the rest is the prompt.
+    // Storing the title inside the file keeps one artifact per variant instead of a
+    // sidecar index that can disagree with it.
+    const nl = body.indexOf("\n");
+    const firstLine = nl === -1 ? body : body.slice(0, nl);
+    const titled = firstLine.startsWith("# ");
+    out.push({
+      id,
+      title: titled ? firstLine.slice(2).trim() : id,
+      body: titled ? body.slice(nl === -1 ? body.length : nl + 1) : body,
+      bytes: Buffer.byteLength(body, "utf8"),
+    });
+  }
+  return out;
+}
+
+/**
+ * Resolve which base prompt is in force, given the config bytes and the variants.
+ *
+ * Comparison is by RESOLVED path: `~/.codex/opencodex-prompt-base/abc123.md` and an
+ * absolute spelling of the same file are the same selection, and treating them as
+ * different would report `external` for a variant we wrote ourselves.
+ */
+export function resolveBaseSelection(
+  configBytes: string | null,
+  variants: readonly BaseVariant[],
+  opts?: Paths,
+): BaseSelection {
+  const raw = readModelInstructionsFile(configBytes);
+  if (raw === null) return { kind: "default" };
+  const dir = activeBaseVariantDir(opts);
+  let resolved: string;
+  try {
+    resolved = resolve(expandUserPath(raw));
+  } catch {
+    return { kind: "external", path: raw };
+  }
+  for (const variant of variants) {
+    if (resolved === resolve(join(dir, `${variant.id}.md`))) {
+      return { kind: "variant", id: variant.id };
+    }
+  }
+  return { kind: "external", path: raw };
+}
+
 /**
  * Pure. Never writes, never locks, never recovers — a GET must not modify a
  * user's configuration, so drift is REPORTED here and resolved elsewhere.
@@ -490,6 +603,7 @@ export function readPromptLayers(opts?: Paths): PromptLayerSnapshot {
   const projection = ownership.state === "owned"
     ? decodeBasicString(ownership.literal)
     : null;
+  const baseVariants = readBaseVariants(opts);
 
   let drift: Drift = null;
   if (existsSync(`${storePath.replace(/\.json$/, "")}.journal`)) {
@@ -514,6 +628,8 @@ export function readPromptLayers(opts?: Paths): PromptLayerSnapshot {
     toggles: TOGGLE_IDS.map(id => readToggle(configBytes, id)),
     custom: layers ?? [],
     modelInstructionsFile: readModelInstructionsFile(configBytes),
+    baseVariants,
+    baseSelection: resolveBaseSelection(configBytes, baseVariants, opts),
     revision: computeRevision(configBytes, storeBytes),
   };
 }
@@ -597,6 +713,31 @@ function setRootBool(content: string, key: string, value: boolean): string {
     }
   }
   lines.splice(limit, 0, `${key} = ${value}`);
+  return bom + joinLines(lines, eol);
+}
+
+/**
+ * Set or REMOVE a root-scope basic string. `null` removes the key.
+ *
+ * Removal is what selecting the default variant does, and it has to be a real deletion
+ * rather than an empty string: `model_instructions_file = ""` is a path Codex would try
+ * to read, not an absent setting.
+ */
+function setRootString(content: string, key: string, value: string | null): string {
+  const eol = dominantEol(content);
+  const { bom, body } = splitBom(content);
+  const lines = splitLines(body);
+  const limit = firstTableIndex(lines);
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`^\\s*${escaped}\\s*=\\s*"[^"]*"\\s*(?:#.*)?$`);
+  for (let i = 0; i < limit; i += 1) {
+    if (!pattern.test(lines[i]!)) continue;
+    if (value === null) lines.splice(i, 1);
+    else lines[i] = `${key} = ${encodeBasicString(value)}`;
+    return bom + joinLines(lines, eol);
+  }
+  if (value === null) return bom + joinLines(lines, eol);
+  lines.splice(limit, 0, `${key} = ${encodeBasicString(value)}`);
   return bom + joinLines(lines, eol);
 }
 
@@ -709,7 +850,7 @@ function commit(
       return { ok: false, error: "stale_revision" };
     }
 
-    const snapshot = readPromptLayers({ configPath, storePath });
+    const snapshot = readPromptLayers({ ...opts, configPath, storePath });
     const built = build(snapshot, configBytes, storeBytes);
     if ("error" in built) return { ok: false, error: built.error, detail: built.detail };
 
@@ -782,7 +923,10 @@ function commit(
     if (!stillHeld(handle)) return { ok: false, error: "write_superseded" };
 
     durableDelete(journalPath);   // this deletion is the commit
-    return { ok: true, changed: true, snapshot: readPromptLayers({ configPath, storePath }) };
+    // The FULL opts, not just the two paths this transaction owns: rebuilding the
+    // snapshot from a narrowed object dropped the injected variant directory, so every
+    // successful write reported an empty variant list back to its caller.
+    return { ok: true, changed: true, snapshot: readPromptLayers({ ...opts, configPath, storePath }) };
   } finally {
     release(handle);
   }
@@ -820,6 +964,142 @@ export function setToggle(id: string, enabled: boolean, revision: string, opts?:
       : setRootBool(configBytes ?? "", spec.key, enabled),
     nextStore: storeBytes,
   }));
+}
+
+/**
+ * Point `model_instructions_file` at a variant, or remove it for the default.
+ *
+ * Refusals, each for a reason the GUI cannot be trusted to enforce alone:
+ * - an unknown variant id, because the key would name a file Codex cannot read;
+ * - the `external` state, because retargeting a key somebody else set silently
+ *   discards their base prompt. Adopting it is a separate, explicit act.
+ */
+export function selectBaseVariant(selection: BaseSelection, revision: string, opts?: Paths): WriteResult {
+  if (selection.kind === "external") return { ok: false, error: "unknown_layer", detail: "cannot select the external state" };
+  const dir = activeBaseVariantDir(opts);
+  return commit(opts, revision, (snapshot, configBytes, storeBytes) => {
+    if (snapshot.baseSelection.kind === "external") {
+      return { error: "developer_instructions_not_owned", detail: snapshot.baseSelection.path };
+    }
+    if (selection.kind === "variant") {
+      const variant = snapshot.baseVariants.find(v => v.id === selection.id);
+      if (!variant) return { error: "unknown_layer", detail: selection.id };
+    }
+    const next = selection.kind === "default"
+      ? null
+      : resolve(join(dir, `${selection.id}.md`));
+    return {
+      nextConfig: setRootString(configBytes ?? "", "model_instructions_file", next),
+      nextStore: storeBytes,
+    };
+  });
+}
+
+/** How many authored variants a user may keep. Two plus the default is the ask. */
+export const MAX_BASE_VARIANTS = 2;
+
+/**
+ * Write or delete one authored variant body.
+ *
+ * Ordering is deliberate and was learned from a defect in this same module: the FILE is
+ * written and verified before `config.toml` is ever pointed at it. Pointing first would
+ * leave the key naming a file that may not exist, which is a worse failure than a written
+ * file nothing references yet.
+ *
+ * Deleting the variant that is currently SELECTED also clears the key in the same
+ * transaction, so the config can never outlive the file it names.
+ */
+export function writeBaseVariant(
+  input: { id: string | null; title: string; body: string } | { id: string; delete: true },
+  revision: string,
+  opts?: Paths,
+): WriteResult {
+  const dir = activeBaseVariantDir(opts);
+  const deleting = "delete" in input;
+  if (!deleting) {
+    const normalized = normalizeBody(input.body);
+    const invalid = findInvalidCharacter(normalized);
+    if (invalid !== null) {
+      return { ok: false, error: "invalid_characters", detail: `at code point ${invalid.position}` };
+    }
+  }
+  const existing = readBaseVariants(opts);
+  const targetId = deleting
+    ? input.id
+    : input.id ?? newBaseVariantId(existing);
+  if (!BASE_VARIANT_ID.test(targetId)) return { ok: false, error: "unknown_layer", detail: targetId };
+  if (deleting && !existing.some(v => v.id === targetId)) {
+    return { ok: false, error: "unknown_layer", detail: targetId };
+  }
+  if (!deleting && input.id === null && existing.length >= MAX_BASE_VARIANTS) {
+    return { ok: false, error: "unknown_layer", detail: `at most ${MAX_BASE_VARIANTS} variants` };
+  }
+  const path = join(dir, `${targetId}.md`);
+  const before = readFileOrNull(path);
+  const next = deleting
+    ? null
+    : `# ${input.title.replace(/[\r\n]+/g, " ").trim() || targetId}\n${normalizeBody(input.body)}`;
+
+  // Whether this id is the live selection has to be decided while the file still
+  // EXISTS. Deleting first made `resolveBaseSelection` fall through to `external` - the
+  // path no longer matched a known variant - so the config half saw a state it refuses
+  // to touch and left the key pointing at a file that was already gone.
+  const selectedBefore = resolveBaseSelection(readFileOrNull(activeConfigPath(opts)), existing, opts);
+  const clearingKey = deleting
+    && selectedBefore.kind === "variant"
+    && selectedBefore.id === targetId;
+
+  // On a CREATE or EDIT the file goes first: pointing config.toml at a file that does
+  // not exist yet is worse than writing a file nothing references. On a DELETE the
+  // order is reversed for the same reason read the other way - the key must stop
+  // naming the file before the file disappears.
+  if (!deleting) {
+    ensureDir(path);
+    try {
+      durableWrite(path, next!);
+    } catch (error) {
+      return { ok: false, error: "write_failed", detail: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  const result = commit(opts, revision, (_snapshot, configBytes, storeBytes) => ({
+    nextConfig: clearingKey
+      ? setRootString(configBytes ?? "", "model_instructions_file", null)
+      : configBytes,
+    nextStore: storeBytes,
+  }));
+
+  if (!result.ok) {
+    // Undo the file half rather than leaving a variant the caller was told was not
+    // written. A delete has not touched the file yet, so there is nothing to undo.
+    if (!deleting) {
+      try {
+        if (before === null) durableDelete(path);
+        else durableWrite(path, before);
+      } catch { /* the returned error already tells the caller to look */ }
+    }
+    return result;
+  }
+
+  if (deleting) {
+    try {
+      durableDelete(path);
+    } catch (error) {
+      // The key is already clear, so the prompt is correct; the stale file is inert.
+      return { ok: false, error: "write_failed", detail: error instanceof Error ? error.message : String(error) };
+    }
+    // Re-read so the caller sees the variant actually gone.
+    return { ok: true, changed: true, snapshot: readPromptLayers(opts) };
+  }
+  return result;
+}
+
+function newBaseVariantId(existing: readonly BaseVariant[]): string {
+  const taken = new Set(existing.map(v => v.id));
+  for (;;) {
+    const id = randomBytes(4).toString("hex").slice(0, 6);
+    if (!taken.has(id)) return id;
+  }
 }
 
 /** Replace the whole custom-layer list; order is composition order. */

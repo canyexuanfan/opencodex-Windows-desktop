@@ -25,6 +25,7 @@ import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 import type { ManagementContext } from "./context";
 import {
   LAYER_INVENTORY,
+  MAX_BASE_VARIANTS,
   adoptDeveloperInstructions,
   composeProjection,
   findInvalidCharacter,
@@ -34,8 +35,11 @@ import {
   previewSalvage,
   readPromptLayers,
   salvageProjection,
+  selectBaseVariant,
   setToggle,
+  writeBaseVariant,
   writeCustomLayers,
+  type BaseSelection,
   type CustomLayer,
   type Paths,
   type PromptLayerSnapshot,
@@ -129,6 +133,14 @@ function serialize(snapshot: PromptLayerSnapshot, configBytes: string | null): R
     extensionLayersEnumerable: EXTENSION_LAYERS_ENUMERABLE,
     custom: snapshot.custom,
     modelInstructionsFile: snapshot.modelInstructionsFile,
+    baseVariants: snapshot.baseVariants,
+    /**
+     * Three-valued on purpose. `external` is not folded into `default`: the key being
+     * set to somebody else's file means the base prompt IS replaced, and reporting that
+     * as "Codex's own prompt" would be a lie the GUI then repeats to the user.
+     */
+    baseSelection: snapshot.baseSelection,
+    maxBaseVariants: MAX_BASE_VARIANTS,
   };
 }
 
@@ -346,6 +358,46 @@ export async function handleCodexPromptRoutes(ctx: ManagementContext): Promise<R
       return fail(ctx, validated.error.code, status, validated.error.message, validated.error.extra);
     }
     return settle(ctx, writeCustomLayers(validated.layers, revision, paths(ctx)));
+  }
+
+  if (url.pathname === "/api/codex-prompt/base/select" && req.method === "PUT") {
+    const body = await readBody(ctx);
+    if (!body) return fail(ctx, "invalid_body", 400, "expected a JSON object");
+    const revision = revisionOf(body);
+    if (!revision) return fail(ctx, "stale_revision", 409, "revision required");
+    const kind = body.kind;
+    // `external` is a state we REPORT, never one a caller may ask for: selecting it
+    // would mean writing a path we do not own.
+    if (kind !== "default" && kind !== "variant") {
+      return fail(ctx, "invalid_body", 400, 'kind must be "default" or "variant"');
+    }
+    let selection: BaseSelection;
+    if (kind === "default") {
+      selection = { kind: "default" };
+    } else {
+      if (typeof body.id !== "string") return fail(ctx, "invalid_body", 400, "id must be a string");
+      selection = { kind: "variant", id: body.id };
+    }
+    return settle(ctx, selectBaseVariant(selection, revision, paths(ctx)));
+  }
+
+  if (url.pathname === "/api/codex-prompt/base" && req.method === "PUT") {
+    const body = await readBody(ctx);
+    if (!body) return fail(ctx, "invalid_body", 400, "expected a JSON object");
+    const revision = revisionOf(body);
+    if (!revision) return fail(ctx, "stale_revision", 409, "revision required");
+    // A null id CREATES; a string id edits. `default` is not an id, and the writer
+    // rejects it independently - this check only makes the refusal legible.
+    const id = body.id === null || body.id === undefined ? null : body.id;
+    if (id !== null && typeof id !== "string") return fail(ctx, "invalid_body", 400, "id must be a string or null");
+    if (id === "default") return fail(ctx, "unknown_layer", 400, "the default variant has no stored body");
+    if (body.delete === true) {
+      if (typeof id !== "string") return fail(ctx, "invalid_body", 400, "delete requires an id");
+      return settle(ctx, writeBaseVariant({ id, delete: true }, revision, paths(ctx)));
+    }
+    if (typeof body.title !== "string") return fail(ctx, "invalid_body", 400, "title must be a string");
+    if (typeof body.body !== "string") return fail(ctx, "invalid_body", 400, "body must be a string");
+    return settle(ctx, writeBaseVariant({ id, title: body.title, body: body.body }, revision, paths(ctx)));
   }
 
   if (url.pathname === "/api/codex-prompt/adopt" && req.method === "POST") {
