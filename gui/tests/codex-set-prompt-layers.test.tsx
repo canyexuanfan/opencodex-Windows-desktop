@@ -7,6 +7,7 @@
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
+import { readFileSync } from "node:fs";
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import { LanguageProvider } from "../src/i18n/provider";
@@ -98,12 +99,18 @@ function row(container: HTMLElement, id: string): HTMLElement | null {
   return container.querySelector("[data-layer-id=\"" + id + "\"]");
 }
 
-test("1. every inventory entry renders a row, in assembly order", async () => {
+test("1. every inventory entry renders a row, state layers before transition notices", async () => {
   stubRoutes(() => json(snapshot()));
   const { container, root } = await mount();
   const rendered = [...container.querySelectorAll("[data-layer-id]")].map(el => el.getAttribute("data-layer-id"));
-  // Assembly order, so the list reads the way the prompt is built.
-  expect(rendered).toEqual(INVENTORY.map(d => d.id));
+  // Two groups, each in assembly order: state layers first, then the notices that
+  // only fire on a change. Every layer appears exactly once - a split that drops
+  // one is worse than no split.
+  const transition = ["realtime", "model-switch"];
+  const state = INVENTORY.map(d => d.id).filter(id => !transition.includes(id));
+  expect(rendered.slice(0, state.length)).toEqual(state);
+  expect(rendered.slice(state.length).slice().sort()).toEqual(transition.slice().sort());
+  expect(new Set(rendered).size).toBe(rendered.length);
   await act(async () => { root.unmount(); });
 });
 
@@ -209,9 +216,11 @@ test("7. the dialog opens read-only: no textarea, no save", async () => {
   await act(async () => { root.unmount(); });
 });
 
-test("9. the dialog says plainly that no rendered layer text exists", async () => {
-  // Omitting the body silently would read as a loading failure to anyone who
-  // expected one. Codex exposes no API for it, so the dialog states that.
+test("9. the dialog names WHY text is missing rather than omitting it silently", async () => {
+  // Codex is open source and `codex debug prompt-input` renders the model-visible
+  // input list, so the old "no API exists" claim was wrong. What remains true is
+  // that a body can still be absent - unread, unrendered on this turn, or carried
+  // outside the printable list - and each case has its own sentence.
   stubRoutes(() => json(snapshot()));
   const { container, root } = await mount();
   await act(async () => {
@@ -223,7 +232,9 @@ test("9. the dialog says plainly that no rendered layer text exists", async () =
   // The element existing is not the contract; saying so is. An empty div would
   // satisfy a presence check while telling the reader nothing.
   expect((notice!.textContent ?? "").length).toBeGreaterThan(40);
-  expect(notice!.textContent).toContain("does not expose");
+  // The probe is not stubbed here, so this asserts the shape of the answer rather
+  // than one branch: a reason is always given, and it is a sentence.
+  expect(notice!.textContent).toMatch(/could not be read|sent nothing|travels outside/);
   await act(async () => { root.unmount(); });
 });
 
@@ -273,7 +284,11 @@ test("11. a cold load shows the skeleton; a refresh keeps the rows visible", asy
   // The first read is held open, so the cold state is actually observed rather than
   // skipped past by an immediately-resolving stub.
   let release: (() => void) | null = null;
-  globalThis.fetch = (async () => {
+  // The panel now makes TWO requests on mount: the snapshot and the size probe.
+  // Only the snapshot is held open; the probe answers immediately so this measures
+  // the cold snapshot state rather than deadlocking on the probe.
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input).includes("/text")) return json({ ok: true, layers: {} });
     await new Promise<void>(resolve => { release = resolve; });
     return json(snapshot());
   }) as typeof fetch;
@@ -323,4 +338,24 @@ test("a layer this build has no copy for is named, never blank", async () => {
   expect(dialog.querySelector("h3")!.textContent).toBe("future-layer");
   expect((dialog.querySelector("p")!.textContent ?? "").length).toBeGreaterThan(20);
   await act(async () => { root.unmount(); });
+});
+
+/**
+ * The dialog body must WRAP, not scroll sideways.
+ *
+ * `.api-code` in styles.css sets `white-space: pre`, and both it and the
+ * dialog rule are single-class selectors - a specificity tie that source order
+ * decides. styles.css loads later, so `pre` won and a 307-byte permissions body
+ * rendered as two clipped lines with a horizontal scrollbar. Asserting on the
+ * stylesheet is the only honest check here: happy-dom applies no cascade, so a
+ * computed-style assertion would pass against the broken rule too.
+ */
+test("the layer-text rule outranks .api-code so long bodies wrap", () => {
+  const css = readFileSync(new URL("../src/styles-codex-set.css", import.meta.url), "utf8");
+  const rule = /\.codex-set-layer-dialog__text\.api-code\s*\{([^}]*)\}/.exec(css);
+  // Chained with .api-code: the unchained selector loses the tie to styles.css.
+  expect(rule).not.toBeNull();
+  expect(rule![1]).toContain("white-space: pre-wrap");
+  expect(rule![1]).toContain("overflow-wrap: anywhere");
+  expect(rule![1]).toContain("overflow-x: hidden");
 });

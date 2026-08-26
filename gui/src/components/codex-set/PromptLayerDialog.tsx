@@ -17,10 +17,17 @@ import { CLASS_LABEL_KEYS, LAYER_ABOUT_KEYS, LAYER_CONDITION_KEYS, LAYER_LABEL_K
 export default function PromptLayerDialog({
   descriptor,
   toggle,
+  text,
+  busy,
+  onToggle,
   onClose,
 }: {
   descriptor: LayerDescriptorDto;
   toggle: ToggleStateDto | undefined;
+  /** Rendered source text for this layer, when the probe could read it. */
+  text: { text: string | null; reason: string; bytes: number; sourcePath?: string } | undefined;
+  busy: boolean;
+  onToggle: (id: string, enabled: boolean) => void;
   onClose: () => void;
 }) {
   const t = useT();
@@ -62,6 +69,24 @@ export default function PromptLayerDialog({
       <div className="modal-card codex-set-layer-dialog" onClick={event => event.stopPropagation()} role="document">
         <div className="modal-head">
           <h3 id={titleId}>{labelKey ? t(labelKey) : descriptor.id}</h3>
+          {/*
+            The switch belongs here too. Opening a layer to read it and then having
+            to close the dialog to act on it is a dead end, and the row and the
+            dialog are the same control over the same key.
+          */}
+          {descriptor.class === "config-toggle" && toggle && (
+            <button
+              type="button"
+              role="switch"
+              className={`toggle ${toggle.defaultedUserValue ? "on" : ""}`}
+              aria-checked={toggle.defaultedUserValue}
+              aria-label={labelKey ? t(labelKey) : descriptor.id}
+              disabled={busy}
+              onClick={() => { onToggle(descriptor.id, !toggle.defaultedUserValue); }}
+            >
+              <span className="toggle-knob" />
+            </button>
+          )}
           <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>{t("common.close")}</button>
         </div>
 
@@ -110,7 +135,30 @@ export default function PromptLayerDialog({
           Stated, not implied. A dialog that simply omitted the body would read as
           a loading failure to anyone who expected one.
         */}
-        <p className="muted small codex-set-layer-dialog__no-text">{t("codexSet.dialog.noRenderedText")}</p>
+        {text?.reason === "ok" && text.text ? (
+          <>
+            <div className="codex-set-layer-dialog__line">
+              <span className="muted text-label">{t("codexSet.dialog.sourceText")}</span>
+              <span className="muted small">{t("codexSet.dialog.sourceBytes", { bytes: text.bytes })}</span>
+            </div>
+            <pre className="api-code codex-set-layer-dialog__text">{text.text}</pre>
+          </>
+        ) : (
+          // Each absent case has a different cause, and saying which one is the
+          // difference between a limit and a bug.
+          <p className="muted small codex-set-layer-dialog__no-text">
+            {text?.reason === "empty-source"
+              // An existing but empty file is a fourth state. Reporting it as
+              // "sent nothing" would describe the layer as idle when the real
+              // answer is that the file the user wrote is blank.
+              ? t("codexSet.dialog.emptySource", { path: text.sourcePath ?? "" })
+              : text?.reason === "not-rendered"
+                ? t("codexSet.dialog.notRendered")
+                : text?.reason === "not-exposed"
+                  ? t("codexSet.dialog.notExposed")
+                  : t("codexSet.dialog.textUnavailable")}
+          </p>
+        )}
       </div>
     </dialog>
   );

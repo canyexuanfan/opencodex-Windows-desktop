@@ -29,7 +29,29 @@ export default function CustomLayerRow({
 }) {
   const t = useT();
   return (
-    <li className="codex-set-prompt__row codex-set-custom__row" data-custom-id={layer.id}>
+    <li
+      className="codex-set-prompt__row codex-set-custom__row"
+      data-custom-id={layer.id}
+      // Alt+Arrow reorders from anywhere in the row, per the W3C rearrangeable
+      // listbox pattern. The up/down buttons stay: a shortcut nobody discovers is
+      // not an affordance, and a button is what makes the capability visible.
+      onKeyDown={event => {
+        if (!event.altKey || busy) return;
+        if (event.key === "ArrowUp" && index > 0) {
+          event.preventDefault();
+          onMove(layer.id, -1);
+        } else if (event.key === "ArrowDown" && index < total - 1) {
+          event.preventDefault();
+          onMove(layer.id, 1);
+        }
+      }}
+    >
+      {/*
+        Numbered among themselves, not continuing the built-in sequence. Custom
+        layers concatenate into ONE developer_instructions section, so sharing a
+        sequence with the built-ins would draw a stack that does not exist.
+      */}
+      <span className="codex-set-prompt__pos" aria-hidden="true">{index + 1}</span>
       <button type="button" className="link-btn codex-set-prompt__name" onClick={() => onEdit(layer.id)}>
         {layer.title}
       </button>

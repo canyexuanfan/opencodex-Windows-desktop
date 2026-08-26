@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useT } from "../i18n/shared";
 import { useDataSurface } from "../data-surface";
 import { setClientResourceData } from "../client-resource";
@@ -120,6 +120,19 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
    * directly.
    */
   const [presetSeed, setPresetSeed] = useState<{ title: string; body: string } | null>(null);
+  /**
+   * Rendered layer text, fetched lazily on first dialog open. It shells out to
+   * `codex debug prompt-input`, so it is not part of the panel load - a user who
+   * never opens a layer never pays for it.
+   */
+  const [layerText, setLayerText] = useState<{ ok: boolean; layers?: Record<string, { text: string | null; reason: string; bytes: number; sourcePath?: string }> } | null>(null);
+
+  /**
+   * Drop the measured text after any write. It describes the configuration that
+   * just changed, so keeping it would show a layer's old body and old byte count
+   * beside a switch that now reads off. Nulling it re-triggers the fetch.
+   */
+  const invalidateLayerText = useCallback(() => { setLayerText(null); }, []);
 
   const load = useCallback(async (signal: AbortSignal): Promise<PromptSnapshotDto> => {
     const res = await fetch(apiBase + "/api/codex-prompt", { signal });
@@ -158,6 +171,10 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
         return;
       }
       setClientResourceData(resourceKey, body.snapshot);
+      invalidateLayerText();
+      // The measured text belongs to the configuration that just changed. Keeping
+      // it would show a layer's old body next to a switch that now says off.
+      setLayerText(null);
     } catch {
       setError(t("codexSet.prompt.writeFailed"));
       resource.refresh();
@@ -203,6 +220,7 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
         return false;
       }
       setClientResourceData(resourceKey, body.snapshot);
+      invalidateLayerText();
       return true;
     } catch {
       setError(t("codexSet.prompt.writeFailed"));
@@ -256,6 +274,7 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
       }
       if (body.snapshot) {
         setClientResourceData(resourceKey, body.snapshot);
+        invalidateLayerText();
         setAdoptPreview(null);
         return;
       }
@@ -291,6 +310,7 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
       }
       if (body.snapshot) setClientResourceData(resourceKey, body.snapshot);
       else resource.refresh();
+      invalidateLayerText();
     } catch {
       setError(t("codexSet.prompt.repairFailed"));
     } finally {
@@ -302,7 +322,76 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
   const rows = [...(snapshot?.inventory ?? [])]
     .filter(d => d.class !== "extension-unknown")
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+  /**
+   * Two kinds of layer, split by what they ARE rather than by a scope flag.
+   *
+   * A transition notice exists only to announce a change - entering realtime,
+   * switching model mid-conversation. There is no steady state for it to describe,
+   * so it never appears in an ordinary turn. Every other layer describes
+   * configuration or context and renders when its snapshot first appears or
+   * changes.
+   *
+   * Note what this is NOT: "ships every turn" versus "sometimes". Sections are
+   * diff-rendered, so an unchanged layer of either kind sends nothing.
+   */
+  const TRANSITION_ONLY = new Set(["realtime", "model-switch"]);
+  const stateRows = rows.filter(d => !TRANSITION_ONLY.has(d.id));
+  const transitionRows = rows.filter(d => TRANSITION_ONLY.has(d.id));
   const openDescriptor = rows.find(d => d.id === openLayerId) ?? null;
+
+  /**
+   * The layer under the open editor, and where it sits.
+   *
+   * A refresh can delete it out from under the dialog - another tab, a hand edit.
+   * Falling back to `null` silently turned the editor into a NEW-layer form
+   * carrying the deleted layer's text, so Save would have recreated a layer the
+   * user had just removed. Index -1 is the signal that this happened.
+   */
+  const editingIndex = editing === null || editing === "new"
+    ? -1
+    : (snapshot?.custom.findIndex(l => l.id === editing) ?? -1);
+  const editingLayer = editingIndex >= 0 ? snapshot!.custom[editingIndex]! : null;
+
+  /**
+   * The layer vanished while its editor was open - another tab, a hand edit.
+   *
+   * Keeping the dialog would let Save recreate what the user just deleted, and
+   * silently swapping to a neighbour would put someone else's text under their
+   * cursor. So the editor closes and the panel says why.
+   *
+   * Derived, not written from an effect. Calling setState synchronously in an
+   * effect body cascades an extra render - which is what lint rejects - and
+   * every input here is already known while rendering.
+   */
+  const layerGone = editing !== null && editing !== "new" && snapshot !== undefined && editingIndex < 0;
+
+  useEffect(() => {
+    // Fetch on panel mount, not on first dialog open: size is what a user needs to
+    // DECIDE with, and a prompt-budget page that hides which layer costs 15 KB is
+    // asking them to guess.
+    if (layerText !== null) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(apiBase + "/api/codex-prompt/text");
+        // Status first. A 500 body still parses as JSON, and `{}` deserialized
+        // into this shape reads as a probe that succeeded and found no layers -
+        // so every row would silently lose its byte count and every dialog would
+        // claim the layer sent nothing.
+        if (!res.ok) {
+          if (!cancelled) setLayerText({ ok: false });
+          return;
+        }
+        const body = await res.json() as { ok: boolean; layers?: Record<string, { text: string | null; reason: string; bytes: number }> };
+        if (!cancelled) setLayerText(body);
+      } catch {
+        // A failed probe is a missing body, not a broken page.
+        if (!cancelled) setLayerText({ ok: false });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [layerText, apiBase]);
 
   return (
     <div className="panel codex-set-prompt">
@@ -341,7 +430,11 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
       {state.showError && (
         <div className="notice notice-err" role="alert">{t("codexSet.prompt.loadFailed")}</div>
       )}
-      {error && <div className="notice notice-err" role="alert">{error}</div>}
+      {(error || layerGone) && (
+        <div className="notice notice-err" role="alert">
+          {layerGone ? t("codexSet.custom.layerGone") : error}
+        </div>
+      )}
 
       {/*
         Drift is never silently self-healed: the user is told what state the file
@@ -363,11 +456,12 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
       )}
 
       <ul className="codex-set-prompt__rows">
-        {rows.map(descriptor => (
+        {stateRows.map(descriptor => (
           <PromptLayerRow
             key={descriptor.id}
             descriptor={descriptor}
             toggle={snapshot?.toggles.find(s => s.id === descriptor.id)}
+            bytes={layerText?.layers?.[descriptor.id]?.bytes ?? null}
             busy={busyId === descriptor.id}
             writesRefused={snapshot?.readable === false}
             onToggle={(id, enabled) => { void onToggle(id, enabled); }}
@@ -375,6 +469,35 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
           />
         ))}
       </ul>
+
+      {/*
+        Kept in the list rather than hidden, because a user auditing their prompt
+        needs to know these exist. They are separated because they are a different
+        kind of thing: a notice about a change, not a description of state.
+      */}
+      {transitionRows.length > 0 && (
+        <>
+          <div className="row codex-set-prompt__group">
+            <strong>{t("codexSet.group.transition")}</strong>
+          </div>
+          <p className="muted small">{t("codexSet.group.transitionDesc")}</p>
+          <ul className="codex-set-prompt__rows">
+            {transitionRows.map(descriptor => (
+              <PromptLayerRow
+                key={descriptor.id}
+                descriptor={descriptor}
+                toggle={snapshot?.toggles.find(s => s.id === descriptor.id)}
+                bytes={layerText?.layers?.[descriptor.id]?.bytes ?? null}
+                transitionOnly
+                busy={busyId === descriptor.id}
+                writesRefused={snapshot?.readable === false}
+                onToggle={(id, enabled) => { void onToggle(id, enabled); }}
+                onOpen={setOpenLayerId}
+              />
+            ))}
+          </ul>
+        </>
+      )}
 
       {/*
         Third-party extension layers cannot be enumerated (devlog 001 class E), so
@@ -389,6 +512,9 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
         <PromptLayerDialog
           descriptor={openDescriptor}
           toggle={snapshot?.toggles.find(s => s.id === openDescriptor.id)}
+          text={layerText?.layers?.[openDescriptor.id]}
+          busy={busyId !== null}
+          onToggle={(id, enabled) => { void onToggle(id, enabled); }}
           onClose={() => setOpenLayerId(null)}
         />
       )}
@@ -522,12 +648,23 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
         </section>
       )}
 
-      {editing && snapshot && (
+      {editing && snapshot && !layerGone && (
         <CustomLayerDialog
-          layer={editing === "new" ? null : snapshot.custom.find(l => l.id === editing) ?? null}
+          layer={editing === "new" ? null : editingLayer}
           seed={editing === "new" ? presetSeed : null}
           others={snapshot.custom}
           busy={busyId !== null}
+          // Navigation only exists while the edited layer is still in the list.
+          // Deriving the position from a findIndex that can return -1 produced
+          // "0 / 3" for a layer another tab had just deleted.
+          navigation={editingIndex >= 0 && snapshot.custom.length > 1 ? {
+            position: editingIndex + 1,
+            total: snapshot.custom.length,
+            onPrev: () => { if (editingIndex > 0) setEditing(snapshot.custom[editingIndex - 1]!.id); },
+            onNext: () => {
+              if (editingIndex < snapshot.custom.length - 1) setEditing(snapshot.custom[editingIndex + 1]!.id);
+            },
+          } : undefined}
           onSave={saveDraft}
           onClose={() => { setEditing(null); setPresetSeed(null); }}
         />
