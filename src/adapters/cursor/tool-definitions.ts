@@ -668,6 +668,9 @@ export function buildCursorToolGuidanceSystemNote(
     hasBareExec
       ? `NEVER attempt Cursor-native Shell, Read, Grep, List, or any tool not in the catalog above — they are not executed locally in this environment and every attempt wastes a turn and can stall the session. ${shellBridgeLabel} is the ONLY shell surface; go to it directly on the FIRST attempt, never as a fallback after probing a native tool. Do not narrate switching surfaces ("native is blocked, using the bridge instead") — there is exactly one surface.`
       : undefined,
+    hasBareExec
+      ? "Tool-selection commentary is forbidden: for any shell, read, grep, list, or file operation, your FIRST visible action is the bridge call itself — never a sentence about which tool you will use, which tool was redirected, or switching surfaces. Words like 차단/전환/blocked/switching must not appear in your output for tool-routing reasons."
+      : undefined,
     hostShellNote,
     "Cursor product features (Chronicle, screen recording, Notes, Plans, background agents) are available only if this turn's catalog lists a matching tool; do not offer or promise them otherwise.",
     hasBareExec
@@ -677,6 +680,9 @@ export function buildCursorToolGuidanceSystemNote(
       ? structuredEditNames.length > 0
         ? `For file edits, prefer the structured edit tools ${quotedNames(structuredEditNames)} — they take replacements that OpenCodex converts into Codex \`apply_patch\` changes. Include exact leading whitespace in old_string/new_string. Use \`apply_patch\` directly only with a \`*** Begin Patch\` envelope and bare \`@@\` hunks (never git-style \`@@ -n,m +n,m @@\`); never emit patch-like plain text as tool arguments.`
         : "For file edits, use the `apply_patch` tool, not built-in file write/delete tools."
+      : undefined,
+    hasApplyPatch
+      ? "Creating or modifying file CONTENT via shell redirection (`>`, `>>`, `printf`/`echo` into a file, `cat <<EOF`, `sed -i`) is forbidden while apply_patch or the structured edit tools are advertised — use those edit tools so the change is reviewable. Shell output redirection is fine for logs/scratch pipes that are not the deliverable file."
       : undefined,
     hasBareExec
       ? "For tool-count demos, each counted tool must be a separate Codex shell-bridge invocation/result; do not collapse several requested tools into one chained shell command."

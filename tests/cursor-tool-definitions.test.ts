@@ -337,6 +337,8 @@ describe("Cursor tool definitions", () => {
     expect(note).toContain("NEVER attempt Cursor-native Shell, Read, Grep, List");
     expect(note).toContain("`exec_command` is the ONLY shell surface");
     expect(note).toContain("never as a fallback after probing a native tool");
+    expect(note).toContain("Tool-selection commentary is forbidden");
+    expect(note).toContain("FIRST visible action is the bridge call itself");
     expect(note).not.toContain("such as `shell_command` / `exec_command`");
     expect(note).not.toContain("Never tell the user");
     expect(note).not.toContain("silently call");
