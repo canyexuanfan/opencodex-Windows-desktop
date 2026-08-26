@@ -55,17 +55,17 @@ export default function CustomLayerRow({
         </button>
       </span>
 
-      <label className="switch">
-        <input
-          type="checkbox"
-          role="switch"
-          aria-label={layer.title}
-          checked={layer.enabled}
-          disabled={busy}
-          onChange={e => onToggle(layer.id, e.target.checked)}
-        />
-        <span className="switch-track" aria-hidden="true" />
-      </label>
+      <button
+        type="button"
+        role="switch"
+        className={`toggle ${layer.enabled ? "on" : ""}`}
+        aria-checked={layer.enabled}
+        aria-label={layer.title}
+        disabled={busy}
+        onClick={() => onToggle(layer.id, !layer.enabled)}
+      >
+        <span className="toggle-knob" />
+      </button>
 
       <button
         type="button"
@@ -79,4 +79,3 @@ export default function CustomLayerRow({
     </li>
   );
 }
-
