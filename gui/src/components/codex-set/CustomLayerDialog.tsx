@@ -46,7 +46,12 @@ export default function CustomLayerDialog({
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const titleId = "codex-set-custom-dialog";
 
-  const dirty = title !== (layer?.title ?? "") || body !== (layer?.body ?? "");
+  // Compare against what the editor OPENED with, seed included. Comparing against
+  // empty strings made a preset-seeded editor dirty before the user touched it, so
+  // Cancel asked to discard changes nobody had made.
+  const initialTitle = layer?.title ?? seed?.title ?? "";
+  const initialBody = layer?.body ?? seed?.body ?? "";
+  const dirty = title !== initialTitle || body !== initialBody;
 
   useEffect(() => {
     const dialog = dialogRef.current;

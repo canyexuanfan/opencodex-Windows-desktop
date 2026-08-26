@@ -943,7 +943,7 @@ export const zh: Record<TKey, string> = {
   "codexSet.preset.testFirst.provenance": "改编自常见的代理实践。文案由我们原创，并非复制。",
   "codexSet.preset.korean.name": "韩语回复",
   "codexSet.preset.korean.description": "无论请求使用哪种语言，都用韩语回答。",
-  "codexSet.preset.korean.provenance": "专为 opencodex 编写。",
+  "codexSet.preset.korean.provenance": "根据常见的用户需求为 opencodex 编写。文案由我们原创，并非复制。",
   "codexSet.dialog.class": "类型",
   "codexSet.dialog.key": "配置键",
   "codexSet.dialog.fileValue": "此文件中的值",

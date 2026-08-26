@@ -1391,7 +1391,7 @@ export const fr: Record<TKey, string> = {
   "codexSet.preset.testFirst.provenance": "Adapté des pratiques courantes des agents. Formulation originale, pas une copie.",
   "codexSet.preset.korean.name": "Réponses en coréen",
   "codexSet.preset.korean.description": "Répondre en coréen, quelle que soit la langue de la requête.",
-  "codexSet.preset.korean.provenance": "Rédigé pour opencodex.",
+  "codexSet.preset.korean.provenance": "Rédigé pour opencodex à partir d'une demande fréquente des utilisateurs. Formulation originale, pas une copie.",
   "codexSet.dialog.class": "Type",
   "codexSet.dialog.key": "Clé de configuration",
   "codexSet.dialog.fileValue": "Valeur dans ce fichier",

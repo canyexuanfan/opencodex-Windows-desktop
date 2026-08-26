@@ -950,7 +950,7 @@ export const ko: Record<TKey, string> = {
   "codexSet.preset.testFirst.provenance": "일반적인 에이전트 작업 방식을 바탕으로 각색했습니다. 직접 작성한 문구이며 복사본이 아닙니다.",
   "codexSet.preset.korean.name": "한국어 답변",
   "codexSet.preset.korean.description": "요청 언어와 관계없이 한국어로 답합니다.",
-  "codexSet.preset.korean.provenance": "opencodex용으로 작성했습니다.",
+  "codexSet.preset.korean.provenance": "자주 요청되는 항목을 바탕으로 opencodex용으로 작성했습니다. 직접 작성한 문구이며 복사본이 아닙니다.",
   "codexSet.dialog.class": "종류",
   "codexSet.dialog.key": "설정 키",
   "codexSet.dialog.fileValue": "이 파일의 값",

@@ -1402,7 +1402,7 @@ export const ru: Record<TKey, string> = {
   "codexSet.preset.testFirst.provenance": "Адаптировано на основе распространённой практики работы агентов. Формулировки наши, это не копия.",
   "codexSet.preset.korean.name": "Ответы на корейском",
   "codexSet.preset.korean.description": "Отвечать на корейском независимо от языка запроса.",
-  "codexSet.preset.korean.provenance": "Написано для opencodex.",
+  "codexSet.preset.korean.provenance": "Написано для opencodex на основе частого пользовательского запроса. Формулировки наши, это не копия.",
   "codexSet.dialog.class": "Тип",
   "codexSet.dialog.key": "Ключ конфигурации",
   "codexSet.dialog.fileValue": "Значение в этом файле",

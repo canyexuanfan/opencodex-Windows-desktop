@@ -93,6 +93,13 @@ async function mount(): Promise<{ root: Root; container: HTMLElement }> {
 
 function dialog(): HTMLElement { return document.querySelector("dialog.modal-overlay") as HTMLElement; }
 
+/** The picker is collapsed until its trigger is pressed. */
+async function openPicker(container: HTMLElement): Promise<void> {
+  await act(async () => {
+    (container.querySelector(".codex-set-custom__add") as HTMLButtonElement).click();
+  });
+}
+
 test("1. every shipped preset lints clean", () => {
   // The self-consistency check. A preset that tripped our own compatibility
   // rules would be worse than shipping none, and this is a bug in the preset
@@ -115,22 +122,37 @@ test("2. every preset is small and names no tool, identity, or environment fact"
   }
 });
 
-test("3. every preset carries a provenance line that says adaptation, not copy", () => {
+test("3. every preset states a source and says it is not a copy, in every locale", async () => {
+  // This is a licensing statement, so an untranslated or softened rendering is a
+  // real defect rather than a copy nit. English-only checking left eight locales
+  // unprotected.
+  const locales = await Promise.all([
+    import("../src/i18n/en"), import("../src/i18n/ko"), import("../src/i18n/ja"),
+    import("../src/i18n/zh"), import("../src/i18n/zh-TW"), import("../src/i18n/ru"),
+    import("../src/i18n/de"), import("../src/i18n/fr"), import("../src/i18n/tr"),
+  ]);
+  const dicts = locales.map(m => Object.values(m)[0] as Record<string, string>);
+  expect(dicts).toHaveLength(9);
+
   for (const preset of PRESETS) {
-    const provenance = en[preset.provenanceKey];
-    expect(provenance, preset.id).toBeTruthy();
-    // The licensing statement: no verbatim third-party prompt is shipped here.
-    const claimsAdaptation = provenance.includes("Adapted from") || provenance.includes("Written for");
-    expect(claimsAdaptation, preset.id + ": " + provenance).toBe(true);
-    if (provenance.includes("Adapted from")) {
-      expect(provenance, preset.id).toContain("not a copy");
+    for (const dict of dicts) {
+      const provenance = dict[preset.provenanceKey];
+      expect(provenance, preset.id).toBeTruthy();
+      // Long enough to be a sentence rather than a label: every one of these names
+      // a source AND disclaims copying, which does not fit in three words.
+      expect(provenance!.length, preset.id).toBeGreaterThan(20);
     }
+    // The English text is the one we can assert semantically.
+    const english = en[preset.provenanceKey];
+    expect(english, preset.id).toMatch(/Adapted from|Written for/);
+    expect(english, preset.id).toContain("not a copy");
   }
 });
 
 test("3b. the picker lists every preset with its provenance", async () => {
   stubRoutes(() => json(snapshot()));
   const { container, root } = await mount();
+  await openPicker(container);
   for (const preset of PRESETS) {
     const item = container.querySelector("[data-preset-id=\"" + preset.id + "\"]");
     expect(item, preset.id).not.toBeNull();
@@ -140,10 +162,14 @@ test("3b. the picker lists every preset with its provenance", async () => {
   await act(async () => { root.unmount(); });
 });
 
-test("4+6. choosing a preset opens a pre-filled editor whose text is editable", async () => {
-  stubRoutes(() => json(snapshot()));
+test("4+6. a preset pre-fills the editor, and the EDITED text is what saves", async () => {
+  const calls = stubRoutes(call => {
+    if (call.method === "PUT") return json({ ok: true, changed: true, snapshot: snapshot() });
+    return json(snapshot());
+  });
   const { container, root } = await mount();
   const concise = PRESETS.find(p => p.id === "concise")!;
+  await openPicker(container);
   await act(async () => {
     (container.querySelector("[data-preset-id=\"concise\"]") as HTMLButtonElement).click();
   });
@@ -151,9 +177,19 @@ test("4+6. choosing a preset opens a pre-filled editor whose text is editable", 
   const title = dialog().querySelector("input[type=\"text\"]") as HTMLInputElement;
   expect(textarea.value).toBe(concise.body);
   expect(title.value).toBe(en[concise.nameKey]);
-  // A starting point, not a locked artifact: the textarea is writable.
-  expect(textarea.readOnly).toBe(false);
-  expect(textarea.disabled).toBe(false);
+
+  // A starting point, not a locked artifact. Checking the DOM flags proves the
+  // control accepts input; typing and saving proves the EDIT is what ships.
+  const edited = concise.body + "\nAlso: never apologize for brevity.";
+  await act(async () => {
+    const proto = testWindow.HTMLTextAreaElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(textarea, edited);
+    textarea.dispatchEvent(new testWindow.Event("input", { bubbles: true }));
+    textarea.dispatchEvent(new testWindow.Event("change", { bubbles: true }));
+  });
+  const save = [...dialog().querySelectorAll("button")].find(b => (b.textContent ?? "").includes("Save"))!;
+  await act(async () => { save.click(); });
+  expect(calls.find(c => c.method === "PUT")!.body.layers[0].body).toBe(edited);
   await act(async () => { root.unmount(); });
 });
 
@@ -163,6 +199,7 @@ test("5. the result is an ordinary custom layer", async () => {
     return json(snapshot());
   });
   const { container, root } = await mount();
+  await openPicker(container);
   await act(async () => {
     (container.querySelector("[data-preset-id=\"korean\"]") as HTMLButtonElement).click();
   });
@@ -182,9 +219,67 @@ test("7. the blank option still exists beside the presets", async () => {
   // The + flow did not become preset-only: an empty editor is still one click.
   stubRoutes(() => json(snapshot()));
   const { container, root } = await mount();
+  await openPicker(container);
   const items = [...container.querySelectorAll(".codex-set-preset__item")];
   expect(items.length).toBe(PRESETS.length + 1);
   await act(async () => { (items[0] as HTMLButtonElement).click(); });
   expect((dialog().querySelector("textarea") as HTMLTextAreaElement).value).toBe("");
+  await act(async () => { root.unmount(); });
+});
+
+test("a disabled picker cannot be opened at all, not merely announced as disabled", async () => {
+  // aria-disabled on a <summary> announced a disabled control while still opening
+  // on click and on Enter, so WP5's disabled-Add contract was true only to a
+  // screen reader.
+  stubRoutes(() => json(snapshot({ readable: false })));
+  const { container, root } = await mount();
+  const trigger = container.querySelector(".codex-set-custom__add") as HTMLButtonElement;
+  expect(trigger.disabled).toBe(true);
+  await act(async () => { trigger.click(); });
+  expect(container.querySelector(".codex-set-preset__menu")).toBeNull();
+  await act(async () => { root.unmount(); });
+});
+
+test("the picker closes when a preset is chosen", async () => {
+  // The editor opens over this. A menu left expanded behind a modal is still there
+  // when the modal closes.
+  stubRoutes(() => json(snapshot()));
+  const { container, root } = await mount();
+  await openPicker(container);
+  expect(container.querySelector(".codex-set-preset__menu")).not.toBeNull();
+  await act(async () => {
+    (container.querySelector("[data-preset-id=\"korean\"]") as HTMLButtonElement).click();
+  });
+  expect(container.querySelector(".codex-set-preset__menu")).toBeNull();
+  await act(async () => { root.unmount(); });
+});
+
+test("a seeded editor is not dirty until the user changes something", async () => {
+  // The dirty check compared against empty strings, so a preset-seeded editor asked
+  // to discard changes nobody had made.
+  stubRoutes(() => json(snapshot()));
+  const { container, root } = await mount();
+  await openPicker(container);
+  await act(async () => {
+    (container.querySelector("[data-preset-id=\"concise\"]") as HTMLButtonElement).click();
+  });
+  await act(async () => { dialog().dispatchEvent(new testWindow.Event("cancel", { cancelable: true })); });
+  // Closed outright: no discard prompt for an untouched preset.
+  expect(document.querySelector("dialog.modal-overlay")).toBeNull();
+
+  // But a real edit still asks.
+  await openPicker(container);
+  await act(async () => {
+    (container.querySelector("[data-preset-id=\"concise\"]") as HTMLButtonElement).click();
+  });
+  const textarea = dialog().querySelector("textarea") as HTMLTextAreaElement;
+  await act(async () => {
+    const proto = testWindow.HTMLTextAreaElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(textarea, "changed");
+    textarea.dispatchEvent(new testWindow.Event("input", { bubbles: true }));
+    textarea.dispatchEvent(new testWindow.Event("change", { bubbles: true }));
+  });
+  await act(async () => { dialog().dispatchEvent(new testWindow.Event("cancel", { cancelable: true })); });
+  expect(dialog().querySelector(".codex-set-custom-dialog__discard")).not.toBeNull();
   await act(async () => { root.unmount(); });
 });

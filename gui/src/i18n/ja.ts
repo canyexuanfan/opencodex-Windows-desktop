@@ -1351,7 +1351,7 @@ export const ja: Record<TKey, string> = {
   "codexSet.preset.testFirst.provenance": "一般的なエージェントの実践をもとに翻案しました。独自の文言であり、複製ではありません。",
   "codexSet.preset.korean.name": "韓国語で回答",
   "codexSet.preset.korean.description": "リクエストの言語にかかわらず、韓国語で回答します。",
-  "codexSet.preset.korean.provenance": "opencodex 向けに作成しました。",
+  "codexSet.preset.korean.provenance": "よく要望される項目をもとに opencodex 向けに作成しました。独自の文言であり、複製ではありません。",
   "codexSet.dialog.class": "種類",
   "codexSet.dialog.key": "設定キー",
   "codexSet.dialog.fileValue": "このファイルの値",

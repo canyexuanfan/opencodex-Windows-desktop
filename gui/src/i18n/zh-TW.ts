@@ -1184,7 +1184,7 @@ export const zhTW: Record<TKey, string> = {
   "codexSet.preset.testFirst.provenance": "改編自常見的代理實務。文案由我們原創，並非複製。",
   "codexSet.preset.korean.name": "韓文回覆",
   "codexSet.preset.korean.description": "無論要求使用哪種語言，都以韓文回答。",
-  "codexSet.preset.korean.provenance": "專為 opencodex 編寫。",
+  "codexSet.preset.korean.provenance": "根據常見的使用者需求為 opencodex 撰寫。文案由我們原創，並非複製。",
   "codexSet.dialog.class": "類型",
   "codexSet.dialog.key": "設定鍵",
   "codexSet.dialog.fileValue": "此檔案中的值",

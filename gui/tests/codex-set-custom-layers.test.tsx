@@ -96,12 +96,22 @@ async function mount(): Promise<{ root: Root; container: HTMLElement }> {
 
 function dialog(): HTMLElement { return document.querySelector("dialog.modal-overlay") as HTMLElement; }
 /**
- * WP6 turned + into a picker: the blank option is its first menu item. These tests
- * are about the custom-layer flow rather than the menu, so they take the shortest
- * path to an empty editor.
+ * WP6 turned + into a picker whose blank option is the first item, and the menu is
+ * collapsed until the trigger is pressed. These tests are about the custom-layer
+ * flow rather than the menu, so this opens it and returns the blank entry.
+ *
+ * When the trigger is disabled the menu never opens, which is exactly what the
+ * limit and unreadable cases assert - so this returns the TRIGGER in that case and
+ * lets them check `disabled` on the control the user actually reaches.
  */
-function addButton(c: HTMLElement) {
-  return c.querySelector(".codex-set-preset__item") as HTMLButtonElement | null;
+function addTrigger(c: HTMLElement): HTMLButtonElement | null {
+  return c.querySelector(".codex-set-custom__add") as HTMLButtonElement | null;
+}
+
+/** Opens the picker and returns its blank entry, the shortest path to an editor. */
+async function addButton(c: HTMLElement): Promise<HTMLButtonElement> {
+  await act(async () => { addTrigger(c)!.click(); });
+  return c.querySelector(".codex-set-preset__item") as HTMLButtonElement;
 }
 function customRow(c: HTMLElement, id: string) { return c.querySelector("[data-custom-id=\"" + id + "\"]"); }
 
@@ -123,7 +133,8 @@ function typeInto(el: HTMLInputElement | HTMLTextAreaElement, value: string): vo
 test("1. + opens an empty editor", async () => {
   stubRoutes(() => json(snapshot()));
   const { container, root } = await mount();
-  await act(async () => { addButton(container)!.click(); });
+  const blank = await addButton(container);
+  await act(async () => { blank.click(); });
   const input = dialog().querySelector("input[type=\"text\"]") as HTMLInputElement;
   const textarea = dialog().querySelector("textarea") as HTMLTextAreaElement;
   expect(input.value).toBe("");
@@ -139,7 +150,8 @@ test("2. Save PUTs the full list with the new layer appended", async () => {
     return json(snapshot({ custom: [layer({ id: "zzzzzz", title: "Already here" })] }));
   });
   const { container, root } = await mount();
-  await act(async () => { addButton(container)!.click(); });
+  const blank = await addButton(container);
+  await act(async () => { blank.click(); });
   const input = dialog().querySelector("input[type=\"text\"]") as HTMLInputElement;
   const textarea = dialog().querySelector("textarea") as HTMLTextAreaElement;
   await act(async () => {
@@ -256,7 +268,8 @@ test("8+9. Escape asks when dirty and closes immediately when clean", async () =
 test("10. each validation rule disables Save with its message", async () => {
   stubRoutes(() => json(snapshot()));
   const { container, root } = await mount();
-  await act(async () => { addButton(container)!.click(); });
+  const blank = await addButton(container);
+  await act(async () => { blank.click(); });
   const input = dialog().querySelector("input[type=\"text\"]") as HTMLInputElement;
   const textarea = dialog().querySelector("textarea") as HTMLTextAreaElement;
   const save = () => [...dialog().querySelectorAll("button")].find(b => (b.textContent ?? "").includes("Save")) as HTMLButtonElement;
@@ -329,7 +342,7 @@ test("14+15+16. an unowned key hides + and offers a previewed Adopt", async () =
     return json(snapshot({ developerInstructionsOwned: false, developerInstructionsState: "external" }));
   });
   const { container, root } = await mount();
-  expect(addButton(container)).toBeNull();
+  expect(addTrigger(container)).toBeNull();
   const adopt = container.querySelector(".codex-set-custom__adopt button") as HTMLButtonElement;
   await act(async () => { adopt.click(); });
   // Preview writes nothing and shows the user their own text first.
@@ -441,10 +454,11 @@ test("a first run can create its first layer", async () => {
     }));
   });
   const { container, root } = await mount();
-  expect(addButton(container)).not.toBeNull();
+  expect(addTrigger(container)).not.toBeNull();
   expect(container.querySelector(".codex-set-custom__adopt")).toBeNull();
 
-  await act(async () => { addButton(container)!.click(); });
+  const blank = await addButton(container);
+  await act(async () => { blank.click(); });
   const input = dialog().querySelector("input[type=\"text\"]") as HTMLInputElement;
   const textarea = dialog().querySelector("textarea") as HTMLTextAreaElement;
   await act(async () => {
@@ -465,7 +479,8 @@ test("a refused save keeps the editor open with the text still in it", async () 
     return json(snapshot());
   });
   const { container, root } = await mount();
-  await act(async () => { addButton(container)!.click(); });
+  const blank = await addButton(container);
+  await act(async () => { blank.click(); });
   const input = dialog().querySelector("input[type=\"text\"]") as HTMLInputElement;
   const textarea = dialog().querySelector("textarea") as HTMLTextAreaElement;
   await act(async () => {
@@ -508,7 +523,8 @@ test("Save cannot be pressed twice while a write is in flight", async () => {
   }) as typeof fetch;
 
   const { container, root } = await mount();
-  await act(async () => { addButton(container)!.click(); });
+  const blank = await addButton(container);
+  await act(async () => { blank.click(); });
   const input = dialog().querySelector("input[type=\"text\"]") as HTMLInputElement;
   const textarea = dialog().querySelector("textarea") as HTMLTextAreaElement;
   await act(async () => {
@@ -531,7 +547,7 @@ test("an unreadable config refuses custom writes too, not only built-in switches
   // server rejection after the user has typed.
   stubRoutes(() => json(snapshot({ readable: false, custom: [layer()] })));
   const { container, root } = await mount();
-  expect(addButton(container)!.disabled).toBe(true);
+  expect(addTrigger(container)!.disabled).toBe(true);
   const row = customRow(container, "aaaaaa")!;
   expect((row.querySelector("input[role=\"switch\"]") as HTMLInputElement).disabled).toBe(true);
   expect((row.querySelector(".codex-set-custom__delete") as HTMLButtonElement).disabled).toBe(true);
@@ -571,7 +587,7 @@ test("composed overflow and the 32-layer ceiling are both refused", async () => 
   const full = Array.from({ length: 32 }, (_, i) => layer({ id: String(i).padStart(6, "a").slice(-6) }));
   stubRoutes(() => json(snapshot({ custom: full })));
   const { container, root } = await mount();
-  expect(addButton(container)!.disabled).toBe(true);
+  expect(addTrigger(container)!.disabled).toBe(true);
   expect(container.textContent).toContain("32");
   await act(async () => { root.unmount(); });
 });

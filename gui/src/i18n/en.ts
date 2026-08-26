@@ -1418,7 +1418,7 @@ export const en = {
   "codexSet.preset.testFirst.provenance": "Adapted from common agent practice. Our wording, not a copy.",
   "codexSet.preset.korean.name": "Korean replies",
   "codexSet.preset.korean.description": "Answer in Korean whatever language the request uses.",
-  "codexSet.preset.korean.provenance": "Written for opencodex.",
+  "codexSet.preset.korean.provenance": "Written for opencodex from a user-requested staple. Our wording, not a copy.",
   "codexSet.dialog.class": "Kind",
   "codexSet.dialog.key": "Config key",
   "codexSet.dialog.fileValue": "Value in this file",

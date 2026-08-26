@@ -1409,7 +1409,7 @@ export const tr: Record<TKey, string> = {
   "codexSet.preset.testFirst.provenance": "Yaygın ajan uygulamalarından uyarlandı. İfade bize aittir, kopya değildir.",
   "codexSet.preset.korean.name": "Korece yanıtlar",
   "codexSet.preset.korean.description": "İstek hangi dilde olursa olsun Korece yanıt ver.",
-  "codexSet.preset.korean.provenance": "opencodex için yazıldı.",
+  "codexSet.preset.korean.provenance": "Sık istenen bir ihtiyaçtan yola çıkarak opencodex için yazıldı. İfade bize aittir, kopya değildir.",
   "codexSet.dialog.class": "Tür",
   "codexSet.dialog.key": "Yapılandırma anahtarı",
   "codexSet.dialog.fileValue": "Bu dosyadaki değer",
