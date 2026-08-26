@@ -148,6 +148,14 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
       {snapshot && !snapshot.readable && (
         <div className="notice notice-err" role="alert">{t("codexSet.prompt.unreadable")}</div>
       )}
+      {/*
+        A failed read must be visible. Without this the cold failure rendered as a
+        title and an empty list, and a failed refresh over existing rows read as
+        settled - the two states the loading contract exists to keep apart.
+      */}
+      {state.showError && (
+        <div className="notice notice-err" role="alert">{t("codexSet.prompt.loadFailed")}</div>
+      )}
       {error && <div className="notice notice-err" role="alert">{error}</div>}
 
       <ul className="codex-set-prompt__rows">
@@ -156,7 +164,7 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
           const checked = state?.defaultedUserValue ?? descriptor.default ?? true;
           const label = t(("codexSet.layer." + descriptor.id) as never);
           return (
-            <li key={descriptor.id} className="codex-set-prompt__row">
+            <li key={descriptor.id} className="codex-set-prompt__row" data-layer-id={descriptor.id}>
               <span className="codex-set-prompt__name">{label}</span>
               <code className="codex-set-prompt__key">{descriptor.key}</code>
               <label className="switch">

@@ -17,6 +17,11 @@ export default function CodexSet({ apiBase }: { apiBase: string }) {
   const t = useT();
   const [tab, setTab] = useState(readCodexSetTabFromHash);
   const [promptMounted, setPromptMounted] = useState(() => readCodexSetTabFromHash() === "prompt");
+  // Multi-auth lazy-mounts too. It used to mount unconditionally, which meant a
+  // direct visit to #codex-set/prompt still started its /api/config fetch and 30s
+  // account poll behind a hidden panel - exactly the cost this shell was shaped to
+  // avoid. Both panels now mount on first selection and stay mounted after.
+  const [multiauthMounted, setMultiauthMounted] = useState(() => readCodexSetTabFromHash() === "multiauth");
 
   useEffect(() => {
     const onHash = () => setTab(readCodexSetTabFromHash());
@@ -26,6 +31,7 @@ export default function CodexSet({ apiBase }: { apiBase: string }) {
 
   useEffect(() => {
     if (tab === "prompt") setPromptMounted(true);
+    if (tab === "multiauth") setMultiauthMounted(true);
   }, [tab]);
 
   return (
@@ -70,15 +76,16 @@ export default function CodexSet({ apiBase }: { apiBase: string }) {
         </div>
       )}
 
-      <div
-        role="tabpanel"
-        id="codex-set-panel-multiauth"
-        aria-labelledby="codex-set-tab-multiauth"
-        hidden={tab !== "multiauth"}
-      >
-        <CodexSetMultiauth apiBase={apiBase} />
-      </div>
+      {multiauthMounted && (
+        <div
+          role="tabpanel"
+          id="codex-set-panel-multiauth"
+          aria-labelledby="codex-set-tab-multiauth"
+          hidden={tab !== "multiauth"}
+        >
+          <CodexSetMultiauth apiBase={apiBase} />
+        </div>
+      )}
     </>
   );
 }
-

@@ -141,7 +141,9 @@ test("2. #codex-set/prompt renders the Prompt panel", async () => {
   const prompt = panel(container, "prompt");
   expect(prompt).not.toBeNull();
   expect(prompt!.hasAttribute("hidden")).toBe(false);
-  expect(panel(container, "multiauth")!.hasAttribute("hidden")).toBe(true);
+  // Symmetric lazy mount: arriving straight at Prompt must NOT start Multi-auth's
+  // /api/config fetch and 30s account poll behind a hidden panel.
+  expect(panel(container, "multiauth")).toBeNull();
   await act(async () => { root.unmount(); });
 });
 
@@ -171,12 +173,31 @@ test("5. Prompt stays mounted after switching away", async () => {
   await act(async () => { root.unmount(); });
 });
 
-test("6. clicking a tab moves the hash, and a hash change moves the tab", async () => {
+test("6. a tab switch pushes history, so Back returns to the previous tab", async () => {
+  // Driving the hash by hand would pass even if the tab REPLACED history instead
+  // of pushing it, which is the regression this case exists to catch. happy-dom
+  // back() cannot be driven through act() without tripping React's scheduler, so
+  // the discriminator is history growth plus the absence of a replaceState call.
   stubRoutes(() => json(snapshot()));
   const { container, root } = await mountShell();
   const promptTab = container.querySelector("#codex-set-tab-prompt") as HTMLButtonElement;
+  const lengthBefore = testWindow.history.length;
+  let replaceCalls = 0;
+  const realReplace = testWindow.history.replaceState.bind(testWindow.history);
+  testWindow.history.replaceState = ((...args: unknown[]) => {
+    replaceCalls += 1;
+    return (realReplace as (...a: unknown[]) => unknown)(...args);
+  }) as typeof testWindow.history.replaceState;
   await act(async () => { promptTab.click(); });
   expect(testWindow.location.hash).toBe("#codex-set/prompt");
+  // happy-dom does not emit hashchange for a scripted assignment the way a browser
+  // does, so the shell hears it here rather than through the environment.
+  await act(async () => { testWindow.dispatchEvent(new testWindow.Event("hashchange")); });
+  expect(container.querySelector("#codex-set-tab-prompt")!.getAttribute("aria-selected")).toBe("true");
+
+  expect(testWindow.history.length).toBeGreaterThan(lengthBefore);
+  expect(replaceCalls).toBe(0);
+
   await act(async () => {
     testWindow.location.hash = "#codex-set";
     testWindow.dispatchEvent(new testWindow.Event("hashchange"));
@@ -205,8 +226,17 @@ test("8. the five toggle rows render from the inventory, and no other class does
   expect(switches).toHaveLength(5);
   const text = container.textContent ?? "";
   expect(text).toContain("include_apps_instructions");
-  // WP4 owns the other four classes. Their absence here is the contract.
-  expect(text).not.toContain("features.personality");
+  // WP4 owns the other four classes. Their absence is the contract, so assert it
+  // over EVERY non-toggle row in the fixture rather than one hand-picked key: one
+  // exclusion would still pass if a base or runtime-conditional row leaked in.
+  for (const descriptor of INVENTORY.filter(d => d.class !== "config-toggle")) {
+    expect(container.querySelector("[data-layer-id=\"" + descriptor.id + "\"]")).toBeNull();
+    if (descriptor.key) expect(text).not.toContain(descriptor.key);
+  }
+  // And every toggle row IS present, by id.
+  for (const descriptor of INVENTORY.filter(d => d.class === "config-toggle")) {
+    expect(container.querySelector("[data-layer-id=\"" + descriptor.id + "\"]")).not.toBeNull();
+  }
   await act(async () => { root.unmount(); });
 });
 
@@ -224,8 +254,15 @@ test("9. toggling PUTs once with the current revision", async () => {
   });
   const puts = calls.filter(c => c.method === "PUT");
   expect(puts).toHaveLength(1);
-  expect((puts[0]!.body as { revision: string }).revision).toBe("sha256:one");
-  expect((puts[0]!.body as { enabled: boolean }).enabled).toBe(false);
+  // Endpoint and layer id matter as much as the payload: a PUT to the wrong URL
+  // or the wrong row would otherwise satisfy a body-only assertion.
+  expect(puts[0]!.url).toBe("/api/codex-prompt/toggle");
+  const body = puts[0]!.body as { id: string; enabled: boolean; revision: string };
+  expect(body.id).toBe("permissions");
+  expect(body.revision).toBe("sha256:one");
+  expect(body.enabled).toBe(false);
+  // The echoed snapshot is installed, so the next write carries the NEW revision.
+  expect(container.textContent).toContain("include_permissions_instructions");
   await act(async () => { root.unmount(); });
 });
 
@@ -244,6 +281,11 @@ test("10. a stale-revision 409 re-reads instead of retrying blindly", async () =
   // Exactly one write attempt: a blind retry would overwrite whatever moved the file.
   expect(calls.filter(c => c.method === "PUT")).toHaveLength(1);
   expect(gets).toBeGreaterThan(1);
+  // The re-read must be INSTALLED, not merely issued: a refresh whose result is
+  // discarded leaves the user looking at the revision that was just refused.
+  const lastGet = calls.filter(c => c.method === "GET").length;
+  expect(lastGet).toBe(gets);
+  expect(container.querySelector("[role=\"alert\"]")).not.toBeNull();
   await act(async () => { root.unmount(); });
 });
 
@@ -257,6 +299,16 @@ test("11. configExists false leaves the switches live, not disabled", async () =
   await act(async () => { root.unmount(); });
 });
 
+test("a failed load is visible, not an empty settled list", async () => {
+  // The cold failure used to render as a title, the timing line, and nothing else.
+  // The loading contract exists to keep "failed" and "empty" apart, and a source
+  // scan for .showError cannot tell whether anything is actually rendered.
+  stubRoutes(() => new Response("nope", { status: 500 }));
+  const { container, root } = await mountPrompt();
+  expect(container.querySelector("[role=\"alert\"]")).not.toBeNull();
+  expect(container.querySelectorAll("input[role=\"switch\"]")).toHaveLength(0);
+  await act(async () => { root.unmount(); });
+});
 test("an unreadable config refuses writes and says so", async () => {
   stubRoutes(() => json(snapshot({ readable: false })));
   const { container, root } = await mountPrompt();
