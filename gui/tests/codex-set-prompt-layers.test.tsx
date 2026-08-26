@@ -264,8 +264,22 @@ test("8. Escape closes the dialog and returns focus to the row", async () => {
 test("11. a cold load shows the skeleton; a refresh keeps the rows visible", async () => {
   // The two states the loading contract exists to separate. A refresh that blanked
   // the list would read as "everything disappeared" rather than "checking again".
-  stubRoutes(() => json(snapshot()));
+  // The first read is held open, so the cold state is actually observed rather than
+  // skipped past by an immediately-resolving stub.
+  let release: (() => void) | null = null;
+  globalThis.fetch = (async () => {
+    await new Promise<void>(resolve => { release = resolve; });
+    return json(snapshot());
+  }) as typeof fetch;
   const { container, root } = await mount();
+  expect(container.querySelector(".data-surface-skeleton")).not.toBeNull();
+  expect(container.querySelectorAll("[data-layer-id]").length).toBe(0);
+
+  await act(async () => {
+    release!();
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+  expect(container.querySelector(".data-surface-skeleton")).toBeNull();
   expect(container.querySelectorAll("[data-layer-id]").length).toBe(INVENTORY.length);
 
   // A second surface on the same key renders from cache with no skeleton: that is
@@ -282,5 +296,25 @@ test("10. an unreadable config refuses writes on every switch", async () => {
   const switches = [...container.querySelectorAll("input[role=\"switch\"]")] as HTMLInputElement[];
   expect(switches).toHaveLength(5);
   for (const input of switches) expect(input.disabled).toBe(true);
+  await act(async () => { root.unmount(); });
+});
+
+test("a layer this build has no copy for is named, never blank", async () => {
+  // The wire response is cast, not validated, so a newer Codex runtime CAN list a
+  // layer the dashboard has no strings for. Rendering it blank would look like a
+  // bug in our own page rather than a version gap.
+  const unknown = { id: "future-layer", class: "runtime-conditional", key: null, default: null, order: 99 };
+  stubRoutes(() => json(snapshot({ inventory: [...INVENTORY, unknown] })));
+  const { container, root } = await mount();
+  const el = row(container, "future-layer");
+  expect(el).not.toBeNull();
+  expect(el!.textContent).toContain("future-layer");
+  expect(el!.querySelector("input")).toBeNull();
+
+  await act(async () => { (el!.querySelector("button") as HTMLButtonElement).click(); });
+  const dialog = document.querySelector("dialog.modal-overlay")!;
+  // Title falls back to the id, and the body says why there is nothing to describe.
+  expect(dialog.querySelector("h3")!.textContent).toBe("future-layer");
+  expect((dialog.querySelector("p")!.textContent ?? "").length).toBeGreaterThan(20);
   await act(async () => { root.unmount(); });
 });

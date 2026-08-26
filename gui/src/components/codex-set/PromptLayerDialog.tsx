@@ -49,7 +49,11 @@ export default function PromptLayerDialog({
   }, [onClose]);
 
   const classKey = CLASS_LABEL_KEYS[descriptor.class];
-  const aboutKey = LAYER_ABOUT_KEYS[descriptor.id]!;
+  // Same fallback the row uses. The wire response is cast, not validated, so a
+  // newer runtime CAN send an id this build has no copy for - and a dialog whose
+  // title and body silently render blank is worse than one that admits the gap.
+  const labelKey = LAYER_LABEL_KEYS[descriptor.id];
+  const aboutKey = LAYER_ABOUT_KEYS[descriptor.id];
   const conditionKey = LAYER_CONDITION_KEYS[descriptor.id];
 
   return (
@@ -57,11 +61,11 @@ export default function PromptLayerDialog({
       <button type="button" className="modal-backdrop-dismiss" aria-label={t("common.close")} tabIndex={-1} onClick={onClose} />
       <div className="modal-card codex-set-layer-dialog" onClick={event => event.stopPropagation()} role="document">
         <div className="modal-head">
-          <h3 id={titleId}>{t(LAYER_LABEL_KEYS[descriptor.id]!)}</h3>
+          <h3 id={titleId}>{labelKey ? t(labelKey) : descriptor.id}</h3>
           <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>{t("common.close")}</button>
         </div>
 
-        <p className="muted small">{t(aboutKey)}</p>
+        <p className="muted small">{aboutKey ? t(aboutKey) : t("codexSet.dialog.unknownLayer")}</p>
 
         <div className="codex-set-layer-dialog__line">
           <span className="muted text-label">{t("codexSet.dialog.class")}</span>
