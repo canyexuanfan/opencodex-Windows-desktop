@@ -509,6 +509,10 @@ describe("020 coverage completions", () => {
 
   test("12b. a hostile Origin is rejected before the route runs", async () => {
     const fx = fixture("");
+    // The revision must be VALID. With a stale one this test passes even when
+    // origin enforcement is gone: the route runs, returns 409 stale_revision, and
+    // a >= 400 assertion is satisfied by the wrong rejection entirely.
+    const rev = await revision(fx);
     const url = new URL("http://127.0.0.1:10100/api/codex-prompt/toggle");
     const req = new Request(url, {
       method: "PUT",
@@ -517,14 +521,18 @@ describe("020 coverage completions", () => {
         origin: "http://evil.example",
         "content-type": "application/json",
       },
-      body: JSON.stringify({ id: "apps", enabled: false, revision: "sha256:x" }),
+      body: JSON.stringify({ id: "apps", enabled: false, revision: rev }),
     });
     const res = await handleManagementAPI(req, url, config, {
       codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath },
     });
     expect(res).not.toBeNull();
-    expect(res!.status).toBeGreaterThanOrEqual(400);
+    expect(res!.status).toBe(403);
+    // The toggle would otherwise have succeeded: this exact request with no
+    // Origin header writes the key. That is what makes the rejection meaningful.
     expect(read(fx.configPath)).toBe("");
+    const allowed = await call("PUT", "/api/codex-prompt/toggle", fx, { id: "apps", enabled: false, revision: rev });
+    expect(allowed.status).toBe(200);
   });
 
   test("9c. adopt refuses a stale revision", async () => {
@@ -588,6 +596,48 @@ describe("020 coverage completions", () => {
       codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath },
     });
     expect(res!.status).toBe(400);
+  });
+
+  test("adopt refuses an oversized value, through BOTH import paths", async () => {
+    // The owned-malformed repair branch reaches adoptDeveloperInstructions exactly
+    // as /adopt does. Without a test on that branch, deleting its cap call is
+    // invisible - which is how the bypass got in.
+    const big = "z".repeat(64 * 1024 + 10);
+
+    const viaAdopt = fixture("developer_instructions = \"" + big + "\"\n");
+    const adopt = await call("POST", "/api/codex-prompt/adopt", viaAdopt, {
+      confirm: true, revision: await revision(viaAdopt),
+    });
+    expect(adopt.status).toBe(400);
+    expect(adopt.body.code).toBe("body_too_large");
+    expect(existsSync(viaAdopt.storePath)).toBe(false);
+
+    // Marker-adjacent but reshaped: drift is owned-malformed, so repair takes the
+    // adopt branch rather than /adopt.
+    const viaRepair = fixture(MARKER + "\ndeveloper_instructions  =  \"" + big + "\"\n");
+    const get = await call("GET", "/api/codex-prompt", viaRepair);
+    expect(get.body.drift).toBe("owned-malformed");
+    const repair = await call("POST", "/api/codex-prompt/repair", viaRepair, {
+      confirm: true, mode: "adopt", revision: get.body.revision,
+    });
+    expect(repair.status).toBe(400);
+    expect(repair.body.code).toBe("body_too_large");
+    expect(existsSync(viaRepair.storePath)).toBe(false);
+  });
+
+  test("the composed cap counts existing enabled layers, not the imported body alone", async () => {
+    const existing = "y".repeat(70 * 1024);
+    const incoming = "z".repeat(60 * 1024);
+    const fx = fixture(
+      "developer_instructions = \"" + incoming + "\"\n",
+      storeJson([{ id: "aaaaaa", title: "Existing", body: existing, enabled: true }]),
+    );
+    const res = await call("POST", "/api/codex-prompt/adopt", fx, {
+      confirm: true, revision: await revision(fx),
+    });
+    // Each body is under the 64 KiB per-layer cap; together they exceed 128 KiB.
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("composed_too_large");
   });
 
   test("an unrecognized repair mode is refused rather than treated as adopt", async () => {

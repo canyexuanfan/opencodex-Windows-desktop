@@ -433,7 +433,8 @@ export async function handleCodexPromptRoutes(ctx: ManagementContext): Promise<R
       if (!revision) return fail(ctx, "stale_revision", 409, "revision required");
       // Same import, same caps. This branch reaches adoptDeveloperInstructions
       // exactly as /adopt does, so skipping the size policy here would mean the
-      // policy is bypassable by choosing the other endpoint.
+      // policy is bypassable by choosing the other endpoint. Proven by driving
+      // the "BOTH import paths" test red with this call deleted.
       const capFailure = adoptCapFailure(ctx, preview.decodedBody ?? "");
       if (capFailure) return capFailure;
       return settle(ctx, adoptDeveloperInstructions(revision, paths(ctx)));
