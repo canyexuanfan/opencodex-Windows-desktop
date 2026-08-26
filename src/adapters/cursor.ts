@@ -29,9 +29,13 @@ import { debugProviderDiagnostic } from "../lib/debug";
 import { estimateTokens } from "../lib/token-estimate";
 import { rememberCursorThreadConversation } from "./cursor/thread-continuity";
 import { runCursorTurnWithRetry } from "./cursor/transport-retry";
+import { cursorRequestHasShellAlias, cursorRequestUsesCodeMode } from "./cursor/tool-definitions";
 import {
   CURSOR_ECHO_RETRY_CONTINUATION_TEXT,
+  CURSOR_ROUTING_COMMENTARY_RETRY_TEXT,
   CursorEnvelopeEchoSniffer,
+  CursorRoutingCommentaryError,
+  CursorRoutingCommentarySniffer,
   CursorToolResultEchoError,
 } from "./cursor/envelope-echo";
 import {
@@ -228,14 +232,26 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
             isCursorExternalWireModel(activeRequest.modelId)
             && (_parsed.context.messages ?? []).some(message => message.role === "toolResult");
           const echoSniffer = armEchoSniffer ? new CursorEnvelopeEchoSniffer() : undefined;
-          let echoHeld: AdapterEvent[] = [];
-          const releaseEchoHeld = () => {
-            for (const held of echoHeld) {
+          const armRoutingCommentarySniffer =
+            isCursorExternalWireModel(activeRequest.modelId)
+            && (
+              cursorRequestUsesCodeMode(activeRequest.tools, activeRequest.toolChoice)
+              || cursorRequestHasShellAlias(activeRequest.tools)
+            );
+          const routingCommentarySniffer = armRoutingCommentarySniffer
+            ? new CursorRoutingCommentarySniffer()
+            : undefined;
+          let guardHeld: AdapterEvent[] = [];
+          const releaseGuardHeld = () => {
+            for (const held of guardHeld) {
               if (held.type !== "heartbeat") emittedOutput = true;
               emit(held);
             }
-            echoHeld = [];
+            guardHeld = [];
           };
+          const guardsSettled = () =>
+            (!echoSniffer || echoSniffer.settled)
+            && (!routingCommentarySniffer || routingCommentarySniffer.settled);
           await runCursorTurnWithRetry(
             makeTransport,
             {
@@ -268,30 +284,41 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
                },
              });
              for (const event of events) {
-                if (echoSniffer && !echoSniffer.settled) {
+                if (!guardsSettled()) {
                   if (event.type === "text_delta") {
-                    const decision = echoSniffer.feed(event.text);
-                    if (decision.kind === "echo") {
-                      echoHeld = [];
-                      throw new CursorToolResultEchoError(decision.marker);
+                    guardHeld.push(event);
+                    if (echoSniffer && !echoSniffer.settled) {
+                      const decision = echoSniffer.feed(event.text);
+                      if (decision.kind === "echo") {
+                        guardHeld = [];
+                        throw new CursorToolResultEchoError(decision.marker);
+                      }
                     }
-                    if (decision.kind === "hold") {
-                      echoHeld.push(event);
-                      continue;
+                    if (routingCommentarySniffer && !routingCommentarySniffer.settled) {
+                      const decision = routingCommentarySniffer.feed(event.text);
+                      if (decision.kind === "hallucination") {
+                        guardHeld = [];
+                        throw new CursorRoutingCommentaryError();
+                      }
                     }
-                    // flush: release everything held, then fall through to emit this event.
-                    releaseEchoHeld();
+                    if (guardsSettled()) releaseGuardHeld();
+                    continue;
                   } else if (event.type === "thinking_delta" || event.type === "heartbeat") {
-                    // Reasoning/liveness before first text never decides the echo question;
-                    // hold thinking in order, pass heartbeats through.
+                    // Reasoning before first text stays ordered; liveness still passes through.
                     if (event.type === "thinking_delta") {
-                      echoHeld.push(event);
+                      guardHeld.push(event);
                       continue;
                     }
                   } else {
-                    // A tool call, done, or error settles it: not an echo. Release and disarm.
-                    echoSniffer.finish();
-                    releaseEchoHeld();
+                    // A tool call, done, or error closes the text quarantine. Re-check the full
+                    // held first line before release so a fragmented routing claim cannot leak.
+                    echoSniffer?.finish();
+                    const routingDecision = routingCommentarySniffer?.finish();
+                    if (routingDecision?.kind === "hallucination") {
+                      guardHeld = [];
+                      throw new CursorRoutingCommentaryError();
+                    }
+                    releaseGuardHeld();
                   }
                 }
                 if (event.type !== "heartbeat") emittedOutput = true;
@@ -325,26 +352,37 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
         try {
           await runOnce(request);
         } catch (err) {
-          // One-shot corrective retry for an echoed tool-result envelope (devlog 260826 gap-10).
-          // The sniffer guarantees no client-visible delta escaped, so a fresh-conversation
-          // full replay with a corrective active turn is safe. A second echo propagates as an
-          // error rather than looping.
-          if (
+          const outputGuardRetryText =
             err instanceof CursorToolResultEchoError
+              ? CURSOR_ECHO_RETRY_CONTINUATION_TEXT
+              : err instanceof CursorRoutingCommentaryError
+                ? CURSOR_ROUTING_COMMENTARY_RETRY_TEXT
+                : undefined;
+          // One-shot corrective retry for guarded external output (devlog 260826 gap-10/11).
+          // The quarantine guarantees no client-visible delta escaped, so a fresh-conversation
+          // retry is safe. A second rejection propagates as an error rather than looping.
+          if (
+            outputGuardRetryText
             && !emittedOutput
             && !replayUnsafe
             && !incoming.abortSignal?.aborted
           ) {
-            debugProviderDiagnostic("cursor", "envelope-echo-retry", {
+            debugProviderDiagnostic(
+              "cursor",
+              err instanceof CursorToolResultEchoError
+                ? "envelope-echo-retry"
+                : "routing-commentary-retry",
+              {
               wireModel: request.modelId,
               conversationHash: request.conversationId.slice(0, 16),
-            });
+              },
+            );
             const echoedConversationId = request.conversationId;
             lastTransport = undefined;
             _parsed._cursorConversationId = undefined;
             request = {
               ...createCursorRequest(_parsed, { forceFreshConversation: true }),
-              echoRetryContinuationText: CURSOR_ECHO_RETRY_CONTINUATION_TEXT,
+              echoRetryContinuationText: outputGuardRetryText,
             };
             rekeyContextUsage(echoedConversationId, request.conversationId);
             _parsed._cursorConversationId = request.conversationId;
