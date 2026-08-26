@@ -21,6 +21,14 @@ describe("codex exec bridge empty-result normalization (devlog 260826 gap-7)", (
     expect(out.changed).toBe(true);
   });
 
+  test("codex CLI native shell names route too (multi-round restart loop, QA round 2)", () => {
+    for (const name of ["shell", "local_shell", "container.exec"]) {
+      const out = normalizeCursorToolResultText("", { toolName: name });
+      expect(out.changed).toBe(true);
+      expect(out.isError).toBe(false);
+    }
+  });
+
   test("non-empty exec output passes through byte-identical", () => {
     const out = normalizeCursorToolResultText("Output:\nhello", { toolName: "exec" });
     expect(out.changed).toBe(false);
