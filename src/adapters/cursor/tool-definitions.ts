@@ -656,6 +656,9 @@ export function buildCursorToolGuidanceSystemNote(
     codeMode
       ? "In code mode the isolate returns nothing on its own: call `text(...)` (or `notify(...)`) on any value you need to see, or the call completes with empty output. There is no `require`, no `module`, and no filesystem or network globals; reach the host only through the nested helpers."
       : undefined,
+    codeMode
+      ? "NEVER attempt Cursor-native Shell, Read, Grep, List, or any tool absent from the catalog — they are not executed in this environment and every probe wastes a turn. The exec code cell (with its nested helpers) is the ONLY execution surface; go to it directly on the FIRST attempt and do not narrate switching surfaces."
+      : undefined,
     hasBareExec
       ? `${shellBridgeLabel} is the Codex Responses shell bridge for this turn, exposed through Cursor's tool protocol; it is not an external MCP server tool. \`shell_command\` and \`exec_command\` are aliases of the same bridge.`
       : undefined,
