@@ -11,7 +11,7 @@ export type Page =
   | "logs"
   | "usage"
   | "storage"
-  | "codex-auth"
+  | "codex-set"
   | "integrations";
 
 export const VALID_PAGES = new Set<Page>([
@@ -23,7 +23,7 @@ export const VALID_PAGES = new Set<Page>([
   "logs",
   "usage",
   "storage",
-  "codex-auth",
+  "codex-set",
   "integrations",
 ]);
 
@@ -35,6 +35,11 @@ export function readPageFromHash(hash?: string): Page {
   const pageId = raw.split("/")[0] as Page;
   // Legacy: Debug used to be a standalone page; it now lives as a tab on Logs.
   if (pageId === ("debug" as Page)) return "logs";
+  // Legacy: Codex Auth became the Multi-auth tab of Codex Set. #codex-auth is a
+  // bookmarkable URL that has shipped, and use-app-route-state reads the initial
+  // page straight from the hash, so without this an old bookmark lands on an
+  // unknown page.
+  if (pageId === ("codex-auth" as Page)) return "codex-set";
   // Legacy: Combos, Routing, and Lab are Models tabs now. Resolve the destination page
   // immediately so a cold legacy hash never flashes Dashboard before replacement.
   if (pageId === ("combos" as Page)
@@ -98,6 +103,7 @@ export const INTEGRATION_TAB_HASHES = [
 export function hashBelongsToPage(rawHash: string, page: Page): boolean {
   return rawHash === page
     || (page === "logs" && rawHash === "logs/debug")
+    || (page === "codex-set" && rawHash === "codex-set/prompt")
     || (page === "models" && (MODELS_TAB_HASHES as readonly string[]).includes(rawHash))
     || (page === "dashboard"
       && (rawHash === DASHBOARD_UPDATE_HASH || (DASHBOARD_TAB_HASHES as readonly string[]).includes(rawHash)))
@@ -123,6 +129,11 @@ export function resolveAppHashChange(rawHash: string): AppHashChangeAction {
   // Legacy: Debug used to be a standalone page.
   if (rawHash === "debug" || rawHash.startsWith("debug/")) {
     return { page: "logs", replaceTo: "logs/debug" };
+  }
+
+  /* Legacy: Codex Auth is now the Multi-auth tab of Codex Set. */
+  if (rawHash === "codex-auth" || rawHash.startsWith("codex-auth/")) {
+    return { page: "codex-set", replaceTo: "codex-set" };
   }
 
   /* Legacy Models pages. Delimiter-aware prefix arms preserve nested legacy bookmarks. */

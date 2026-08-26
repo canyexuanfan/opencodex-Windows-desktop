@@ -1,0 +1,84 @@
+import { useEffect, useState } from "react";
+import { useT } from "../i18n/shared";
+import CodexSetMultiauth from "./codex-set-multiauth";
+import CodexSetPrompt from "./codex-set-prompt";
+import { codexSetTabKeyDown, readCodexSetTabFromHash, selectCodexSetTab } from "./codex-set-tab";
+
+/**
+ * Codex Set — the page that configures Codex as a whole, not just its accounts.
+ *
+ * Two exclusive tabpanels shaped like Logs/Debug rather than the scrolling
+ * SectionTabs strip: Multi-auth and Prompt are unrelated surfaces, and Multi-auth
+ * polls /api/codex-auth/* on a 30s timer that has no business running while the
+ * user is editing prompts. Prompt lazy-mounts on first visit and stays mounted
+ * afterwards, so hopping between tabs does not refetch either side.
+ */
+export default function CodexSet({ apiBase }: { apiBase: string }) {
+  const t = useT();
+  const [tab, setTab] = useState(readCodexSetTabFromHash);
+  const [promptMounted, setPromptMounted] = useState(() => readCodexSetTabFromHash() === "prompt");
+
+  useEffect(() => {
+    const onHash = () => setTab(readCodexSetTabFromHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  useEffect(() => {
+    if (tab === "prompt") setPromptMounted(true);
+  }, [tab]);
+
+  return (
+    <>
+      <div className="page-tabs" role="tablist" aria-label={t("nav.codexSet")}>
+        <button
+          type="button"
+          role="tab"
+          id="codex-set-tab-multiauth"
+          aria-selected={tab === "multiauth"}
+          aria-controls="codex-set-panel-multiauth"
+          tabIndex={tab === "multiauth" ? 0 : -1}
+          className={`page-tab${tab === "multiauth" ? " page-tab--active" : ""}`}
+          onClick={() => selectCodexSetTab("multiauth")}
+          onKeyDown={codexSetTabKeyDown}
+        >
+          {t("codexSet.tab.multiauth")}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="codex-set-tab-prompt"
+          aria-selected={tab === "prompt"}
+          aria-controls="codex-set-panel-prompt"
+          tabIndex={tab === "prompt" ? 0 : -1}
+          className={`page-tab${tab === "prompt" ? " page-tab--active" : ""}`}
+          onClick={() => selectCodexSetTab("prompt")}
+          onKeyDown={codexSetTabKeyDown}
+        >
+          {t("codexSet.tab.prompt")}
+        </button>
+      </div>
+
+      {promptMounted && (
+        <div
+          role="tabpanel"
+          id="codex-set-panel-prompt"
+          aria-labelledby="codex-set-tab-prompt"
+          hidden={tab !== "prompt"}
+        >
+          <CodexSetPrompt apiBase={apiBase} />
+        </div>
+      )}
+
+      <div
+        role="tabpanel"
+        id="codex-set-panel-multiauth"
+        aria-labelledby="codex-set-tab-multiauth"
+        hidden={tab !== "multiauth"}
+      >
+        <CodexSetMultiauth apiBase={apiBase} />
+      </div>
+    </>
+  );
+}
+

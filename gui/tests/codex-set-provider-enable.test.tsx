@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LanguageProvider } from "../src/i18n/provider";
-import { OpenAiAccountModeBanner } from "../src/pages/CodexAuth";
+import { OpenAiAccountModeBanner } from "../src/pages/codex-set-multiauth";
 
 let previousLanguageDescriptor: PropertyDescriptor | undefined;
 

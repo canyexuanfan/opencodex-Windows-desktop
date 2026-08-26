@@ -102,11 +102,18 @@ type CachedMode = {
 };
 
 /**
- * Codex Auth page — a thin wrapper around CodexAccountPool (WP060 extraction).
- * The page owns the /api/config fetch feeding the account-mode banner and
- * passes the mode down so the pool renders mode-aware copy.
+ * The Multi-auth panel of Codex Set — a thin wrapper around CodexAccountPool
+ * (WP060 extraction). The panel owns the /api/config fetch feeding the
+ * account-mode banner and passes the mode down so the pool renders mode-aware
+ * copy.
+ *
+ * This is a MOVE, not a rewrite: every line below arrived here from
+ * `CodexAuth.tsx` unchanged, including the session cache key
+ * `ocx.codex-auth.config.v1`. Renaming that key would discard every user's warm
+ * cache to gain nothing, and the backend namespace /api/codex-auth/* does not
+ * move either (devlog 004 §C: a dozen test files bind to it).
  */
-export default function CodexAuth({ apiBase }: { apiBase: string }) {
+export default function CodexSetMultiauth({ apiBase }: { apiBase: string }) {
   const t = useT();
   const configCacheKey = `ocx.codex-auth.config.v1:${apiBase}`;
   const cached = readSessionListCache<CachedMode>(configCacheKey);

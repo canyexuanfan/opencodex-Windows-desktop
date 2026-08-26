@@ -3,7 +3,7 @@ import { Window } from "happy-dom";
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import { LanguageProvider } from "../src/i18n/provider";
-import CodexAuth from "../src/pages/CodexAuth";
+import CodexSetMultiauth from "../src/pages/codex-set-multiauth";
 
 /**
  * Interaction-level recovery journey for Codex Auth.
@@ -111,11 +111,11 @@ async function mountPage() {
     root = createRoot(host);
     root.render(
       <LanguageProvider>
-        <CodexAuth apiBase="" />
+        <CodexSetMultiauth apiBase="" />
       </LanguageProvider>,
     );
   });
-  // CodexAuth loads mode via setTimeout(0); pool controller settles shortly after.
+  // The Multi-auth panel loads mode via setTimeout(0); the pool controller settles shortly after.
   await act(async () => { await new Promise((r) => setTimeout(r, 40)); });
 }
 
