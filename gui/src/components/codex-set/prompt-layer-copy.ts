@@ -24,7 +24,8 @@ export type LayerId =
   | "plugins"
   | "tools"
   | "skills"
-  | "multi-agent-mode";
+  | "multi-agent-mode"
+  | "git-attribution";
 
 /**
  * Layer id -> i18n key, written out rather than built by string concatenation.
@@ -49,6 +50,7 @@ export const LAYER_LABEL_KEYS: Record<LayerId, TKey> = {
   tools: "codexSet.layer.tools",
   skills: "codexSet.layer.skills",
   "multi-agent-mode": "codexSet.layer.multi-agent-mode",
+  "git-attribution": "codexSet.layer.git-attribution",
 };
 
 export const LAYER_ABOUT_KEYS: Record<LayerId, TKey> = {
@@ -67,6 +69,7 @@ export const LAYER_ABOUT_KEYS: Record<LayerId, TKey> = {
   tools: "codexSet.about.tools",
   skills: "codexSet.about.skills",
   "multi-agent-mode": "codexSet.about.multi-agent-mode",
+  "git-attribution": "codexSet.about.git-attribution",
 };
 
 /**
@@ -80,6 +83,10 @@ export const LAYER_CONDITION_KEYS: Partial<Record<LayerId, TKey>> = {
   realtime: "codexSet.condition.realtime",
   "agents-md": "codexSet.condition.agents-md",
   plugins: "codexSet.condition.plugins",
+  // Mandatory for this row, not optional: without it the renderer falls through to
+  // "always on", and that is false - the account can turn attribution off, in which
+  // case Codex sends the opposite instruction rather than sending nothing.
+  "git-attribution": "codexSet.condition.git-attribution",
 };
 
 export const CLASS_LABEL_KEYS: Record<LayerClass, TKey> = {

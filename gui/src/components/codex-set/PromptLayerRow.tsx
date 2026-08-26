@@ -1,7 +1,7 @@
 import { useT } from "../../i18n/shared";
 import { navigateHash } from "../../hash-routing";
 import type { LayerDescriptorDto, ToggleStateDto } from "../../pages/codex-set-prompt";
-import { LAYER_LABEL_KEYS } from "./prompt-layer-copy";
+import { LAYER_CONDITION_KEYS, LAYER_LABEL_KEYS } from "./prompt-layer-copy";
 
 /**
  * One row of the prompt-layer list.
@@ -47,6 +47,10 @@ export default function PromptLayerRow({
   // An id this build has no copy for is shown verbatim rather than blank: a newer
   // runtime listing a layer we do not know about is information, not an error.
   const label = labelKey ? t(labelKey) : descriptor.id;
+  // A layer that only appears under a condition has one; the rest do not (the map is
+  // deliberately partial). Read here as well as in the dialog so a conditional row
+  // never claims to be unconditional.
+  const conditionKey = LAYER_CONDITION_KEYS[descriptor.id];
   const checked = toggle?.defaultedUserValue ?? descriptor.default ?? true;
 
   return (
@@ -123,8 +127,19 @@ export default function PromptLayerRow({
             "Always on" is false for a transition notice: it is not on, it fires.
             Reusing the locked label would tell the user this text is in every
             prompt when it appears only at a change.
+
+            It is equally false for a layer with a CONDITION. `plugins` is emitted
+            when a plugin is selected or advertises a capability, and
+            `git-attribution` follows the account's attribution policy - neither is
+            unconditionally present, and the dialog has always said so while the row
+            said "Always on". The row now prefers the condition when one exists, so
+            the two surfaces cannot disagree about the same layer.
           */}
-          {transitionOnly ? t("codexSet.row.onChange") : t("codexSet.row.alwaysOn")}
+          {transitionOnly
+            ? t("codexSet.row.onChange")
+            : conditionKey
+              ? t(conditionKey)
+              : t("codexSet.row.alwaysOn")}
         </span>
       )}
     </li>
