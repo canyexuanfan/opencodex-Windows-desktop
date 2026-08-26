@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleManagementAPI } from "../src/server/management-api";
 import { LAYER_INVENTORY, readPromptLayers } from "../src/codex/prompt-layers";
+import type { ManagementPrincipal } from "../src/server/management-auth";
 import type { OcxConfig } from "../src/types";
 
 const MARKER = "# Auto-injected by opencodex";
@@ -69,6 +70,7 @@ async function call(
   pathname: string,
   fx: Fixture,
   body?: unknown,
+  principal: ManagementPrincipal | undefined = "gui-session",
 ): Promise<{ status: number; body: any; routed: boolean }> {
   const url = new URL("http://127.0.0.1:10100" + pathname);
   const headers: Record<string, string> = { host: "127.0.0.1:10100" };
@@ -88,7 +90,7 @@ async function call(
   try {
     res = await handleManagementAPI(req, url, config, {
       codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath },
-    });
+    }, principal);
   } finally {
     if (previousHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = previousHome;
@@ -583,7 +585,7 @@ describe("020 coverage completions", () => {
       });
       const res = await handleManagementAPI(req, url, config, {
         codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath },
-      });
+      }, "gui-session");
       expect(res!.status).toBe(400);
     }
     const url = new URL("http://127.0.0.1:10100/api/codex-prompt/adopt");
@@ -594,8 +596,39 @@ describe("020 coverage completions", () => {
     });
     const res = await handleManagementAPI(req, url, config, {
       codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath },
-    });
+    }, "gui-session");
     expect(res!.status).toBe(400);
+  });
+
+  test("an admin token can read the prompt stack but not rewrite it", async () => {
+    // The gate accepts the raw admin token before it consults the session table
+    // (management-auth.ts:462), and that token sits readable in ~/.opencodex. This
+    // endpoint writes the file that decides what the model reads, so the two
+    // credentials must not be interchangeable here.
+    //
+    // Reads stay open: describing the stack changes nothing, and the CLI parity
+    // path depends on it.
+    const fx = fixture("developer_instructions = \"Answer in Korean.\"\n");
+    const readAsAdmin = await call("GET", "/api/codex-prompt", fx, undefined, "admin-token");
+    expect(readAsAdmin.status).toBe(200);
+    const rev = readAsAdmin.body.revision as string;
+    const before = read(fx.configPath);
+
+    // Every mutating verb, so a future route added to this file is covered by the
+    // same rule rather than needing its own test.
+    const writes: [string, string, unknown][] = [
+      ["PUT", "/api/codex-prompt/toggle", { id: "permissions", enabled: false, revision: rev }],
+      ["PUT", "/api/codex-prompt/custom", { layers: [], revision: rev }],
+      ["POST", "/api/codex-prompt/adopt", { confirm: true, revision: rev }],
+      ["POST", "/api/codex-prompt/repair", { mode: "adopt", revision: rev }],
+    ];
+    for (const [method, path, body] of writes) {
+      const res = await call(method, path, fx, body, "admin-token");
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe("dashboard_session_required");
+    }
+    // The refusal is not merely a status: nothing was written on the way to it.
+    expect(read(fx.configPath)).toBe(before);
   });
 
   test("adopt refuses an oversized value, through BOTH import paths", async () => {

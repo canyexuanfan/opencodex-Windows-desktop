@@ -261,6 +261,33 @@ export async function handleCodexPromptRoutes(ctx: ManagementContext): Promise<R
   const { req, url } = ctx;
   if (!url.pathname.startsWith("/api/codex-prompt")) return null;
 
+  // Every mutating verb on this surface requires a MINTED GUI SESSION, not merely a
+  // request that passed the auth gate. The gate accepts the raw admin token before
+  // it consults the session table (management-auth.ts:462), and this endpoint writes
+  // the user's `$CODEX_HOME/config.toml` — the file that decides what the model
+  // reads. A token any local process can read off disk is the wrong credential for
+  // rewriting a prompt.
+  //
+  // Same principal check and the same honest limit as the star endpoint
+  // (sidebar-routes.ts:42): a process running as the user can mint its own session
+  // from the loopback dashboard bootstrap, and can edit config.toml directly without
+  // this proxy at all. So this is not a technical barrier against a determined local
+  // agent. What it removes is the CASUAL path — an agent that would have PUT here
+  // because the endpoint existed and the token was lying in `~/.opencodex` — and it
+  // makes the refusal legible instead of silent. The real boundary is normative and
+  // lives in AGENTS.md.
+  //
+  // Reads stay open to the admin token: describing the prompt stack changes nothing,
+  // and the dashboard's own cold load needs it.
+  if (req.method !== "GET" && req.method !== "HEAD" && ctx.principal !== "gui-session") {
+    return fail(
+      ctx,
+      "dashboard_session_required",
+      403,
+      "prompt layers are written from the dashboard; an admin token alone cannot rewrite config.toml",
+    );
+  }
+
   if (url.pathname === "/api/codex-prompt" && req.method === "GET") {
     // Pure read. A GET must never repair drift — it is reported here and
     // resolved only by an explicit, revision-checked POST.
