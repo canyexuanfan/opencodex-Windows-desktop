@@ -22,10 +22,13 @@ export default function PresetPicker({
   onBlank,
   onPreset,
   disabled,
+  presets = PRESETS,
 }: {
   onBlank: () => void;
   onPreset: (body: string, title: string) => void;
   disabled: boolean;
+  /** Injectable so the empty-list contract is testable without module mocking. */
+  presets?: readonly (typeof PRESETS)[number][];
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -55,6 +58,22 @@ export default function PresetPicker({
     run();
   };
 
+  // With nothing to choose between, the menu is pure friction: WP5 shipped + as a
+  // single action precisely because an empty menu is worse than no menu. If the
+  // preset list is ever emptied, the affordance collapses back to that.
+  if (presets.length === 0) {
+    return (
+      <button
+        type="button"
+        className="btn btn-sm codex-set-custom__add"
+        disabled={disabled}
+        onClick={onBlank}
+      >
+        {t("codexSet.custom.add")}
+      </button>
+    );
+  }
+
   return (
     <div className="codex-set-preset" ref={rootRef}>
       <button
@@ -75,7 +94,7 @@ export default function PresetPicker({
           >
             <span className="codex-set-preset__name">{t("codexSet.preset.blank")}</span>
           </button>
-          {PRESETS.map(preset => (
+          {presets.map(preset => (
             <button
               key={preset.id}
               type="button"
@@ -98,4 +117,3 @@ export default function PresetPicker({
     </div>
   );
 }
-

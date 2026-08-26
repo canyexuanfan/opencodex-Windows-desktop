@@ -227,6 +227,35 @@ test("7. the blank option still exists beside the presets", async () => {
   await act(async () => { root.unmount(); });
 });
 
+test("7b. with no presets the submenu disappears and + is a single action", async () => {
+  // 060: an empty menu is worse than no menu, which is why WP5 shipped + without
+  // one. If the preset list is ever emptied, the affordance must collapse back.
+  // The list is injected rather than module-mocked: a mock would leak into every
+  // later case in the file, which is exactly what happened first time round.
+  const { default: PresetPicker } = await import("../src/components/codex-set/PresetPicker");
+  const { createRoot } = await import("react-dom/client");
+  const container = document.createElement("div");
+  document.body.append(container);
+  let root!: Root;
+  let blanks = 0;
+  await act(async () => {
+    root = createRoot(container);
+    root.render(
+      <LanguageProvider>
+        <PresetPicker disabled={false} presets={[]} onBlank={() => { blanks += 1; }} onPreset={() => {}} />
+      </LanguageProvider>,
+    );
+  });
+
+  const trigger = container.querySelector(".codex-set-custom__add") as HTMLButtonElement;
+  expect(trigger).not.toBeNull();
+  await act(async () => { trigger.click(); });
+  // No menu at all, and the click went straight to the blank editor.
+  expect(container.querySelector(".codex-set-preset__menu")).toBeNull();
+  expect(container.querySelector(".codex-set-preset__item")).toBeNull();
+  expect(blanks).toBe(1);
+  await act(async () => { root.unmount(); });
+});
 test("a disabled picker cannot be opened at all, not merely announced as disabled", async () => {
   // aria-disabled on a <summary> announced a disabled control while still opening
   // on click and on Enter, so WP5's disabled-Add contract was true only to a
