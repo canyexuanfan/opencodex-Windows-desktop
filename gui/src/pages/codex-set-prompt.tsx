@@ -488,12 +488,19 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
 
           {confirmingDelete && (
             // Confirm first: a body can be long and there is no undo.
-            <div className="notice codex-set-custom__confirm" role="alertdialog">
+            // The named prompt below is also the accessible name: an alertdialog
+            // without one is announced as an unnamed dialog, which defeats the point
+            // of naming the row in the first place.
+            <div
+              className="notice codex-set-custom__confirm"
+              role="alertdialog"
+              aria-labelledby="codex-set-delete-confirm"
+            >
               {/*
                 Name the row. A generic "delete this layer?" sitting under a list of
                 long titles leaves the user guessing which one is pending.
               */}
-              <span>{t("codexSet.custom.deleteConfirmNamed", {
+              <span id="codex-set-delete-confirm">{t("codexSet.custom.deleteConfirmNamed", {
                 title: snapshot.custom.find(l => l.id === confirmingDelete)?.title ?? "",
               })}</span>
               <button

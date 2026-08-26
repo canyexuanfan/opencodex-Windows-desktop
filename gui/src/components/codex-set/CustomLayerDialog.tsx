@@ -216,8 +216,15 @@ export default function CustomLayerDialog({
         )}
 
         {confirmingDiscard ? (
-          <div className="modal-actions codex-set-custom-dialog__discard" role="alertdialog">
-            <span className="muted small">{t("codexSet.custom.discardPrompt")}</span>
+          // The prompt text IS the accessible name. role="alertdialog" without one
+          // announces an unnamed dialog, so a screen-reader user is asked to confirm
+          // something the announcement never states.
+          <div
+            className="modal-actions codex-set-custom-dialog__discard"
+            role="alertdialog"
+            aria-labelledby={titleId + "-discard"}
+          >
+            <span id={titleId + "-discard"} className="muted small">{t("codexSet.custom.discardPrompt")}</span>
             <button type="button" className="btn btn-sm" onClick={() => setConfirmingDiscard(false)}>
               {t("codexSet.custom.keepEditing")}
             </button>
