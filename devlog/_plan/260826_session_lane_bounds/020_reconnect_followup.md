@@ -52,8 +52,9 @@
 
 ### `tests/session-lane-recall-harness.test.ts`
 
-- Change the HTTP regression from expecting 503 to expecting the downstream 400 parse
-  result while a same-lane lease is held.
+- Hold a real HTTP request at the mocked upstream boundary, release the manually held
+  same-lane lease, and prove the HTTP lease keeps that lane active until its response
+  settles. Keep a separate invalid-JSON assertion for the stable downstream 400 envelope.
 - Add direct lease assertions proving two same-lane leases share one retained lane and that
   releasing either lease first cannot prematurely free it.
 - Add a cross-gate assertion proving 256 active turns on one lane still make the next
@@ -70,7 +71,7 @@
 
 | Condition | Activation | Observable proof |
 | --- | --- | --- |
-| Same-session reconnect | Hold one lease, POST `/v1/responses` with the same `session_id` | Request reaches body parsing and returns 400, not admission 503 |
+| Same-session reconnect | Hold one lease, POST `/v1/responses` with the same `session_id`, and pause the mocked upstream | Releasing the manual lease leaves one active lane until the HTTP response settles; the request returns 200, not admission 503 |
 | Same-lane cleanup ordering | Admit two leases for one lane and release them in both orders | Unique active lanes stay 1 until the final release, then become 0 |
 | Unique-lane cap | Hold 64 distinct lane leases and request a 65th | 65th returns null and rejection metric increments |
 | Global cap with same lane | Hold 256 leases for one lane, then request that lane again | 257th total turn is rejected by the process-wide gate while unique-lane metrics stay bounded |

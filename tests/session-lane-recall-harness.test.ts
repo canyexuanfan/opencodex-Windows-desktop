@@ -153,14 +153,41 @@ describe("#820 concurrent tool-recall session harness", () => {
   test("the HTTP boundary admits a reconnect while the same logical session is settling", async () => {
     resetLifecycleDrainStateForTests();
     const previousHome = process.env.OPENCODEX_HOME;
+    const originalFetch = globalThis.fetch;
     const home = mkdtempSync(join(tmpdir(), "ocx-session-lane-"));
     process.env.OPENCODEX_HOME = home;
+    let markUpstreamStarted!: () => void;
+    const upstreamStarted = new Promise<void>(resolve => { markUpstreamStarted = resolve; });
+    let finishUpstream!: () => void;
+    const upstreamResponse = new Promise<Response>(resolve => {
+      finishUpstream = () => resolve(Response.json({
+        id: "resp_reconnect",
+        object: "response",
+        status: "completed",
+        model: "test-model",
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      }));
+    });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://reconnect.example.test/v1/responses") {
+        markUpstreamStarted();
+        return upstreamResponse;
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
     saveConfig({
       port: 0,
       hostname: "127.0.0.1",
-      defaultProvider: "openai",
+      defaultProvider: "reconnect",
       providers: {
-        openai: { adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", authMode: "forward" },
+        reconnect: {
+          adapter: "openai-responses",
+          baseUrl: "https://reconnect.example.test/v1",
+          authMode: "key",
+          apiKey: "test-key",
+        },
       },
     } as OcxConfig);
     const headers = new Headers({ "content-type": "application/json", session_id: "recall-session" });
@@ -168,22 +195,35 @@ describe("#820 concurrent tool-recall session harness", () => {
     const server = startServer(0);
     try {
       expect(held).not.toBeNull();
-      const overlapping = await fetch(new URL("/v1/responses", server.url), {
+      const overlappingResponse = originalFetch(new URL("/v1/responses", server.url), {
         method: "POST",
         headers,
-        body: "not-json",
+        body: JSON.stringify({ model: "reconnect/test-model", input: "hello", stream: false }),
       });
-      expect(overlapping.status).toBe(400);
+      await upstreamStarted;
+      expect(sessionLaneMetrics()).toMatchObject({ active: 1, admitted: 1, rejected: 0 });
       held?.release();
-      const afterRelease = await fetch(new URL("/v1/responses", server.url), {
+      expect(sessionLaneMetrics()).toMatchObject({ active: 1, retainedBytes: SESSION_LANE_ID_BYTES });
+      finishUpstream();
+      const overlapping = await overlappingResponse;
+      expect(overlapping.status).toBe(200);
+      await overlapping.text();
+      expect(sessionLaneMetrics()).toMatchObject({ active: 0, retainedBytes: 0 });
+
+      const invalid = await originalFetch(new URL("/v1/responses", server.url), {
         method: "POST",
         headers,
         body: "not-json",
       });
-      expect(afterRelease.status).toBe(400);
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toMatchObject({
+        error: { type: "invalid_request_error", message: "Invalid JSON body" },
+      });
     } finally {
+      finishUpstream();
       held?.release();
       await server.stop(true);
+      globalThis.fetch = originalFetch;
       if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previousHome;
       rmSync(home, { recursive: true, force: true });
