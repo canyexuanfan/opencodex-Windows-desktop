@@ -63,6 +63,12 @@ export interface PromptSnapshotDto {
   configExists: boolean;
   readable: boolean;
   developerInstructionsOwned: boolean;
+  /**
+   * The precise ownership state. `developerInstructionsOwned: false` conflates an
+   * ABSENT key (ordinary first run) with an EXTERNAL one (someone else wrote it),
+   * and treating both as external hides + from every new user.
+   */
+  developerInstructionsState: "absent" | "owned" | "owned-malformed" | "external";
   drift: "journal-present" | "projection-stale" | "store-missing" | "owned-malformed" | null;
   revision: string;
   inventory: LayerDescriptorDto[];
@@ -143,8 +149,8 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
    * composition order, so a reorder needs no separate verb and a delete is just
    * the remaining list.
    */
-  const writeCustom = async (layers: CustomLayerDto[], busyKey: string) => {
-    if (!snapshot) return;
+  const writeCustom = async (layers: CustomLayerDto[], busyKey: string): Promise<boolean> => {
+    if (!snapshot) return false;
     setBusyId(busyKey);
     setError("");
     const previous = snapshot.custom;
@@ -159,25 +165,27 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
         if (body.code === "stale_revision") {
           resource.refresh();
           setError(t("codexSet.prompt.staleRevision"));
-          return;
+          return false;
         }
         setError(body.message ?? t("codexSet.prompt.writeFailed"));
         // Restore the previous list rather than leaving the UI showing an edit
         // the file never accepted.
         setClientResourceData(resourceKey, { ...snapshot, custom: previous });
         resource.refresh();
-        return;
+        return false;
       }
       setClientResourceData(resourceKey, body.snapshot);
+      return true;
     } catch {
       setError(t("codexSet.prompt.writeFailed"));
       resource.refresh();
+      return false;
     } finally {
       setBusyId(null);
     }
   };
 
-  const saveDraft = (draft: Draft) => {
+  const saveDraft = async (draft: Draft) => {
     if (!snapshot) return;
     const existing = snapshot.custom;
     const next = draft.id === null
@@ -185,8 +193,12 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
       // Editing keeps the id: it is stable across edits, which is what lets the
       // store and the projection stay in agreement.
       : existing.map(l => (l.id === draft.id ? { ...l, title: draft.title, body: draft.body } : l));
-    setEditing(null);
-    void writeCustom(next, draft.id ?? "new");
+    // Close only after the write lands. Closing first threw away the text the user
+    // just typed whenever the write was refused - a stale revision, a transient
+    // failure - and the re-read that follows can restore the file but not a draft
+    // that no longer exists anywhere.
+    const saved = await writeCustom(next, draft.id ?? "new");
+    if (saved) setEditing(null);
   };
 
   const adopt = async (confirm: boolean) => {
@@ -309,7 +321,7 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
         <section className="codex-set-custom">
           <div className="row">
             <strong>{t("codexSet.custom.heading")}</strong>
-            {snapshot.developerInstructionsOwned || snapshot.custom.length > 0 ? (
+            {snapshot.developerInstructionsState !== "external" ? (
               <button
                 type="button"
                 className="btn btn-sm codex-set-custom__add"
@@ -330,7 +342,7 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
             the user to go delete their own instructions by hand, the panel offers
             to import them - previewed first, written only on confirmation.
           */}
-          {!snapshot.developerInstructionsOwned && snapshot.modelInstructionsFile === null && (
+          {snapshot.developerInstructionsState === "external" && snapshot.modelInstructionsFile === null && (
             <div className="codex-set-custom__adopt">
               <p className="muted small">{t("codexSet.custom.notOwned")}</p>
               {adoptPreview ? (
@@ -385,7 +397,13 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
           {confirmingDelete && (
             // Confirm first: a body can be long and there is no undo.
             <div className="notice codex-set-custom__confirm" role="alertdialog">
-              <span>{t("codexSet.custom.deleteConfirm")}</span>
+              {/*
+                Name the row. A generic "delete this layer?" sitting under a list of
+                long titles leaves the user guessing which one is pending.
+              */}
+              <span>{t("codexSet.custom.deleteConfirmNamed", {
+                title: snapshot.custom.find(l => l.id === confirmingDelete)?.title ?? "",
+              })}</span>
               <button
                 type="button"
                 className="btn btn-danger btn-sm"

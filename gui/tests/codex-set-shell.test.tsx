@@ -38,6 +38,7 @@ function snapshot(over: Record<string, unknown> = {}) {
     configExists: true,
     readable: true,
     developerInstructionsOwned: false,
+    developerInstructionsState: "absent" as const,
     drift: null,
     revision: "sha256:one",
     inventory: INVENTORY,

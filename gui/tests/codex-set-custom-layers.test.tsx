@@ -32,6 +32,7 @@ function snapshot(over: Record<string, unknown> = {}) {
     configExists: true,
     readable: true,
     developerInstructionsOwned: true,
+    developerInstructionsState: "owned" as const,
     drift: null,
     revision: "sha256:one",
     inventory: INVENTORY,
@@ -126,7 +127,9 @@ test("1. + opens an empty editor", async () => {
 test("2. Save PUTs the full list with the new layer appended", async () => {
   const calls = stubRoutes(call => {
     if (call.method === "PUT") return json({ ok: true, changed: true, snapshot: snapshot({ custom: [layer()] }) });
-    return json(snapshot());
+    // An EXISTING layer, so a write that replaced the list instead of appending to
+    // it would be caught. Starting from empty made the two indistinguishable.
+    return json(snapshot({ custom: [layer({ id: "zzzzzz", title: "Already here" })] }));
   });
   const { container, root } = await mount();
   await act(async () => { addButton(container)!.click(); });
@@ -140,10 +143,11 @@ test("2. Save PUTs the full list with the new layer appended", async () => {
   await act(async () => { save.click(); });
   const put = calls.find(c => c.method === "PUT")!;
   expect(put.url).toBe("/api/codex-prompt/custom");
-  expect(put.body.layers).toHaveLength(1);
-  expect(put.body.layers[0].title).toBe("House rules");
-  expect(put.body.layers[0].body).toBe("Be brief.");
-  expect(put.body.layers[0].id).toMatch(/^[a-z0-9]{6}$/);
+  expect(put.body.layers).toHaveLength(2);
+  expect(put.body.layers[0].id).toBe("zzzzzz");
+  expect(put.body.layers[1].title).toBe("House rules");
+  expect(put.body.layers[1].body).toBe("Be brief.");
+  expect(put.body.layers[1].id).toMatch(/^[a-z0-9]{6}$/);
   expect(put.body.revision).toBe("sha256:one");
   await act(async () => { root.unmount(); });
 });
@@ -151,7 +155,7 @@ test("2. Save PUTs the full list with the new layer appended", async () => {
 test("3. editing changes title and body but keeps the id", async () => {
   const calls = stubRoutes(call => {
     if (call.method === "PUT") return json({ ok: true, changed: true, snapshot: snapshot({ custom: [layer({ title: "Renamed" })] }) });
-    return json(snapshot({ custom: [layer()] }));
+    return json(snapshot({ custom: [layer(), layer({ id: "zzzzzz", title: "Untouched" })] }));
   });
   const { container, root } = await mount();
   await act(async () => { (customRow(container, "aaaaaa")!.querySelector("button") as HTMLButtonElement).click(); });
@@ -159,12 +163,16 @@ test("3. editing changes title and body but keeps the id", async () => {
   expect(input.value).toBe("House rules");
   await act(async () => {
     typeInto(input, "Renamed");
+    typeInto(dialog().querySelector("textarea") as HTMLTextAreaElement, "Different body.");
   });
   const save = [...dialog().querySelectorAll("button")].find(b => (b.textContent ?? "").includes("Save"))!;
   await act(async () => { save.click(); });
   const put = calls.find(c => c.method === "PUT")!;
   expect(put.body.layers[0].id).toBe("aaaaaa");
   expect(put.body.layers[0].title).toBe("Renamed");
+  expect(put.body.layers[0].body).toBe("Different body.");
+  // The sibling survives untouched: an edit must not rewrite its neighbours.
+  expect(put.body.layers[1]).toEqual({ id: "zzzzzz", title: "Untouched", body: "Be brief.", enabled: true });
   await act(async () => { root.unmount(); });
 });
 
@@ -185,7 +193,9 @@ test("4. toggling a custom layer PUTs with enabled flipped", async () => {
 test("5. delete confirms first, then PUTs without the row", async () => {
   const calls = stubRoutes(call => {
     if (call.method === "PUT") return json({ ok: true, changed: true, snapshot: snapshot({ custom: [] }) });
-    return json(snapshot({ custom: [layer()] }));
+    // Two rows: deleting the sole row could not distinguish "removed this one"
+    // from "cleared everything".
+    return json(snapshot({ custom: [layer(), layer({ id: "bbbbbb", title: "Keeper" })] }));
   });
   const { container, root } = await mount();
   const del = customRow(container, "aaaaaa")!.querySelector(".codex-set-custom__delete") as HTMLButtonElement;
@@ -194,7 +204,9 @@ test("5. delete confirms first, then PUTs without the row", async () => {
   expect(calls.filter(c => c.method === "PUT")).toHaveLength(0);
   const confirm = container.querySelector(".codex-set-custom__confirm .btn-danger") as HTMLButtonElement;
   await act(async () => { confirm.click(); });
-  expect(calls.find(c => c.method === "PUT")!.body.layers).toHaveLength(0);
+  const remaining = calls.find(c => c.method === "PUT")!.body.layers;
+  expect(remaining).toHaveLength(1);
+  expect(remaining[0].id).toBe("bbbbbb");
   await act(async () => { root.unmount(); });
 });
 
@@ -243,18 +255,30 @@ test("10. each validation rule disables Save with its message", async () => {
   const save = () => [...dialog().querySelectorAll("button")].find(b => (b.textContent ?? "").includes("Save")) as HTMLButtonElement;
   // Empty title.
   expect(save().disabled).toBe(true);
-  const cases: Array<[string, string]> = [
-    ["x".repeat(81), "ok"],
-    ["fine", "a\u0007b"],
+  // Every blocking rule, each with the message that names it - a generic alert
+  // check would pass while telling the user the wrong thing.
+  const cases: Array<[string, string, string]> = [
+    ["x".repeat(81), "ok", "81"],
+    ["fine", "a\u0007b", "1"],
+    ["fine", "y".repeat(64 * 1024 + 1), "65537"],
   ];
-  for (const [title, body] of cases) {
+  for (const [title, body, needle] of cases) {
     await act(async () => {
-    typeInto(input, title);
-    typeInto(textarea, body);
+      typeInto(input, title);
+      typeInto(textarea, body);
     });
-    expect(save().disabled).toBe(true);
-    expect(dialog().querySelector("[role=\"alert\"]")).not.toBeNull();
+    expect(save().disabled, needle).toBe(true);
+    const alert = dialog().querySelector("[role=\"alert\"]");
+    expect(alert, needle).not.toBeNull();
+    expect(alert!.textContent, needle).toContain(needle);
   }
+  // And a valid draft re-enables Save, so the disabled state tracks the problem
+  // rather than being stuck on.
+  await act(async () => {
+    typeInto(input, "fine");
+    typeInto(textarea, "Be brief.");
+  });
+  expect(save().disabled).toBe(false);
   await act(async () => { root.unmount(); });
 });
 
@@ -295,7 +319,7 @@ test("14+15+16. an unowned key hides + and offers a previewed Adopt", async () =
       }
       return json({ ok: true, changed: false, preview: { rawLine: "developer_instructions = \"Answer in Korean.\"", decodedBody: "Answer in Korean." } });
     }
-    return json(snapshot({ developerInstructionsOwned: false }));
+    return json(snapshot({ developerInstructionsOwned: false, developerInstructionsState: "external" }));
   });
   const { container, root } = await mount();
   expect(addButton(container)).toBeNull();
@@ -353,6 +377,22 @@ test("21+22+23. the linter flags each rule, spans the right text, and stays quie
   // Behavioral text - the shape every preset takes - produces nothing.
   expect(lintPromptLayer("Answer in Korean. Keep replies short and state the plan first.")).toEqual([]);
 
+  // Every content rule is a WARNING, not an error: the level is what keeps the
+  // linter advisory, and a rule promoted to blocking would change behaviour
+  // silently.
+  for (const sample of [
+    "You are Claude.",
+    "Use the Read tool.",
+    "Run ${{ x }}.",
+    "apply_patch must be used.",
+    "Use acceptEdits.",
+    "Your cwd is /tmp.",
+  ]) {
+    const found = lintPromptLayer(sample);
+    expect(found.length, sample).toBeGreaterThan(0);
+    for (const finding of found) expect(finding.level, sample).toBe("warn");
+  }
+
   // Advisory, never a warning: the 8 KB cap is opencodex policy, not an upstream limit.
   const big = lintPromptLayer("x".repeat(8 * 1024 + 1));
   expect(big).toHaveLength(1);
@@ -377,4 +417,68 @@ test("moveLayer reorders without mutating its input", () => {
   expect(layers.map(l => l.id)).toEqual(["aaaaaa", "bbbbbb", "cccccc"]);
   // Edges are no-ops rather than errors.
   expect(moveLayer(layers, "aaaaaa", -1).map(l => l.id)).toEqual(["aaaaaa", "bbbbbb", "cccccc"]);
+});
+
+test("a first run can create its first layer", async () => {
+  // developerInstructionsOwned is false both when the key is ABSENT and when it is
+  // EXTERNAL. Treating both as external hid + from every new user and offered them
+  // an Adopt that answers nothing_to_adopt - the feature was unreachable on a fresh
+  // machine, which is the state most users start from.
+  const calls = stubRoutes(call => {
+    if (call.method === "PUT") return json({ ok: true, changed: true, snapshot: snapshot({ custom: [layer()] }) });
+    return json(snapshot({
+      developerInstructionsOwned: false,
+      developerInstructionsState: "absent",
+      configExists: false,
+      custom: [],
+    }));
+  });
+  const { container, root } = await mount();
+  expect(addButton(container)).not.toBeNull();
+  expect(container.querySelector(".codex-set-custom__adopt")).toBeNull();
+
+  await act(async () => { addButton(container)!.click(); });
+  const input = dialog().querySelector("input[type=\"text\"]") as HTMLInputElement;
+  const textarea = dialog().querySelector("textarea") as HTMLTextAreaElement;
+  await act(async () => {
+    typeInto(input, "House rules");
+    typeInto(textarea, "Be brief.");
+  });
+  const save = [...dialog().querySelectorAll("button")].find(b => (b.textContent ?? "").includes("Save"))!;
+  await act(async () => { save.click(); });
+  expect(calls.find(c => c.method === "PUT")!.body.layers).toHaveLength(1);
+  await act(async () => { root.unmount(); });
+});
+
+test("a refused save keeps the editor open with the text still in it", async () => {
+  // Closing first threw the draft away on every rejection, and the re-read that
+  // follows restores the file but not text that no longer exists anywhere.
+  stubRoutes(call => {
+    if (call.method === "PUT") return json({ ok: false, code: "stale_revision" }, 409);
+    return json(snapshot());
+  });
+  const { container, root } = await mount();
+  await act(async () => { addButton(container)!.click(); });
+  const input = dialog().querySelector("input[type=\"text\"]") as HTMLInputElement;
+  const textarea = dialog().querySelector("textarea") as HTMLTextAreaElement;
+  await act(async () => {
+    typeInto(input, "Worth keeping");
+    typeInto(textarea, "Please do not lose this.");
+  });
+  const save = [...dialog().querySelectorAll("button")].find(b => (b.textContent ?? "").includes("Save"))!;
+  await act(async () => { save.click(); });
+
+  expect(document.querySelector("dialog.modal-overlay")).not.toBeNull();
+  expect((dialog().querySelector("input[type=\"text\"]") as HTMLInputElement).value).toBe("Worth keeping");
+  expect((dialog().querySelector("textarea") as HTMLTextAreaElement).value).toBe("Please do not lose this.");
+  await act(async () => { root.unmount(); });
+});
+
+test("the delete confirmation names the layer it will remove", async () => {
+  stubRoutes(() => json(snapshot({ custom: [layer(), layer({ id: "bbbbbb", title: "Second rules" })] })));
+  const { container, root } = await mount();
+  const del = customRow(container, "bbbbbb")!.querySelector(".codex-set-custom__delete") as HTMLButtonElement;
+  await act(async () => { del.click(); });
+  expect(container.querySelector(".codex-set-custom__confirm")!.textContent).toContain("Second rules");
+  await act(async () => { root.unmount(); });
 });
