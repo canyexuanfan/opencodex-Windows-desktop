@@ -268,6 +268,16 @@ export async function handleCodexPromptRoutes(ctx: ManagementContext): Promise<R
     return jsonResponse(serialize(snapshot, configBytesOf(snapshot)), 200, req, ctx.config);
   }
 
+  if (url.pathname === "/api/codex-prompt/text" && req.method === "GET") {
+    // The dialog used to claim Codex does not expose layer text. It does:
+    // `codex debug prompt-input` renders the model-visible input list, and this
+    // reads it. Bounded and fail-soft - an unavailable probe degrades to "we could
+    // not read it", never to an error page.
+    const { probePromptText } = await import("../../codex/prompt-text-probe");
+    const cwd = url.searchParams.get("cwd") ?? process.cwd();
+    return jsonResponse(await probePromptText(cwd), 200, req, ctx.config);
+  }
+
   if (url.pathname === "/api/codex-prompt/toggle" && req.method === "PUT") {
     const body = await readBody(ctx);
     if (!body) return fail(ctx, "invalid_body", 400, "expected a JSON object");

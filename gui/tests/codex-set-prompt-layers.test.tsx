@@ -209,9 +209,11 @@ test("7. the dialog opens read-only: no textarea, no save", async () => {
   await act(async () => { root.unmount(); });
 });
 
-test("9. the dialog says plainly that no rendered layer text exists", async () => {
-  // Omitting the body silently would read as a loading failure to anyone who
-  // expected one. Codex exposes no API for it, so the dialog states that.
+test("9. the dialog names WHY text is missing rather than omitting it silently", async () => {
+  // Codex is open source and `codex debug prompt-input` renders the model-visible
+  // input list, so the old "no API exists" claim was wrong. What remains true is
+  // that a body can still be absent - unread, unrendered on this turn, or carried
+  // outside the printable list - and each case has its own sentence.
   stubRoutes(() => json(snapshot()));
   const { container, root } = await mount();
   await act(async () => {
@@ -223,7 +225,9 @@ test("9. the dialog says plainly that no rendered layer text exists", async () =
   // The element existing is not the contract; saying so is. An empty div would
   // satisfy a presence check while telling the reader nothing.
   expect((notice!.textContent ?? "").length).toBeGreaterThan(40);
-  expect(notice!.textContent).toContain("does not expose");
+  // The probe is not stubbed here, so this asserts the shape of the answer rather
+  // than one branch: a reason is always given, and it is a sentence.
+  expect(notice!.textContent).toMatch(/could not be read|sent nothing|travels outside/);
   await act(async () => { root.unmount(); });
 });
 

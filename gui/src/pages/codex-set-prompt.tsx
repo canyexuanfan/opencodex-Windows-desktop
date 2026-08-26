@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useT } from "../i18n/shared";
 import { useDataSurface } from "../data-surface";
 import { setClientResourceData } from "../client-resource";
@@ -120,6 +120,12 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
    * directly.
    */
   const [presetSeed, setPresetSeed] = useState<{ title: string; body: string } | null>(null);
+  /**
+   * Rendered layer text, fetched lazily on first dialog open. It shells out to
+   * `codex debug prompt-input`, so it is not part of the panel load - a user who
+   * never opens a layer never pays for it.
+   */
+  const [layerText, setLayerText] = useState<{ ok: boolean; layers?: Record<string, { text: string | null; reason: string; bytes: number }> } | null>(null);
 
   const load = useCallback(async (signal: AbortSignal): Promise<PromptSnapshotDto> => {
     const res = await fetch(apiBase + "/api/codex-prompt", { signal });
@@ -304,6 +310,22 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const openDescriptor = rows.find(d => d.id === openLayerId) ?? null;
 
+  useEffect(() => {
+    if (openLayerId === null || layerText !== null) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(apiBase + "/api/codex-prompt/text");
+        const body = await res.json() as { ok: boolean; layers?: Record<string, { text: string | null; reason: string; bytes: number }> };
+        if (!cancelled) setLayerText(body);
+      } catch {
+        // A failed probe is a missing body, not a broken page.
+        if (!cancelled) setLayerText({ ok: false });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [openLayerId, layerText, apiBase]);
+
   return (
     <div className="panel codex-set-prompt">
       <div className="row">
@@ -389,6 +411,9 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
         <PromptLayerDialog
           descriptor={openDescriptor}
           toggle={snapshot?.toggles.find(s => s.id === openDescriptor.id)}
+          text={layerText?.layers?.[openDescriptor.id]}
+          busy={busyId !== null}
+          onToggle={(id, enabled) => { void onToggle(id, enabled); }}
           onClose={() => setOpenLayerId(null)}
         />
       )}
