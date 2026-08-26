@@ -932,6 +932,24 @@ function isXaiSchemaTarget(provider: OcxProviderConfig): boolean {
   }
 }
 
+// Moonshot validates function schemas against a draft-07 reading of `$ref`, where the
+// keyword stands alone and siblings are ignored. It rejects the whole request rather
+// than ignoring them: "not a valid moonshot flavored json schema ... when using $ref,
+// type should be defined in the referenced schema instead of the parent schema".
+const MOONSHOT_SCHEMA_HOSTNAMES = new Set([
+  "api.kimi.com",
+  "api.moonshot.ai",
+  "api.moonshot.cn",
+]);
+
+function isMoonshotSchemaTarget(provider: OcxProviderConfig): boolean {
+  try {
+    return MOONSHOT_SCHEMA_HOSTNAMES.has(new URL(provider.baseUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
 const VOLCENGINE_ARK_HOSTNAMES = new Set([
   "ark.cn-beijing.volces.com",
   "ark.ap-southeast.volces.com",
@@ -962,6 +980,186 @@ function ensureRootObjectType(parameters: unknown): Record<string, unknown> {
 
 function isXaiObjectSchema(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * JSON Schema 2020-12 makes `$ref` an in-place applicator: siblings stay in force and are
+ * combined with the referenced schema. Moonshot enforces the older draft-07 reading where
+ * `$ref` must stand alone, and 400s the entire request when a node carries both. Codex's own
+ * deferred tool catalog emits exactly that shape (zod-to-json-schema deduplicates into
+ * `$defs.__schema*` nodes that keep `type`/`minLength`/`format` beside the `$ref`), so the
+ * schema is not something a user can fix from configuration — see issue #2673.
+ *
+ * Inline the referenced schema underneath the node's own keywords, which is what 2020-12 says
+ * the node means, then drop `$ref`. Constraints reach the model instead of being stripped.
+ * The `$defs` bag is preserved: a bare `$ref` (no siblings) is already legal for Moonshot and
+ * is left pointing at its definition rather than expanded, which keeps recursive schemas finite.
+ */
+function moonshotRefTargetKeys(node: Record<string, unknown>): string[] {
+  return Object.keys(node).filter(key => key !== "$ref");
+}
+
+/**
+ * Inlining duplicates the target, so a schema referencing one large definition from many
+ * sibling-carrying nodes can multiply. Bound the total expansions and fall back to a bare
+ * `$ref` once the budget is spent: still valid for Moonshot, just without the node's own
+ * narrowing keywords. Mirrors the node budget in google-tool-schema.ts.
+ */
+const MOONSHOT_MAX_REF_EXPANSIONS = 512;
+
+/**
+ * Expansion count alone does not bound the walk: a deeply nested ref-free schema, or one
+ * large definition repeated across many nodes, still recurses to exhaustion or amplifies the
+ * emitted output. Depth and node budgets close both, and mirror google-tool-schema.ts.
+ */
+const MOONSHOT_MAX_SCHEMA_DEPTH = 64;
+const MOONSHOT_MAX_SCHEMA_NODES = 4_096;
+
+/**
+ * Assertion keywords whose meaning under a `$ref` is CONJUNCTION, not replacement. A node
+ * carrying `required: ["b"]` beside a target requiring `["a"]` means both are required;
+ * letting the sibling win emitted a schema that no longer described the tool.
+ */
+function unionRequired(target: unknown, sibling: unknown): unknown {
+  if (!Array.isArray(target) || !Array.isArray(sibling)) return sibling;
+  const seen = new Set<unknown>();
+  const out: unknown[] = [];
+  for (const name of [...target, ...sibling]) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
+/**
+ * Keywords whose values are DATA, not schemas.
+ *
+ * Recursing into them rewrote user data: an `enum` listing a literal object that happens
+ * to carry a `"$ref"` string had that key stripped as if it were a schema reference, so a
+ * value the tool declared as legal silently changed shape. These are copied through.
+ */
+const MOONSHOT_DATA_VALUED_KEYWORDS = new Set(["enum", "const", "default", "examples"]);
+
+/**
+ * Compose two `properties` maps. A property named in BOTH the referenced target and the
+ * node is the same conjunction problem `required` had: letting the sibling win discards
+ * the target's constraints for that member. Merge the two member schemas so neither side
+ * loses its keywords, and let the node narrow on a genuine conflict.
+ */
+function composeProperties(
+  target: Record<string, unknown>,
+  sibling: Record<string, unknown>,
+): Record<string, unknown> {
+  const combined: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const [name, sub] of Object.entries(target)) combined[name] = sub;
+  for (const [name, sub] of Object.entries(sibling)) {
+    const existing = combined[name];
+    if (isXaiObjectSchema(existing) && isXaiObjectSchema(sub)) {
+      const member: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+      for (const [k, v] of Object.entries(existing)) member[k] = v;
+      for (const [k, v] of Object.entries(sub)) {
+        member[k] = k === "required" ? unionRequired(member[k], v) : v;
+      }
+      combined[name] = member;
+      continue;
+    }
+    combined[name] = sub;
+  }
+  return combined;
+}
+
+interface MoonshotNormalizeState {
+  activeRefs: Set<string>;
+  remainingExpansions: number;
+  remainingNodes: number;
+}
+
+function normalizeMoonshotSchemaNode(
+  node: unknown,
+  root: Record<string, unknown>,
+  state: MoonshotNormalizeState,
+  depth = 0,
+): unknown {
+  if (Array.isArray(node)) {
+    if (depth >= MOONSHOT_MAX_SCHEMA_DEPTH) return [];
+    return node.map(item => normalizeMoonshotSchemaNode(item, root, state, depth + 1));
+  }
+  if (!isXaiObjectSchema(node)) return node;
+
+  // Fail closed for this node rather than emitting a partially weakened schema: an empty
+  // object is the one shape that asserts nothing it cannot back up.
+  if (depth >= MOONSHOT_MAX_SCHEMA_DEPTH || state.remainingNodes <= 0) return {};
+  state.remainingNodes -= 1;
+
+  const ref = node.$ref;
+  const hasSiblings = moonshotRefTargetKeys(node).length > 0;
+
+  if (typeof ref === "string" && hasSiblings) {
+    // A cycle cannot be inlined. Keeping the bare `$ref` is the lossy-but-valid fallback:
+    // Moonshot accepts it, and the alternative (dropping the ref) would erase the recursion.
+    if (state.activeRefs.has(ref) || state.remainingExpansions <= 0) return { $ref: ref };
+
+    const target = lookupLocalJsonPointer(root, ref);
+    if (isXaiObjectSchema(target)) {
+      state.remainingExpansions -= 1;
+      state.activeRefs.add(ref);
+      const resolvedTarget = normalizeMoonshotSchemaNode(target, root, state, depth + 1);
+      state.activeRefs.delete(ref);
+      const merged: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+      if (isXaiObjectSchema(resolvedTarget)) {
+        for (const [key, value] of Object.entries(resolvedTarget)) merged[key] = value;
+      }
+      // "Alongside the target" is conjunction, not replacement. For most keywords the node
+      // narrows the target and overwriting is the narrower reading, but `required` and
+      // `properties` are set-valued: letting the sibling win DROPPED the target's own
+      // members, so a tool requiring `a` beside a node requiring `b` shipped requiring only
+      // `b`. Those two compose; everything else keeps the narrowing overwrite.
+      for (const [key, value] of Object.entries(node)) {
+        if (key === "$ref") continue;
+        if (MOONSHOT_DATA_VALUED_KEYWORDS.has(key)) {
+          merged[key] = value;
+          continue;
+        }
+        const normalized = normalizeMoonshotSchemaNode(value, root, state, depth + 1);
+        if (key === "required") {
+          merged[key] = unionRequired(merged[key], normalized);
+          continue;
+        }
+        if (key === "properties" && isXaiObjectSchema(merged[key]) && isXaiObjectSchema(normalized)) {
+          merged[key] = composeProperties(merged[key] as Record<string, unknown>, normalized);
+          continue;
+        }
+        merged[key] = normalized;
+      }
+      return merged;
+    }
+
+    // Unresolvable pointer: a remote ref, a malformed path, or a non-object target. Dropping
+    // the ref and keeping the siblings silently discards whatever the reference constrained,
+    // which is the one outcome we cannot detect downstream. A bare `$ref` is lossy in the
+    // other direction - it loses the node's own keywords - but it preserves the identity of
+    // what was asked for, and Moonshot accepts it.
+    return { $ref: ref };
+  }
+
+  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(node)) {
+    out[key] = key === "$ref" || MOONSHOT_DATA_VALUED_KEYWORDS.has(key)
+      ? value
+      : normalizeMoonshotSchemaNode(value, root, state, depth + 1);
+  }
+  return out;
+}
+
+function normalizeMoonshotToolParameters(parameters: unknown): Record<string, unknown> {
+  const rooted = ensureRootObjectType(parameters);
+  const normalized = normalizeMoonshotSchemaNode(rooted, rooted, {
+    activeRefs: new Set<string>(),
+    remainingExpansions: MOONSHOT_MAX_REF_EXPANSIONS,
+    remainingNodes: MOONSHOT_MAX_SCHEMA_NODES,
+  });
+  return isXaiObjectSchema(normalized) ? normalized : rooted;
 }
 
 function stringRequiredFields(value: unknown): string[] {
@@ -1228,10 +1426,14 @@ function toolsToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig
   const tools = parsed.context.tools.filter(toolChoiceToolPredicate(parsed.options.toolChoice, parsed.context.tools));
   if (tools.length === 0) return undefined;
   const xaiTarget = isXaiSchemaTarget(provider);
+  const moonshotTarget = !xaiTarget && isMoonshotSchemaTarget(provider);
   const formatted = tools.flatMap(t => {
-    const parameters = stripResponsesOnlyEncryptedMarker(xaiTarget
+    const normalized = xaiTarget
       ? normalizeXaiToolParameters(t.parameters)
-      : ensureRootObjectType(t.parameters));
+      : moonshotTarget
+        ? normalizeMoonshotToolParameters(t.parameters)
+        : ensureRootObjectType(t.parameters);
+    const parameters = stripResponsesOnlyEncryptedMarker(normalized);
 
     if (parameters === undefined) return [];
     return [{
