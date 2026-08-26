@@ -30,6 +30,12 @@ export default function CustomLayerRow({
   const t = useT();
   return (
     <li className="codex-set-prompt__row codex-set-custom__row" data-custom-id={layer.id}>
+      {/*
+        Numbered among themselves, not continuing the built-in sequence. Custom
+        layers concatenate into ONE developer_instructions section, so sharing a
+        sequence with the built-ins would draw a stack that does not exist.
+      */}
+      <span className="codex-set-prompt__pos" aria-hidden="true">{index + 1}</span>
       <button type="button" className="link-btn codex-set-prompt__name" onClick={() => onEdit(layer.id)}>
         {layer.title}
       </button>

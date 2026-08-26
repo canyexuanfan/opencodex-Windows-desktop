@@ -322,6 +322,22 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
   const rows = [...(snapshot?.inventory ?? [])]
     .filter(d => d.class !== "extension-unknown")
     .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+  /**
+   * Two kinds of layer, split by what they ARE rather than by a scope flag.
+   *
+   * A transition notice exists only to announce a change - entering realtime,
+   * switching model mid-conversation. There is no steady state for it to describe,
+   * so it never appears in an ordinary turn. Every other layer describes
+   * configuration or context and renders when its snapshot first appears or
+   * changes.
+   *
+   * Note what this is NOT: "ships every turn" versus "sometimes". Sections are
+   * diff-rendered, so an unchanged layer of either kind sends nothing.
+   */
+  const TRANSITION_ONLY = new Set(["realtime", "model-switch"]);
+  const stateRows = rows.filter(d => !TRANSITION_ONLY.has(d.id));
+  const transitionRows = rows.filter(d => TRANSITION_ONLY.has(d.id));
   const openDescriptor = rows.find(d => d.id === openLayerId) ?? null;
 
   useEffect(() => {
@@ -402,7 +418,7 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
       )}
 
       <ul className="codex-set-prompt__rows">
-        {rows.map(descriptor => (
+        {stateRows.map(descriptor => (
           <PromptLayerRow
             key={descriptor.id}
             descriptor={descriptor}
@@ -415,6 +431,35 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
           />
         ))}
       </ul>
+
+      {/*
+        Kept in the list rather than hidden, because a user auditing their prompt
+        needs to know these exist. They are separated because they are a different
+        kind of thing: a notice about a change, not a description of state.
+      */}
+      {transitionRows.length > 0 && (
+        <>
+          <div className="row codex-set-prompt__group">
+            <strong>{t("codexSet.group.transition")}</strong>
+          </div>
+          <p className="muted small">{t("codexSet.group.transitionDesc")}</p>
+          <ul className="codex-set-prompt__rows">
+            {transitionRows.map(descriptor => (
+              <PromptLayerRow
+                key={descriptor.id}
+                descriptor={descriptor}
+                toggle={snapshot?.toggles.find(s => s.id === descriptor.id)}
+                bytes={layerText?.layers?.[descriptor.id]?.bytes ?? null}
+                transitionOnly
+                busy={busyId === descriptor.id}
+                writesRefused={snapshot?.readable === false}
+                onToggle={(id, enabled) => { void onToggle(id, enabled); }}
+                onOpen={setOpenLayerId}
+              />
+            ))}
+          </ul>
+        </>
+      )}
 
       {/*
         Third-party extension layers cannot be enumerated (devlog 001 class E), so
@@ -571,6 +616,18 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
           seed={editing === "new" ? presetSeed : null}
           others={snapshot.custom}
           busy={busyId !== null}
+          navigation={editing !== "new" && snapshot.custom.length > 1 ? {
+            position: snapshot.custom.findIndex(l => l.id === editing) + 1,
+            total: snapshot.custom.length,
+            onPrev: () => {
+              const i = snapshot.custom.findIndex(l => l.id === editing);
+              if (i > 0) setEditing(snapshot.custom[i - 1]!.id);
+            },
+            onNext: () => {
+              const i = snapshot.custom.findIndex(l => l.id === editing);
+              if (i >= 0 && i < snapshot.custom.length - 1) setEditing(snapshot.custom[i + 1]!.id);
+            },
+          } : undefined}
           onSave={saveDraft}
           onClose={() => { setEditing(null); setPresetSeed(null); }}
         />

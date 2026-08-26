@@ -98,12 +98,18 @@ function row(container: HTMLElement, id: string): HTMLElement | null {
   return container.querySelector("[data-layer-id=\"" + id + "\"]");
 }
 
-test("1. every inventory entry renders a row, in assembly order", async () => {
+test("1. every inventory entry renders a row, state layers before transition notices", async () => {
   stubRoutes(() => json(snapshot()));
   const { container, root } = await mount();
   const rendered = [...container.querySelectorAll("[data-layer-id]")].map(el => el.getAttribute("data-layer-id"));
-  // Assembly order, so the list reads the way the prompt is built.
-  expect(rendered).toEqual(INVENTORY.map(d => d.id));
+  // Two groups, each in assembly order: state layers first, then the notices that
+  // only fire on a change. Every layer appears exactly once - a split that drops
+  // one is worse than no split.
+  const transition = ["realtime", "model-switch"];
+  const state = INVENTORY.map(d => d.id).filter(id => !transition.includes(id));
+  expect(rendered.slice(0, state.length)).toEqual(state);
+  expect(rendered.slice(state.length).slice().sort()).toEqual(transition.slice().sort());
+  expect(new Set(rendered).size).toBe(rendered.length);
   await act(async () => { root.unmount(); });
 });
 

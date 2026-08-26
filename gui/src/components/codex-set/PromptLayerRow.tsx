@@ -25,6 +25,7 @@ export default function PromptLayerRow({
   descriptor,
   toggle,
   bytes,
+  transitionOnly = false,
   busy,
   writesRefused,
   onToggle,
@@ -34,6 +35,8 @@ export default function PromptLayerRow({
   toggle: ToggleStateDto | undefined;
   /** Measured size of what this layer actually sent, when known. */
   bytes: number | null;
+  /** A notice about a change has no steady state to be "on" in. */
+  transitionOnly?: boolean;
   busy: boolean;
   writesRefused: boolean;
   onToggle: (id: string, enabled: boolean) => void;
@@ -48,6 +51,15 @@ export default function PromptLayerRow({
 
   return (
     <li className="codex-set-prompt__row" data-layer-id={descriptor.id} data-layer-class={descriptor.class}>
+      {/*
+        The CANONICAL assembly index, gaps included. Renumbering per visual group
+        would invent an order the runtime does not have: these positions come from
+        world_state.rs and are not user-reorderable, which is also why there is no
+        drag handle here.
+      */}
+      <span className="codex-set-prompt__pos" aria-hidden="true">
+        {descriptor.order === null ? "\u00b7" : descriptor.order + 1}
+      </span>
       <button
         type="button"
         className="link-btn codex-set-prompt__name"
@@ -107,7 +119,12 @@ export default function PromptLayerRow({
       ) : (
         // base and runtime-conditional: no off-switch exists anywhere in Codex.
         <span className="codex-set-prompt__note codex-set-prompt__note--locked">
-          {t("codexSet.row.alwaysOn")}
+          {/*
+            "Always on" is false for a transition notice: it is not on, it fires.
+            Reusing the locked label would tell the user this text is in every
+            prompt when it appears only at a change.
+          */}
+          {transitionOnly ? t("codexSet.row.onChange") : t("codexSet.row.alwaysOn")}
         </span>
       )}
     </li>
