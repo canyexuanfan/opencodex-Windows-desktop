@@ -34,8 +34,15 @@ export default function PresetPicker({
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
+  // A disabled picker must not stay expanded from a previous state. Derived
+  // during render rather than reset in an effect: an effect costs an extra
+  // render pass with the menu still open, and React Compiler flags resetting
+  // state from a prop change. `open` remains the user's intent; this is what
+  // gets rendered.
+  const expanded = open && !disabled;
+
   useEffect(() => {
-    if (!open) return;
+    if (!expanded) return;
     const onDown = (event: Event) => {
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     };
@@ -46,10 +53,7 @@ export default function PresetPicker({
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open]);
-
-  // A disabled picker must not stay expanded from a previous state.
-  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  }, [expanded]);
 
   const choose = (run: () => void) => {
     // Close first: the editor opens over this, and leaving the list expanded
@@ -79,13 +83,13 @@ export default function PresetPicker({
       <button
         type="button"
         className="btn btn-sm codex-set-custom__add"
-        aria-expanded={open}
+        aria-expanded={expanded}
         disabled={disabled}
         onClick={() => setOpen(value => !value)}
       >
         {t("codexSet.custom.add")}
       </button>
-      {open && (
+      {expanded && (
         <div className="codex-set-preset__menu">
           <button
             type="button"
