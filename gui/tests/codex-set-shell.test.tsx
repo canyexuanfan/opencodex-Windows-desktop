@@ -281,11 +281,18 @@ test("10. a stale-revision 409 re-reads instead of retrying blindly", async () =
   // Exactly one write attempt: a blind retry would overwrite whatever moved the file.
   expect(calls.filter(c => c.method === "PUT")).toHaveLength(1);
   expect(gets).toBeGreaterThan(1);
-  // The re-read must be INSTALLED, not merely issued: a refresh whose result is
-  // discarded leaves the user looking at the revision that was just refused.
-  const lastGet = calls.filter(c => c.method === "GET").length;
-  expect(lastGet).toBe(gets);
   expect(container.querySelector("[role=\"alert\"]")).not.toBeNull();
+
+  // The re-read must be INSTALLED, not merely issued. Counting GETs cannot show
+  // that: a refresh whose payload is discarded issues the same request. The only
+  // proof is the NEXT write carrying the refreshed revision, which is exactly what
+  // the user needs for their retry to land.
+  await act(async () => {
+    (container.querySelector("input[role=\"switch\"]") as HTMLInputElement).click();
+  });
+  const puts = calls.filter(c => c.method === "PUT");
+  expect(puts).toHaveLength(2);
+  expect((puts[1]!.body as { revision: string }).revision).toBe("sha256:fresh");
   await act(async () => { root.unmount(); });
 });
 
