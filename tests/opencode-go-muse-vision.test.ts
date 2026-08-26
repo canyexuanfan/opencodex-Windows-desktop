@@ -16,6 +16,7 @@ import type { OcxProviderConfig } from "../src/types";
 
 const MUSE_MODEL = "muse-spark-1.2-contributor";
 
+/** Seeded OpenCode Go provider config for the Muse Spark vision assertions. */
 function opencodeGo(): OcxProviderConfig {
   const entry = getProviderRegistryEntry("opencode-go");
   if (!entry) throw new Error("missing opencode-go registry fixture");
