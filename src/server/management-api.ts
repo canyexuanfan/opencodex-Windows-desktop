@@ -69,6 +69,7 @@ import { handleOauthAccountRoutes } from "./management/oauth-account-routes";
 import { handleComboRoutes } from "./management/combo-routes";
 import { handleSystemRoutes } from "./management/system-routes";
 import { handleSidebarRoutes } from "./management/sidebar-routes";
+import { handleCodexPromptRoutes } from "./management/codex-prompt-routes";
 import { handleIntegrationRoutes } from "./management/integration-routes";
 import { handleNativeIntegrationRoutes } from "./management/native-integration-routes";
 import type { ManagementContext } from "./management/context";
@@ -227,6 +228,7 @@ export async function handleManagementAPI(
     ??     (await handleIntegrationRoutes(ctx))
     ??     (await handleNativeIntegrationRoutes(ctx))
     ??     (await handleAgentSettingsRoutes(ctx))
+    ??     (await handleCodexPromptRoutes(ctx))
     ??     (await handleOauthAccountRoutes(ctx))
     ??     (await handleComboRoutes(ctx))
     ??     (await handleSystemRoutes(ctx))
