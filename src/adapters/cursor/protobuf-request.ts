@@ -967,12 +967,15 @@ function buildPreparedCursorRunRequest(
         displayName: request.modelId,
         displayNameShort: request.modelId,
         aliases: [],
+        ...(request.maxMode === true ? { maxMode: true } : {}),
       }),
     } : {}),
-    ...(requestedModelParameters.length > 0 ? {
+    ...(requestedModelParameters.length > 0 || request.maxMode === true ? {
       requestedModel: create(RequestedModelSchema, {
         modelId: request.modelId,
-        maxMode: false,
+        // Max Mode must be raised on BOTH RequestedModel and ModelDetails; missing either
+        // can invalid_argument upstream (devlog 260826 070).
+        maxMode: request.maxMode === true,
         parameters: requestedModelParameters.map(parameter =>
           create(RequestedModel_ModelParameterbytesSchema, parameter)),
       }),
