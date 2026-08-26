@@ -223,7 +223,7 @@ test("7. the timing copy promises new sessions, not an immediate or restarted ap
 test("8. the five switches come from the inventory, one per config-toggle row", async () => {
   stubRoutes(() => json(snapshot()));
   const { container, root } = await mountPrompt();
-  const switches = container.querySelectorAll("input[role=\"switch\"]");
+  const switches = container.querySelectorAll("button[role=\"switch\"]");
   expect(switches).toHaveLength(5);
   const text = container.textContent ?? "";
   expect(text).toContain("include_apps_instructions");
@@ -250,7 +250,7 @@ test("9. toggling PUTs once with the current revision", async () => {
     return json(snapshot());
   });
   const { container, root } = await mountPrompt();
-  const first = container.querySelector("input[role=\"switch\"]") as HTMLInputElement;
+  const first = container.querySelector("button[role=\"switch\"]") as HTMLButtonElement;
   await act(async () => {
     first.click();
   });
@@ -276,7 +276,7 @@ test("10. a stale-revision 409 re-reads instead of retrying blindly", async () =
     return json(snapshot({ revision: gets > 1 ? "sha256:fresh" : "sha256:one" }));
   });
   const { container, root } = await mountPrompt();
-  const first = container.querySelector("input[role=\"switch\"]") as HTMLInputElement;
+  const first = container.querySelector("button[role=\"switch\"]") as HTMLButtonElement;
   await act(async () => {
     first.click();
   });
@@ -290,7 +290,7 @@ test("10. a stale-revision 409 re-reads instead of retrying blindly", async () =
   // proof is the NEXT write carrying the refreshed revision, which is exactly what
   // the user needs for their retry to land.
   await act(async () => {
-    (container.querySelector("input[role=\"switch\"]") as HTMLInputElement).click();
+    (container.querySelector("button[role=\"switch\"]") as HTMLButtonElement).click();
   });
   const puts = calls.filter(c => c.method === "PUT");
   expect(puts).toHaveLength(2);
@@ -302,7 +302,7 @@ test("11. configExists false leaves the switches live, not disabled", async () =
   // First run: the file does not exist yet and the first write creates it.
   stubRoutes(() => json(snapshot({ configExists: false })));
   const { container, root } = await mountPrompt();
-  const switches = [...container.querySelectorAll("input[role=\"switch\"]")] as HTMLInputElement[];
+  const switches = [...container.querySelectorAll("button[role=\"switch\"]")] as HTMLButtonElement[];
   expect(switches).toHaveLength(5);
   for (const input of switches) expect(input.disabled).toBe(false);
   await act(async () => { root.unmount(); });
@@ -315,14 +315,14 @@ test("a failed load is visible, not an empty settled list", async () => {
   stubRoutes(() => new Response("nope", { status: 500 }));
   const { container, root } = await mountPrompt();
   expect(container.querySelector("[role=\"alert\"]")).not.toBeNull();
-  expect(container.querySelectorAll("input[role=\"switch\"]")).toHaveLength(0);
+  expect(container.querySelectorAll("button[role=\"switch\"]")).toHaveLength(0);
   await act(async () => { root.unmount(); });
 });
 test("an unreadable config refuses writes and says so", async () => {
   stubRoutes(() => json(snapshot({ readable: false })));
   const { container, root } = await mountPrompt();
   expect(container.querySelector("[role=\"alert\"]")).not.toBeNull();
-  const switches = [...container.querySelectorAll("input[role=\"switch\"]")] as HTMLInputElement[];
+  const switches = [...container.querySelectorAll("button[role=\"switch\"]")] as HTMLButtonElement[];
   for (const input of switches) expect(input.disabled).toBe(true);
   await act(async () => { root.unmount(); });
 });
