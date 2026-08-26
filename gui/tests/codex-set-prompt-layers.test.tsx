@@ -277,7 +277,11 @@ test("11. a cold load shows the skeleton; a refresh keeps the rows visible", asy
   // The first read is held open, so the cold state is actually observed rather than
   // skipped past by an immediately-resolving stub.
   let release: (() => void) | null = null;
-  globalThis.fetch = (async () => {
+  // The panel now makes TWO requests on mount: the snapshot and the size probe.
+  // Only the snapshot is held open; the probe answers immediately so this measures
+  // the cold snapshot state rather than deadlocking on the probe.
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input).includes("/text")) return json({ ok: true, layers: {} });
     await new Promise<void>(resolve => { release = resolve; });
     return json(snapshot());
   }) as typeof fetch;

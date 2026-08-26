@@ -24,6 +24,7 @@ import { LAYER_LABEL_KEYS } from "./prompt-layer-copy";
 export default function PromptLayerRow({
   descriptor,
   toggle,
+  bytes,
   busy,
   writesRefused,
   onToggle,
@@ -31,6 +32,8 @@ export default function PromptLayerRow({
 }: {
   descriptor: LayerDescriptorDto;
   toggle: ToggleStateDto | undefined;
+  /** Measured size of what this layer actually sent, when known. */
+  bytes: number | null;
   busy: boolean;
   writesRefused: boolean;
   onToggle: (id: string, enabled: boolean) => void;
@@ -54,6 +57,17 @@ export default function PromptLayerRow({
       </button>
 
       {descriptor.key && <code className="codex-set-prompt__key">{descriptor.key}</code>}
+
+      {/*
+        Weight, shown where the decision happens. This is a prompt-budget page: a
+        layer that costs 15 KB and one that costs 300 bytes should not look
+        identical while the user decides which to keep.
+      */}
+      {bytes !== null && bytes > 0 && (
+        <span className="codex-set-prompt__bytes" title={t("codexSet.dialog.sourceBytes", { bytes })}>
+          {bytes >= 1024 ? Math.round(bytes / 1024) + " KB" : bytes + " B"}
+        </span>
+      )}
 
       {descriptor.class === "config-toggle" ? (
         // The dashboard's switch is a button with a knob, not a checkbox. A raw

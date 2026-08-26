@@ -20,7 +20,9 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 0;
+  /* D6 density: this is an operator surface with fifteen rows, not a settings page
+     with three. Consumer-app row height turned a scannable list into a scroll. */
+  padding: 7px 0;
   border-bottom: 1px solid var(--border);
 }
 
@@ -31,6 +33,20 @@
 .codex-set-prompt__name {
   flex: 0 0 auto;
   text-align: left;
+}
+
+/* A row the user can act on carries more weight than one that only reports. */
+.codex-set-prompt__row[data-layer-class="config-toggle"] .codex-set-prompt__name {
+  font-weight: 500;
+}
+
+.codex-set-prompt__bytes {
+  flex: 0 0 auto;
+  min-width: 48px;
+  text-align: right;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
 }
 
 .codex-set-prompt__key {

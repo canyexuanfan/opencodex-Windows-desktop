@@ -311,7 +311,10 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
   const openDescriptor = rows.find(d => d.id === openLayerId) ?? null;
 
   useEffect(() => {
-    if (openLayerId === null || layerText !== null) return;
+    // Fetch on panel mount, not on first dialog open: size is what a user needs to
+    // DECIDE with, and a prompt-budget page that hides which layer costs 15 KB is
+    // asking them to guess.
+    if (layerText !== null) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -324,7 +327,7 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [openLayerId, layerText, apiBase]);
+  }, [layerText, apiBase]);
 
   return (
     <div className="panel codex-set-prompt">
@@ -390,6 +393,7 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
             key={descriptor.id}
             descriptor={descriptor}
             toggle={snapshot?.toggles.find(s => s.id === descriptor.id)}
+            bytes={layerText?.layers?.[descriptor.id]?.bytes ?? null}
             busy={busyId === descriptor.id}
             writesRefused={snapshot?.readable === false}
             onToggle={(id, enabled) => { void onToggle(id, enabled); }}
