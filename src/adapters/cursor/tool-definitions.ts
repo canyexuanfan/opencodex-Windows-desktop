@@ -663,7 +663,7 @@ export function buildCursorToolGuidanceSystemNote(
       ? "Your tool list may display it under a longer `mcp_opencodex-responses_shell_command` / `mcp_opencodex-responses_exec_command` name; those are the SAME tool — call whichever your list shows, and do not comment on the naming difference to the user."
       : undefined,
     hasBareExec
-      ? `Prefer the Codex shell bridge over Cursor-native Shell/Read. If a Cursor-native file read, directory listing, grep, or shell operation is rejected, continue with the listed catalog tool ${shellBridgeLabel}.`
+      ? `NEVER attempt Cursor-native Shell, Read, Grep, List, or any tool not in the catalog above — they are not executed locally in this environment and every attempt wastes a turn and can stall the session. ${shellBridgeLabel} is the ONLY shell surface; go to it directly on the FIRST attempt, never as a fallback after probing a native tool. Do not narrate switching surfaces ("native is blocked, using the bridge instead") — there is exactly one surface.`
       : undefined,
     hostShellNote,
     "Cursor product features (Chronicle, screen recording, Notes, Plans, background agents) are available only if this turn's catalog lists a matching tool; do not offer or promise them otherwise.",
@@ -687,7 +687,7 @@ export function buildCursorToolGuidanceSystemNote(
       : undefined,
     "Do not count or report a tool call unless a tool result was actually returned.",
     hasBareExec
-      ? `If a Cursor-native file read, directory listing, grep, or shell operation is rejected by the runtime, use ${shellBridgeLabel} with an equivalent host-shell-safe command (POSIX: \`cat\`/\`ls\`/\`rg\`; Windows PowerShell: \`Get-Content\`/\`Get-ChildItem\`/\`Select-String\`). For file edits, use ${structuredEditNames.length > 0 ? `the structured edit tools (${quotedNames(structuredEditNames)}) or ` : ""}\`apply_patch\` when available.`
+      ? `For every file read, directory listing, grep, or shell operation use ${shellBridgeLabel} directly with host-shell-safe commands (POSIX: \`cat\`/\`ls\`/\`rg\`; Windows PowerShell: \`Get-Content\`/\`Get-ChildItem\`/\`Select-String\`). For file edits, use ${structuredEditNames.length > 0 ? `the structured edit tools (${quotedNames(structuredEditNames)}) or ` : ""}\`apply_patch\` when available.`
       : undefined,
   ].filter((note): note is string => typeof note === "string");
   return notes.join(" ");

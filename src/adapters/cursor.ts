@@ -163,7 +163,19 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
             || activeRequest.contextUsageStoreCheckpoints === false
             || !lastTransport?.captured
             || lastTransport.captured.byteLength === 0
-          ) return;
+          ) {
+            // Refusal diagnostics (devlog 260826 050/080): name the exact guard so a live
+            // missing_ref chain can be attributed without instrumented rebuilds.
+            debugProviderDiagnostic("cursor", "checkpoint-commit-refused", {
+              replayUnsafe,
+              emittedClientTool,
+              capturedAfterClientTool,
+              externalModel: isCursorExternalWireModel(activeRequest.modelId),
+              storeCheckpoints: activeRequest.contextUsageStoreCheckpoints !== false,
+              capturedBytes: lastTransport?.captured?.byteLength ?? 0,
+            });
+            return;
+          }
           const previousRef = _parsed._providerContinuation?.cursor?.checkpointRef;
           const coveredMessageCount = _parsed.context.messages.length;
           const checkpointRef = commitCursorCheckpoint({
