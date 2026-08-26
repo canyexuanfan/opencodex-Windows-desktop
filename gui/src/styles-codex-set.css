@@ -306,3 +306,48 @@
   font-size: 11px;
   color: var(--muted);
 }
+
+/* ---------------------------------------------------------------------------
+   Base-prompt variant picker.
+   Mirrors the custom-layer dialog nav rather than inventing a second vocabulary:
+   both are "move between things without leaving the editor".
+   --------------------------------------------------------------------------- */
+.codex-set-base-dialog__nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+/* Tabular so the indicator does not jitter as the position changes. */
+.codex-set-base-dialog__pos {
+  min-width: 44px;
+  text-align: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+/*
+  The default slot. Bordered rather than plain so it reads as a CARD the user has
+  landed on, not as an empty state - it is a real choice, and the one a fresh
+  install is already using.
+*/
+.codex-set-base-dialog__default {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2, transparent);
+}
+
+/*
+  A horizontal drag inside the dialog is a swipe, so the browser must not also
+  claim it for its own gesture handling. Vertical panning stays with the browser:
+  a long prompt body has to remain scrollable.
+*/
+.codex-set-base-dialog {
+  touch-action: pan-y;
+}

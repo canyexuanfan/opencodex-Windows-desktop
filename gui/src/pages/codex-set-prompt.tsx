@@ -10,6 +10,7 @@ import type { TKey } from "../i18n/en";
 import CustomLayerRow from "../components/codex-set/CustomLayerRow";
 import CustomLayerDialog from "../components/codex-set/CustomLayerDialog";
 import PresetPicker from "../components/codex-set/PresetPicker";
+import BaseVariantDialog, { type BaseSelectionDto, type BaseVariantDto } from "../components/codex-set/BaseVariantDialog";
 import { MAX_LAYERS, moveLayer, newLayerId, type Draft } from "../components/codex-set/custom-layer-state";
 
 /**
@@ -78,6 +79,14 @@ export interface PromptSnapshotDto {
   extensionLayersEnumerable: boolean;
   custom: CustomLayerDto[];
   modelInstructionsFile: string | null;
+  baseVariants: BaseVariantDto[];
+  /**
+   * Three-valued. `external` is NOT folded into `default`: the key being set to a file
+   * we did not write means the base prompt IS replaced, and showing that as "Codex's own
+   * prompt" would be the panel lying about what the model reads.
+   */
+  baseSelection: BaseSelectionDto;
+  maxBaseVariants: number;
 }
 
 /**
@@ -183,6 +192,46 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
     }
   };
 
+  /**
+   * One writer for all three base-variant verbs.
+   *
+   * They share a failure contract worth writing once: a stale revision means another
+   * tab or a hand edit moved the file, so re-read rather than retry - a retry would
+   * overwrite whatever moved it.
+   */
+  const writeBase = async (path: string, payload: Record<string, unknown>): Promise<void> => {
+    if (!snapshot || busyId !== null) return;
+    setBusyId("base");
+    setError("");
+    try {
+      const res = await fetch(apiBase + path, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...payload, revision: snapshot.revision }),
+      });
+      const body = await res.json() as { ok?: boolean; code?: string; message?: string; snapshot?: PromptSnapshotDto };
+      if (!res.ok || !body.ok || !body.snapshot) {
+        if (body.code === "stale_revision") {
+          resource.refresh();
+          setError(t("codexSet.prompt.staleRevision"));
+          return;
+        }
+        setError(body.message ?? t("codexSet.prompt.writeFailed"));
+        resource.refresh();
+        return;
+      }
+      setClientResourceData(resourceKey, body.snapshot);
+      // The base prompt is a prompt layer like any other, so the measured text that
+      // described the old one is no longer about this configuration.
+      invalidateLayerText();
+      setLayerText(null);
+    } catch {
+      setError(t("codexSet.prompt.writeFailed"));
+      resource.refresh();
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   /**
    * Full-replacement write. The route is shaped that way on purpose: order is
@@ -471,6 +520,19 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
             busy={busyId === descriptor.id}
             writesRefused={snapshot?.readable === false}
             onToggle={(id, enabled) => { void onToggle(id, enabled); }}
+            onSelectBase={descriptor.class === "base" && snapshot ? (useDefault => {
+              // Turning it OFF has to pick something concrete. With no variant yet the
+              // switch cannot act, so it opens the picker instead of writing a key that
+              // would name a file the user has not written.
+              if (useDefault) {
+                void writeBase("/api/codex-prompt/base/select", { kind: "default" });
+                return;
+              }
+              const first = snapshot.baseVariants[0];
+              if (!first) { setOpenLayerId(descriptor.id); return; }
+              void writeBase("/api/codex-prompt/base/select", { kind: "variant", id: first.id });
+            }) : undefined}
+            baseSelection={snapshot?.baseSelection}
             onOpen={setOpenLayerId}
           />
         ))}
@@ -515,6 +577,20 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
       )}
 
       {openDescriptor && (
+        // The base row opens the VARIANT picker, not the read-only dialog: it is the
+        // one layer with something to choose between.
+        openDescriptor.class === "base" && snapshot ? (
+          <BaseVariantDialog
+            variants={snapshot.baseVariants}
+            selection={snapshot.baseSelection}
+            maxVariants={snapshot.maxBaseVariants}
+            busy={busyId !== null || !snapshot.readable}
+            onSelect={sel => { void writeBase("/api/codex-prompt/base/select", sel); }}
+            onSave={input => { void writeBase("/api/codex-prompt/base", input); }}
+            onDelete={id => { void writeBase("/api/codex-prompt/base", { id, delete: true }); }}
+            onClose={() => setOpenLayerId(null)}
+          />
+        ) : (
         <PromptLayerDialog
           descriptor={openDescriptor}
           toggle={snapshot?.toggles.find(s => s.id === openDescriptor.id)}
@@ -523,6 +599,7 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
           onToggle={(id, enabled) => { void onToggle(id, enabled); }}
           onClose={() => setOpenLayerId(null)}
         />
+        )
       )}
 
       {/*

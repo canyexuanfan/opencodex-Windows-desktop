@@ -37,6 +37,9 @@ function snapshot(over: Record<string, unknown> = {}) {
     extensionLayersEnumerable: false,
     custom: [],
     modelInstructionsFile: null,
+    baseVariants: [],
+    baseSelection: { kind: "default" as const },
+    maxBaseVariants: 2,
     ...over,
   };
 }
@@ -141,8 +144,14 @@ test("a transition notice is never labelled always-on", async () => {
     expect(note!.textContent, id).not.toContain("Always on");
   }
   // A genuinely locked layer keeps the strong label.
-  expect(container.querySelector("[data-layer-id=\"base-instructions\"] .codex-set-prompt__note")!.textContent)
-    .toContain("Always on");
+  // `plugins` rather than `base-instructions`: base now carries a switch instead of a
+  // note, because the variant work gave it a real off-position. A layer with a
+  // CONDITION states the condition, so the one that still reads "Always on" has to be
+  // one with neither a switch nor a condition.
+  expect(container.querySelector("[data-layer-id=\"agents-md\"] .codex-set-prompt__note")!.textContent)
+    .not.toContain("Always on");
+  expect(container.querySelector("[data-layer-id=\"tools\"] .codex-set-prompt__note")!.textContent)
+    .toContain("Configured under");
   await act(async () => { root.unmount(); });
 });
 
