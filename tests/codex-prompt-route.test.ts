@@ -7,7 +7,7 @@
  * fixture changed does not prove nothing else did.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleManagementAPI } from "../src/server/management-api";
@@ -23,6 +23,7 @@ interface Fixture {
   storePath: string;
   decoyConfig: string;
   decoyStore: string;
+  decoyHome: string;
 }
 
 function fixture(configBytes?: string, storeBytes?: string): Fixture {
@@ -37,7 +38,7 @@ function fixture(configBytes?: string, storeBytes?: string): Fixture {
   const decoyStore = join(decoy, "opencodex-prompt.json");
   writeFileSync(decoyConfig, "model = \"sentinel\"\n", "utf8");
   writeFileSync(decoyStore, "{\"layers\":[]}", "utf8");
-  return { configPath, storePath, decoyConfig, decoyStore };
+  return { configPath, storePath, decoyConfig, decoyStore, decoyHome: decoy };
 }
 
 function storeJson(layers: unknown[]): string {
@@ -52,7 +53,12 @@ function read(path: string): string | null {
   return existsSync(path) ? readFileSync(path, "utf8") : null;
 }
 
-/** Sentinels must survive every verb: a route that wrote elsewhere is a route bug. */
+/**
+ * Sentinels must survive every verb. The decoy is installed as CODEX_HOME for the
+ * duration of each request, so this is not a vacuous check: a regression that
+ * dropped `codexPromptPaths` would fall back to CODEX_HOME and land here, on a
+ * temp directory, instead of on the developer's real ~/.codex.
+ */
 function expectDecoyUntouched(fx: Fixture): void {
   expect(read(fx.decoyConfig)).toBe("model = \"sentinel\"\n");
   expect(read(fx.decoyStore)).toBe("{\"layers\":[]}");
@@ -72,9 +78,21 @@ async function call(
     headers,
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  const res = await handleManagementAPI(req, url, config, {
-    codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath },
-  });
+  // The decoy is CODEX_HOME for the duration of the call. Without this the
+  // sentinel assertion proves nothing: a route that ignored the injected paths
+  // would write to the developer's real home and both sentinels would still
+  // match. With it, that same regression lands on the decoy and is caught.
+  const previousHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = fx.decoyHome;
+  let res: Response | null;
+  try {
+    res = await handleManagementAPI(req, url, config, {
+      codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath },
+    });
+  } finally {
+    if (previousHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousHome;
+  }
   if (!res) return { status: 404, body: null, routed: false };
   const raw = await res.text();
   const parsed: unknown = raw ? JSON.parse(raw) : null;
@@ -445,3 +463,139 @@ describe("dispatch and safety", () => {
   });
 });
 
+describe("020 coverage completions", () => {
+  test("11. an unreadable config refuses every mutation by name", async () => {
+    // chmod 000 is not honored for root, and Windows ignores the mode entirely.
+    // A directory in place of the file is unreadable on every platform we ship.
+    const root = mkdtempSync(join(tmpdir(), "ocx-prompt-unreadable-"));
+    const decoy = mkdtempSync(join(tmpdir(), "ocx-prompt-decoy-"));
+    roots.push(root, decoy);
+    const configPath = join(root, "config.toml");
+    mkdirSync(configPath);
+    const fx: Fixture = {
+      configPath,
+      storePath: join(root, "opencodex-prompt.json"),
+      decoyConfig: join(decoy, "config.toml"),
+      decoyStore: join(decoy, "opencodex-prompt.json"),
+      decoyHome: decoy,
+    };
+    writeFileSync(fx.decoyConfig, "model = \"sentinel\"\n", "utf8");
+    writeFileSync(fx.decoyStore, "{\"layers\":[]}", "utf8");
+
+    const get = await call("GET", "/api/codex-prompt", fx);
+    expect(get.body.readable).toBe(false);
+
+    const toggle = await call("PUT", "/api/codex-prompt/toggle", fx, {
+      id: "apps", enabled: false, revision: get.body.revision,
+    });
+    expect(toggle.status).toBe(409);
+    expect(toggle.body.code).toBe("config_unreadable");
+
+    const custom = await call("PUT", "/api/codex-prompt/custom", fx, {
+      revision: get.body.revision,
+      layers: [{ id: "abc123", title: "T", body: "B", enabled: true }],
+    });
+    expect(custom.status).toBe(409);
+    expect(custom.body.code).toBe("config_unreadable");
+
+    const adopt = await call("POST", "/api/codex-prompt/adopt", fx, { confirm: true, revision: get.body.revision });
+    expect(adopt.status).toBe(409);
+    expect(adopt.body.code).toBe("config_unreadable");
+
+    const repair = await call("POST", "/api/codex-prompt/repair", fx, { confirm: true, revision: get.body.revision });
+    expect(repair.status).toBe(409);
+    expect(repair.body.code).toBe("config_unreadable");
+  });
+
+  test("12b. a hostile Origin is rejected before the route runs", async () => {
+    const fx = fixture("");
+    const url = new URL("http://127.0.0.1:10100/api/codex-prompt/toggle");
+    const req = new Request(url, {
+      method: "PUT",
+      headers: {
+        host: "127.0.0.1:10100",
+        origin: "http://evil.example",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ id: "apps", enabled: false, revision: "sha256:x" }),
+    });
+    const res = await handleManagementAPI(req, url, config, {
+      codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath },
+    });
+    expect(res).not.toBeNull();
+    expect(res!.status).toBeGreaterThanOrEqual(400);
+    expect(read(fx.configPath)).toBe("");
+  });
+
+  test("9c. adopt refuses a stale revision", async () => {
+    const fx = fixture("developer_instructions = \"Answer in Korean.\"\n");
+    const res = await call("POST", "/api/codex-prompt/adopt", fx, { confirm: true, revision: "sha256:stale" });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe("stale_revision");
+    expect(existsSync(fx.storePath)).toBe(false);
+  });
+
+  test("17c. journal-present is reported by GET, which writes nothing", async () => {
+    const fx = fixture(ownedConfig("Be brief."), storeJson([]));
+    const journal = fx.storePath.replace(/\.json$/, "") + ".journal";
+    writeFileSync(journal, "{}", "utf8");
+    const before = read(fx.configPath);
+    const res = await call("GET", "/api/codex-prompt", fx);
+    expect(res.body.drift).toBe("journal-present");
+    expect(read(fx.configPath)).toBe(before);
+    expect(read(journal)).toBe("{}");
+  });
+
+  test("20d. each write error keeps its exact status, not merely a 4xx", async () => {
+    // A range assertion would still pass if unknown_layer silently became a 409.
+    const { WRITE_ERROR_STATUS_FOR_TESTS } = await import("../src/server/management/codex-prompt-routes");
+    expect(WRITE_ERROR_STATUS_FOR_TESTS).toEqual({
+      config_unreadable: 409,
+      stale_revision: 409,
+      developer_instructions_not_owned: 409,
+      unknown_layer: 400,
+      store_unreadable: 409,
+      invalid_characters: 400,
+      write_superseded: 409,
+      recovery_required: 409,
+      locked: 409,
+    });
+  });
+
+  test("malformed JSON is a 400, never an empty object", async () => {
+    // Swallowing a parse error into {} made an invalid adopt return a successful
+    // PREVIEW and an invalid custom return stale_revision.
+    const fx = fixture("developer_instructions = \"Answer in Korean.\"\n");
+    for (const path of ["/api/codex-prompt/toggle", "/api/codex-prompt/custom"]) {
+      const url = new URL("http://127.0.0.1:10100" + path);
+      const req = new Request(url, {
+        method: "PUT",
+        headers: { host: "127.0.0.1:10100", "content-type": "application/json" },
+        body: "{not json",
+      });
+      const res = await handleManagementAPI(req, url, config, {
+        codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath },
+      });
+      expect(res!.status).toBe(400);
+    }
+    const url = new URL("http://127.0.0.1:10100/api/codex-prompt/adopt");
+    const req = new Request(url, {
+      method: "POST",
+      headers: { host: "127.0.0.1:10100", "content-type": "application/json" },
+      body: "{not json",
+    });
+    const res = await handleManagementAPI(req, url, config, {
+      codexPromptPaths: { configPath: fx.configPath, storePath: fx.storePath },
+    });
+    expect(res!.status).toBe(400);
+  });
+
+  test("an unrecognized repair mode is refused rather than treated as adopt", async () => {
+    const fx = fixture(MARKER + "\ndeveloper_instructions = 'reshaped'\n");
+    const res = await call("POST", "/api/codex-prompt/repair", fx, {
+      confirm: true, mode: "reset", revision: await revision(fx),
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("invalid_body");
+  });
+});

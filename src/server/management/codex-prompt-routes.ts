@@ -20,7 +20,7 @@
  * 020 wherever the landed WP1 module moved).
  */
 import { jsonResponse } from "../auth-cors";
-import { readManagementJsonBodyOr, rethrowManagementBodyTooLarge } from "./body";
+import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 import type { ManagementContext } from "./context";
 import {
   LAYER_INVENTORY,
@@ -191,9 +191,42 @@ function revisionOf(body: Record<string, unknown>): string | null {
   return typeof body.revision === "string" && body.revision.length > 0 ? body.revision : null;
 }
 
+/**
+ * Adopt-shaped size policy, applied wherever a config value is imported as a
+ * layer. The `owned-malformed` repair branch imports through the same WP1 call
+ * as `/adopt`, so it must pass the same caps: a route that enforces a limit on
+ * one path and not the other does not have a limit.
+ *
+ * Runs AFTER the read-only preview and BEFORE any write. The value being
+ * measured lives in config.toml, so it cannot be checked before a read; both
+ * limits are UTF-8 byte length, and the composed cap measures what
+ * `composeProjection` will actually produce — the imported layer plus every
+ * already-enabled custom layer.
+ */
+function adoptCapFailure(ctx: ManagementContext, decoded: string): Response | null {
+  if (utf8Bytes(decoded) > MAX_BODY_BYTES) {
+    return fail(ctx, "body_too_large", 400, `the existing value exceeds ${MAX_BODY_BYTES} bytes`);
+  }
+  const existing = readPromptLayers(paths(ctx)).custom;
+  const composed = composeProjection([
+    { id: "adopted", title: "Imported from config.toml", body: decoded, enabled: true },
+    ...existing,
+  ]);
+  if (utf8Bytes(composed) > MAX_COMPOSED_BYTES) {
+    return fail(ctx, "composed_too_large", 400, `the composed prompt would exceed ${MAX_COMPOSED_BYTES} bytes`);
+  }
+  return null;
+}
+
+/**
+ * Malformed JSON must be a 400, never an empty object. Swallowing a parse error
+ * into `{}` made a syntactically invalid adopt or repair request return a
+ * successful PREVIEW, and an invalid custom request return `stale_revision` —
+ * two answers that describe neither the request nor the file.
+ */
 async function readBody(ctx: ManagementContext): Promise<Record<string, unknown> | null> {
   try {
-    const parsed: unknown = await readManagementJsonBodyOr(ctx.req, {});
+    const parsed: unknown = await readManagementJsonBody(ctx.req);
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
       ? parsed as Record<string, unknown>
       : null;
@@ -253,6 +286,15 @@ export async function handleCodexPromptRoutes(ctx: ManagementContext): Promise<R
   if (url.pathname === "/api/codex-prompt/adopt" && req.method === "POST") {
     const body = await readBody(ctx);
     if (!body) return fail(ctx, "invalid_body", 400, "expected a JSON object");
+    // An unreadable file must say so. Both adopt and repair inspect read-derived
+    // state before ever reaching WP1's own `config_unreadable`, so without this
+    // the user was told "nothing to adopt" about a file we could not open.
+    const readState = readPromptLayers(paths(ctx));
+    if (!readState.readable) {
+      return fail(ctx, "config_unreadable", 409, "the configuration file exists but could not be read", {
+        path: readState.configPath,
+      });
+    }
     const preview = previewAdopt(paths(ctx));
 
     if (preview.reason === "nothing_to_adopt") {
@@ -274,25 +316,8 @@ export async function handleCodexPromptRoutes(ctx: ManagementContext): Promise<R
       return fail(ctx, "invalid_characters", 400, preview.detail, { path: preview.path, line: preview.line });
     }
 
-    // The WP1 docstring mentions a cap step its implementation does not perform,
-    // so the route enforces the same limits it applies to any other body. This
-    // runs AFTER the read-only preview and BEFORE any write: the value being
-    // measured lives in config.toml, so it cannot be checked before a read, and
-    // `previewAdopt` mutates nothing. Both limits are UTF-8 byte length.
-    const decoded = preview.decodedBody ?? "";
-    if (utf8Bytes(decoded) > MAX_BODY_BYTES) {
-      return fail(ctx, "body_too_large", 400, `the existing value exceeds ${MAX_BODY_BYTES} bytes`);
-    }
-    // Composed size is what `composeProjection` will actually produce: the
-    // imported layer plus every already-enabled custom layer, not the body alone.
-    const existing = readPromptLayers(paths(ctx)).custom;
-    const composedAfterAdopt = composeProjection([
-      { id: "adopted", title: "Imported from config.toml", body: decoded, enabled: true },
-      ...existing,
-    ]);
-    if (utf8Bytes(composedAfterAdopt) > MAX_COMPOSED_BYTES) {
-      return fail(ctx, "composed_too_large", 400, `the composed prompt would exceed ${MAX_COMPOSED_BYTES} bytes`);
-    }
+    const capFailure = adoptCapFailure(ctx, preview.decodedBody ?? "");
+    if (capFailure) return capFailure;
 
     if (body.confirm !== true) {
       // Preview writes nothing, by construction: previewAdopt is a pure read.
@@ -318,6 +343,11 @@ export async function handleCodexPromptRoutes(ctx: ManagementContext): Promise<R
     if (!body) return fail(ctx, "invalid_body", 400, "expected a JSON object");
     const snapshot = readPromptLayers(paths(ctx));
     const drift = snapshot.drift;
+    if (!snapshot.readable) {
+      return fail(ctx, "config_unreadable", 409, "the configuration file exists but could not be read", {
+        path: snapshot.configPath,
+      });
+    }
     if (drift === null) return fail(ctx, "nothing_to_repair", 409, "no drift is present");
 
     const confirm = body.confirm === true;
@@ -369,6 +399,12 @@ export async function handleCodexPromptRoutes(ctx: ManagementContext): Promise<R
 
     if (drift === "owned-malformed") {
       const mode = body.mode;
+      // Whitelist, not a single-value denial: an arbitrary or missing mode used to
+      // fall through to adopt, so a client that sent `mode: "reset"` mutated the
+      // file through a verb the contract never offered.
+      if (mode !== undefined && mode !== "adopt" && mode !== "replace") {
+        return fail(ctx, "invalid_body", 400, "mode must be \"adopt\" or \"replace\"", { drift });
+      }
       if (mode === "replace") {
         // No WP1 export performs this. Writing one here would put a second write
         // path beside the journal transaction, in the one place in this unit where
@@ -395,6 +431,11 @@ export async function handleCodexPromptRoutes(ctx: ManagementContext): Promise<R
         }, 200, req, ctx.config);
       }
       if (!revision) return fail(ctx, "stale_revision", 409, "revision required");
+      // Same import, same caps. This branch reaches adoptDeveloperInstructions
+      // exactly as /adopt does, so skipping the size policy here would mean the
+      // policy is bypassable by choosing the other endpoint.
+      const capFailure = adoptCapFailure(ctx, preview.decodedBody ?? "");
+      if (capFailure) return capFailure;
       return settle(ctx, adoptDeveloperInstructions(revision, paths(ctx)));
     }
 
