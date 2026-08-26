@@ -58,6 +58,9 @@ const CURSOR_MODEL_EFFORT_TIERS: Record<string, readonly string[]> = {
   // GetUsableModels (2026-07-28) lists kimi-k3 only as effort-suffixed kimi-k3-{low,high,max};
   // the bare id returns not_found. Tiers mirror the native Kimi provider's K3 ladder.
   "kimi-k3": ["low", "high", "max"],
+  // Synthetic ultra picker variant (devlog 260826 070): same tier ladder as kimi-k3; the -1m
+  // marker is stripped before wire-id composition, so these tiers never form a wire suffix.
+  "kimi-k3-1m": ["low", "high", "max"],
   // Cursor renamed the Grok 4.5 slugs to cursor-grok-4.5-{low,medium,high} and
   // cursor-grok-4.5-{low,medium,high}-fast. The bare Fast id returns not_found.
   "grok-4.5": ["low", "medium", "high"],

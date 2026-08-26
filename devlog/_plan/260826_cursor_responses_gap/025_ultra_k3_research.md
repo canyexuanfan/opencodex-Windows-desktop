@@ -11,7 +11,7 @@ Claim ledger — status per cxc-search discipline:
 | Some models show 1M "Max Context" in Cursor table (Fable/Opus/Sonnet 5, Gemini) | verified | same (primary) |
 | Ultra = 20x usage ($400 API-agent allowance), NOT an exclusive catalog | verified | cursor.com/pricing + forum staff (primary) |
 | Max Mode currently documented for legacy request-based plans | verified | prod.cursor.com/help/ai-features/max-mode (primary) |
-| K3 1M specifically unlocked on Ultra | UNVERIFIED — user observation; no primary source; Reddit says the 1M option appeared then disappeared | reddit 2026-08 (lead) |
+| K3 1M specifically unlocked on Ultra | user-confirmed 2026-08-26 (operator saw the 1M option live in Cursor on the Ultra plan); public primary source still absent | user observation (authoritative for this deployment) + reddit lead |
 | Wire: max mode = RequestedModel.max_mode (field 2) AND ModelDetails.max_mode (field 7); missing either can invalid_argument | lead (2 impl sources) | oh-my-pi #4969, cursor-opencode-provider |
 | 1M exposure pattern: synthetic <model>-1m picker variant w/ limit.context=1M, wire sends original id + maxMode | lead | cursor-opencode-provider README |
 | In-repo: GetUsableModels ModelDetails.maxMode=true observed on 28 -fast ids (260822); no contextTokenLimit field | verified (own probe) | devlog/_plan/260822_senpi_cursor_transfer/210_maxmode.md |

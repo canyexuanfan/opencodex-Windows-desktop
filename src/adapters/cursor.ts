@@ -146,15 +146,36 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
         let completedNormally = false;
         let lastTransport: { captured?: Uint8Array } | undefined;
         let emittedClientTool = false;
+        // Ordering proof for tool-suspended checkpoints: true only when the newest captured
+        // checkpoint bytes arrived AFTER the turn emitted a client tool call, i.e. upstream
+        // serialized its suspended-on-tool-call state. Only that snapshot can safely resume
+        // with the covered-prefix + trailing-toolResult path (devlog 260826 050).
+        let capturedAfterClientTool = false;
 
         const commitCapturedCheckpoint = (activeRequest: ReturnType<typeof createCursorRequest>): void => {
+          const toolSuspendedCommit =
+            emittedClientTool
+            && capturedAfterClientTool
+            && isCursorExternalWireModel(activeRequest.modelId);
           if (
             replayUnsafe
-            || emittedClientTool
+            || (emittedClientTool && !toolSuspendedCommit)
             || activeRequest.contextUsageStoreCheckpoints === false
             || !lastTransport?.captured
             || lastTransport.captured.byteLength === 0
-          ) return;
+          ) {
+            // Refusal diagnostics (devlog 260826 050/080): name the exact guard so a live
+            // missing_ref chain can be attributed without instrumented rebuilds.
+            debugProviderDiagnostic("cursor", "checkpoint-commit-refused", {
+              replayUnsafe,
+              emittedClientTool,
+              capturedAfterClientTool,
+              externalModel: isCursorExternalWireModel(activeRequest.modelId),
+              storeCheckpoints: activeRequest.contextUsageStoreCheckpoints !== false,
+              capturedBytes: lastTransport?.captured?.byteLength ?? 0,
+            });
+            return;
+          }
           const previousRef = _parsed._providerContinuation?.cursor?.checkpointRef;
           const coveredMessageCount = _parsed.context.messages.length;
           const checkpointRef = commitCursorCheckpoint({
@@ -173,7 +194,9 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
             cursor: {
               ...(_parsed._providerContinuation?.cursor ?? {}),
               conversationId: activeRequest.conversationId,
-              checkpointUsable: true,
+              // A tool-suspended checkpoint is only usable by the immediate trailing-toolResult
+              // continuation; the request-builder guard keys on checkpointUsable=false for that.
+              checkpointUsable: !toolSuspendedCommit,
               checkpointRef,
             },
           };
@@ -183,6 +206,7 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
             checkpointRefHash: cursorCheckpointRefHash(checkpointRef),
             checkpointBytes: lastTransport.captured.byteLength,
             wireModel: activeRequest.modelId,
+            ...(toolSuspendedCommit ? { toolSuspended: true } : {}),
           });
         };
 
@@ -208,7 +232,10 @@ export function createCursorAdapter(provider: OcxProviderConfig, deps: CursorAda
               if (message.type === "done") completedNormally = true;
               if (message.type === "tool_call_end") emittedClientTool = true;
               const captured = capturedCursorCheckpointBytes(activeTransport);
-              if (captured) lastTransport = { captured };
+              if (captured) {
+                if (captured !== lastTransport?.captured) capturedAfterClientTool = emittedClientTool;
+                lastTransport = { captured };
+              }
               const events = mapCursorServerMessage(message, {
                 kv,
                 writeClient: clientMessage => {

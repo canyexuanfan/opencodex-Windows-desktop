@@ -10,6 +10,7 @@ import type {
 import { isAllowedToolChoice, namespacedToolName, toolChoiceAliases, type OcxTool, type OcxToolChoice } from "../../types";
 import type { CursorRequestMessage, CursorRequestedModelParameter, CursorRunRequest } from "./types";
 import { cursorCheckpointModelAffinityId, cursorWireModelSelection, type CursorRoutingLevel } from "./discovery";
+import { cursorUltraBaseModelId } from "./discovery";
 import { decodeCursorCallId } from "./call-id";
 import { cursorEffortSuffix, cursorRequestWireModelIdWithEffort } from "./effort-map";
 import {
@@ -189,13 +190,19 @@ function normalizeCursorModelId(modelId: string, reasoning?: string): {
   modelId: string;
   requestedModelParameters?: readonly CursorRequestedModelParameter[];
   routingLevel?: CursorRoutingLevel;
+  maxMode?: boolean;
 } {
-  const selection = cursorWireModelSelection(modelId);
+  // Synthetic ultra (-1m) picker rows resolve to their wire base with Max Mode on
+  // (devlog 260826 070); the marker never reaches the wire.
+  const ultraBase = cursorUltraBaseModelId(modelId);
+  const selection = cursorWireModelSelection(ultraBase ?? modelId);
+  const maxMode = ultraBase !== undefined ? { maxMode: true } : {};
   const id = selection.modelId;
   const suffix = cursorEffortSuffix(id, reasoning);
   if ((id === "grok-4.5-fast" || id === "grok-4.6-fast") && suffix) {
     return {
       ...selection,
+      ...maxMode,
       modelId: id.slice(0, -"-fast".length),
       requestedModelParameters: [
         { id: "effort", value: suffix },
@@ -203,7 +210,7 @@ function normalizeCursorModelId(modelId: string, reasoning?: string): {
       ],
     };
   }
-  return { ...selection, modelId: suffix ? cursorRequestWireModelIdWithEffort(id, suffix) : id };
+  return { ...selection, ...maxMode, modelId: suffix ? cursorRequestWireModelIdWithEffort(id, suffix) : id };
 }
 
 function contentPartToText(part: OcxContentPart | OcxAssistantContentPart): string | undefined {
@@ -446,6 +453,7 @@ export function createCursorRequest(
     modelId: model.modelId,
     ...(model.requestedModelParameters ? { requestedModelParameters: model.requestedModelParameters } : {}),
     ...(model.routingLevel ? { routingLevel: model.routingLevel } : {}),
+    ...(model.maxMode ? { maxMode: true } : {}),
     conversationId: resolveCursorConversationId(parsed, model.modelId, options),
     system: [...(parsed.context.systemPrompt ?? []), ...(limitNote ? [limitNote] : [])],
     messages,
@@ -453,6 +461,11 @@ export function createCursorRequest(
     ...(parsed._compactionRequest === true || parsed._contextCompactionBoundary === true ? { contextUsageReset: true } : {}),
     ...(parsed._compactionRequest === true ? { contextUsageStoreCheckpoints: false } : {}),
     ...(budget.tools.length ? { tools: budget.tools } : {}),
+    // Bare API caller (no tools, no Codex thread identity): suppress Cursor's default
+    // native tool catalog instead of paying its ~10-15K token preamble (devlog 260826 040).
+    ...(budget.tools.length === 0 && !cursorClientThreadOwner(parsed)
+      ? { suppressDefaultCursorToolCatalog: true }
+      : {}),
     ...(parsed.options.toolChoice ? { toolChoice: parsed.options.toolChoice } : {}),
     ...(parsed.options.parallelToolCalls !== undefined ? { parallelToolCalls: parsed.options.parallelToolCalls } : {}),
   };

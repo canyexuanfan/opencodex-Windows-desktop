@@ -155,6 +155,25 @@ export function cursorCodexToWireModelId(modelId: string): string {
 }
 
 /**
+ * Synthetic ultra/big-context picker marker (devlog 260826 070). A `cursor/<base>-1m` row is a
+ * picker-only variant: the wire request keeps `<base>` (plus effort suffix) and turns on Cursor
+ * Max Mode instead. Only ids listed here are treated as synthetic — a real upstream wire id that
+ * happens to end in `-1m` never collides because it will not be in this set.
+ */
+export const CURSOR_ULTRA_1M_MODEL_IDS: ReadonlySet<string> = new Set([
+  "kimi-k3-1m",
+]);
+
+const CURSOR_ULTRA_1M_SUFFIX = "-1m";
+
+/** Resolve a synthetic ultra marker id to its wire base, or undefined for ordinary ids. */
+export function cursorUltraBaseModelId(modelId: string): string | undefined {
+  const normalized = modelId.startsWith("cursor/") ? modelId.slice("cursor/".length) : modelId;
+  if (!CURSOR_ULTRA_1M_MODEL_IDS.has(normalized)) return undefined;
+  return normalized.slice(0, -CURSOR_ULTRA_1M_SUFFIX.length);
+}
+
+/**
  * Cursor-native wire models keep server-side conversation state reliably.
  * External models (gpt/claude/gemini/grok families and similar) are more brittle on resumeAction.
  */
@@ -214,9 +233,26 @@ export function filterCursorConfiguredModelsByLiveDiscovery<T extends { id: stri
   liveIds: readonly string[],
 ): T[] {
   return configured.filter(model =>
-    isCursorRouterModelId(model.id) || isCursorModelAvailableForAccount(model.id, liveIds),
+    !CURSOR_KNOWN_UNCALLABLE_MODEL_IDS.has(model.id)
+    && (
+      isCursorRouterModelId(model.id)
+      // Synthetic ultra rows ride their base model's account availability.
+      || isCursorModelAvailableForAccount(cursorUltraBaseModelId(model.id) ?? model.id, liveIds)
+    ),
   );
 }
+
+/**
+ * Models GetUsableModels advertises but whose every Run returns not_found (catalog honesty,
+ * devlog 260826_cursor_responses_gap 060). Live probes 2026-08-26: cursor/claude-opus-5 failed
+ * 100% ("Cursor Connect error not_found") while its -fast and -thinking siblings — separate
+ * wire families — succeed. Quarantined here, in the shared filter, so live, cached, stale, and
+ * static serving paths all agree. Custom user provider overrides are not routed through this
+ * canonical seed and stay untouched.
+ */
+export const CURSOR_KNOWN_UNCALLABLE_MODEL_IDS: ReadonlySet<string> = new Set([
+  "claude-opus-5",
+]);
 
 export const CURSOR_STATIC_MODELS: readonly CursorModelInfo[] = normalizeCursorModels([
   // Context windows and the model lineup mirror Cursor's public models/pricing docs plus the jawcode
@@ -245,7 +281,8 @@ export const CURSOR_STATIC_MODELS: readonly CursorModelInfo[] = normalizeCursorM
   { id: "claude-opus-4-7-fast", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
   { id: "claude-opus-4-8-fast", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
   { id: "claude-opus-4-8", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
-  { id: "claude-opus-5", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
+  // claude-opus-5 (bare) removed from the seed: GetUsableModels lists it but every Run returns
+  // not_found (quarantined via CURSOR_KNOWN_UNCALLABLE_MODEL_IDS; -fast/-thinking families stay).
   { id: "claude-opus-5-fast", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
   { id: "claude-fable-5", contextWindow: CONTEXT_200K, supportsReasoningEffort: true },
 
@@ -308,6 +345,10 @@ export const CURSOR_STATIC_MODELS: readonly CursorModelInfo[] = normalizeCursorM
   // kimi-k3: cursor.com/docs/models/kimi-k3; account-verified via GetUsableModels (2026-07-28) —
   // ships only as effort-suffixed kimi-k3-{low,high,max}, so the tier picker is exposed.
   { id: "kimi-k3", contextWindow: CONTEXT_262K, supportsReasoningEffort: true },
+  // kimi-k3-1m: synthetic ultra/Max-Mode picker variant (CURSOR_ULTRA_1M_MODEL_IDS) — wire sends
+  // kimi-k3-<effort> with maxMode=true; 1M context user-verified live on the Ultra plan
+  // (devlog 260826_cursor_responses_gap/025). inferCursorContextWindow maps "1m" ids to 1M.
+  { id: "kimi-k3-1m", contextWindow: CONTEXT_1M, supportsReasoningEffort: true },
 
   { id: "grok-4.5", contextWindow: 500_000, supportsReasoningEffort: true },
   { id: "grok-4.5-fast", contextWindow: 500_000, supportsReasoningEffort: true },

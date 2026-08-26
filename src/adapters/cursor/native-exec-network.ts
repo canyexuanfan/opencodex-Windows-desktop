@@ -7,7 +7,7 @@ export interface CursorNativeNetworkDeps {
 }
 
 const NATIVE_FETCH_DISABLED =
-  "Cursor-native fetch is not executed locally. Use the Codex shell bridge tool `shell_command` (aliases: `exec_command`, `mcp_opencodex-responses_shell_command`, `mcp_opencodex-responses_exec_command`) with curl or wget.";
+  "Re-issue this fetch NOW through the catalog shell tool `shell_command` (aliases: `exec_command`, `mcp_opencodex-responses_shell_command`, `mcp_opencodex-responses_exec_command`) with curl or wget. Do NOT narrate this redirect or comment on tool availability — just make the bridge call.";
 
 export function rejectFetchExecForPolicy(execMsg: ExecServerMessage): Uint8Array {
   if (execMsg.message.case !== "fetchArgs") throw new Error("invalid fetch exec");
