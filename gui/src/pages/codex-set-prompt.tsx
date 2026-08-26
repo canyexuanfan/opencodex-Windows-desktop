@@ -353,15 +353,18 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
     : (snapshot?.custom.findIndex(l => l.id === editing) ?? -1);
   const editingLayer = editingIndex >= 0 ? snapshot!.custom[editingIndex]! : null;
 
-  useEffect(() => {
-    // The layer vanished while its editor was open. Keeping the dialog would let
-    // Save recreate what the user just deleted, and silently swapping to a
-    // neighbour would put someone else's text under their cursor. Close and say so.
-    if (editing !== null && editing !== "new" && snapshot !== undefined && editingIndex < 0) {
-      setEditing(null);
-      setError(t("codexSet.custom.layerGone"));
-    }
-  }, [editing, editingIndex, snapshot, t]);
+  /**
+   * The layer vanished while its editor was open - another tab, a hand edit.
+   *
+   * Keeping the dialog would let Save recreate what the user just deleted, and
+   * silently swapping to a neighbour would put someone else's text under their
+   * cursor. So the editor closes and the panel says why.
+   *
+   * Derived, not written from an effect. Calling setState synchronously in an
+   * effect body cascades an extra render - which is what lint rejects - and
+   * every input here is already known while rendering.
+   */
+  const layerGone = editing !== null && editing !== "new" && snapshot !== undefined && editingIndex < 0;
 
   useEffect(() => {
     // Fetch on panel mount, not on first dialog open: size is what a user needs to
@@ -427,7 +430,11 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
       {state.showError && (
         <div className="notice notice-err" role="alert">{t("codexSet.prompt.loadFailed")}</div>
       )}
-      {error && <div className="notice notice-err" role="alert">{error}</div>}
+      {(error || layerGone) && (
+        <div className="notice notice-err" role="alert">
+          {layerGone ? t("codexSet.custom.layerGone") : error}
+        </div>
+      )}
 
       {/*
         Drift is never silently self-healed: the user is told what state the file
@@ -641,7 +648,7 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
         </section>
       )}
 
-      {editing && snapshot && (
+      {editing && snapshot && !layerGone && (
         <CustomLayerDialog
           layer={editing === "new" ? null : editingLayer}
           seed={editing === "new" ? presetSeed : null}
