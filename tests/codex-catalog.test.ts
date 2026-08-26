@@ -4747,6 +4747,10 @@ describe("Codex catalog routed normalization", () => {
       "glm-5.2[1m]": true,
       "glm-5.3": true,
       "glm-5.3[1m]": true,
+      // glm-5.3-flash joined ZAI_GLM_53_MODELS, which is what modelSupportsReasoningSummaries
+      // is derived from. It belongs in the family for reasoning metadata even though it is
+      // excluded from the vision-sidecar list - the two answer different questions.
+      "glm-5.3-flash": true,
     });
   });
 

@@ -1042,6 +1042,48 @@ function unionRequired(target: unknown, sibling: unknown): unknown {
 const MOONSHOT_DATA_VALUED_KEYWORDS = new Set(["enum", "const", "default", "examples"]);
 
 /**
+ * Numeric assertions whose intersection is a bound, and which direction tightens.
+ *
+ * `$ref` under 2020-12 is an in-place applicator: the node and its target BOTH apply, so
+ * the emitted schema must be their INTERSECTION. The previous code overwrote the target
+ * with the node and called that "the narrower reading", which holds only when the node
+ * happens to be narrower. A node declaring `minLength: 1` beside a target declaring
+ * `minLength: 5` shipped `minLength: 1` - a contract weaker than either side asked for,
+ * emitted silently, which is the same failure mode the `required` composition fixed for
+ * set-valued keywords.
+ *
+ * "max" means the surviving value is the larger of the two (lower bounds), "min" the
+ * smaller (upper bounds). A keyword absent from this table keeps the overwrite: for
+ * `type`, `format`, `description` and friends there is no ordering to intersect along,
+ * and the node is the more specific statement.
+ */
+const MOONSHOT_BOUND_KEYWORDS: Record<string, "max" | "min"> = {
+  minLength: "max",
+  minItems: "max",
+  minProperties: "max",
+  minimum: "max",
+  exclusiveMinimum: "max",
+  maxLength: "min",
+  maxItems: "min",
+  maxProperties: "min",
+  maximum: "min",
+  exclusiveMaximum: "min",
+};
+
+/**
+ * Intersect one numeric bound. Either side being absent or non-finite yields the other,
+ * because an unstated bound constrains nothing - returning `undefined` there would drop
+ * a constraint the remaining side genuinely made.
+ */
+function intersectBound(target: unknown, sibling: unknown, direction: "max" | "min"): unknown {
+  const a = typeof target === "number" && Number.isFinite(target) ? target : null;
+  const b = typeof sibling === "number" && Number.isFinite(sibling) ? sibling : null;
+  if (a === null) return b === null ? sibling : sibling;
+  if (b === null) return target;
+  return direction === "max" ? Math.max(a, b) : Math.min(a, b);
+}
+
+/**
  * Compose two `properties` maps. A property named in BOTH the referenced target and the
  * node is the same conjunction problem `required` had: letting the sibling win discards
  * the target's constraints for that member. Merge the two member schemas so neither side
@@ -1128,6 +1170,14 @@ function normalizeMoonshotSchemaNode(
         }
         if (key === "properties" && isXaiObjectSchema(merged[key]) && isXaiObjectSchema(normalized)) {
           merged[key] = composeProperties(merged[key] as Record<string, unknown>, normalized);
+          continue;
+        }
+        // Numeric bounds intersect rather than overwrite: both the node and its target
+        // apply, so the surviving bound is the stricter of the two in whichever direction
+        // that keyword tightens.
+        const boundDirection = MOONSHOT_BOUND_KEYWORDS[key];
+        if (boundDirection && key in merged) {
+          merged[key] = intersectBound(merged[key], normalized, boundDirection);
           continue;
         }
         merged[key] = normalized;

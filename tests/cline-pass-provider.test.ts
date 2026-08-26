@@ -72,7 +72,6 @@ describe("ClinePass provider", () => {
     expect(entry?.modelMaxInputTokens).toBeUndefined();
     expect(entry?.noVisionModels).toEqual([
       "cline-pass/glm-5.3",
-  "cline-pass/glm-5.3-flash",
       "cline-pass/glm-5.2",
       "cline-pass/deepseek-v4-pro",
       "cline-pass/deepseek-v4-flash",
