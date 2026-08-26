@@ -1,10 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runNpmCachePreflight } from "../src/update/npm-cache-preflight.mjs";
-import { killProxy } from "../src/lib/process-control";
+import { isProcessAlive, killProxy } from "../src/lib/process-control";
 
 const repoRoot = join(import.meta.dir, "..");
 
@@ -63,6 +63,16 @@ const serverSource = readFileSync(join(import.meta.dir, "..", "src", "server", "
 const dispatchSource = readFileSync(join(import.meta.dir, "..", "src", "cli", "dispatch.ts"), "utf8");
 
 describe("update stops the running proxy before replacing files", () => {
+  // The recovery case starts a real detached proxy, and its own result says nothing about
+  // whether cleanup reaped it — it stayed green while an escapee spun on a deleted tree for
+  // hours. Auditing the pid once the suite is done turns a silent leak back into a red test.
+  let auditedRecoveryPid: number | undefined;
+
+  afterAll(() => {
+    if (auditedRecoveryPid === undefined) return;
+    expect(isProcessAlive(auditedRecoveryPid)).toBe(false);
+  });
+
   test("a failed cache pre-flight aborts before the stop callback can run", () => {
     let stopped = false;
     const malformedSpawn = (() => ({ status: 0, signal: null, stdout: "not-json", stderr: "" })) as never;
@@ -227,24 +237,42 @@ esac
         expect(runtime.pid).toBeGreaterThan(0);
         recoveredPid = runtime.pid;
       } finally {
-        const stopped = existsSync(launcher)
-          ? Bun.spawnSync(["node", launcher, "stop"], {
-              cwd: root,
-              env,
-              stdout: "ignore",
-              stderr: "ignore",
-              timeout: UPDATE_SPAWN_TIMEOUT_MS,
-            })
-          : null;
-        if (stopped?.exitCode !== 0) {
-          if (!recoveredPid) {
-            try {
-              recoveredPid = JSON.parse(readFileSync(join(opencodexHome, "runtime-port.json"), "utf8")).pid;
-            } catch { /* the proxy never wrote runtime state */ }
-          }
-          if (Number.isSafeInteger(recoveredPid) && recoveredPid! > 0) killProxy(recoveredPid!);
+        // Resolve the pid FIRST. `stop` rewrites runtime-port.json and the rmSync below
+        // deletes it outright, so this is the last moment the detached proxy the recovery
+        // path started can still be identified at all.
+        if (!recoveredPid) {
+          try {
+            recoveredPid = JSON.parse(readFileSync(join(opencodexHome, "runtime-port.json"), "utf8")).pid;
+          } catch { /* the proxy never wrote runtime state */ }
         }
-        rmSync(root, { recursive: true, force: true });
+        auditedRecoveryPid = Number.isSafeInteger(recoveredPid) && recoveredPid! > 0
+          ? recoveredPid
+          : undefined;
+        if (existsSync(launcher)) {
+          Bun.spawnSync(["node", launcher, "stop"], {
+            cwd: root,
+            env,
+            stdout: "ignore",
+            stderr: "ignore",
+            timeout: UPDATE_SPAWN_TIMEOUT_MS,
+          });
+        }
+        try {
+          // `stop` exiting 0 is a claim, not proof: it also reports success when it finds no
+          // live runtime to stop, which is indistinguishable here from one it failed to stop.
+          // Gating the reap on that exit code let a detached proxy survive, get reparented to
+          // init, and then spin on a fixture tree this same block had already deleted — one
+          // escapee burned a full core for hours. Verify liveness and reap regardless.
+          // bin/ocx.mjs mirrors its Bun child's exit, so reaping the recorded child pid takes
+          // the node launcher with it.
+          if (Number.isSafeInteger(recoveredPid) && recoveredPid! > 0 && isProcessAlive(recoveredPid!)) {
+            killProxy(recoveredPid!);
+          }
+        } finally {
+          // Ordered after the reap on purpose: deleting the tree out from under a live
+          // detached proxy is what turned a missed kill into a permanently spinning orphan.
+          rmSync(root, { recursive: true, force: true });
+        }
       }
     },
     RECOVERY_CASE_TIMEOUT_MS,
