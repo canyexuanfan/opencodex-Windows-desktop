@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import {
@@ -49,7 +49,7 @@ describe("package tree integrity", () => {
     let observation: PackageTreeObservation = {
       device: 1n,
       inode: 10n,
-      changeTimeNs: 100n,
+      contentTimeNs: 100n,
       size: 500n,
     };
     // An explicit clock: `status()` reuses an `ok` reading for a second so the guard does not
@@ -60,14 +60,14 @@ describe("package tree integrity", () => {
 
     expect(guard.status()).toEqual({ ok: true });
 
-    observation = { ...observation, inode: 11n, changeTimeNs: 200n };
+    observation = { ...observation, inode: 11n, contentTimeNs: 200n };
     clock += 2_000;
     expect(guard.status()).toEqual({ ok: false, reason: "package_tree_replaced" });
   });
 
   test("an ok reading is reused briefly, and a bad one is never cached", () => {
     let observation: PackageTreeObservation | null = {
-      device: 1n, inode: 10n, changeTimeNs: 100n, size: 500n,
+      device: 1n, inode: 10n, contentTimeNs: 100n, size: 500n,
     };
     let observations = 0;
     let clock = 0;
@@ -96,13 +96,68 @@ describe("package tree integrity", () => {
     let observation: PackageTreeObservation | null = {
       device: 1n,
       inode: 10n,
-      changeTimeNs: 100n,
+      contentTimeNs: 100n,
       size: 500n,
     };
     const guard = createPackageTreeIntegrityGuard(() => observation);
     observation = null;
 
     expect(guard.status()).toEqual({ ok: false, reason: "package_tree_unreadable" });
+  });
+
+  // BUG-R1: a chmod fenced the whole data plane behind 503.
+  //
+  // These three drive the REAL filesystem rather than a hand-built observation,
+  // because the defect lived in which stat field was read - a synthetic
+  // PackageTreeObservation cannot tell ctime from mtime, so a fixture-only test
+  // would have passed both before and after the fix.
+  const manifest = () => join(TEST_DIR, "package.json");
+  const observeAt = (path: string) => () => {
+    const stat = statSync(path, { bigint: true });
+    return {
+      device: stat.dev,
+      inode: stat.ino,
+      contentTimeNs: stat.mtimeNs,
+      size: stat.size,
+    };
+  };
+
+  test("a permission change is not a replacement", () => {
+    writeFileSync(manifest(), '{"name":"ocx","version":"1.0.0"}');
+    let clock = 0;
+    const guard = createPackageTreeIntegrityGuard(observeAt(manifest()), () => clock);
+    expect(guard.status()).toEqual({ ok: true });
+
+    chmodSync(manifest(), 0o600);
+    clock += 2_000;
+    expect(guard.status()).toEqual({ ok: true });
+  });
+
+  test("an in-place rewrite of the same byte length is still a replacement", () => {
+    writeFileSync(manifest(), '{"name":"ocx","version":"1.0.0"}');
+    let clock = 0;
+    const guard = createPackageTreeIntegrityGuard(observeAt(manifest()), () => clock);
+    expect(guard.status()).toEqual({ ok: true });
+
+    // Same length, different bytes: neither inode nor size moves, so mtime is the
+    // only signal left. This is the case that would break if someone "simplified"
+    // the comparison down to inode and size.
+    writeFileSync(manifest(), '{"name":"ocx","version":"9.9.9"}');
+    clock += 2_000;
+    expect(guard.status()).toEqual({ ok: false, reason: "package_tree_replaced" });
+  });
+
+  test("an atomic install is still a replacement", () => {
+    writeFileSync(manifest(), '{"name":"ocx","version":"1.0.0"}');
+    let clock = 0;
+    const guard = createPackageTreeIntegrityGuard(observeAt(manifest()), () => clock);
+    expect(guard.status()).toEqual({ ok: true });
+
+    // write-then-rename, which is what a package manager actually does.
+    writeFileSync(join(TEST_DIR, "package.json.new"), '{"name":"ocx","version":"1.0.0"}');
+    renameSync(join(TEST_DIR, "package.json.new"), manifest());
+    clock += 2_000;
+    expect(guard.status()).toEqual({ ok: false, reason: "package_tree_replaced" });
   });
 
   test("degrades health and refuses Responses requests with a restart-required error", async () => {
