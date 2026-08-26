@@ -32,6 +32,12 @@ Bounds: <=30 live probes, <=3 retries/class, ~40min wall clock.
 | C1b | control: reasoning replay | xai/grok-4.6 | PASS | native reasoning item RETURNED in output, reasoning_tokens=143 (cursor route: always 0) |
 | C2a | control: cross-model | cursor/claude-opus-5 | FAIL | status:"failed", error "Cursor upstream error: Cursor Connect error not_found" (both P5-shape and plain retry); model advertised in catalog but unusable |
 | C2b | control: cross-model | cursor/gemini-3.7-flash | PASS* | P5 shape ok; in=14846 — highest preamble floor of all routes |
+| P13a | stream + function tool | cursor/grok-4.6 | PASS | full arg delta/done sequence, args complete, response.completed emitted |
+| P13b | stream + custom (exec) tool | cursor/grok-4.6 | PASS* | custom_tool_call_input delta/done ok; note response.heartbeat event emitted (non-standard); tool input "await tools.exec_command({ command: \"date\" })" — wrong arg name (cmd vs command), model-side |
+| S1a | subagent real task | cursor/grok-4.6 (Noether) | PASS* | 4-line file via apply_patch completed BUT: apply_patch rejections mid-task, duplicate round2-ok line collapsed, one ls "came back empty", agent wrote receipts OUTSIDE scratch fence (.codexclaw/evidence in repo), needed 3 hook-forced verification attempts |
+| S1b | subagent real task | gpt-5.6-sol medium (Nash) | PASS | notes_sol-medium.md 4 lines correct; no incidents; finished but stayed unreaped until close (interrupted at close) |
+| S1c | subagent real task | cursor/gemini-3.7-flash (Cicero) | PASS | notes + receipt written, self-reported PASS; also stayed unreaped |
+| S2a | subagent plugin surface | cursor/grok-4.6 (Ramanujan) | FAIL | completed the probe (shell ok, Chrome screenshot ok, Codex-app screenshot policy-blocked as designed) THEN degenerated: ~180 consecutive identical exec calls ("BYTES:1646 EXISTS:true"), never terminated, closed manually |
 
 ## Per-probe notes
 
@@ -73,3 +79,43 @@ Flag for 020: token-cost floor.
    in_tokens jumping 268 -> 10383 after the first tool round (P11a:
    checkpoint not reused across the tool boundary; full-replay fallback,
    001 S1 mechanism confirmed by token accounting).
+
+### Subagent-phase observations (S1/S2 + user session reports)
+
+7. **Degenerate tool-call loop (S2a, live)**: after finishing its task, the
+   cursor/grok-4.6 subagent repeated the byte-identical exec call ~180
+   times ("BYTES:1646 EXISTS:true" x180 in its transcript) without ever
+   emitting a final answer. The flattened-text history replay (001 S1)
+   makes each round look like "someone verified bytes, verify again" —
+   no structured turn state to signal completion. Highest-severity live
+   confirmation of the replay-representation gap.
+8. **Turn stall right after tool-call emission (user screenshot,
+   2026-08-26 ~11:57)**: a cursor/grok-4.6 High session in the Codex app
+   ended its turn immediately after printing "[Tool call:
+   mcp_opencodex-responses_exec] / input" — tool call emitted, turn died
+   before the round trip. Matches P13b-adjacent risk: custom_tool_call
+   completes, stream closes with response.completed, and the app renders
+   a dead turn. UNKNOWN split: adapter closed the turn early vs app-side
+   loop drop — needs a captured SSE trace of a stalling session.
+9. **Injected token corruption in replayed history (S2a transcript)**:
+   a stray token (" mar") spliced into tool results and structural
+   markers: "is_error mar: false", "jun mar staff", "[ martool_result]",
+   "[ martool_ marresult]". Corruption sits INSIDE replayed [tool_result]
+   text envelopes — produced on the replay/blob path
+   (protobuf-request.ts root blob candidates / blob hydration), not by
+   the local shell. Live confirmation of 001 S3 with a concrete
+   signature: token-level splicing at high replay volume.
+10. **Hook/verification storm interaction (S1a)**: the codexclaw
+    SubagentStop evidence hook re-prompted the cursor worker 3 times;
+    each re-prompt re-entered the degraded replay loop, multiplying
+    cost. Not an adapter bug per se, but cursor-route sessions amplify
+    any re-prompting supervisor.
+11. **Scratch-fence violation (S1a)**: the cursor worker wrote receipts
+    into repo .codexclaw/evidence/ despite scratch-only instruction
+    (the evidence hook demanded that path — instruction conflict
+    resolved toward the hook). Receipts left in place, noted here.
+12. **Fleet reaping**: all three S1 workers reached their final message
+    but wait_agent kept timing out; each reported previous_status
+    "interrupted" at close. Completion signaling did not translate into
+    a reapable final status (affects sol too — not cursor-specific;
+    recorded for the campaign, attribution MIXED/host-side).
