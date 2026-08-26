@@ -260,6 +260,23 @@ export function isCodexAppServerCommandLine(commandLine: string, executable?: st
   }
   if (tokens.length === 0) return false;
   if (isCodeModeHostProcess(tokens)) return true;
+  // An npm-installed Codex runs as a PAIR: `node /usr/local/bin/codex app-server` and the
+  // vendored native binary that wrapper spawns. Only the child used to match, so
+  // `--restart-codex` signalled the child while its supervisor kept holding the socket -
+  // which is what "PID(s) still running after SIGTERM" was reporting on Linux.
+  //
+  // The codex-shaped token must be IMMEDIATELY next. Skipping interpreter flags to reach
+  // it looks tempting and is wrong: interpreter options take values, so a generic skip
+  // reads the value of `node --require codex app-server worker.js` as the entrypoint.
+  // Supporting flags needs a real Node/Bun/Deno entrypoint parser, not a loop over
+  // hyphens; the observed wrappers put the path first, so this stays narrow on purpose.
+  //
+  // Dropping only the interpreter and re-running the ordinary scan is what preserves the
+  // subcommand discipline below: `node <codex> exec 'hi'` stays unmatched exactly like
+  // `codex exec 'hi'` does.
+  if (isInterpreterToken(tokens[0]!) && tokens.length > 1 && isCodexExecutableToken(tokens[1]!)) {
+    tokens = tokens.slice(1);
+  }
   if (!isCodexExecutableToken(tokens[0]!)) return false;
 
   let i = 1;

@@ -375,6 +375,30 @@ describe("Codex app-server process matching (#476)", () => {
     expect(isCodexAppServerCommandLine("node /opt/codex-code-mode-host --session 1")).toBe(true);
   });
 
+
+  test("matches the npm wrapper that supervises the native app-server", () => {
+    // The shape that made `ocx sync --restart-codex` report a survivor on Linux. An
+    // npm-installed Codex runs as a PAIR: `node /usr/local/bin/codex app-server` and
+    // the vendored native binary it spawns. Only the child matched, so SIGTERM went to
+    // the child while its supervisor kept the socket. Both halves have to match.
+    expect(isCodexAppServerCommandLine("node /usr/local/bin/codex app-server proxy")).toBe(true);
+    expect(isCodexAppServerCommandLine(
+      "node /usr/local/bin/codex -c features.code_mode_host=true app-server --listen unix://",
+    )).toBe(true);
+    expect(isCodexAppServerCommandLine("bun /usr/local/bin/codex app-server")).toBe(true);
+
+    // The interpreter pair only forms when the codex-shaped token is IMMEDIATELY next.
+    // `worker.js` is not codex-shaped, so this stays the unrelated process it always was.
+    expect(isCodexAppServerCommandLine("node worker.js codex app-server")).toBe(false);
+    // Subcommand discipline survives the slice: `exec` is not `app-server`.
+    expect(isCodexAppServerCommandLine("node /usr/local/bin/codex exec 'hello'")).toBe(false);
+    // `run` is an npm-script indirection, not the executable.
+    expect(isCodexAppServerCommandLine("bun run codex app-server")).toBe(false);
+    // Interpreter FLAGS are deliberately unsupported: skipping them generically would
+    // mistake an option VALUE for the entrypoint (`node --require codex app-server x.js`).
+    expect(isCodexAppServerCommandLine("node --inspect /usr/local/bin/codex app-server")).toBe(false);
+  });
+
   test("matches official platform-baked Codex target-triple basenames", () => {
     expect(isCodexAppServerCommandLine(
       "/opt/codex/codex-x86_64-unknown-linux-musl app-server --listen unix:///tmp/c.sock",
