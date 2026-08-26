@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createOpenAIChatAdapter as createOpenAIChatAdapterProduction } from "../src/adapters/openai-chat";
 import { saveConfig } from "../src/config";
 import {
+  MAX_ACTIVE_TURNS,
   MAX_ACTIVE_SESSION_LANES,
   SESSION_LANE_ID_BYTES,
   resetLifecycleDrainStateForTests,
@@ -103,9 +104,19 @@ async function runRecallWave(sessionCount: 32 | 64) {
   expect(sessionLaneMetrics()).toMatchObject({
     active: sessionCount,
     peak: sessionCount,
+    admitted: sessionCount,
+    rejected: 0,
     retainedBytes: sessionCount * SESSION_LANE_ID_BYTES,
   });
-  expect(tryAdmitTurn("logical-session-0")).toBeNull();
+  const overlappingLease = tryAdmitTurn("logical-session-0");
+  expect(overlappingLease).not.toBeNull();
+  expect(sessionLaneMetrics()).toMatchObject({
+    active: sessionCount,
+    admitted: sessionCount,
+    rejected: 0,
+    retainedBytes: sessionCount * SESSION_LANE_ID_BYTES,
+  });
+  overlappingLease?.release();
 
   const firstCalls = await Promise.all(Array.from({ length: sessionCount }, (_, session) => parseCalls(session, 1)));
   for (const lease of leases) lease.release();
@@ -139,17 +150,44 @@ async function runRecallWave(sessionCount: 32 | 64) {
 }
 
 describe("#820 concurrent tool-recall session harness", () => {
-  test("the HTTP boundary rejects an overlapping recall on the same logical session", async () => {
+  test("the HTTP boundary admits a reconnect while the same logical session is settling", async () => {
     resetLifecycleDrainStateForTests();
     const previousHome = process.env.OPENCODEX_HOME;
+    const originalFetch = globalThis.fetch;
     const home = mkdtempSync(join(tmpdir(), "ocx-session-lane-"));
     process.env.OPENCODEX_HOME = home;
+    let markUpstreamStarted!: () => void;
+    const upstreamStarted = new Promise<void>(resolve => { markUpstreamStarted = resolve; });
+    let finishUpstream!: () => void;
+    const upstreamResponse = new Promise<Response>(resolve => {
+      finishUpstream = () => resolve(Response.json({
+        id: "resp_reconnect",
+        object: "response",
+        status: "completed",
+        model: "test-model",
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      }));
+    });
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === "https://reconnect.example.test/v1/responses") {
+        markUpstreamStarted();
+        return upstreamResponse;
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
     saveConfig({
       port: 0,
       hostname: "127.0.0.1",
-      defaultProvider: "openai",
+      defaultProvider: "reconnect",
       providers: {
-        openai: { adapter: "openai-responses", baseUrl: "https://api.openai.com/v1", authMode: "forward" },
+        reconnect: {
+          adapter: "openai-responses",
+          baseUrl: "https://reconnect.example.test/v1",
+          authMode: "key",
+          apiKey: "test-key",
+        },
       },
     } as OcxConfig);
     const headers = new Headers({ "content-type": "application/json", session_id: "recall-session" });
@@ -157,23 +195,35 @@ describe("#820 concurrent tool-recall session harness", () => {
     const server = startServer(0);
     try {
       expect(held).not.toBeNull();
-      const overlapping = await fetch(new URL("/v1/responses", server.url), {
+      const overlappingResponse = originalFetch(new URL("/v1/responses", server.url), {
         method: "POST",
         headers,
-        body: "not-json",
+        body: JSON.stringify({ model: "reconnect/test-model", input: "hello", stream: false }),
       });
-      expect(overlapping.status).toBe(503);
-      expect(await overlapping.json()).toMatchObject({ error: { code: "server_busy" } });
+      await upstreamStarted;
+      expect(sessionLaneMetrics()).toMatchObject({ active: 1, admitted: 1, rejected: 0 });
       held?.release();
-      const afterRelease = await fetch(new URL("/v1/responses", server.url), {
+      expect(sessionLaneMetrics()).toMatchObject({ active: 1, retainedBytes: SESSION_LANE_ID_BYTES });
+      finishUpstream();
+      const overlapping = await overlappingResponse;
+      expect(overlapping.status).toBe(200);
+      await overlapping.text();
+      expect(sessionLaneMetrics()).toMatchObject({ active: 0, retainedBytes: 0 });
+
+      const invalid = await originalFetch(new URL("/v1/responses", server.url), {
         method: "POST",
         headers,
         body: "not-json",
       });
-      expect(afterRelease.status).toBe(400);
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toMatchObject({
+        error: { type: "invalid_request_error", message: "Invalid JSON body" },
+      });
     } finally {
+      finishUpstream();
       held?.release();
       await server.stop(true);
+      globalThis.fetch = originalFetch;
       if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
       else process.env.OPENCODEX_HOME = previousHome;
       rmSync(home, { recursive: true, force: true });
@@ -199,6 +249,46 @@ describe("#820 concurrent tool-recall session harness", () => {
     expect(sessionLaneMetrics()).toMatchObject({ active: 64, retainedBytes: 2048, rejected: 1 });
     for (const lease of leases) lease?.release();
     expect(sessionLaneMetrics().retainedBytes).toBe(0);
+  });
+
+  test("same-lane reconnect leases retain one lane until the final release", () => {
+    resetLifecycleDrainStateForTests();
+    const first = tryAdmitTurn("reconnect-lane");
+    const second = tryAdmitTurn("reconnect-lane");
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(sessionLaneMetrics()).toMatchObject({
+      active: 1,
+      peak: 1,
+      admitted: 1,
+      rejected: 0,
+      retainedBytes: SESSION_LANE_ID_BYTES,
+    });
+
+    first?.release();
+    expect(sessionLaneMetrics()).toMatchObject({ active: 1, retainedBytes: SESSION_LANE_ID_BYTES });
+    second?.release();
+    expect(sessionLaneMetrics()).toMatchObject({ active: 0, retainedBytes: 0 });
+
+    const third = tryAdmitTurn("reconnect-lane");
+    const fourth = tryAdmitTurn("reconnect-lane");
+    expect(third).not.toBeNull();
+    expect(fourth).not.toBeNull();
+    fourth?.release();
+    expect(sessionLaneMetrics()).toMatchObject({ active: 1, retainedBytes: SESSION_LANE_ID_BYTES });
+    third?.release();
+    expect(sessionLaneMetrics()).toMatchObject({ active: 0, retainedBytes: 0 });
+  });
+
+  test("same-lane reconnects remain bounded by the global active-turn cap", () => {
+    resetLifecycleDrainStateForTests();
+    const leases = Array.from({ length: MAX_ACTIVE_TURNS }, () => tryAdmitTurn("global-cap-lane"));
+    expect(leases.every(Boolean)).toBe(true);
+    expect(sessionLaneMetrics()).toMatchObject({ active: 1, admitted: 1, rejected: 0 });
+    expect(tryAdmitTurn("global-cap-lane")).toBeNull();
+    expect(sessionLaneMetrics()).toMatchObject({ active: 1, admitted: 1, rejected: 0 });
+    for (const lease of leases) lease?.release();
+    expect(sessionLaneMetrics()).toMatchObject({ active: 0, retainedBytes: 0 });
   });
 
   /**
@@ -227,9 +317,12 @@ describe("#820 concurrent tool-recall session harness", () => {
     const siblingLeases = siblingLanes.map(lane => tryAdmitTurn(lane));
     expect(siblingLeases.every(Boolean)).toBe(true);
 
-    // Same parent AND same child thread: one logical conversation, so the second overlapping
-    // turn is refused rather than admitted alongside the first.
-    expect(tryAdmitTurn(sessionLaneIdFromRequest(spawn("child-a")))).toBeNull();
+    // Same parent AND same child thread still shares one fixed-size lane, while a reconnect
+    // gets its own process-wide turn lease instead of a local 503.
+    const overlappingSibling = tryAdmitTurn(sessionLaneIdFromRequest(spawn("child-a")));
+    expect(overlappingSibling).not.toBeNull();
+    expect(sessionLaneMetrics()).toMatchObject({ active: 3, admitted: 3, rejected: 0 });
+    overlappingSibling?.release();
 
     for (const lease of siblingLeases) lease?.release();
     expect(sessionLaneMetrics().retainedBytes).toBe(0);
