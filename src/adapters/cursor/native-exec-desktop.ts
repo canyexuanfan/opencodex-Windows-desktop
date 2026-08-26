@@ -170,10 +170,33 @@ function runExternalJson(command: string, payload: unknown, config: DesktopExecu
       }
     });
 
+    // A command that never reads stdin - `echo`, a script that exits on a bad flag,
+    // anything that fails before its first read - closes the pipe while we are still
+    // writing to it. The write then fails with EPIPE, and on Linux that surfaces as an
+    // ASYNCHRONOUS 'error' event on the stream rather than a throw, so the try/catch
+    // below never saw it and the rejection escaped as an unhandled stream error. On
+    // macOS the same command usually drains the small payload first, which is why this
+    // only ever went red on the Linux shard.
+    //
+    // EPIPE here is not a failure of the executor CONTRACT: the child's exit code and
+    // stdout are what decide the result, and both are handled in 'close' above. So the
+    // pipe error is swallowed deliberately and the outcome is left to the child, which
+    // is what makes "bad output maps to failure" reachable instead of exploding.
+    child.stdin.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED") return;
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
     try {
       child.stdin.write(JSON.stringify(payload));
       child.stdin.end();
     } catch (err) {
+      // Kept for the synchronous half: a stream already destroyed when we reach this
+      // line throws immediately instead of emitting.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EPIPE" || code === "ERR_STREAM_DESTROYED") return;
       if (!settled) {
         settled = true;
         clearTimeout(timer);
