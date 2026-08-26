@@ -274,7 +274,7 @@
       "assertions": [
         { "id": "text", "operator": "normalized_text_equals", "selector": "/client/response/normalizedText", "expected": "OK", "required": true },
         { "id": "terminal", "operator": "terminal_signal_equals", "selector": "/client/response/terminal", "expected": "completed", "required": true },
-        { "id": "phase", "operator": "json_path_equals", "selector": "/client/response/events/6/data/item/phase", "expected": "final_answer", "required": true }
+        { "id": "phase", "operator": "json_path_equals", "selector": "/client/response/events/7/data/item/phase", "expected": "final_answer", "required": true }
       ]
     },
     {
