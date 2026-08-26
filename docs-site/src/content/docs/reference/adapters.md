@@ -67,6 +67,11 @@ This rewrite is destination-scoped. Key-auth public/custom Responses providers a
 forward gateways keep both fields unchanged; a multimodal system message is never partially folded
 or silently dropped.
 
+For canonical forward continuations, client-only `prompt_cache_breakpoint` properties are removed
+recursively within bounded traversal limits. When `store: false`, `item_reference` rows are also
+omitted because the destination cannot resolve an item it did not persist. Function/tool `call_id`
+pairs and `reasoning.effort` are preserved.
+
 For `key` auth, [`retryOn429`](/reference/configuration/) applies here too: a pre-stream 429
 waits and replays the identical request on the same key before any other handling, exactly like
 the translated `openai-chat` / Anthropic request path. Custom `runTurn` transports are not part

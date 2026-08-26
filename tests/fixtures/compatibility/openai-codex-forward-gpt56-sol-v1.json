@@ -24,7 +24,15 @@
           {
             "type": "message",
             "role": "user",
-            "content": [{ "type": "input_text", "text": "ping" }]
+            "content": [{
+              "type": "input_text",
+              "text": "ping",
+              "prompt_cache_breakpoint": { "type": "ephemeral" }
+            }]
+          },
+          {
+            "type": "item_reference",
+            "id": "rs_unpersisted"
           }
         ],
         "instructions": "Fixture instructions",
@@ -79,6 +87,8 @@
           }
         },
         { "id": "truncation-removed", "operator": "absent", "path": "/body/truncation" },
+        { "id": "prompt-cache-breakpoint-removed", "operator": "absent", "path": "/body/input/0/content/0/prompt_cache_breakpoint" },
+        { "id": "unstored-item-reference-removed", "operator": "absent", "path": "/body/input/1" },
         { "id": "previous-response-id-removed", "operator": "absent", "path": "/body/previous_response_id" },
         { "id": "prompt-cache-key-preserved", "operator": "equals", "path": "/body/prompt_cache_key", "expected": "project-cache-v1" },
         { "id": "prompt-cache-retention-removed", "operator": "absent", "path": "/body/prompt_cache_retention" }

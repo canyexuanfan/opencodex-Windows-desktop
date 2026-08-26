@@ -9,7 +9,7 @@ const FIXTURE_ID = "openai-codex-forward-gpt56-sol-v1";
 export const OPENAI_CODEX_FORWARD_GPT56_SOL_MANIFEST = defineCompatibilityManifest({
   schemaVersion: 1,
   id: "openai.codex-forward.gpt-5-6-sol.responses",
-  version: "1.1.0",
+  version: "1.2.0",
   subject: {
     providerId: "openai",
     baseUrl: "https://chatgpt.com/backend-api/codex",
@@ -84,6 +84,22 @@ export const OPENAI_CODEX_FORWARD_GPT56_SOL_MANIFEST = defineCompatibilityManife
       summary: "The ChatGPT Codex forward route does not receive truncation.",
       limitation: "The field is removed only for the canonical forward destination; public and custom Responses providers keep it.",
       evidence: [{ kind: "fixture", id: FIXTURE_ID, assertionIds: ["truncation-removed"] }],
+    },
+    {
+      id: "prompt-cache-breakpoint",
+      feature: "request.prompt_cache_breakpoint",
+      disposition: "unsupported",
+      summary: "Client-only prompt cache breakpoint markers do not reach the forward backend.",
+      limitation: "Markers are removed recursively from input within bounded depth and node budgets.",
+      evidence: [{ kind: "fixture", id: FIXTURE_ID, assertionIds: ["prompt-cache-breakpoint-removed"] }],
+    },
+    {
+      id: "unstored-item-reference",
+      feature: "continuation.item_reference",
+      disposition: "degraded",
+      summary: "Unpersisted item references are omitted from store-false continuations.",
+      limitation: "The referenced item cannot exist at the backend when store is false; tool call_id pairs remain unchanged.",
+      evidence: [{ kind: "fixture", id: FIXTURE_ID, assertionIds: ["unstored-item-reference-removed"] }],
     },
     {
       id: "prompt-cache-retention",
