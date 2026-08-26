@@ -1104,6 +1104,69 @@ function stripUnsupportedForwardParams(body: unknown): unknown {
   return rest;
 }
 
+/** Return the lossless text represented by one system message, or null when it is multimodal. */
+function canonicalForwardSystemText(item: Record<string, unknown>): string | null {
+  const content = item.content;
+  if (content === undefined) return "";
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+  let text = "";
+  for (const block of content) {
+    if (!isPlainObject(block)) return null;
+    if (block.type !== "input_text" && block.type !== "text") return null;
+    if (typeof block.text !== "string") return null;
+    text += block.text;
+  }
+  return text;
+}
+
+/**
+ * The public Responses API accepts input system messages and `truncation`, but the canonical
+ * ChatGPT Codex forward endpoint rejects both. Fold only fully textual system messages into the
+ * existing top-level instructions and remove the unsupported flag at this destination boundary.
+ *
+ * The fold is atomic: if any system message contains a non-text block, keep every message in
+ * place so the proxy never silently drops multimodal content. The backend may still reject that
+ * unsupported shape, but it will not receive a partially rewritten prompt.
+ */
+function normalizeCanonicalForwardPromptEnvelope(body: unknown): unknown {
+  if (!isPlainObject(body)) return body;
+  const stripTruncation = Object.hasOwn(body, "truncation");
+  const input = Array.isArray(body.input) ? body.input : undefined;
+  if (!input) {
+    if (!stripTruncation) return body;
+    const { truncation: _truncation, ...rest } = body;
+    return rest;
+  }
+
+  const foldedText: string[] = [];
+  let sawSystemMessage = false;
+  let canFoldAllSystemMessages = true;
+  for (const item of input) {
+    if (!isPlainObject(item) || item.role !== "system") continue;
+    sawSystemMessage = true;
+    const text = canonicalForwardSystemText(item);
+    if (text === null) {
+      canFoldAllSystemMessages = false;
+      break;
+    }
+    foldedText.push(text);
+  }
+  if (!stripTruncation && (!sawSystemMessage || !canFoldAllSystemMessages)) return body;
+
+  const next: Record<string, unknown> = { ...body };
+  if (stripTruncation) delete next.truncation;
+  if (sawSystemMessage && canFoldAllSystemMessages) {
+    next.input = input.filter(item => !isPlainObject(item) || item.role !== "system");
+    const folded = foldedText.join("\n\n");
+    if (folded !== "") {
+      const existing = typeof body.instructions === "string" ? body.instructions : "";
+      next.instructions = existing !== "" ? `${existing}\n\n${folded}` : folded;
+    }
+  }
+  return next;
+}
+
 const IMAGE_GEN_NAMESPACE = "image_gen";
 const HOSTED_IMAGE_GENERATION_TOOL = "image_generation";
 const IMAGE_GEN_DOTTED_PREFIX = `${IMAGE_GEN_NAMESPACE}.`;
@@ -1794,6 +1857,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         // third-party forward gateway may still accept it, so this must not be widened.
         if (isCanonicalOpenAiForwardProvider(provider)) {
           outBody = stripDeprecatedPromptCacheRetention(outBody, parsed.modelId);
+          outBody = normalizeCanonicalForwardPromptEnvelope(outBody);
         }
       } else {
         outBody = preferConfiguredHostedTools(
