@@ -6,6 +6,7 @@ import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surfa
 import PromptLayerRow from "../components/codex-set/PromptLayerRow";
 import PromptLayerDialog from "../components/codex-set/PromptLayerDialog";
 import type { LayerId } from "../components/codex-set/prompt-layer-copy";
+import type { TKey } from "../i18n/en";
 import CustomLayerRow from "../components/codex-set/CustomLayerRow";
 import CustomLayerDialog from "../components/codex-set/CustomLayerDialog";
 import { MAX_LAYERS, moveLayer, newLayerId, type Draft } from "../components/codex-set/custom-layer-state";
@@ -87,6 +88,14 @@ function codexPromptResourceKey(apiBase: string): string {
   return "codex-prompt:" + apiBase;
 }
 
+/** One message per drift state; a new state upstream breaks the build here. */
+const DRIFT_KEYS: Record<Exclude<PromptSnapshotDto["drift"], null>, TKey> = {
+  "journal-present": "codexSet.drift.journalPresent",
+  "projection-stale": "codexSet.drift.projectionStale",
+  "store-missing": "codexSet.drift.storeMissing",
+  "owned-malformed": "codexSet.drift.ownedMalformed",
+};
+
 export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
   const t = useT();
   const resourceKey = codexPromptResourceKey(apiBase);
@@ -97,6 +106,13 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
   const [editing, setEditing] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [adoptPreview, setAdoptPreview] = useState<{ rawLine: string | null; decodedBody: string | null } | null>(null);
+  /**
+   * A refused adopt has to say WHERE. "The existing value could not be imported"
+   * leaves the user with no way to act; the file path and line number are what let
+   * them move the text by hand.
+   */
+  const [adoptRefusal, setAdoptRefusal] = useState<{ path?: string; line?: number | null; rawLine?: string | null } | null>(null);
+  const [repairBusy, setRepairBusy] = useState(false);
 
   const load = useCallback(async (signal: AbortSignal): Promise<PromptSnapshotDto> => {
     const res = await fetch(apiBase + "/api/codex-prompt", { signal });
@@ -220,10 +236,15 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
         ok?: boolean; code?: string; message?: string;
         snapshot?: PromptSnapshotDto;
         preview?: { rawLine: string | null; decodedBody: string | null };
+        path?: string; line?: number | null; rawLine?: string | null;
       };
       if (!res.ok || !body.ok) {
         setError(body.message ?? t("codexSet.custom.adoptRefused"));
         setAdoptPreview(null);
+        // Only an unsupported FORM has a place to point at; other refusals do not.
+        setAdoptRefusal(body.code === "adopt_unsupported_form"
+          ? { path: body.path, line: body.line, rawLine: body.rawLine }
+          : null);
         return;
       }
       if (body.snapshot) {
@@ -237,6 +258,36 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
       setError(t("codexSet.prompt.writeFailed"));
     } finally {
       setBusyId(null);
+    }
+  };
+
+  /**
+   * Drift is REPORTED by GET and resolved only here, on an explicit,
+   * revision-checked POST. Two of the four states are repairable from WP1 exports;
+   * the route refuses the other two by name rather than duplicating its journal
+   * transaction, and the panel surfaces whatever it says.
+   */
+  const repair = async (confirm: boolean) => {
+    if (!snapshot || snapshot.drift === null) return;
+    setRepairBusy(true);
+    setError("");
+    try {
+      const res = await fetch(apiBase + "/api/codex-prompt/repair", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(confirm ? { confirm: true, revision: snapshot.revision } : { confirm: false }),
+      });
+      const body = await res.json() as { ok?: boolean; message?: string; snapshot?: PromptSnapshotDto };
+      if (!res.ok || !body.ok) {
+        setError(body.message ?? t("codexSet.prompt.repairFailed"));
+        return;
+      }
+      if (body.snapshot) setClientResourceData(resourceKey, body.snapshot);
+      else resource.refresh();
+    } catch {
+      setError(t("codexSet.prompt.repairFailed"));
+    } finally {
+      setRepairBusy(false);
     }
   };
   // Assembly order, so the list reads the way the prompt is actually built.
@@ -284,6 +335,25 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
         <div className="notice notice-err" role="alert">{t("codexSet.prompt.loadFailed")}</div>
       )}
       {error && <div className="notice notice-err" role="alert">{error}</div>}
+
+      {/*
+        Drift is never silently self-healed: the user is told what state the file
+        is in and repairs it deliberately, because two of the four branches
+        rewrite content they authored.
+      */}
+      {snapshot?.drift && (
+        <div className="notice codex-set-prompt__drift" role="alert" data-drift={snapshot.drift}>
+          <span>{t(DRIFT_KEYS[snapshot.drift])}</span>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={repairBusy}
+            onClick={() => { void repair(true); }}
+          >
+            {t("codexSet.prompt.repair")}
+          </button>
+        </div>
+      )}
 
       <ul className="codex-set-prompt__rows">
         {rows.map(descriptor => (
@@ -353,6 +423,16 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
           {snapshot.developerInstructionsState === "external" && snapshot.modelInstructionsFile === null && (
             <div className="codex-set-custom__adopt">
               <p className="muted small">{t("codexSet.custom.notOwned")}</p>
+              {adoptRefusal && (
+                // Path and line, so the user can go find the text and move it by hand.
+                // "Could not be imported" alone leaves them with nothing to act on.
+                <p className="muted small codex-set-custom__adopt-refusal">
+                  {t("codexSet.custom.adoptUnsupported", {
+                    path: adoptRefusal.path ?? "",
+                    line: adoptRefusal.line ?? 0,
+                  })}
+                </p>
+              )}
               {adoptPreview ? (
                 <>
                   <pre className="api-code codex-set-custom__adopt-preview">{adoptPreview.decodedBody}</pre>

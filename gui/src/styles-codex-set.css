@@ -140,3 +140,19 @@
   gap: 8px;
 }
 
+/* Drift is announced, not silently healed, so the banner sits above the rows. */
+.codex-set-prompt__drift {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.codex-set-prompt__drift button {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.codex-set-custom__adopt-refusal {
+  margin-top: 8px;
+}

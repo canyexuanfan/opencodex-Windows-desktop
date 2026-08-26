@@ -568,3 +568,53 @@ test("composed overflow and the 32-layer ceiling are both refused", async () => 
   expect(container.textContent).toContain("32");
   await act(async () => { root.unmount(); });
 });
+
+
+test("20. every drift state renders a Repair action instead of self-healing", async () => {
+  // Two of the four branches rewrite content the user authored, so nothing is
+  // repaired silently: the state is named and the action is explicit.
+  for (const drift of ["journal-present", "projection-stale", "store-missing", "owned-malformed"] as const) {
+    clearClientResourceStoresForTests();
+    const calls = stubRoutes(call => {
+      if (call.url.includes("/repair")) return json({ ok: true, changed: true, snapshot: snapshot({ drift: null }) });
+      return json(snapshot({ drift }));
+    });
+    const { container, root } = await mount();
+    const banner = container.querySelector("[data-drift]");
+    expect(banner, drift).not.toBeNull();
+    expect(banner!.getAttribute("data-drift")).toBe(drift);
+    // The message describes THIS state, not a generic "something is wrong".
+    expect((banner!.textContent ?? "").length, drift).toBeGreaterThan(30);
+
+    await act(async () => { (banner!.querySelector("button") as HTMLButtonElement).click(); });
+    const repair = calls.find(c => c.url.includes("/repair"))!;
+    expect(repair.body.confirm, drift).toBe(true);
+    expect(repair.body.revision, drift).toBe("sha256:one");
+    await act(async () => { root.unmount(); });
+  }
+});
+
+test("16. an unsupported adopt names the file and line to move by hand", async () => {
+  // "Could not be imported" leaves the user with nothing to act on. The path and
+  // line are what let them find the text.
+  stubRoutes(call => {
+    if (call.url.includes("/adopt")) {
+      return json({
+        ok: false,
+        code: "adopt_unsupported_form",
+        message: "only a single-line basic string can be decoded safely",
+        path: "/tmp/config.toml",
+        line: 7,
+        rawLine: "developer_instructions = '''multi",
+      }, 409);
+    }
+    return json(snapshot({ developerInstructionsOwned: false, developerInstructionsState: "external" }));
+  });
+  const { container, root } = await mount();
+  await act(async () => { (container.querySelector(".codex-set-custom__adopt button") as HTMLButtonElement).click(); });
+  const refusal = container.querySelector(".codex-set-custom__adopt-refusal");
+  expect(refusal).not.toBeNull();
+  expect(refusal!.textContent).toContain("/tmp/config.toml");
+  expect(refusal!.textContent).toContain("7");
+  await act(async () => { root.unmount(); });
+});
