@@ -922,6 +922,37 @@ function shouldSanitizeZenToolParameters(provider: OcxProviderConfig): boolean {
     || baseUrl === "https://opencode.ai/zen/go/v1";
 }
 
+/** Azure Model Router (and Gemini-in-the-pool) 400s Codex MCP schemas whose root is a union. */
+const AZURE_CHAT_FORBIDDEN_ROOT_KEYS = ["oneOf", "anyOf", "allOf", "enum", "const", "not"] as const;
+
+function isAzureOpenAiChatTarget(provider: OcxProviderConfig): boolean {
+  try {
+    const host = new URL(provider.baseUrl).hostname.toLowerCase();
+    return host.endsWith(".openai.azure.com")
+      || host.endsWith(".cognitiveservices.azure.com")
+      || host.endsWith(".services.ai.azure.com")
+      || host.endsWith(".ai.azure.com");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Azure Foundry Model Router validates every function schema against the strictest model in
+ * the pool (Gemini-shaped): root must be {type:"object"} with no oneOf/anyOf/allOf/enum/
+ * const/not. Codex App MCP tools such as mcp__codex_app__automation_update ship a root
+ * union, which 400s the whole turn. Flatten like Zen, then strip leftover forbidden keys.
+ */
+function sanitizeAzureChatToolParameters(parameters: unknown): Record<string, unknown> {
+  const root = ensureZenRootObjectSchema(parameters);
+  for (const key of AZURE_CHAT_FORBIDDEN_ROOT_KEYS) delete root[key];
+  root.type = "object";
+  if (!root.properties || typeof root.properties !== "object" || Array.isArray(root.properties)) {
+    root.properties = {};
+  }
+  return root;
+}
+
 function isXaiSchemaTarget(provider: OcxProviderConfig): boolean {
   try {
     // Public api.x.ai accepts native root object unions. Only the Grok CLI proxy
@@ -1249,17 +1280,22 @@ function toolsToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig
 
 function toolsToChatFormatForProvider(parsed: OcxParsedRequest, provider: OcxProviderConfig): unknown[] | undefined {
   const base = toolsToChatFormat(parsed, provider);
-  if (!base || !shouldSanitizeZenToolParameters(provider)) return base;
+  const azureChat = isAzureOpenAiChatTarget(provider);
+  const zenChat = shouldSanitizeZenToolParameters(provider);
+  if (!base || (!zenChat && !azureChat)) return base;
   return base.map(tool => {
     if (!tool || typeof tool !== "object") return tool;
     const functionDef = (tool as { function?: Record<string, unknown> }).function;
     if (!functionDef || typeof functionDef !== "object") return tool;
+    const parameters = azureChat
+      ? sanitizeAzureChatToolParameters(functionDef.parameters ?? {})
+      : ensureZenRootObjectSchema(functionDef.parameters ?? {});
+    const nextFunction = { ...functionDef, parameters };
+    // strict: true plus a flattened schema is rejected by Gemini-in-the-pool routers.
+    if (azureChat) delete nextFunction.strict;
     return {
       ...tool,
-      function: {
-        ...functionDef,
-        parameters: ensureZenRootObjectSchema(functionDef.parameters ?? {}),
-      },
+      function: nextFunction,
     };
   });
 }
