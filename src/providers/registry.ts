@@ -505,8 +505,6 @@ const DEEPSEEK_VISION_PREVIEW_MODEL = "deepseek-v4-flash-vision-exp";
  * capability intersection trusts this map.
  */
 const COMMAND_CODE_IMAGE_MODELS = [
-  "stealth/ox-alpha",
-  "openai/ox-alpha",
   `deepseek/${DEEPSEEK_VISION_PREVIEW_MODEL}`,
   "gpt-5.6-luna",
   "gpt-5.6-sol",
@@ -518,15 +516,6 @@ const COMMAND_CODE_IMAGE_MODELS = [
 const COMMAND_CODE_MODEL_INPUT_MODALITIES: Record<string, ["text", "image"]> =
   Object.fromEntries(COMMAND_CODE_IMAGE_MODELS.map(id => [id, ["text", "image"]]));
 const OPENCODE_FREE_DEEPSEEK_MODELS = ["deepseek-v4-flash-free"];
-/*
- * OpenCode Zen's free slug for the OpenRouter stealth model "Ox Alpha"
- * (openrouter.ai/stealth/ox-alpha): 1,048,576-token context, multimodal
- * (text+image+video upstream; Zen serves text+image), mandatory reasoning,
- * free during the stealth window. Zen displays it as "Ox Alpha Free" under
- * this exact id (opencode.ai/docs/zen, verified 2026-08-21).
- */
-const OPENCODE_OX_ALPHA_FREE_MODEL = "x-preview-f-free";
-const OX_ALPHA_CONTEXT_WINDOW = 1_048_576;
 /*
  * Zen free models that reject `image_url` upstream (#1043, and the reproducible
  * half of #1024).
@@ -624,7 +613,7 @@ const ALIBABA_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
   "qwen3.7-plus": ["text", "image"],
   "qwen3.6-flash": ["text", "image"],
   "glm-5.3": ["text"],
-  "glm-5.3-flash": ["text"],
+  "glm-5.3-flash": ["text", "image"],
   "glm-5.2": ["text"],
   "deepseek-v4-pro": ["text"],
 };
@@ -732,7 +721,7 @@ const ALIBABA_INTL_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
   "kimi-k2.6": ["text", "image"],
   "kimi-k2.5": ["text", "image"],
   "glm-5.3": ["text"],
-  "glm-5.3-flash": ["text"],
+  "glm-5.3-flash": ["text", "image"],
   "glm-5.2": ["text"],
   "glm-5.1": ["text"],
   "glm-5": ["text"],
@@ -1209,11 +1198,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // Unknown/new live models deliberately do not advertise a reasoning picker.
     reasoningEfforts: [],
     modelReasoningEfforts: COMMAND_CODE_MODEL_REASONING_EFFORTS,
-    // Ox Alpha (stealth preview, changelog v1.31.0): free 1M multimodal reasoning
-    // model on every plan. DeepSeek vision preview id is preemptive metadata —
-    // it is expected to merge into deepseek-v4-flash later.
+    // The DeepSeek vision preview id is preemptive metadata — it is expected to
+    // merge into deepseek-v4-flash later.
     modelContextWindows: {
-      "stealth/ox-alpha": OX_ALPHA_CONTEXT_WINDOW,
       [`deepseek/${DEEPSEEK_VISION_PREVIEW_MODEL}`]: 1_048_576,
     },
     modelInputModalities: COMMAND_CODE_MODEL_INPUT_MODALITIES,
@@ -1412,15 +1399,12 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelWireDefaults: { "gpt-5.6-luna": "openai-responses", "muse-spark-1.2-contributor": "openai-responses" },
     modelContextWindows: {
       "kimi-k3": KIMI_K3_STANDARD_CONTEXT_WINDOW,
-      // Ox Alpha (stealth 1M multimodal) and the DeepSeek vision preview are
-      // metadata-only here: the Go roster is discovered live, so these apply
-      // the moment the gateway starts serving the ids.
-      [OPENCODE_OX_ALPHA_FREE_MODEL]: OX_ALPHA_CONTEXT_WINDOW,
+      // The DeepSeek vision preview id is metadata-only here: the Go roster is
+      // discovered live, so it applies the moment the gateway serves the id.
       [DEEPSEEK_VISION_PREVIEW_MODEL]: 1_048_576,
     },
     modelInputModalities: {
       "kimi-k3": ["text", "image"],
-      [OPENCODE_OX_ALPHA_FREE_MODEL]: ["text", "image"],
       // Experimental DeepSeek vision preview — expected to merge into deepseek-v4-flash later.
       [DEEPSEEK_VISION_PREVIEW_MODEL]: ["text", "image"],
     },
@@ -1460,7 +1444,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // every model listed here (and the catalog advertises image input on their behalf).
     // Kimi K2.7 Code accepts text+image+video: do NOT list it here.
     noVisionModels: [
-      "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5", "glm-5.1",
+      "glm-5.3", "glm-5.2", "glm-5", "glm-5.1",
       "deepseek-v4-flash", "deepseek-v4-pro",
       "mimo-v2-pro", "mimo-v2.5-pro",
       "minimax-m2.5", "minimax-m2.7",
@@ -1518,7 +1502,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     },
     thinkingBudgetModels: THINKING_BUDGET_MODELS,
     noReasoningModels: ["glm-5.3-fast", "glm-5.3-short-fast", "glm-5.2-fast", "glm-5.2-short-fast", "kimi-k2.6-fast", "qwen3.5-397b-fast", "qwen3.6-35b-fast"],
-    noVisionModels: ["glm-5.3", "glm-5.3-fast", "glm-5.3-short", "glm-5.3-short-fast", "glm-5.3-flash", "glm-5.2", "glm-5.2-fast", "glm-5.2-short", "glm-5.2-short-fast", "qwen3.5-397b", "qwen3.5-397b-fast"],
+    noVisionModels: ["glm-5.3", "glm-5.3-fast", "glm-5.3-short", "glm-5.3-short-fast", "glm-5.2", "glm-5.2-fast", "glm-5.2-short", "glm-5.2-short-fast", "qwen3.5-397b", "qwen3.5-397b-fast"],
     noTemperatureModels: ["kimi-k2.7-code"],
     noTopPModels: ["kimi-k2.7-code"],
     noPenaltyModels: ["kimi-k2.7-code"],
@@ -1534,16 +1518,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     featured: true,
     dashboardUrl: "https://openrouter.ai/keys",
     jawcodeBundle: "openrouter",
-    // stealth/ox-alpha: free stealth-window frontier model (launched 2026-08-20).
-    // /api/v1/models reports 1,048,576 context, 131,072 max output, text+image+video
-    // input, $0 pricing, mandatory reasoning. Single provider slug: `stealth`.
-    models: ["anthropic/claude-sonnet-5", "stealth/ox-alpha", ...OPENROUTER_GPT56_MODELS],
+    models: ["anthropic/claude-sonnet-5", ...OPENROUTER_GPT56_MODELS],
     modelContextWindows: {
       "anthropic/claude-sonnet-5": 1_000_000,
-      "stealth/ox-alpha": OX_ALPHA_CONTEXT_WINDOW,
       ...OPENROUTER_GPT56_CONTEXT_WINDOWS,
     },
-    modelInputModalities: { "stealth/ox-alpha": ["text", "image"] },
     // OpenRouter documents priority support for OpenAI endpoints, but not Anthropic. Keep the
     // provider unclassified and opt in only the exact OpenAI-backed slugs we ship. These facts
     // belong only to the canonical destination; a same-named custom gateway is unknown to us.
@@ -1954,11 +1933,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // slash ids — so a Codex-facing slug like `commandcode/deepseek-deepseek-v4-pro`
     // is sent upstream verbatim and rejected with `unsupported_model`.
     modelReasoningEfforts: COMMAND_CODE_MODEL_REASONING_EFFORTS,
-    // Ox Alpha (stealth preview, Command Code changelog v1.31.0) ships with a
-    // 1.05M-token multimodal context; the DeepSeek vision preview id is
-    // preemptive for when the catalog serves it (merges into v4-flash later).
+    // The DeepSeek vision preview id is preemptive for when the catalog serves it
+    // (merges into v4-flash later).
     modelContextWindows: {
-      "stealth/ox-alpha": OX_ALPHA_CONTEXT_WINDOW,
       [`deepseek/${DEEPSEEK_VISION_PREVIEW_MODEL}`]: 1_048_576,
     },
     modelInputModalities: COMMAND_CODE_MODEL_INPUT_MODALITIES,
@@ -2460,7 +2437,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     directReasoningEffortModels: ["qwen3.8-max"],
     thinkingBudgetModels: ALIBABA_TOKEN_PLAN_QWEN_MODELS.filter(id => id !== "qwen3.8-max"),
     preserveReasoningContentModels: ["glm-5.3", "glm-5.3-flash", "glm-5.2", "deepseek-v4-pro", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash"],
-    noVisionModels: ["glm-5.3", "glm-5.3-flash", "glm-5.2", "deepseek-v4-pro"],
+    noVisionModels: ["glm-5.3", "glm-5.2", "deepseek-v4-pro"],
   },
   {
     id: "alibaba-token-plan-intl",
@@ -2501,7 +2478,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     directReasoningEffortModels: ["qwen3.8-max"],
     thinkingBudgetModels: ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS.filter(id => id !== "qwen3.8-max"),
     preserveReasoningContentModels: ["glm-5.3", "glm-5.3-flash", "glm-5.2", "deepseek-v4-pro", "deepseek-v4-flash", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash"],
-    noVisionModels: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.2", "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "MiniMax-M2.5"],
+    noVisionModels: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.2", "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "MiniMax-M2.5"],
     noReasoningModels: ["kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "deepseek-v3.2", "glm-5.1", "glm-5", "MiniMax-M2.5"],
     modelDefaultReasoningEfforts: { "qwen3.8-max": "xhigh" },
   },
@@ -2608,14 +2585,12 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       [...DEEPSEEK_THINKING_MODELS, ...OPENCODE_FREE_DEEPSEEK_MODELS].map(id => [id, deepseekReasoningMapFor(id)]),
     ),
     preserveReasoningContentModels: [...DEEPSEEK_THINKING_MODELS, ...OPENCODE_FREE_DEEPSEEK_MODELS],
-    // Same Zen gateway as opencode-free: Ox Alpha Free (1M multimodal stealth model)
-    // and the DeepSeek vision preview (merges into deepseek-v4-flash later).
+    // Same Zen gateway as opencode-free: the DeepSeek vision preview id
+    // (merges into deepseek-v4-flash later).
     modelContextWindows: {
-      [OPENCODE_OX_ALPHA_FREE_MODEL]: OX_ALPHA_CONTEXT_WINDOW,
       [DEEPSEEK_VISION_PREVIEW_MODEL]: 1_048_576,
     },
     modelInputModalities: {
-      [OPENCODE_OX_ALPHA_FREE_MODEL]: ["text", "image"],
       [DEEPSEEK_VISION_PREVIEW_MODEL]: ["text", "image"],
     },
     noVisionModels: [...OPENCODE_ZEN_TEXT_ONLY_MODELS, ...DEEPSEEK_THINKING_MODELS],
@@ -2648,16 +2623,12 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelReasoningEfforts: Object.fromEntries(OPENCODE_FREE_DEEPSEEK_MODELS.map(id => [id, deepseekThinkingEffortsFor(id)])),
     modelReasoningEffortMap: Object.fromEntries(OPENCODE_FREE_DEEPSEEK_MODELS.map(id => [id, deepseekReasoningMapFor(id)])),
     preserveReasoningContentModels: OPENCODE_FREE_DEEPSEEK_MODELS,
-    // Ox Alpha Free (`x-preview-f-free`): the OpenRouter stealth model on Zen's
-    // free tier — 1,048,576 context, text+image input. Deliberately NOT in the
-    // text-only list below. The DeepSeek vision preview id is preemptive
-    // metadata for when Zen starts serving it (merges into v4-flash later).
+    // The DeepSeek vision preview id is preemptive metadata for when Zen starts
+    // serving it (merges into v4-flash later).
     modelContextWindows: {
-      [OPENCODE_OX_ALPHA_FREE_MODEL]: OX_ALPHA_CONTEXT_WINDOW,
       [DEEPSEEK_VISION_PREVIEW_MODEL]: 1_048_576,
     },
     modelInputModalities: {
-      [OPENCODE_OX_ALPHA_FREE_MODEL]: ["text", "image"],
       [DEEPSEEK_VISION_PREVIEW_MODEL]: ["text", "image"],
     },
     // Same Zen roster behind the same base URL, so it carries the same measured

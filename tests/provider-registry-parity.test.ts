@@ -60,7 +60,7 @@ describe("provider registry parity", () => {
     expect(KEY_LOGIN_PROVIDERS.umans.noVisionModels).toContain("umans-glm-5.2");
     // Zen Go text-only models are vision-sidecar covered; Kimi K2.7 Code is multimodal and must NOT be listed.
     expect(KEY_LOGIN_PROVIDERS["opencode-go"].noVisionModels).toEqual([
-      "glm-5.3", "glm-5.3-flash",
+      "glm-5.3",
       "glm-5.2", "glm-5", "glm-5.1",
       "deepseek-v4-flash", "deepseek-v4-pro",
       "mimo-v2-pro", "mimo-v2.5-pro",
@@ -322,7 +322,7 @@ describe("provider registry parity", () => {
         "qwen3.7-max": 1_000_000,
         "deepseek-v4-pro": 1_000_000,
       },
-      noVisionModels: ["glm-5.3", "glm-5.3-flash", "glm-5.2", "deepseek-v4-pro"],
+      noVisionModels: ["glm-5.3", "glm-5.2", "deepseek-v4-pro"],
       preserveReasoningContentModels: expect.arrayContaining(["qwen3.8-max", "qwen3.7-max", "qwen3.7-plus"]),
     });
     expect(PROVIDER_REGISTRY.find(entry => entry.id === "alibaba-token-plan")?.directReasoningEffortModels)
@@ -355,7 +355,7 @@ describe("provider registry parity", () => {
     expect(neuralwatt?.noReasoningModels).toContain("glm-5.2-short-fast");
     expect(neuralwatt?.noReasoningModels).not.toContain("kimi-k2.5-fast");
     expect(neuralwatt?.noVisionModels).toEqual([
-      "glm-5.3", "glm-5.3-fast", "glm-5.3-short", "glm-5.3-short-fast", "glm-5.3-flash",
+      "glm-5.3", "glm-5.3-fast", "glm-5.3-short", "glm-5.3-short-fast",
       "glm-5.2", "glm-5.2-fast", "glm-5.2-short", "glm-5.2-short-fast",
       "qwen3.5-397b", "qwen3.5-397b-fast",
     ]);

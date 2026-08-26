@@ -25,33 +25,44 @@ a provider needs a number this unit does not have from that provider's own docs,
 **mirrors the `glm-5.3` entry that provider already carries** rather than inventing a
 figure. That is stated per-cluster below and is the difference between seeding and guessing.
 
-## The vision decision, made once
+## The vision decision, corrected mid-unit
 
-`glm-5.3-flash` goes into **no** vision list, and it is added to `noVisionModels`
-wherever `glm-5.2` appears there.
-
-`registry.ts:500-506` records why:
+The first pass put `glm-5.3-flash` into every `noVisionModels` list, reasoning from
+`registry.ts:500-506`:
 
 > Verified-negative and therefore deliberately ABSENT: … zai-org/GLM-5.2, zai-org/GLM-5.3
-> … Those routes accept the request and drop the image, which is worse than declining it
-> — the model answers about an image it never saw.
+> … Those routes accept the request and drop the image, which is worse than declining it.
 
-A flash variant inherits that suspicion until someone proves otherwise. Same reasoning
-excludes it from `COMMAND_CODE_IMAGE_MODELS`.
+**That was wrong, and the same comment says why.** It ends with "Do not add an id here on
+family resemblance" — and inheriting a text-only verdict from `glm-5.3` because of the
+shared name is that exact error, pointed the other way.
 
-## The `ox-alpha` surfaces: excluded, with a reason
+`glm-5.3-flash` is a vision model. Z.AI documents it under `docs.z.ai/guides/vlm/` — the
+VLM namespace, the same one `glm-4.6v` lives in — accepting `image_url` blocks as public
+URLs or Base64, multiple images per request, plus video and file input. OpenRouter lists
+it as a multimodal reasoning model: 1M context, 128K max output, text + image + video.
 
-`ox-alpha` appears in three places — `COMMAND_CODE_IMAGE_MODELS` (registry.ts:508-509),
-`command-code-efforts.ts:15`, and two `modelContextWindows` blocks (1203, 1523, 1941).
+One incidental confirmation: this unit had already given it `ZAI_GLM_53_REASONING_EFFORTS`
+(low/high/max), which matches the three-tier ladder OpenRouter documents for it. The
+effort ladder was right for the same reason the modality was wrong — 5.3 is its family.
 
-**All three are vision/Command-Code surfaces, and `glm-5.3-flash` gets none of them.**
-`COMMAND_CODE_IMAGE_MODELS` is the image allowlist the paragraph above forbids. The
-context-window blocks exist to describe Ox Alpha's 1.05M multimodal window on Command
-Code, a provider whose catalog does not carry `glm-5.2` at all — seeding a Z.AI flash
-model into a Command Code table would advertise a model that provider never serves.
+The naming split is the tell: `-flash` is a speed and price tier; `v` is the modality
+suffix. A flash variant of a VLM is still a VLM.
 
-So the honest reading of "ox-alpha가 있는곳" is: reviewed, and deliberately empty. The
-`glm-5.2` surfaces are where this model actually belongs.
+So it ships with `["text", "image"]` and appears in **no** `noVisionModels` list.
+
+## Ox Alpha: removed entirely
+
+The first pass excluded `glm-5.3-flash` from the Ox Alpha surfaces and left Ox Alpha in
+place. It is now removed from the tree outright — both ids (`stealth/ox-alpha`,
+`openai/ox-alpha`) and the OpenCode Zen slug that served the same stealth model
+(`x-preview-f-free`), along with `OX_ALPHA_CONTEXT_WINDOW`, the Command Code effort
+profile, the OpenRouter catalog entry, and every comment describing them.
+
+"Ox Alpha" was a stealth-window model: free, unbranded, and time-boxed by construction.
+A catalog entry for a window that has closed advertises something the provider no longer
+serves, which is the same class of defect this unit exists to avoid in the other
+direction.
 
 ## Insertion points
 
