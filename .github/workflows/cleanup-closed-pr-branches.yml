@@ -70,6 +70,10 @@ jobs:
               merged: Boolean(pr.merged_at),
               closedAt: pr.closed_at,
               headRefName: pr.head && pr.head.ref,
+              // The tip this PR actually pointed at. Without it the planner cannot
+              // tell a genuinely abandoned branch from a name someone reused, and
+              // keeps the branch instead of deleting it.
+              headRefOid: pr.head && pr.head.sha,
               baseRefName: pr.base && pr.base.ref,
               // A fork head lives in the contributor's repository. Comparing
               // repo ids (not names) keeps a same-name fork from looking local.
@@ -82,7 +86,10 @@ jobs:
               repo,
               per_page: 100,
             });
-            const branches = rawBranches.map((branch) => branch.name);
+            const branches = rawBranches.map((branch) => ({
+              name: branch.name,
+              oid: branch.commit && branch.commit.sha,
+            }));
             const protectedByGitHub = new Set(
               rawBranches.filter((branch) => branch.protected).map((branch) => branch.name),
             );

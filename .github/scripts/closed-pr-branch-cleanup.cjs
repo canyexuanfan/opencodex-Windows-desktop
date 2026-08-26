@@ -23,6 +23,20 @@ function normalizeBranchName(value) {
   return String(value || "").trim();
 }
 
+/**
+ * A commit id, lowercased for comparison.
+ *
+ * The REST and GraphQL APIs are not consistent about case, and a full 40-character
+ * sha compared case-sensitively against an abbreviated or upper-case one silently
+ * reads as "different" - which here would mean "keep", so the failure direction is
+ * safe, but it would make the guard useless rather than protective. Anything that
+ * is not a plausible hex object id becomes null, i.e. unknown.
+ */
+function normalizeOid(value) {
+  const text = String(value || "").trim().toLowerCase();
+  return /^[0-9a-f]{7,64}$/.test(text) ? text : null;
+}
+
 function isProtectedBranch(name) {
   return PROTECTED_BRANCHES.includes(normalizeBranchName(name));
 }
@@ -45,6 +59,8 @@ const KEEP_REASONS = Object.freeze({
   CROSS_REPOSITORY: "cross-repository-head",
   MISSING_CLOSED_AT: "missing-closed-at",
   WITHIN_GRACE: "within-grace-period",
+  MOVED_SINCE_CLOSE: "branch-moved-since-close",
+  UNKNOWN_HEAD_SHA: "unknown-head-sha",
 });
 
 /**
@@ -63,12 +79,23 @@ const KEEP_REASONS = Object.freeze({
  *   contributor's repository and this token has no business there.
  * - A grace period after `closed_at` leaves room to reopen a PR that was
  *   closed by mistake.
+ * - The branch must still POINT AT a commit one of those closed pull requests
+ *   had as its head. Matching by NAME alone deletes reused work: `codex/`-style
+ *   names get picked up again all the time, and a branch recreated for new work
+ *   inherits the closed history of every PR that ever used that name. The tip
+ *   moved, so the branch is not the closed PR's branch any more - it only shares
+ *   its label.
+ * - A branch whose current tip cannot be determined is kept. An unknown tip is
+ *   not evidence of an abandoned branch, and this job's mistakes are not
+ *   recoverable.
  *
  * @param {object} input
  * @param {Array<object>} input.pullRequests Pull requests with
- *   `headRefName`, `baseRefName`, `state`, `merged`, `closedAt`, and
- *   `isCrossRepository`.
- * @param {Array<string>} input.branches Branch names that currently exist.
+ *   `headRefName`, `headRefOid`, `baseRefName`, `state`, `merged`, `closedAt`,
+ *   and `isCrossRepository`.
+ * @param {Array<string|{name: string, oid?: string}>} input.branches Branches
+ *   that currently exist. A bare string carries no tip, which is treated as an
+ *   unknown tip and kept.
  * @param {number} [input.now] Current time in milliseconds.
  * @param {number} [input.graceDays] Days to wait after `closedAt`.
  * @returns {{ deletions: Array<{branch: string, pullRequests: number[]}>,
@@ -80,7 +107,17 @@ function planClosedPrBranchDeletions({
   now = Date.now(),
   graceDays = DEFAULT_GRACE_DAYS,
 }) {
-  const existing = new Set(branches.map(normalizeBranchName).filter(Boolean));
+  // Accepts both shapes so an older caller passing bare names still works - it
+  // just gets the conservative answer, because a name without a tip cannot be
+  // proven safe to delete.
+  /** @type {Map<string, string|null>} */
+  const existing = new Map();
+  for (const entry of branches) {
+    const name = normalizeBranchName(typeof entry === "string" ? entry : entry && entry.name);
+    if (!name) continue;
+    const oid = typeof entry === "string" ? null : normalizeOid(entry && entry.oid);
+    existing.set(name, oid);
+  }
   const graceMs = Math.max(0, Number(graceDays) || 0) * 24 * 60 * 60 * 1000;
 
   /** @type {Map<string, object[]>} */
@@ -104,7 +141,7 @@ function planClosedPrBranchDeletions({
   const deletions = [];
   const keeps = [];
 
-  for (const branch of [...existing].sort()) {
+  for (const branch of [...existing.keys()].sort()) {
     if (isProtectedBranch(branch)) {
       keeps.push({ branch, reason: KEEP_REASONS.PROTECTED });
       continue;
@@ -138,6 +175,33 @@ function planClosedPrBranchDeletions({
     const newestClosedAt = Math.max(...closedTimestamps);
     if (now - newestClosedAt < graceMs) {
       keeps.push({ branch, reason: KEEP_REASONS.WITHIN_GRACE });
+      continue;
+    }
+
+    // The tip check, last because it is the most expensive claim to satisfy and
+    // the cheaper rules above have already excluded most branches.
+    //
+    // A closed PR's head branch is only THIS branch if the branch still points at
+    // a commit that PR had as its head. Without this, a name reused for new work
+    // is deleted on the strength of an unrelated PR that happened to share the
+    // label months earlier - and a deleted branch whose commits were never pushed
+    // anywhere else is gone.
+    const currentOid = existing.get(branch) || null;
+    if (!currentOid) {
+      keeps.push({ branch, reason: KEEP_REASONS.UNKNOWN_HEAD_SHA });
+      continue;
+    }
+    const closedOids = new Set(
+      related.map((pr) => normalizeOid(pr && pr.headRefOid)).filter(Boolean),
+    );
+    // An empty set means the API gave us no head SHA for any of them, which is the
+    // unknown case again rather than a licence to delete.
+    if (closedOids.size === 0) {
+      keeps.push({ branch, reason: KEEP_REASONS.UNKNOWN_HEAD_SHA });
+      continue;
+    }
+    if (!closedOids.has(currentOid)) {
+      keeps.push({ branch, reason: KEEP_REASONS.MOVED_SINCE_CLOSE });
       continue;
     }
 

@@ -340,9 +340,31 @@ const ANTHROPIC_MODEL_CONTEXT_WINDOWS: Record<string, number> = { "claude-sonnet
 // The non-Z.AI providers below are speculative on purpose: they carry 5.2 today and are
 // expected to pick 5.3 up on their usual lag. Providers whose live /v1/models discovery is
 // enabled self-correct on the next successful fetch; static ones need a follow-up refresh.
-const ZAI_GLM_53_MODELS = ["glm-5.3", "glm-5.3[1m]"];
+// Every 5.3 family member, so the effort ladder, the default effort and the output
+// cap are derived in ONE place. `glm-5.3-flash` was seeded into the model list and
+// the context map by hand and left out of this constant, which meant it advertised
+// a 1M context with a null effort ladder, no default effort and no output cap while
+// its siblings carried three tiers, a `max` default and 131072 tokens. A member
+// added to the list but not to the family is a model whose metadata silently
+// disappears.
+const ZAI_GLM_53_MODELS = ["glm-5.3", "glm-5.3[1m]", "glm-5.3-flash"];
 const ZAI_GLM_52_MODELS = ["glm-5.2", "glm-5.2[1m]"];
 const ZAI_GLM_5X_MODELS = [...ZAI_GLM_53_MODELS, ...ZAI_GLM_52_MODELS];
+/**
+ * The 5.x rows whose images the PROXY has to describe, which is NOT the same set as
+ * the 5.x rows themselves.
+ *
+ * `glm-5.3-flash` is a native VLM (docs.z.ai/guides/vlm/glm-5.3-flash), so listing it
+ * in `noVisionModels` sent an image through the vision sidecar and handed the model a
+ * text description of a picture it could have read itself - no error, worse answer,
+ * extra call. The correction commit fixed the Alibaba entries and left the eight
+ * providers that reach this constant behind.
+ *
+ * Kept separate from ZAI_GLM_5X_MODELS rather than filtered at each use site: that
+ * constant also drives `modelSupportsReasoningSummaries` and
+ * `preserveReasoningContentModels`, where flash DOES belong.
+ */
+const ZAI_GLM_5X_SIDECAR_VISION_MODELS = ZAI_GLM_5X_MODELS.filter(id => id !== "glm-5.3-flash");
 const ZAI_GLM_52_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 /**
  * GLM-5.3 does NOT share 5.2's five-tier ladder. docs.z.ai/devpack/latest-model folds every
@@ -471,7 +493,9 @@ const OPENCODE_GO_THINKING_TOGGLE_MODELS = [
  * images through the proxy's vision sidecar (src/codex/catalog/provider-fetch.ts), a claim nobody
  * has verified for BigModel-hosted GLM.
  */
-const ZHIPU_BIGMODEL_TEXT_MODELS = ["glm-4.6", "glm-4.7", "glm-4.7-flash", "glm-5", "glm-5.1", "glm-5.2", "glm-5.3", "glm-5.3-flash"];
+// `glm-5.3-flash` is deliberately absent: it is a native VLM
+// (docs.z.ai/guides/vlm/glm-5.3-flash), unlike glm-5.3 itself.
+const ZHIPU_BIGMODEL_TEXT_MODELS = ["glm-4.6", "glm-4.7", "glm-4.7-flash", "glm-5", "glm-5.1", "glm-5.2", "glm-5.3"];
 const ZHIPU_BIGMODEL_MODELS = [...ZHIPU_BIGMODEL_TEXT_MODELS, "glm-4.6v"];
 const ZHIPU_BIGMODEL_INPUT_MODALITIES: Record<string, string[]> = {
   ...Object.fromEntries(ZHIPU_BIGMODEL_TEXT_MODELS.map(id => [id, ["text"]])),
@@ -694,6 +718,9 @@ const VOLCENGINE_AGENT_PLAN_MODELS = [
 const VOLCENGINE_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
   "kimi-k2.6": ["text", "image"],
   "minimax-m3": ["text", "image"],
+  // Native VLM (docs.z.ai/guides/vlm/glm-5.3-flash), so it is declared here and left
+  // out of the text-only list below.
+  "glm-5.3-flash": ["text", "image"],
 };
 // Every other Plan model is text-only. Declaring this explicitly keeps the vision
 // sidecar from advertising image input for models that cannot accept it — the same
@@ -704,7 +731,6 @@ const VOLCENGINE_PLAN_TEXT_ONLY_MODELS = [
   "deepseek-v4-pro",
   "deepseek-v4-flash",
   "glm-5.3",
-  "glm-5.3-flash",
   "glm-5.2",
   "doubao-seed-2.0-pro",
 ];
@@ -812,6 +838,7 @@ const NVIDIA_NIM_VISION_MODELS = [
   "minimaxai/minimax-m3", "moonshotai/kimi-k2.6", "moonshotai/kimi-k2.5",
   "stepfun-ai/step-3.7-flash", "thinkingmachines/inkling",
   "mistralai/mistral-medium-3.5-128b",
+  "z-ai/glm-5.3-flash",
 ];
 /**
  * The catalog advertises image input only for `noVisionModels` members, so a natively
@@ -845,7 +872,11 @@ const NVIDIA_NIM_NO_VISION_MODELS = [
   "nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-mini-4b-instruct",
   "nvidia/nvidia-nemotron-nano-9b-v2",
   "openai/gpt-oss-120b", "openai/gpt-oss-20b",
-  "poolside/laguna-xs-2.1", "z-ai/glm-5.3", "z-ai/glm-5.3-flash", "z-ai/glm-5.2",
+  // z-ai/glm-5.3-flash belongs in NVIDIA_NIM_VISION_MODELS, not here: Z.AI documents
+  // it under docs.z.ai/guides/vlm/. The header above says an id must be classified
+  // deliberately rather than assumed from its name, and inheriting glm-5.3's
+  // text-only verdict because of the shared prefix is exactly that mistake.
+  "poolside/laguna-xs-2.1", "z-ai/glm-5.3", "z-ai/glm-5.2",
 ];
 const KIMI_CODING_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
   KIMI_CODING_MODELS.map(id => [id, id === "k3[1m]" ? KIMI_K3_1M_CONTEXT_WINDOW : KIMI_K3_STANDARD_CONTEXT_WINDOW]),
@@ -976,7 +1007,11 @@ const UMANS_GLM_REASONING_EFFORTS = ["high", "xhigh", "max"];
 // 260814: Z.AI folds GLM-5.3 efforts into low/high/max, so `low` is a real tier here and
 // `xhigh` is not distinct from `max` (docs.z.ai/devpack/latest-model).
 const UMANS_GLM_53_REASONING_EFFORTS = ["low", "high", "max"];
-const UMANS_TEXT_ONLY_MODELS = ["umans-glm-5.3", "umans-glm-5.3-flash", "umans-glm-5.2", "umans-glm-5.1"];
+// `umans-glm-5.3-flash` is NOT here: Z.AI documents glm-5.3-flash under
+// docs.z.ai/guides/vlm/, so it takes images natively and does not need the proxy's
+// vision sidecar. The seeding pass classified it from the family name and a later
+// pass corrected only some of the providers; this is one it missed.
+const UMANS_TEXT_ONLY_MODELS = ["umans-glm-5.3", "umans-glm-5.2", "umans-glm-5.1"];
 const UMANS_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "umans-coder": 262_144,
   "umans-kimi-k2.7": 262_144,
@@ -1030,6 +1065,11 @@ const CLINE_PASS_IMAGE_MODELS = new Set([
   "cline-pass/mimo-v2.5",
   "cline-pass/minimax-m3",
   "cline-pass/qwen3.7-plus",
+  // Native VLM (docs.z.ai/guides/vlm/), so its images do not go through the proxy's
+  // sidecar. Adding it here moves it out of CLINE_PASS_TEXT_ONLY_MODELS and flips its
+  // declared modalities to ["text", "image"] in one edit, because both are derived
+  // from this set.
+  "cline-pass/glm-5.3-flash",
 ]);
 const CLINE_PASS_MODALITY_KNOWN_MODELS = CLINE_PASS_MODELS.filter(id => id !== "cline-pass/qwen3.8-max");
 const CLINE_PASS_TEXT_ONLY_MODELS = CLINE_PASS_MODALITY_KNOWN_MODELS.filter(id => !CLINE_PASS_IMAGE_MODELS.has(id));
@@ -2199,7 +2239,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelContextWindows: { "glm-5.3": 1_000_000, "glm-5.3[1m]": 1_000_000, "glm-5.3-flash": 1_000_000, "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 },
     // Z.AI's OpenAI path returns 400 code 1211 for bracketed model ids.
     modelSuffixBracketStrip: true,
-    noVisionModels: ZAI_GLM_5X_MODELS,
+    noVisionModels: ZAI_GLM_5X_SIDECAR_VISION_MODELS,
     modelReasoningEfforts: ZAI_GLM_5X_REASONING_EFFORTS,
     modelDefaultReasoningEfforts: Object.fromEntries(ZAI_GLM_53_MODELS.map(id => [id, "max"])),
     modelMaxOutputTokens: Object.fromEntries(ZAI_GLM_53_MODELS.map(id => [id, 131_072])),
@@ -2280,7 +2320,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     jawcodeBundle: "zai",
     modelContextWindows: { "glm-5.3": 1_000_000, "glm-5.3[1m]": 1_000_000, "glm-5.3-flash": 1_000_000, "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 },
     modelSuffixBracketStrip: true,
-    noVisionModels: ZAI_GLM_5X_MODELS,
+    noVisionModels: ZAI_GLM_5X_SIDECAR_VISION_MODELS,
     modelReasoningEfforts: ZAI_GLM_5X_REASONING_EFFORTS,
     modelSupportsReasoningSummaries: Object.fromEntries(ZAI_GLM_5X_MODELS.map(id => [id, true])),
     preserveReasoningContentModels: ZAI_GLM_5X_MODELS,
@@ -2513,7 +2553,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     models: ["glm-5.3", "glm-5.3-flash", "glm-5.2", "deepseek-v4-pro", "qwen3-coder:480b", "gpt-oss:120b", "kimi-k2.6", "minimax-m3", "qwen3.5:397b", "gemma4:31b"],
     defaultModel: "glm-5.3",
     noVisionModels: [
-      "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "glm-4.7",
+      // glm-5.3-flash is absent on purpose: native VLM
+      // (docs.z.ai/guides/vlm/glm-5.3-flash), so its images skip the sidecar.
+      "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "glm-4.7",
       "minimax-m2.7", "minimax-m2.5", "minimax-m2.1",
       "nemotron-3-ultra", "nemotron-3-super",
       "deepseek-v4-pro", "deepseek-v4-flash",

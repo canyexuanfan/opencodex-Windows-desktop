@@ -226,6 +226,66 @@ describe("Moonshot tool schema normalization (issue #2673)", () => {
     expect(value.enum).toEqual(["x", "y"]);
   });
 
+  // BUG-R6: "the node narrows the target" was asserted, never enforced.
+  //
+  // The test above uses a node whose minLength is TIGHTER than the target's, so a plain
+  // overwrite and a real narrowing are indistinguishable there. When the node is LOOSER,
+  // the two diverge and the overwrite ships the weaker contract - the opposite of what
+  // the comment claims and of what `$ref` means under 2020-12, where the node and its
+  // target both apply.
+  test("a looser sibling assertion does not relax the target", async () => {
+    const parameters = await emittedParameters("https://api.moonshot.ai/v1", {
+      name: "loosening_tool",
+      parameters: {
+        type: "object",
+        $defs: {
+          Tight: {
+            type: "string",
+            minLength: 5,
+            maxLength: 10,
+            minimum: 10,
+            maximum: 100,
+          },
+        },
+        properties: {
+          value: {
+            $ref: "#/$defs/Tight",
+            // Every one of these is weaker than the target's.
+            minLength: 1,
+            maxLength: 99,
+            minimum: 0,
+            maximum: 1_000,
+          },
+        },
+      },
+    });
+
+    const value = (parameters?.properties as Record<string, Record<string, unknown>>).value!;
+    // The intersection, per keyword direction: lower bounds take the max, upper bounds
+    // take the min. Both sides apply, so the surviving constraint is the stricter one.
+    expect(value.minLength).toBe(5);
+    expect(value.minimum).toBe(10);
+    expect(value.maxLength).toBe(10);
+    expect(value.maximum).toBe(100);
+  });
+
+  test("a tighter sibling assertion still wins", async () => {
+    // The other direction, so the fix cannot be "always prefer the target" - that would
+    // discard a genuine narrowing, which is the mirror-image bug.
+    const parameters = await emittedParameters("https://api.moonshot.ai/v1", {
+      name: "tightening_tool",
+      parameters: {
+        type: "object",
+        $defs: { Loose: { type: "string", minLength: 1, maxLength: 100 } },
+        properties: { value: { $ref: "#/$defs/Loose", minLength: 5, maxLength: 10 } },
+      },
+    });
+
+    const value = (parameters?.properties as Record<string, Record<string, unknown>>).value!;
+    expect(value.minLength).toBe(5);
+    expect(value.maxLength).toBe(10);
+  });
+
   test("a deeply nested ref-free schema is bounded instead of exhausting the stack", async () => {
     // The second blocker: the expansion budget counts $ref inlines only, so a schema with
     // no refs at all walked unbounded. This nests far past any real tool.
