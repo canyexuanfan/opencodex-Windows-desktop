@@ -5,6 +5,7 @@ import { setClientResourceData } from "../client-resource";
 import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surface";
 import PromptLayerRow from "../components/codex-set/PromptLayerRow";
 import PromptLayerDialog from "../components/codex-set/PromptLayerDialog";
+import type { LayerId } from "../components/codex-set/prompt-layer-copy";
 
 /**
  * The Prompt panel of Codex Set (WP3).
@@ -25,7 +26,13 @@ export type LayerClass =
   | "extension-unknown";
 
 export interface LayerDescriptorDto {
-  id: string;
+  /**
+   * Narrowed to the ids the GUI has copy for. The server projects LAYER_INVENTORY,
+   * so a value outside this union means the runtime shipped a layer this build does
+   * not know about - handled explicitly at the render site rather than surfacing as
+   * a blank row.
+   */
+  id: LayerId;
   class: LayerClass;
   key: string | null;
   default: boolean | null;

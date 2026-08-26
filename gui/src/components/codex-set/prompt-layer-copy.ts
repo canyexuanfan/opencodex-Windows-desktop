@@ -2,14 +2,38 @@ import type { TKey } from "../../i18n/en";
 import type { LayerClass } from "../../pages/codex-set-prompt";
 
 /**
+ * Every layer id in LAYER_INVENTORY, as a finite union.
+ *
+ * This is what makes the maps below exhaustive. `Record<string, TKey>` does NOT:
+ * `string` has no required members, so deleting an entry typechecks cleanly and
+ * the non-null assertion at the call site hides the missing lookup until a user
+ * sees a blank row. A union has required members, so a gap is a build failure.
+ */
+export type LayerId =
+  | "base-instructions"
+  | "model-switch"
+  | "personality"
+  | "context-window-guidance"
+  | "realtime"
+  | "agents-md"
+  | "permissions"
+  | "collaboration"
+  | "environment"
+  | "environments-instructions"
+  | "apps"
+  | "plugins"
+  | "tools"
+  | "skills"
+  | "multi-agent-mode";
+
+/**
  * Layer id -> i18n key, written out rather than built by string concatenation.
  *
  * A template like `("codexSet.layer." + id) as never` typechecks whether or not
  * the key exists, so a missing translation reaches the user as a raw key instead
- * of failing the build. These maps are `Record<..., TKey>`, which makes an absent
- * key a typecheck error - the same guarantee the locale dictionaries already have.
+ * of failing the build.
  */
-export const LAYER_LABEL_KEYS: Record<string, TKey> = {
+export const LAYER_LABEL_KEYS: Record<LayerId, TKey> = {
   "base-instructions": "codexSet.layer.base-instructions",
   "model-switch": "codexSet.layer.model-switch",
   personality: "codexSet.layer.personality",
@@ -27,7 +51,7 @@ export const LAYER_LABEL_KEYS: Record<string, TKey> = {
   "multi-agent-mode": "codexSet.layer.multi-agent-mode",
 };
 
-export const LAYER_ABOUT_KEYS: Record<string, TKey> = {
+export const LAYER_ABOUT_KEYS: Record<LayerId, TKey> = {
   "base-instructions": "codexSet.about.base-instructions",
   "model-switch": "codexSet.about.model-switch",
   personality: "codexSet.about.personality",
@@ -45,8 +69,13 @@ export const LAYER_ABOUT_KEYS: Record<string, TKey> = {
   "multi-agent-mode": "codexSet.about.multi-agent-mode",
 };
 
-/** Only runtime-conditional rows state a condition; the rest have none to state. */
-export const LAYER_CONDITION_KEYS: Record<string, TKey> = {
+/**
+ * Only runtime-conditional rows state a condition, so this map is deliberately
+ * PARTIAL - a Partial<Record<LayerId, TKey>> rather than a total one, because
+ * requiring an entry for every layer would mean inventing conditions that do not
+ * exist.
+ */
+export const LAYER_CONDITION_KEYS: Partial<Record<LayerId, TKey>> = {
   "model-switch": "codexSet.condition.model-switch",
   realtime: "codexSet.condition.realtime",
   "agents-md": "codexSet.condition.agents-md",
@@ -60,4 +89,3 @@ export const CLASS_LABEL_KEYS: Record<LayerClass, TKey> = {
   "runtime-conditional": "codexSet.class.runtime-conditional",
   "extension-unknown": "codexSet.class.extension-unknown",
 };
-

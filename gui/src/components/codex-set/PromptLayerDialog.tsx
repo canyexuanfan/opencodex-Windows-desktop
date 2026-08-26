@@ -29,10 +29,16 @@ export default function PromptLayerDialog({
 
   useEffect(() => {
     const dialog = dialogRef.current;
+    // Remember who opened this. A modal that closes to the document root strands a
+    // keyboard user, and the row they were reading is the only sensible return.
+    const opener = document.activeElement as HTMLElement | null;
     if (dialog && !dialog.open) dialog.showModal();
     // A parent re-render that drops this node while the dialog is open would
     // otherwise leave the top layer occupied.
-    return () => { if (dialog?.open) dialog.close(); };
+    return () => {
+      if (dialog?.open) dialog.close();
+      if (opener && typeof opener.focus === "function") opener.focus();
+    };
   }, []);
 
   const handleCancel = useCallback((event: React.SyntheticEvent) => {
@@ -66,6 +72,13 @@ export default function PromptLayerDialog({
           <div className="codex-set-layer-dialog__line">
             <span className="muted text-label">{t("codexSet.dialog.key")}</span>
             <code className="api-code">{descriptor.key}</code>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => { void navigator.clipboard?.writeText(descriptor.key ?? ""); }}
+            >
+              {t("codexSet.dialog.copyKey")}
+            </button>
           </div>
         )}
 
@@ -75,7 +88,12 @@ export default function PromptLayerDialog({
             <span>
               {toggle.userFileValue === null
                 ? t("codexSet.dialog.absentDefault", { value: String(toggle.default) })
-                : String(toggle.userFileValue)}
+                // The default travels with an explicit value too: knowing the file says
+                // false is only half the answer without knowing what it would be otherwise.
+                : t("codexSet.dialog.setValue", {
+                  value: String(toggle.userFileValue),
+                  fallback: String(toggle.default),
+                })}
             </span>
           </div>
         )}

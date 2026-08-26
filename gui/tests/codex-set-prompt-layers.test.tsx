@@ -12,30 +12,19 @@ import type { Root } from "react-dom/client";
 import { LanguageProvider } from "../src/i18n/provider";
 import { clearClientResourceStoresForTests } from "../src/client-resource";
 import CodexSetPrompt from "../src/pages/codex-set-prompt";
+import { LAYER_INVENTORY } from "../../src/codex/prompt-layers";
 
 const globals = ["document", "window", "navigator", "localStorage", "IS_REACT_ACT_ENVIRONMENT"] as const;
 let previousGlobals: Record<(typeof globals)[number], unknown>;
 let testWindow: Window;
 const originalFetch = globalThis.fetch;
 
-/** The shipped inventory, verbatim from src/codex/prompt-layers.ts. */
-const INVENTORY = [
-  { id: "base-instructions", class: "base", key: null, default: null, order: 0 },
-  { id: "model-switch", class: "runtime-conditional", key: null, default: null, order: 1 },
-  { id: "personality", class: "feature-gated", key: "features.personality", default: true, order: 2 },
-  { id: "context-window-guidance", class: "feature-gated", key: "features.token_budget", default: false, order: 3 },
-  { id: "realtime", class: "runtime-conditional", key: null, default: null, order: 4 },
-  { id: "agents-md", class: "runtime-conditional", key: null, default: null, order: 5 },
-  { id: "permissions", class: "config-toggle", key: "include_permissions_instructions", default: true, order: 6 },
-  { id: "collaboration", class: "config-toggle", key: "include_collaboration_mode_instructions", default: true, order: 7 },
-  { id: "environment", class: "config-toggle", key: "include_environment_context", default: true, order: 8 },
-  { id: "environments-instructions", class: "feature-gated", key: "features.deferred_executor", default: false, order: 9 },
-  { id: "apps", class: "config-toggle", key: "include_apps_instructions", default: true, order: 10 },
-  { id: "plugins", class: "runtime-conditional", key: null, default: null, order: 11 },
-  { id: "tools", class: "feature-gated", key: "features.deferred_tool_world_state", default: false, order: 12 },
-  { id: "skills", class: "config-toggle", key: "skills.include_instructions", default: true, order: 13 },
-  { id: "multi-agent-mode", class: "feature-gated", key: "features.multi_agent_v2.enabled", default: false, order: 14 },
-];
+/**
+ * The SHIPPED inventory, imported rather than copied. A hand-written fixture
+ * drifts silently: a layer added to WP1 would simply not be covered, which is
+ * exactly the gap these tests exist to close.
+ */
+const INVENTORY = LAYER_INVENTORY.map(d => ({ ...d }));
 
 function snapshot(over: Record<string, unknown> = {}) {
   return {
@@ -144,11 +133,18 @@ test("3. a feature-gated row names its governing key and is not called always-on
   // Calling them always-on would tell a user a setting does not exist.
   stubRoutes(() => json(snapshot()));
   const { container, root } = await mount();
-  const personality = row(container, "personality")!;
-  expect(personality.textContent).toContain("features.personality");
-  expect(personality.querySelector(".codex-set-prompt__note--locked")).toBeNull();
-  const base = row(container, "base-instructions")!;
-  expect(base.querySelector(".codex-set-prompt__note--locked")).not.toBeNull();
+  // Every feature-gated row, not one hand-picked example: these layers ARE
+  // disableable, so labelling any of them always-on is the specific falsehood.
+  for (const d of INVENTORY.filter(x => x.class === "feature-gated")) {
+    const el = row(container, d.id)!;
+    expect(el.textContent, d.id).toContain(d.key!);
+    expect(el.querySelector(".codex-set-prompt__note--locked"), d.id).toBeNull();
+    expect(el.querySelector("a"), d.id).not.toBeNull();
+  }
+  // And every row that genuinely has no off-switch anywhere does carry the label.
+  for (const d of INVENTORY.filter(x => x.class === "base" || x.class === "runtime-conditional")) {
+    expect(row(container, d.id)!.querySelector(".codex-set-prompt__note--locked"), d.id).not.toBeNull();
+  }
   await act(async () => { root.unmount(); });
 });
 
@@ -161,17 +157,30 @@ test("5. extension layers render as a statement, never as rows", async () => {
 });
 
 test("6. a rejected PUT reverts the row to server truth", async () => {
+  // The server keeps apps OFF throughout. An optimistic UI would show the switch
+  // the user clicked; reverting to server truth means showing what the FILE says,
+  // which is why the fixture disagrees with both the click and the initial render.
+  let gets = 0;
   const calls = stubRoutes(call => {
     if (call.method === "PUT") return json({ ok: false, code: "config_unreadable", message: "nope" }, 409);
-    return json(snapshot());
+    gets += 1;
+    return json(snapshot({
+      toggles: INVENTORY.filter(d => d.class === "config-toggle").map(d => ({
+        id: d.id, key: d.key as string,
+        userFileValue: d.id === "apps" && gets > 1 ? false : null,
+        defaultedUserValue: !(d.id === "apps" && gets > 1),
+        default: true,
+      })),
+    }));
   });
   const { container, root } = await mount();
   const apps = row(container, "apps")!.querySelector("input") as HTMLInputElement;
   expect(apps.checked).toBe(true);
   await act(async () => { apps.click(); });
-  // The switch must not keep showing a state the file does not have.
+  // The refreshed snapshot says false, so the row must read false. Counting GETs
+  // would pass even if the response were discarded and the row stayed true.
   const after = row(container, "apps")!.querySelector("input") as HTMLInputElement;
-  expect(after.checked).toBe(true);
+  expect(after.checked).toBe(false);
   expect(container.querySelector("[role=\"alert\"]")).not.toBeNull();
   expect(calls.filter(c => c.method === "GET").length).toBeGreaterThan(1);
   await act(async () => { root.unmount(); });
@@ -186,6 +195,10 @@ test("7. the dialog opens read-only: no textarea, no save", async () => {
   expect(dialog).not.toBeNull();
   expect(dialog!.querySelector("textarea")).toBeNull();
   expect(dialog!.querySelector("input")).toBeNull();
+  // The test is named "no save", so assert it: a Save control appearing later is
+  // exactly the regression a textarea check alone would miss.
+  const actionLabels = [...dialog!.querySelectorAll("button")].map(b => (b.textContent ?? "").toLowerCase());
+  expect(actionLabels.some(l => l.includes("save"))).toBe(false);
   expect(dialog!.textContent).toContain("include_permissions_instructions");
   await act(async () => { root.unmount(); });
 });
@@ -199,7 +212,12 @@ test("9. the dialog says plainly that no rendered layer text exists", async () =
     (row(container, "base-instructions")!.querySelector("button") as HTMLButtonElement).click();
   });
   const dialog = document.querySelector("dialog.modal-overlay")!;
-  expect(dialog.querySelector(".codex-set-layer-dialog__no-text")).not.toBeNull();
+  const notice = dialog.querySelector(".codex-set-layer-dialog__no-text");
+  expect(notice).not.toBeNull();
+  // The element existing is not the contract; saying so is. An empty div would
+  // satisfy a presence check while telling the reader nothing.
+  expect((notice!.textContent ?? "").length).toBeGreaterThan(40);
+  expect(notice!.textContent).toContain("does not expose");
   await act(async () => { root.unmount(); });
 });
 
@@ -210,8 +228,18 @@ test("4. a runtime-conditional row states the condition that emits it", async ()
     (row(container, "agents-md")!.querySelector("button") as HTMLButtonElement).click();
   });
   const dialog = document.querySelector("dialog.modal-overlay")!;
-  expect(dialog.textContent).toContain("AGENTS.md");
-  expect((dialog.textContent ?? "").length).toBeGreaterThan(40);
+  // The about text already contains "AGENTS.md" and is long, so asserting either
+  // would pass with the condition paragraph deleted. Query the condition copy
+  // itself, and prove the SAME dialog omits it for a non-conditional layer.
+  const conditional = dialog.textContent ?? "";
+  expect(conditional).toContain("working directory");
+  await act(async () => {
+    (document.querySelector("dialog.modal-overlay button") as HTMLButtonElement).click();
+  });
+  await act(async () => {
+    (row(container, "permissions")!.querySelector("button") as HTMLButtonElement).click();
+  });
+  expect(document.querySelector("dialog.modal-overlay")!.textContent).not.toContain("working directory");
   await act(async () => { root.unmount(); });
 });
 
@@ -219,16 +247,35 @@ test("8. Escape closes the dialog and returns focus to the row", async () => {
   stubRoutes(() => json(snapshot()));
   const { container, root } = await mount();
   const trigger = row(container, "apps")!.querySelector("button") as HTMLButtonElement;
-  await act(async () => { trigger.click(); });
+  // A real browser focuses a button when it is clicked; happy-dom does not, so the
+  // focus is set explicitly to model the state the dialog actually opens from.
+  await act(async () => { trigger.focus(); trigger.click(); });
   expect(document.querySelector("dialog.modal-overlay")).not.toBeNull();
   const dialog = document.querySelector("dialog.modal-overlay") as HTMLDialogElement;
   await act(async () => {
     dialog.dispatchEvent(new testWindow.Event("cancel", { cancelable: true }));
   });
   expect(document.querySelector("dialog.modal-overlay")).toBeNull();
+  // Closing without returning focus strands a keyboard user at the document root.
+  expect(document.activeElement).toBe(trigger);
   await act(async () => { root.unmount(); });
 });
 
+test("11. a cold load shows the skeleton; a refresh keeps the rows visible", async () => {
+  // The two states the loading contract exists to separate. A refresh that blanked
+  // the list would read as "everything disappeared" rather than "checking again".
+  stubRoutes(() => json(snapshot()));
+  const { container, root } = await mount();
+  expect(container.querySelectorAll("[data-layer-id]").length).toBe(INVENTORY.length);
+
+  // A second surface on the same key renders from cache with no skeleton: that is
+  // the revalidation path, and it must never blank rows the user is reading.
+  const second = await mount();
+  expect(second.container.querySelector(".data-surface-skeleton")).toBeNull();
+  expect(second.container.querySelectorAll("[data-layer-id]").length).toBe(INVENTORY.length);
+  await act(async () => { second.root.unmount(); });
+  await act(async () => { root.unmount(); });
+});
 test("10. an unreadable config refuses writes on every switch", async () => {
   stubRoutes(() => json(snapshot({ readable: false })));
   const { container, root } = await mount();
@@ -237,4 +284,3 @@ test("10. an unreadable config refuses writes on every switch", async () => {
   for (const input of switches) expect(input.disabled).toBe(true);
   await act(async () => { root.unmount(); });
 });
-

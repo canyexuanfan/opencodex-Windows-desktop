@@ -36,7 +36,10 @@ export default function PromptLayerRow({
   onOpen: (id: string) => void;
 }) {
   const t = useT();
-  const label = t(LAYER_LABEL_KEYS[descriptor.id]!);
+  const labelKey = LAYER_LABEL_KEYS[descriptor.id];
+  // An id this build has no copy for is shown verbatim rather than blank: a newer
+  // runtime listing a layer we do not know about is information, not an error.
+  const label = labelKey ? t(labelKey) : descriptor.id;
   const checked = toggle?.defaultedUserValue ?? descriptor.default ?? true;
 
   return (
@@ -64,9 +67,13 @@ export default function PromptLayerRow({
           <span className="switch-track" aria-hidden="true" />
         </label>
       ) : descriptor.class === "feature-gated" ? (
-        // Configurable, just not here. Naming the governing key is the whole point:
-        // "always on" would be a lie about a setting the user can actually change.
-        <span className="codex-set-prompt__note">{t("codexSet.row.featureGated")}</span>
+        // Configurable, just not here. Naming the governing key is the whole point -
+        // "always on" would be a lie about a setting the user can actually change -
+        // and the link is what turns that from a dead end into a destination.
+        <span className="codex-set-prompt__note">
+          {t("codexSet.row.featureGated")}{" "}
+          <a className="link-btn" href="#integrations/codex">{t("codexSet.row.openFeatures")}</a>
+        </span>
       ) : (
         // base and runtime-conditional: no off-switch exists anywhere in Codex.
         <span className="codex-set-prompt__note codex-set-prompt__note--locked">
