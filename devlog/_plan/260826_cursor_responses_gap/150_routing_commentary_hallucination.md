@@ -52,4 +52,10 @@ not a useful repair: the model ignored the existing exact instruction.
   retry, no leaked commentary, and the existing envelope cases.
 - Focused suite: 54 pass / 0 fail across output quarantine, tool definitions,
   repetition breaker, silent redirect, and tool continuation tests.
-- Live verification follows after ocx service repair on the gap-11 branch.
+- Live verification after ocx service repair on the gap-11 branch:
+  - Fresh codex exec session with cursor/kimi-k3-1m: first visible action was
+    the real command execution (cat /tmp/ocx-routing-live.txt), exit 0; final
+    response was LIVE_ROUTING_OK=ROUTING_LIVE_7391; no tool-selection prose.
+  - Adversarial raw Responses batch seeded the prior assistant history with the
+    false blocked/switching sentence: 10/10 HTTP 200, each returned one real
+    exec custom tool call, zero leaked Read/Grep/Shell failure commentary.
