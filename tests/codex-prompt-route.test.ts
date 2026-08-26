@@ -640,6 +640,30 @@ describe("020 coverage completions", () => {
     expect(res.body.code).toBe("composed_too_large");
   });
 
+  test("25. /text takes no caller-supplied directory", async () => {
+    // A cwd parameter let an authenticated request read any readable folder's
+    // AGENTS.md through the dashboard, and described a prompt from wherever the
+    // caller pointed rather than the configuration this page reports on.
+    const source = await Bun.file(new URL("../src/server/management/codex-prompt-routes.ts", import.meta.url)).text();
+    const textRoute = source.slice(source.indexOf("/api/codex-prompt/text"));
+    expect(textRoute).not.toContain("searchParams.get(\"cwd\")");
+    expect(textRoute.slice(0, 900)).not.toContain("process.cwd()");
+
+    const probe = await Bun.file(new URL("../src/codex/prompt-text-probe.ts", import.meta.url)).text();
+    // The probe resolves CODEX_HOME itself; it must not accept a directory.
+    expect(probe).toContain("resolveCodexHomeDir()");
+    expect(probe).toMatch(/export async function probePromptText\(timeoutMs/);
+  });
+
+  test("26. the probe is bounded in bytes as well as in time", async () => {
+    // A 15-second window with no output ceiling let a noisy binary balloon the
+    // server. Both bounds must exist, and the process must settle exactly once.
+    const probe = await Bun.file(new URL("../src/codex/prompt-text-probe.ts", import.meta.url)).text();
+    expect(probe).toContain("MAX_PROBE_OUTPUT_BYTES");
+    expect(probe).toContain("if (settled) return;");
+    // Decoding per chunk corrupts UTF-8 that straddles a chunk boundary.
+    expect(probe).toContain("Buffer.concat(chunks).toString(\"utf8\")");
+  });
   test("24. every ownership state is named, not collapsed into a boolean", async () => {
     // developerInstructionsOwned:false covers an ABSENT key and an EXTERNAL one, and
     // a GUI that cannot tell them apart hides its own create affordance from every

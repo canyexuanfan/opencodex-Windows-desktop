@@ -38,6 +38,19 @@ const LAYER_SECTION_TAGS: Record<string, string> = {
   realtime: "realtime",
 };
 
+/**
+ * Inventory ids with no confirmed tag in the rendered output. They are listed
+ * explicitly rather than left missing: an absent entry made the dialog report a
+ * successful probe as unavailable.
+ */
+const UNMAPPED_LAYER_IDS = [
+  "model-switch",
+  "context-window-guidance",
+  "environments-instructions",
+  "tools",
+  "multi-agent-mode",
+] as const;
+
 export interface LayerText {
   /** Rendered text, when this layer produced a section on the probed turn. */
   text: string | null;
@@ -191,5 +204,12 @@ export async function probePromptText(timeoutMs = 15_000): Promise<PromptTextPro
   }
   // The base prompt travels outside prompt.input and cannot be read this way.
   layers["base-instructions"] = { text: null, reason: "not-exposed", bytes: 0 };
+
+  // Layers whose rendered tag we have not confirmed against live output. Leaving
+  // them absent made the GUI fall through to "unavailable", which claims the probe
+  // failed when it succeeded. Saying we have no mapping is the smaller claim.
+  for (const id of UNMAPPED_LAYER_IDS) {
+    layers[id] ??= { text: null, reason: "not-exposed", bytes: 0 };
+  }
   return { ok: true, codexHome, layers };
 }

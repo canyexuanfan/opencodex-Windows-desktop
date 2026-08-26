@@ -125,7 +125,14 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
    * `codex debug prompt-input`, so it is not part of the panel load - a user who
    * never opens a layer never pays for it.
    */
-  const [layerText, setLayerText] = useState<{ ok: boolean; layers?: Record<string, { text: string | null; reason: string; bytes: number }> } | null>(null);
+  const [layerText, setLayerText] = useState<{ ok: boolean; layers?: Record<string, { text: string | null; reason: string; bytes: number; sourcePath?: string }> } | null>(null);
+
+  /**
+   * Drop the measured text after any write. It describes the configuration that
+   * just changed, so keeping it would show a layer's old body and old byte count
+   * beside a switch that now reads off. Nulling it re-triggers the fetch.
+   */
+  const invalidateLayerText = useCallback(() => { setLayerText(null); }, []);
 
   const load = useCallback(async (signal: AbortSignal): Promise<PromptSnapshotDto> => {
     const res = await fetch(apiBase + "/api/codex-prompt", { signal });
@@ -164,6 +171,10 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
         return;
       }
       setClientResourceData(resourceKey, body.snapshot);
+      invalidateLayerText();
+      // The measured text belongs to the configuration that just changed. Keeping
+      // it would show a layer's old body next to a switch that now says off.
+      setLayerText(null);
     } catch {
       setError(t("codexSet.prompt.writeFailed"));
       resource.refresh();
@@ -209,6 +220,7 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
         return false;
       }
       setClientResourceData(resourceKey, body.snapshot);
+      invalidateLayerText();
       return true;
     } catch {
       setError(t("codexSet.prompt.writeFailed"));
@@ -262,6 +274,7 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
       }
       if (body.snapshot) {
         setClientResourceData(resourceKey, body.snapshot);
+        invalidateLayerText();
         setAdoptPreview(null);
         return;
       }
@@ -297,6 +310,7 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
       }
       if (body.snapshot) setClientResourceData(resourceKey, body.snapshot);
       else resource.refresh();
+      invalidateLayerText();
     } catch {
       setError(t("codexSet.prompt.repairFailed"));
     } finally {
