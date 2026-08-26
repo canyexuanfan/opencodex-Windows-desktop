@@ -372,6 +372,14 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
     void (async () => {
       try {
         const res = await fetch(apiBase + "/api/codex-prompt/text");
+        // Status first. A 500 body still parses as JSON, and `{}` deserialized
+        // into this shape reads as a probe that succeeded and found no layers -
+        // so every row would silently lose its byte count and every dialog would
+        // claim the layer sent nothing.
+        if (!res.ok) {
+          if (!cancelled) setLayerText({ ok: false });
+          return;
+        }
         const body = await res.json() as { ok: boolean; layers?: Record<string, { text: string | null; reason: string; bytes: number }> };
         if (!cancelled) setLayerText(body);
       } catch {

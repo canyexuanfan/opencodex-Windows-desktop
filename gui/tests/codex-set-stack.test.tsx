@@ -62,7 +62,15 @@ afterEach(() => {
   }
 });
 
-interface Call { url: string; method: string; body: any }
+/**
+ * The request body, typed rather than `any`.
+ *
+ * Every assertion below reads `body.layers[].id`, so `any` bought nothing and
+ * cost the repository's lint gate. `revision` is optional because only the
+ * write calls carry one.
+ */
+interface CallBody { layers?: { id: string; title: string; body: string }[]; revision?: string; enabled?: boolean }
+interface Call { url: string; method: string; body: CallBody }
 function stubRoutes(handler: (call: Call) => Response) {
   const calls: Call[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -257,7 +265,7 @@ test("custom layers reorder from the keyboard, not only from the buttons", async
   });
   const put = calls.find(c => c.method === "PUT");
   expect(put).toBeDefined();
-  expect(put!.body.layers.map((l: any) => l.id)).toEqual(["bbbbbb", "aaaaaa", "cccccc"]);
+  expect(put!.body.layers.map(l => l.id)).toEqual(["bbbbbb", "aaaaaa", "cccccc"]);
 
   // A bare arrow is ordinary navigation and must not reorder anything.
   const before = calls.filter(c => c.method === "PUT").length;
@@ -299,11 +307,11 @@ test("9. saving after navigation writes the layer you are looking at", async () 
   expect(put.url).toBe("/api/codex-prompt/custom");
   expect(put.body.revision).toBe("sha256:one");
   // The edited layer keeps its id, and its siblings survive untouched.
-  expect(put.body.layers.map((l: any) => l.id)).toEqual(["aaaaaa", "bbbbbb", "cccccc"]);
-  const edited = put.body.layers.find((l: any) => l.id === "bbbbbb");
+  expect(put.body.layers.map(l => l.id)).toEqual(["aaaaaa", "bbbbbb", "cccccc"]);
+  const edited = put.body.layers.find(l => l.id === "bbbbbb");
   expect(edited.body).toBe("Edited beta.");
-  expect(put.body.layers.find((l: any) => l.id === "aaaaaa")).toEqual(THREE[0]);
-  expect(put.body.layers.find((l: any) => l.id === "cccccc")).toEqual(THREE[2]);
+  expect(put.body.layers.find(l => l.id === "aaaaaa")).toEqual(THREE[0]);
+  expect(put.body.layers.find(l => l.id === "cccccc")).toEqual(THREE[2]);
   await act(async () => { root.unmount(); });
 });
 
@@ -351,5 +359,26 @@ test("the top row does not move up, and the bottom row does not move down", asyn
   });
   // Silently writing an unchanged list would burn a revision for nothing.
   expect(calls.filter(c => c.method === "PUT")).toHaveLength(0);
+  await act(async () => { root.unmount(); });
+});
+
+test("an error response is not trusted for its layer data", async () => {
+  // A 500 body still parses as JSON. Without a status check the payload was
+  // adopted verbatim, so an error response carrying a `layers` key was reported
+  // to the user as measured truth - here, a 12-byte permissions layer that was
+  // never actually read.
+  stubRoutes(call => (call.url.includes("/text")
+    ? json({ ok: true, layers: { permissions: { text: "stale", reason: "ok", bytes: 12 } } }, 500)
+    : json(snapshot())));
+  const { container, root } = await mount();
+  const row = container.querySelector("[data-layer-id=\"permissions\"]")!;
+  // Nothing was measured, so nothing is claimed.
+  expect(row.querySelector(".codex-set-prompt__bytes")).toBeNull();
+  await act(async () => {
+    (row.querySelector("button") as HTMLButtonElement).click();
+  });
+  const dialog = document.querySelector("dialog.modal-overlay")!;
+  expect(dialog.querySelector(".codex-set-layer-dialog__text")).toBeNull();
+  expect(dialog.textContent).not.toContain("stale");
   await act(async () => { root.unmount(); });
 });
