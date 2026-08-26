@@ -512,6 +512,10 @@ export type WriteError =
   | "store_unreadable"
   | "invalid_characters"
   | "write_superseded"
+  // The filesystem refused a rename that passed every precondition: a directory on
+  // the store path, a mode change, a full disk. Distinct from write_superseded,
+  // which means another writer won a race — here nobody won and nothing landed.
+  | "write_failed"
   | "recovery_required"
   | "locked";
 
@@ -531,6 +535,24 @@ function splitLines(content: string): string[] {
   return content.replace(/\r\n/g, "\n").split("\n");
 }
 
+/**
+ * A leading UTF-8 BOM, split off so line editing never steps over it.
+ *
+ * Codex reads config.toml with Rust `toml_edit`, which accepts a BOM at byte 0 and
+ * nowhere else. Inserting the generated block at line index 0 pushed the BOM down
+ * to byte 58, the write reported success because our own byte comparison matched
+ * what we intended to write, and the next parse failed with
+ * "Expected a key but found (0xEF)" — a config file the user could no longer load,
+ * produced by a write that told them it worked.
+ *
+ * Editors on Windows write this byte routinely, so the file is not exotic.
+ */
+function splitBom(content: string): { bom: string; body: string } {
+  return content.startsWith("\ufeff")
+    ? { bom: "\ufeff", body: content.slice(1) }
+    : { bom: "", body: content };
+}
+
 function joinLines(lines: string[], eol: "\r\n" | "\n"): string {
   const text = lines.join("\n");
   return eol === "\n" ? text : text.replace(/\n/g, "\r\n");
@@ -544,7 +566,8 @@ function firstTableIndex(lines: string[]): number {
 /** Set a root-scope boolean, inserting above the first table when absent. */
 function setRootBool(content: string, key: string, value: boolean): string {
   const eol = dominantEol(content);
-  const lines = splitLines(content);
+  const { bom, body } = splitBom(content);
+  const lines = splitLines(body);
   const limit = firstTableIndex(lines);
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(`^(\\s*${escaped}\\s*=\\s*)(?:true|false)(\\s*(?:#.*)?)$`);
@@ -552,23 +575,24 @@ function setRootBool(content: string, key: string, value: boolean): string {
     const m = pattern.exec(lines[i]!);
     if (m) {
       lines[i] = `${m[1]}${value}${m[2]}`;
-      return joinLines(lines, eol);
+      return bom + joinLines(lines, eol);
     }
   }
   lines.splice(limit, 0, `${key} = ${value}`);
-  return joinLines(lines, eol);
+  return bom + joinLines(lines, eol);
 }
 
 /** Set a boolean inside `[table]`, appending the table when absent. */
 function setTableBool(content: string, table: string, key: string, value: boolean): string {
   const eol = dominantEol(content);
-  const lines = splitLines(content);
+  const { bom, body } = splitBom(content);
+  const lines = splitLines(body);
   const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const start = lines.findIndex(l => new RegExp(`^\\s*\\[${escaped}\\]\\s*(?:#.*)?$`).test(l));
   if (start === -1) {
     const tail = lines.length > 0 && lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
     lines.splice(tail, 0, `[${table}]`, `${key} = ${value}`);
-    return joinLines(lines, eol);
+    return bom + joinLines(lines, eol);
   }
   const keyEscaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(`^(\\s*${keyEscaped}\\s*=\\s*)(?:true|false)(\\s*(?:#.*)?)$`);
@@ -578,11 +602,11 @@ function setTableBool(content: string, table: string, key: string, value: boolea
     const m = pattern.exec(lines[i]!);
     if (m) {
       lines[i] = `${m[1]}${value}${m[2]}`;
-      return joinLines(lines, eol);
+      return bom + joinLines(lines, eol);
     }
   }
   lines.splice(end, 0, `${key} = ${value}`);
-  return joinLines(lines, eol);
+  return bom + joinLines(lines, eol);
 }
 
 /**
@@ -593,7 +617,11 @@ function setTableBool(content: string, table: string, key: string, value: boolea
 function setProjection(content: string | null, projection: string | null): string {
   const base = content ?? "";
   const eol = dominantEol(base);
-  const lines = splitLines(base);
+  // The BOM is held aside for the whole edit. This is the function that produced
+  // the corruption: the insert below is at index 0, which put the marker line
+  // ahead of a byte that is only legal at byte 0.
+  const { bom, body } = splitBom(base);
+  const lines = splitLines(body);
   const limit = firstTableIndex(lines);
 
   let markerAt = -1;
@@ -607,12 +635,12 @@ function setProjection(content: string | null, projection: string | null): strin
   if (markerAt !== -1) {
     if (projection === null) lines.splice(markerAt, 2);
     else lines[markerAt + 1] = `${DEV_INSTRUCTIONS_KEY} = ${encodeBasicString(projection)}`;
-    return joinLines(lines, eol);
+    return bom + joinLines(lines, eol);
   }
 
-  if (projection === null) return joinLines(lines, eol);
+  if (projection === null) return bom + joinLines(lines, eol);
   lines.splice(0, 0, OCX_SECTION_MARKER, `${DEV_INSTRUCTIONS_KEY} = ${encodeBasicString(projection)}`);
-  return joinLines(lines, eol);
+  return bom + joinLines(lines, eol);
 }
 
 function serializeStore(layers: readonly CustomLayer[]): string {
@@ -691,19 +719,39 @@ function commit(
 
     // 4/5. each target re-verifies ITS OWN bytes immediately before its rename,
     //      so a third party writing between step 2 and here is not overwritten.
-    if (configChanged) {
-      if (hashBytes(readFileOrNull(configPath)) !== record.preConfig) {
-        return rollback(record, journalPath, "stale_revision");
+    //
+    //      Wrapped, because a THROW here used to escape the transaction entirely.
+    //      Only `config` readability is pre-checked, so an unwritable STORE — a
+    //      directory sitting on its path, a permission change, a full disk — raised
+    //      out of `durableWrite` after the config had already been renamed into
+    //      place. The caller saw an exception, the config carried a projection whose
+    //      store did not exist, and the journal stayed behind claiming an
+    //      uncommitted intent. Every later write then failed recovery_required.
+    //
+    //      Rolling back on the way out restores the pre-state we recorded and drops
+    //      the journal, so a failed write leaves the pair exactly as it was found.
+    try {
+      if (configChanged) {
+        if (hashBytes(readFileOrNull(configPath)) !== record.preConfig) {
+          return rollback(record, journalPath, "stale_revision");
+        }
+        if (nextConfig === null) durableDelete(configPath);
+        else durableWrite(configPath, nextConfig);
       }
-      if (nextConfig === null) durableDelete(configPath);
-      else durableWrite(configPath, nextConfig);
-    }
-    if (storeChanged) {
-      if (hashBytes(readFileOrNull(storePath)) !== record.preStore) {
-        return rollback(record, journalPath, "stale_revision");
+      if (storeChanged) {
+        if (hashBytes(readFileOrNull(storePath)) !== record.preStore) {
+          return rollback(record, journalPath, "stale_revision");
+        }
+        if (nextStore === null) durableDelete(storePath);
+        else durableWrite(storePath, nextStore);
       }
-      if (nextStore === null) durableDelete(storePath);
-      else durableWrite(storePath, nextStore);
+    } catch (error) {
+      // `rollback` is byte-hash driven and refuses to touch a file it does not
+      // recognise, so it is safe to run against a partially applied pair. If it
+      // cannot account for what it finds it returns recovery_required, which is the
+      // honest answer — better than a silent half-write either way.
+      const undone = rollback(record, journalPath, "write_failed");
+      return { ...undone, detail: error instanceof Error ? error.message : String(error) } as WriteResult;
     }
 
     // 6. verify COMPLETE bytes, not just our two lines: another writer could

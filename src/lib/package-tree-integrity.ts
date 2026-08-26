@@ -3,7 +3,7 @@ import { statSync } from "node:fs";
 export interface PackageTreeObservation {
   readonly device: bigint;
   readonly inode: bigint;
-  readonly changeTimeNs: bigint;
+  readonly contentTimeNs: bigint;
   readonly size: bigint;
 }
 
@@ -25,7 +25,18 @@ function observePackageManifest(): PackageTreeObservation | null {
     return {
       device: stat.dev,
       inode: stat.ino,
-      changeTimeNs: stat.ctimeNs,
+      // mtimeNs, NOT ctimeNs. An inode-change time moves for METADATA writes that
+      // replace nothing: chmod, chown, touch, an editor normalizing permissions, a
+      // backup tool restoring modes. Each of those left device, inode and size
+      // identical, so the comparison below called the manifest "replaced" and every
+      // /v1/* request answered 503 until the process was restarted. Measured on
+      // macOS: chmod alone moved ctimeNs and left mtimeNs untouched.
+      //
+      // mtimeNs still catches every real replacement. An in-place rewrite of the
+      // same byte length moves mtimeNs while inode and size hold; an atomic
+      // install (write-then-rename, which is what a package manager does) changes
+      // the inode as well. Both were measured before this change was made.
+      contentTimeNs: stat.mtimeNs,
       size: stat.size,
     };
   } catch {
@@ -36,7 +47,7 @@ function observePackageManifest(): PackageTreeObservation | null {
 function sameObservation(left: PackageTreeObservation, right: PackageTreeObservation): boolean {
   return left.device === right.device
     && left.inode === right.inode
-    && left.changeTimeNs === right.changeTimeNs
+    && left.contentTimeNs === right.contentTimeNs
     && left.size === right.size;
 }
 
