@@ -932,6 +932,24 @@ function isXaiSchemaTarget(provider: OcxProviderConfig): boolean {
   }
 }
 
+// Moonshot validates function schemas against a draft-07 reading of `$ref`, where the
+// keyword stands alone and siblings are ignored. It rejects the whole request rather
+// than ignoring them: "not a valid moonshot flavored json schema ... when using $ref,
+// type should be defined in the referenced schema instead of the parent schema".
+const MOONSHOT_SCHEMA_HOSTNAMES = new Set([
+  "api.kimi.com",
+  "api.moonshot.ai",
+  "api.moonshot.cn",
+]);
+
+function isMoonshotSchemaTarget(provider: OcxProviderConfig): boolean {
+  try {
+    return MOONSHOT_SCHEMA_HOSTNAMES.has(new URL(provider.baseUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
 const VOLCENGINE_ARK_HOSTNAMES = new Set([
   "ark.cn-beijing.volces.com",
   "ark.ap-southeast.volces.com",
@@ -962,6 +980,99 @@ function ensureRootObjectType(parameters: unknown): Record<string, unknown> {
 
 function isXaiObjectSchema(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * JSON Schema 2020-12 makes `$ref` an in-place applicator: siblings stay in force and are
+ * combined with the referenced schema. Moonshot enforces the older draft-07 reading where
+ * `$ref` must stand alone, and 400s the entire request when a node carries both. Codex's own
+ * deferred tool catalog emits exactly that shape (zod-to-json-schema deduplicates into
+ * `$defs.__schema*` nodes that keep `type`/`minLength`/`format` beside the `$ref`), so the
+ * schema is not something a user can fix from configuration — see issue #2673.
+ *
+ * Inline the referenced schema underneath the node's own keywords, which is what 2020-12 says
+ * the node means, then drop `$ref`. Constraints reach the model instead of being stripped.
+ * The `$defs` bag is preserved: a bare `$ref` (no siblings) is already legal for Moonshot and
+ * is left pointing at its definition rather than expanded, which keeps recursive schemas finite.
+ */
+function moonshotRefTargetKeys(node: Record<string, unknown>): string[] {
+  return Object.keys(node).filter(key => key !== "$ref");
+}
+
+/**
+ * Inlining duplicates the target, so a schema referencing one large definition from many
+ * sibling-carrying nodes can multiply. Bound the total expansions and fall back to a bare
+ * `$ref` once the budget is spent: still valid for Moonshot, just without the node's own
+ * narrowing keywords. Mirrors the node budget in google-tool-schema.ts.
+ */
+const MOONSHOT_MAX_REF_EXPANSIONS = 512;
+
+interface MoonshotNormalizeState {
+  activeRefs: Set<string>;
+  remainingExpansions: number;
+}
+
+function normalizeMoonshotSchemaNode(
+  node: unknown,
+  root: Record<string, unknown>,
+  state: MoonshotNormalizeState,
+): unknown {
+  if (Array.isArray(node)) {
+    return node.map(item => normalizeMoonshotSchemaNode(item, root, state));
+  }
+  if (!isXaiObjectSchema(node)) return node;
+
+  const ref = node.$ref;
+  const hasSiblings = moonshotRefTargetKeys(node).length > 0;
+
+  if (typeof ref === "string" && hasSiblings) {
+    // A cycle cannot be inlined. Keeping the bare `$ref` is the lossy-but-valid fallback:
+    // Moonshot accepts it, and the alternative (dropping the ref) would erase the recursion.
+    if (state.activeRefs.has(ref) || state.remainingExpansions <= 0) return { $ref: ref };
+
+    const target = lookupLocalJsonPointer(root, ref);
+    if (isXaiObjectSchema(target)) {
+      state.remainingExpansions -= 1;
+      state.activeRefs.add(ref);
+      const resolvedTarget = normalizeMoonshotSchemaNode(target, root, state);
+      state.activeRefs.delete(ref);
+      const merged: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+      if (isXaiObjectSchema(resolvedTarget)) {
+        for (const [key, value] of Object.entries(resolvedTarget)) merged[key] = value;
+      }
+      // The node's own keywords win: under 2020-12 they are applied alongside the target,
+      // and a node that narrows `type`/`format` means the narrower constraint.
+      for (const [key, value] of Object.entries(node)) {
+        if (key === "$ref") continue;
+        merged[key] = normalizeMoonshotSchemaNode(value, root, state);
+      }
+      return merged;
+    }
+
+    // Unresolvable pointer (remote ref, malformed path, non-object target): the siblings are
+    // the only usable schema left, so drop the ref rather than forwarding a rejected node.
+    const withoutRef: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "$ref") continue;
+      withoutRef[key] = normalizeMoonshotSchemaNode(value, root, state);
+    }
+    return withoutRef;
+  }
+
+  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const [key, value] of Object.entries(node)) {
+    out[key] = key === "$ref" ? value : normalizeMoonshotSchemaNode(value, root, state);
+  }
+  return out;
+}
+
+function normalizeMoonshotToolParameters(parameters: unknown): Record<string, unknown> {
+  const rooted = ensureRootObjectType(parameters);
+  const normalized = normalizeMoonshotSchemaNode(rooted, rooted, {
+    activeRefs: new Set<string>(),
+    remainingExpansions: MOONSHOT_MAX_REF_EXPANSIONS,
+  });
+  return isXaiObjectSchema(normalized) ? normalized : rooted;
 }
 
 function stringRequiredFields(value: unknown): string[] {
@@ -1228,10 +1339,14 @@ function toolsToChatFormat(parsed: OcxParsedRequest, provider: OcxProviderConfig
   const tools = parsed.context.tools.filter(toolChoiceToolPredicate(parsed.options.toolChoice, parsed.context.tools));
   if (tools.length === 0) return undefined;
   const xaiTarget = isXaiSchemaTarget(provider);
+  const moonshotTarget = !xaiTarget && isMoonshotSchemaTarget(provider);
   const formatted = tools.flatMap(t => {
-    const parameters = stripResponsesOnlyEncryptedMarker(xaiTarget
+    const normalized = xaiTarget
       ? normalizeXaiToolParameters(t.parameters)
-      : ensureRootObjectType(t.parameters));
+      : moonshotTarget
+        ? normalizeMoonshotToolParameters(t.parameters)
+        : ensureRootObjectType(t.parameters);
+    const parameters = stripResponsesOnlyEncryptedMarker(normalized);
 
     if (parameters === undefined) return [];
     return [{
