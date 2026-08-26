@@ -43,6 +43,9 @@ const ZH_TW_KEEP_ENGLISH: ReadonlySet<string> = new Set([
   // A literal filename, not prose: AGENTS.md is the file Codex reads from the
   // working directory, and Taiwan renders it the same way every other locale does.
   "codexSet.layer.agents-md",
+  // "{position} / {total}" is punctuation and two placeholders, identical in
+  // every locale that ships it - there are no words to render in Chinese.
+  "codexSet.custom.navPosition",
   "provider.name.volcengineAgentPlan",
   "provider.name.volcengineCodingPlan",
   // Backend/brand names

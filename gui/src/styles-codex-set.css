@@ -72,3 +72,151 @@
   border-top: 1px solid var(--border);
 }
 
+/* Custom layers ---------------------------------------------------------- */
+
+.codex-set-custom {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.codex-set-custom__add {
+  margin-left: auto;
+}
+
+.codex-set-custom__reorder {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.codex-set-custom__adopt {
+  margin-top: 12px;
+}
+
+.codex-set-custom__adopt-preview {
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.codex-set-custom__confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.codex-set-custom-dialog {
+  max-width: 640px;
+}
+
+.codex-set-custom-dialog textarea {
+  width: 100%;
+  font-family: var(--mono, monospace);
+  font-size: 13px;
+  resize: vertical;
+}
+
+/* Advisory, never blocking - styled as notes rather than errors. */
+.codex-set-custom-dialog__lint {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.codex-set-custom-dialog__span {
+  margin-left: 6px;
+}
+
+.codex-set-custom-dialog__discard {
+  align-items: center;
+  gap: 8px;
+}
+
+/* Drift is announced, not silently healed, so the banner sits above the rows. */
+.codex-set-prompt__drift {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.codex-set-prompt__drift button {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.codex-set-custom__adopt-refusal {
+  margin-top: 8px;
+}
+
+/* Preset picker ----------------------------------------------------------- */
+
+.codex-set-preset {
+  margin-left: auto;
+  position: relative;
+}
+
+.codex-set-preset > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.codex-set-preset > summary::-webkit-details-marker {
+  display: none;
+}
+
+.codex-set-preset__menu {
+  position: absolute;
+  right: 0;
+  z-index: 10;
+  min-width: 280px;
+  max-width: 380px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.codex-set-preset__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.codex-set-preset__item:hover:not(:disabled) {
+  background: var(--bg-subtle, rgba(127, 127, 127, 0.08));
+}
+
+.codex-set-preset__desc,
+.codex-set-preset__provenance {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* The preview is the full body, so it is scrollable rather than clipped. */
+.codex-set-preset__preview {
+  margin-top: 4px;
+  max-height: 120px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  color: var(--muted);
+}

@@ -6,6 +6,11 @@ import { DataSurfaceSkeleton, DataSurfaceStatus } from "../components/data-surfa
 import PromptLayerRow from "../components/codex-set/PromptLayerRow";
 import PromptLayerDialog from "../components/codex-set/PromptLayerDialog";
 import type { LayerId } from "../components/codex-set/prompt-layer-copy";
+import type { TKey } from "../i18n/en";
+import CustomLayerRow from "../components/codex-set/CustomLayerRow";
+import CustomLayerDialog from "../components/codex-set/CustomLayerDialog";
+import PresetPicker from "../components/codex-set/PresetPicker";
+import { MAX_LAYERS, moveLayer, newLayerId, type Draft } from "../components/codex-set/custom-layer-state";
 
 /**
  * The Prompt panel of Codex Set (WP3).
@@ -60,6 +65,12 @@ export interface PromptSnapshotDto {
   configExists: boolean;
   readable: boolean;
   developerInstructionsOwned: boolean;
+  /**
+   * The precise ownership state. `developerInstructionsOwned: false` conflates an
+   * ABSENT key (ordinary first run) with an EXTERNAL one (someone else wrote it),
+   * and treating both as external hides + from every new user.
+   */
+  developerInstructionsState: "absent" | "owned" | "owned-malformed" | "external";
   drift: "journal-present" | "projection-stale" | "store-missing" | "owned-malformed" | null;
   revision: string;
   inventory: LayerDescriptorDto[];
@@ -78,12 +89,37 @@ function codexPromptResourceKey(apiBase: string): string {
   return "codex-prompt:" + apiBase;
 }
 
+/** One message per drift state; a new state upstream breaks the build here. */
+const DRIFT_KEYS: Record<Exclude<PromptSnapshotDto["drift"], null>, TKey> = {
+  "journal-present": "codexSet.drift.journalPresent",
+  "projection-stale": "codexSet.drift.projectionStale",
+  "store-missing": "codexSet.drift.storeMissing",
+  "owned-malformed": "codexSet.drift.ownedMalformed",
+};
+
 export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
   const t = useT();
   const resourceKey = codexPromptResourceKey(apiBase);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [openLayerId, setOpenLayerId] = useState<string | null>(null);
+  // null = closed, "new" = the + flow, otherwise the id being edited.
+  const [editing, setEditing] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  const [adoptPreview, setAdoptPreview] = useState<{ rawLine: string | null; decodedBody: string | null } | null>(null);
+  /**
+   * A refused adopt has to say WHERE. "The existing value could not be imported"
+   * leaves the user with no way to act; the file path and line number are what let
+   * them move the text by hand.
+   */
+  const [adoptRefusal, setAdoptRefusal] = useState<{ path?: string; line?: number | null; rawLine?: string | null } | null>(null);
+  const [repairBusy, setRepairBusy] = useState(false);
+  /**
+   * A preset chosen from the picker seeds the ordinary editor. It is a starting
+   * point, not a locked artifact, so it travels as a draft rather than being saved
+   * directly.
+   */
+  const [presetSeed, setPresetSeed] = useState<{ title: string; body: string } | null>(null);
 
   const load = useCallback(async (signal: AbortSignal): Promise<PromptSnapshotDto> => {
     const res = await fetch(apiBase + "/api/codex-prompt", { signal });
@@ -130,6 +166,137 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
     }
   };
 
+
+  /**
+   * Full-replacement write. The route is shaped that way on purpose: order is
+   * composition order, so a reorder needs no separate verb and a delete is just
+   * the remaining list.
+   */
+  const writeCustom = async (layers: CustomLayerDto[], busyKey: string): Promise<boolean> => {
+    if (!snapshot) return false;
+    // Keeping the editor open until the write lands (so a refusal cannot discard a
+    // draft) also means Save stays reachable while a PUT is in flight. Without this
+    // guard two full-replacement writes can leave with the same revision: one lands,
+    // the other comes back stale, and the user sees an error for work that succeeded.
+    if (busyId !== null) return false;
+    setBusyId(busyKey);
+    setError("");
+    const previous = snapshot.custom;
+    try {
+      const res = await fetch(apiBase + "/api/codex-prompt/custom", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ layers, revision: snapshot.revision }),
+      });
+      const body = await res.json() as { ok?: boolean; code?: string; message?: string; snapshot?: PromptSnapshotDto };
+      if (!res.ok || !body.ok || !body.snapshot) {
+        if (body.code === "stale_revision") {
+          resource.refresh();
+          setError(t("codexSet.prompt.staleRevision"));
+          return false;
+        }
+        setError(body.message ?? t("codexSet.prompt.writeFailed"));
+        // Restore the previous list rather than leaving the UI showing an edit
+        // the file never accepted.
+        setClientResourceData(resourceKey, { ...snapshot, custom: previous });
+        resource.refresh();
+        return false;
+      }
+      setClientResourceData(resourceKey, body.snapshot);
+      return true;
+    } catch {
+      setError(t("codexSet.prompt.writeFailed"));
+      resource.refresh();
+      return false;
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const saveDraft = async (draft: Draft) => {
+    if (!snapshot) return;
+    const existing = snapshot.custom;
+    const next = draft.id === null
+      ? [...existing, { id: newLayerId(existing), title: draft.title, body: draft.body, enabled: true }]
+      // Editing keeps the id: it is stable across edits, which is what lets the
+      // store and the projection stay in agreement.
+      : existing.map(l => (l.id === draft.id ? { ...l, title: draft.title, body: draft.body } : l));
+    // Close only after the write lands. Closing first threw away the text the user
+    // just typed whenever the write was refused - a stale revision, a transient
+    // failure - and the re-read that follows can restore the file but not a draft
+    // that no longer exists anywhere.
+    const saved = await writeCustom(next, draft.id ?? "new");
+    if (saved) setEditing(null);
+  };
+
+  const adopt = async (confirm: boolean) => {
+    if (!snapshot) return;
+    setBusyId("adopt");
+    setError("");
+    try {
+      const res = await fetch(apiBase + "/api/codex-prompt/adopt", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(confirm ? { confirm: true, revision: snapshot.revision } : { confirm: false }),
+      });
+      const body = await res.json() as {
+        ok?: boolean; code?: string; message?: string;
+        snapshot?: PromptSnapshotDto;
+        preview?: { rawLine: string | null; decodedBody: string | null };
+        path?: string; line?: number | null; rawLine?: string | null;
+      };
+      if (!res.ok || !body.ok) {
+        setError(body.message ?? t("codexSet.custom.adoptRefused"));
+        setAdoptPreview(null);
+        // Only an unsupported FORM has a place to point at; other refusals do not.
+        setAdoptRefusal(body.code === "adopt_unsupported_form"
+          ? { path: body.path, line: body.line, rawLine: body.rawLine }
+          : null);
+        return;
+      }
+      if (body.snapshot) {
+        setClientResourceData(resourceKey, body.snapshot);
+        setAdoptPreview(null);
+        return;
+      }
+      // Preview only: nothing has been written, and the user still has to confirm.
+      setAdoptPreview(body.preview ?? null);
+    } catch {
+      setError(t("codexSet.prompt.writeFailed"));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  /**
+   * Drift is REPORTED by GET and resolved only here, on an explicit,
+   * revision-checked POST. Two of the four states are repairable from WP1 exports;
+   * the route refuses the other two by name rather than duplicating its journal
+   * transaction, and the panel surfaces whatever it says.
+   */
+  const repair = async (confirm: boolean) => {
+    if (!snapshot || snapshot.drift === null) return;
+    setRepairBusy(true);
+    setError("");
+    try {
+      const res = await fetch(apiBase + "/api/codex-prompt/repair", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(confirm ? { confirm: true, revision: snapshot.revision } : { confirm: false }),
+      });
+      const body = await res.json() as { ok?: boolean; message?: string; snapshot?: PromptSnapshotDto };
+      if (!res.ok || !body.ok) {
+        setError(body.message ?? t("codexSet.prompt.repairFailed"));
+        return;
+      }
+      if (body.snapshot) setClientResourceData(resourceKey, body.snapshot);
+      else resource.refresh();
+    } catch {
+      setError(t("codexSet.prompt.repairFailed"));
+    } finally {
+      setRepairBusy(false);
+    }
+  };
   // Assembly order, so the list reads the way the prompt is actually built.
   // Every class renders; the row decides what each one gets.
   const rows = [...(snapshot?.inventory ?? [])]
@@ -176,6 +343,25 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
       )}
       {error && <div className="notice notice-err" role="alert">{error}</div>}
 
+      {/*
+        Drift is never silently self-healed: the user is told what state the file
+        is in and repairs it deliberately, because two of the four branches
+        rewrite content they authored.
+      */}
+      {snapshot?.drift && (
+        <div className="notice codex-set-prompt__drift" role="alert" data-drift={snapshot.drift}>
+          <span>{t(DRIFT_KEYS[snapshot.drift])}</span>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={repairBusy}
+            onClick={() => { void repair(true); }}
+          >
+            {t("codexSet.prompt.repair")}
+          </button>
+        </div>
+      )}
+
       <ul className="codex-set-prompt__rows">
         {rows.map(descriptor => (
           <PromptLayerRow
@@ -204,6 +390,146 @@ export default function CodexSetPrompt({ apiBase }: { apiBase: string }) {
           descriptor={openDescriptor}
           toggle={snapshot?.toggles.find(s => s.id === openDescriptor.id)}
           onClose={() => setOpenLayerId(null)}
+        />
+      )}
+
+      {/*
+        Custom layers compose into developer_instructions, NEVER into
+        model_instructions_file: that key REPLACES the entire base prompt, so
+        wiring + to it would delete Codex's own instructions on first save.
+        devlog 000 records this as the deliberate deviation from the literal ask.
+      */}
+      {snapshot && (
+        <section className="codex-set-custom">
+          <div className="row">
+            <strong>{t("codexSet.custom.heading")}</strong>
+            {snapshot.developerInstructionsState !== "external" ? (
+              <PresetPicker
+                // Same refusal as the built-in switches. Offering an editor over a
+                // file we cannot read only trades a disabled control for a server
+                // rejection after the user has typed.
+                disabled={snapshot.custom.length >= MAX_LAYERS || busyId !== null || !snapshot.readable}
+                onBlank={() => { setPresetSeed(null); setEditing("new"); }}
+                onPreset={(body, title) => { setPresetSeed({ body, title }); setEditing("new"); }}
+              />
+            ) : null}
+          </div>
+
+          {snapshot.custom.length >= MAX_LAYERS && (
+            <p className="muted small">{t("codexSet.custom.limitReached", { max: MAX_LAYERS })}</p>
+          )}
+
+          {/*
+            An externally authored key is not ours to rewrite. Rather than telling
+            the user to go delete their own instructions by hand, the panel offers
+            to import them - previewed first, written only on confirmation.
+          */}
+          {snapshot.developerInstructionsState === "external" && snapshot.modelInstructionsFile === null && (
+            <div className="codex-set-custom__adopt">
+              <p className="muted small">{t("codexSet.custom.notOwned")}</p>
+              {adoptRefusal && (
+                // Path and line, so the user can go find the text and move it by hand.
+                // "Could not be imported" alone leaves them with nothing to act on.
+                <p className="muted small codex-set-custom__adopt-refusal">
+                  {t("codexSet.custom.adoptUnsupported", {
+                    path: adoptRefusal.path ?? "",
+                    line: adoptRefusal.line ?? 0,
+                  })}
+                </p>
+              )}
+              {adoptPreview ? (
+                <>
+                  <pre className="api-code codex-set-custom__adopt-preview">{adoptPreview.decodedBody}</pre>
+                  <div className="modal-actions">
+                    <button type="button" className="btn btn-primary btn-sm" disabled={busyId !== null} onClick={() => { void adopt(true); }}>
+                      {t("codexSet.custom.adoptConfirm")}
+                    </button>
+                    <button type="button" className="btn btn-sm" onClick={() => setAdoptPreview(null)}>
+                      {t("common.cancel")}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <button type="button" className="btn btn-sm" disabled={busyId !== null} onClick={() => { void adopt(false); }}>
+                  {t("codexSet.custom.adopt")}
+                </button>
+              )}
+            </div>
+          )}
+
+          {/*
+            model_instructions_file is reported, never written: it replaces the base
+            prompt outright, so the panel states that something outside opencodex
+            has taken it over.
+          */}
+          {snapshot.modelInstructionsFile !== null && (
+            <p className="muted small codex-set-custom__replaced">
+              {t("codexSet.custom.baseReplaced", { path: snapshot.modelInstructionsFile })}
+            </p>
+          )}
+
+          <ul className="codex-set-prompt__rows">
+            {snapshot.custom.map((layer, index) => (
+              <CustomLayerRow
+                key={layer.id}
+                layer={layer}
+                index={index}
+                total={snapshot.custom.length}
+                busy={busyId !== null || !snapshot.readable}
+                onToggle={(id, enabled) => {
+                  void writeCustom(snapshot.custom.map(l => (l.id === id ? { ...l, enabled } : l)), id);
+                }}
+                onEdit={setEditing}
+                onDelete={setConfirmingDelete}
+                onMove={(id, delta) => { void writeCustom(moveLayer(snapshot.custom, id, delta), id); }}
+              />
+            ))}
+          </ul>
+
+          {confirmingDelete && (
+            // Confirm first: a body can be long and there is no undo.
+            // The named prompt below is also the accessible name: an alertdialog
+            // without one is announced as an unnamed dialog, which defeats the point
+            // of naming the row in the first place.
+            <div
+              className="notice codex-set-custom__confirm"
+              role="alertdialog"
+              aria-labelledby="codex-set-delete-confirm"
+            >
+              {/*
+                Name the row. A generic "delete this layer?" sitting under a list of
+                long titles leaves the user guessing which one is pending.
+              */}
+              <span id="codex-set-delete-confirm">{t("codexSet.custom.deleteConfirmNamed", {
+                title: snapshot.custom.find(l => l.id === confirmingDelete)?.title ?? "",
+              })}</span>
+              <button
+                type="button"
+                className="btn btn-danger btn-sm"
+                onClick={() => {
+                  const id = confirmingDelete;
+                  setConfirmingDelete(null);
+                  void writeCustom(snapshot.custom.filter(l => l.id !== id), id);
+                }}
+              >
+                {t("common.delete")}
+              </button>
+              <button type="button" className="btn btn-sm" onClick={() => setConfirmingDelete(null)}>
+                {t("common.cancel")}
+              </button>
+            </div>
+          )}
+        </section>
+      )}
+
+      {editing && snapshot && (
+        <CustomLayerDialog
+          layer={editing === "new" ? null : snapshot.custom.find(l => l.id === editing) ?? null}
+          seed={editing === "new" ? presetSeed : null}
+          others={snapshot.custom}
+          busy={busyId !== null}
+          onSave={saveDraft}
+          onClose={() => { setEditing(null); setPresetSeed(null); }}
         />
       )}
     </div>

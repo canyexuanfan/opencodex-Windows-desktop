@@ -56,17 +56,20 @@ export default function PromptLayerRow({
       {descriptor.key && <code className="codex-set-prompt__key">{descriptor.key}</code>}
 
       {descriptor.class === "config-toggle" ? (
-        <label className="switch">
-          <input
-            type="checkbox"
-            role="switch"
-            aria-label={label}
-            checked={checked}
-            disabled={busy || writesRefused}
-            onChange={e => { onToggle(descriptor.id, e.target.checked); }}
-          />
-          <span className="switch-track" aria-hidden="true" />
-        </label>
+        // The dashboard's switch is a button with a knob, not a checkbox. A raw
+        // <input type="checkbox"> renders as an actual checkbox here because the
+        // .switch class it was reaching for styles a different element.
+        <button
+          type="button"
+          role="switch"
+          className={`toggle ${checked ? "on" : ""}`}
+          aria-checked={checked}
+          aria-label={label}
+          disabled={busy || writesRefused}
+          onClick={() => { onToggle(descriptor.id, !checked); }}
+        >
+          <span className="toggle-knob" />
+        </button>
       ) : descriptor.class === "feature-gated" ? (
         // Configurable, just not here. Naming the governing key is the whole point -
         // "always on" would be a lie about a setting the user can actually change -

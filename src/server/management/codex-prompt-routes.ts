@@ -20,6 +20,7 @@
  * 020 wherever the landed WP1 module moved).
  */
 import { jsonResponse } from "../auth-cors";
+import { readFileSync } from "node:fs";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
 import type { ManagementContext } from "./context";
 import {
@@ -27,6 +28,7 @@ import {
   adoptDeveloperInstructions,
   composeProjection,
   findInvalidCharacter,
+  inspectOwnership,
   normalizeBody,
   previewAdopt,
   previewSalvage,
@@ -94,13 +96,22 @@ function utf8Bytes(value: string): number {
 }
 
 /** The DTO. `inventory` is `LAYER_INVENTORY` serialized — never a second table. */
-function serialize(snapshot: PromptLayerSnapshot): Record<string, unknown> {
+function serialize(snapshot: PromptLayerSnapshot, configBytes: string | null): Record<string, unknown> {
   return {
     configPath: snapshot.configPath,
     storePath: snapshot.storePath,
     configExists: snapshot.configExists,
     readable: snapshot.readable,
     developerInstructionsOwned: snapshot.developerInstructionsOwned,
+    /**
+     * `developerInstructionsOwned: false` conflates two very different states: the
+     * key is ABSENT (an ordinary first run - the first write creates it) and the key
+     * is EXTERNAL (someone else wrote it, and we must not overwrite it). A GUI that
+     * cannot tell them apart hides its own create affordance from every new user,
+     * which is exactly what happened. The state is named here rather than guessed
+     * there.
+     */
+    developerInstructionsState: inspectOwnership(configBytes).state,
     drift: snapshot.drift,
     revision: snapshot.revision,
     inventory: LAYER_INVENTORY.map(d => ({
@@ -117,8 +128,18 @@ function serialize(snapshot: PromptLayerSnapshot): Record<string, unknown> {
   };
 }
 
+/** Re-read the bytes the snapshot was derived from, so the DTO can name the ownership state. */
+function configBytesOf(snapshot: PromptLayerSnapshot): string | null {
+  if (!snapshot.configExists) return null;
+  try {
+    return readFileSync(snapshot.configPath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 function ok(ctx: ManagementContext, changed: boolean, snapshot: PromptLayerSnapshot): Response {
-  return jsonResponse({ ok: true, changed, snapshot: serialize(snapshot) }, 200, ctx.req, ctx.config);
+  return jsonResponse({ ok: true, changed, snapshot: serialize(snapshot, configBytesOf(snapshot)) }, 200, ctx.req, ctx.config);
 }
 
 /** Re-read after a mutation so the GUI can publish server truth, not optimistic state. */
@@ -243,7 +264,8 @@ export async function handleCodexPromptRoutes(ctx: ManagementContext): Promise<R
   if (url.pathname === "/api/codex-prompt" && req.method === "GET") {
     // Pure read. A GET must never repair drift — it is reported here and
     // resolved only by an explicit, revision-checked POST.
-    return jsonResponse(serialize(readPromptLayers(paths(ctx))), 200, req, ctx.config);
+    const snapshot = readPromptLayers(paths(ctx));
+    return jsonResponse(serialize(snapshot, configBytesOf(snapshot)), 200, req, ctx.config);
   }
 
   if (url.pathname === "/api/codex-prompt/toggle" && req.method === "PUT") {

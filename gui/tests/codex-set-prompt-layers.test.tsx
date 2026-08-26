@@ -33,6 +33,7 @@ function snapshot(over: Record<string, unknown> = {}) {
     configExists: true,
     readable: true,
     developerInstructionsOwned: false,
+    developerInstructionsState: "absent" as const,
     drift: null,
     revision: "sha256:one",
     inventory: INVENTORY,
@@ -123,7 +124,7 @@ test("2. every non-config-toggle class renders NO switch element at all", async 
   }
   // And every config-toggle DOES get one, or the assertion above proves nothing.
   for (const descriptor of INVENTORY.filter(d => d.class === "config-toggle")) {
-    expect(row(container, descriptor.id)!.querySelector("input[role=\"switch\"]"), descriptor.id).not.toBeNull();
+    expect(row(container, descriptor.id)!.querySelector("button[role=\"switch\"]"), descriptor.id).not.toBeNull();
   }
   await act(async () => { root.unmount(); });
 });
@@ -177,13 +178,15 @@ test("6. a rejected PUT reverts the row to server truth", async () => {
     }));
   });
   const { container, root } = await mount();
-  const apps = row(container, "apps")!.querySelector("input") as HTMLInputElement;
-  expect(apps.checked).toBe(true);
+  // The switch is a button with aria-checked, not a checkbox: reading `.checked`
+  // off it returned undefined, so this guard asserted nothing about the revert.
+  const apps = row(container, "apps")!.querySelector("button[role=\"switch\"]") as HTMLButtonElement;
+  expect(apps.getAttribute("aria-checked")).toBe("true");
   await act(async () => { apps.click(); });
   // The refreshed snapshot says false, so the row must read false. Counting GETs
   // would pass even if the response were discarded and the row stayed true.
-  const after = row(container, "apps")!.querySelector("input") as HTMLInputElement;
-  expect(after.checked).toBe(false);
+  const after = row(container, "apps")!.querySelector("button[role=\"switch\"]") as HTMLButtonElement;
+  expect(after.getAttribute("aria-checked")).toBe("false");
   expect(container.querySelector("[role=\"alert\"]")).not.toBeNull();
   expect(calls.filter(c => c.method === "GET").length).toBeGreaterThan(1);
   await act(async () => { root.unmount(); });
@@ -296,7 +299,7 @@ test("11. a cold load shows the skeleton; a refresh keeps the rows visible", asy
 test("10. an unreadable config refuses writes on every switch", async () => {
   stubRoutes(() => json(snapshot({ readable: false })));
   const { container, root } = await mount();
-  const switches = [...container.querySelectorAll("input[role=\"switch\"]")] as HTMLInputElement[];
+  const switches = [...container.querySelectorAll("button[role=\"switch\"]")] as HTMLButtonElement[];
   expect(switches).toHaveLength(5);
   for (const input of switches) expect(input.disabled).toBe(true);
   await act(async () => { root.unmount(); });
