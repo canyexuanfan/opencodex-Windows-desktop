@@ -1032,6 +1032,43 @@ function unionRequired(target: unknown, sibling: unknown): unknown {
   return out;
 }
 
+/**
+ * Keywords whose values are DATA, not schemas.
+ *
+ * Recursing into them rewrote user data: an `enum` listing a literal object that happens
+ * to carry a `"$ref"` string had that key stripped as if it were a schema reference, so a
+ * value the tool declared as legal silently changed shape. These are copied through.
+ */
+const MOONSHOT_DATA_VALUED_KEYWORDS = new Set(["enum", "const", "default", "examples"]);
+
+/**
+ * Compose two `properties` maps. A property named in BOTH the referenced target and the
+ * node is the same conjunction problem `required` had: letting the sibling win discards
+ * the target's constraints for that member. Merge the two member schemas so neither side
+ * loses its keywords, and let the node narrow on a genuine conflict.
+ */
+function composeProperties(
+  target: Record<string, unknown>,
+  sibling: Record<string, unknown>,
+): Record<string, unknown> {
+  const combined: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const [name, sub] of Object.entries(target)) combined[name] = sub;
+  for (const [name, sub] of Object.entries(sibling)) {
+    const existing = combined[name];
+    if (isXaiObjectSchema(existing) && isXaiObjectSchema(sub)) {
+      const member: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+      for (const [k, v] of Object.entries(existing)) member[k] = v;
+      for (const [k, v] of Object.entries(sub)) {
+        member[k] = k === "required" ? unionRequired(member[k], v) : v;
+      }
+      combined[name] = member;
+      continue;
+    }
+    combined[name] = sub;
+  }
+  return combined;
+}
+
 interface MoonshotNormalizeState {
   activeRefs: Set<string>;
   remainingExpansions: number;
@@ -1080,16 +1117,17 @@ function normalizeMoonshotSchemaNode(
       // `b`. Those two compose; everything else keeps the narrowing overwrite.
       for (const [key, value] of Object.entries(node)) {
         if (key === "$ref") continue;
+        if (MOONSHOT_DATA_VALUED_KEYWORDS.has(key)) {
+          merged[key] = value;
+          continue;
+        }
         const normalized = normalizeMoonshotSchemaNode(value, root, state, depth + 1);
         if (key === "required") {
           merged[key] = unionRequired(merged[key], normalized);
           continue;
         }
         if (key === "properties" && isXaiObjectSchema(merged[key]) && isXaiObjectSchema(normalized)) {
-          const combined: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-          for (const [name, sub] of Object.entries(merged[key] as Record<string, unknown>)) combined[name] = sub;
-          for (const [name, sub] of Object.entries(normalized)) combined[name] = sub;
-          merged[key] = combined;
+          merged[key] = composeProperties(merged[key] as Record<string, unknown>, normalized);
           continue;
         }
         merged[key] = normalized;
@@ -1107,7 +1145,9 @@ function normalizeMoonshotSchemaNode(
 
   const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const [key, value] of Object.entries(node)) {
-    out[key] = key === "$ref" ? value : normalizeMoonshotSchemaNode(value, root, state, depth + 1);
+    out[key] = key === "$ref" || MOONSHOT_DATA_VALUED_KEYWORDS.has(key)
+      ? value
+      : normalizeMoonshotSchemaNode(value, root, state, depth + 1);
   }
   return out;
 }

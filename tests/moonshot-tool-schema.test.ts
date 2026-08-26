@@ -245,6 +245,42 @@ describe("Moonshot tool schema normalization (issue #2673)", () => {
     expect(siblingRefPaths(parameters)).toEqual([]);
   });
 
+
+  test("composes a property that both the target and the node define", async () => {
+    // The same conjunction problem `required` had, one level down. Letting the sibling
+    // win discarded the target's constraints for that member, so a property the tool
+    // declared with minLength shipped without it.
+    const parameters = await emittedParameters("https://api.moonshot.ai/v1", {
+      name: "shared_property_tool",
+      parameters: {
+        type: "object",
+        $defs: { Base: { type: "object", properties: { shared: { type: "string", minLength: 3 } } } },
+        properties: { v: { $ref: "#/$defs/Base", properties: { shared: { type: "string" } } } },
+      },
+    });
+
+    const v = (parameters?.properties as Record<string, Record<string, unknown>>).v!;
+    const shared = (v.properties as Record<string, Record<string, unknown>>).shared!;
+    expect(shared.minLength).toBe(3);
+    expect(shared.type).toBe("string");
+  });
+
+  test("leaves data-valued keywords alone, even when they look like schemas", async () => {
+    // `enum` lists VALUES. Recursing into it treated a literal object carrying a "$ref"
+    // string as a reference node and stripped the key, silently changing a value the tool
+    // declared as legal.
+    const parameters = await emittedParameters("https://api.moonshot.ai/v1", {
+      name: "enum_data_tool",
+      parameters: {
+        type: "object",
+        properties: { mode: { type: "object", enum: [{ $ref: "not-a-pointer", keep: 1 }] } },
+      },
+    });
+
+    const mode = (parameters?.properties as Record<string, Record<string, unknown>>).mode!;
+    expect(mode.enum).toEqual([{ $ref: "not-a-pointer", keep: 1 }]);
+  });
+
   test("still stamps the root object type Moonshot requires (issue #228)", async () => {
     const parameters = await emittedParameters("https://api.moonshot.ai/v1", {
       name: "root_union_tool",
