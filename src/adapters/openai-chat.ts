@@ -1007,20 +1007,53 @@ function moonshotRefTargetKeys(node: Record<string, unknown>): string[] {
  */
 const MOONSHOT_MAX_REF_EXPANSIONS = 512;
 
+/**
+ * Expansion count alone does not bound the walk: a deeply nested ref-free schema, or one
+ * large definition repeated across many nodes, still recurses to exhaustion or amplifies the
+ * emitted output. Depth and node budgets close both, and mirror google-tool-schema.ts.
+ */
+const MOONSHOT_MAX_SCHEMA_DEPTH = 64;
+const MOONSHOT_MAX_SCHEMA_NODES = 4_096;
+
+/**
+ * Assertion keywords whose meaning under a `$ref` is CONJUNCTION, not replacement. A node
+ * carrying `required: ["b"]` beside a target requiring `["a"]` means both are required;
+ * letting the sibling win emitted a schema that no longer described the tool.
+ */
+function unionRequired(target: unknown, sibling: unknown): unknown {
+  if (!Array.isArray(target) || !Array.isArray(sibling)) return sibling;
+  const seen = new Set<unknown>();
+  const out: unknown[] = [];
+  for (const name of [...target, ...sibling]) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
 interface MoonshotNormalizeState {
   activeRefs: Set<string>;
   remainingExpansions: number;
+  remainingNodes: number;
 }
 
 function normalizeMoonshotSchemaNode(
   node: unknown,
   root: Record<string, unknown>,
   state: MoonshotNormalizeState,
+  depth = 0,
 ): unknown {
   if (Array.isArray(node)) {
-    return node.map(item => normalizeMoonshotSchemaNode(item, root, state));
+    if (depth >= MOONSHOT_MAX_SCHEMA_DEPTH) return [];
+    return node.map(item => normalizeMoonshotSchemaNode(item, root, state, depth + 1));
   }
   if (!isXaiObjectSchema(node)) return node;
+
+  // Fail closed for this node rather than emitting a partially weakened schema: an empty
+  // object is the one shape that asserts nothing it cannot back up.
+  if (depth >= MOONSHOT_MAX_SCHEMA_DEPTH || state.remainingNodes <= 0) return {};
+  state.remainingNodes -= 1;
 
   const ref = node.$ref;
   const hasSiblings = moonshotRefTargetKeys(node).length > 0;
@@ -1034,34 +1067,47 @@ function normalizeMoonshotSchemaNode(
     if (isXaiObjectSchema(target)) {
       state.remainingExpansions -= 1;
       state.activeRefs.add(ref);
-      const resolvedTarget = normalizeMoonshotSchemaNode(target, root, state);
+      const resolvedTarget = normalizeMoonshotSchemaNode(target, root, state, depth + 1);
       state.activeRefs.delete(ref);
       const merged: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
       if (isXaiObjectSchema(resolvedTarget)) {
         for (const [key, value] of Object.entries(resolvedTarget)) merged[key] = value;
       }
-      // The node's own keywords win: under 2020-12 they are applied alongside the target,
-      // and a node that narrows `type`/`format` means the narrower constraint.
+      // "Alongside the target" is conjunction, not replacement. For most keywords the node
+      // narrows the target and overwriting is the narrower reading, but `required` and
+      // `properties` are set-valued: letting the sibling win DROPPED the target's own
+      // members, so a tool requiring `a` beside a node requiring `b` shipped requiring only
+      // `b`. Those two compose; everything else keeps the narrowing overwrite.
       for (const [key, value] of Object.entries(node)) {
         if (key === "$ref") continue;
-        merged[key] = normalizeMoonshotSchemaNode(value, root, state);
+        const normalized = normalizeMoonshotSchemaNode(value, root, state, depth + 1);
+        if (key === "required") {
+          merged[key] = unionRequired(merged[key], normalized);
+          continue;
+        }
+        if (key === "properties" && isXaiObjectSchema(merged[key]) && isXaiObjectSchema(normalized)) {
+          const combined: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+          for (const [name, sub] of Object.entries(merged[key] as Record<string, unknown>)) combined[name] = sub;
+          for (const [name, sub] of Object.entries(normalized)) combined[name] = sub;
+          merged[key] = combined;
+          continue;
+        }
+        merged[key] = normalized;
       }
       return merged;
     }
 
-    // Unresolvable pointer (remote ref, malformed path, non-object target): the siblings are
-    // the only usable schema left, so drop the ref rather than forwarding a rejected node.
-    const withoutRef: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-    for (const [key, value] of Object.entries(node)) {
-      if (key === "$ref") continue;
-      withoutRef[key] = normalizeMoonshotSchemaNode(value, root, state);
-    }
-    return withoutRef;
+    // Unresolvable pointer: a remote ref, a malformed path, or a non-object target. Dropping
+    // the ref and keeping the siblings silently discards whatever the reference constrained,
+    // which is the one outcome we cannot detect downstream. A bare `$ref` is lossy in the
+    // other direction - it loses the node's own keywords - but it preserves the identity of
+    // what was asked for, and Moonshot accepts it.
+    return { $ref: ref };
   }
 
   const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const [key, value] of Object.entries(node)) {
-    out[key] = key === "$ref" ? value : normalizeMoonshotSchemaNode(value, root, state);
+    out[key] = key === "$ref" ? value : normalizeMoonshotSchemaNode(value, root, state, depth + 1);
   }
   return out;
 }
@@ -1071,6 +1117,7 @@ function normalizeMoonshotToolParameters(parameters: unknown): Record<string, un
   const normalized = normalizeMoonshotSchemaNode(rooted, rooted, {
     activeRefs: new Set<string>(),
     remainingExpansions: MOONSHOT_MAX_REF_EXPANSIONS,
+    remainingNodes: MOONSHOT_MAX_SCHEMA_NODES,
   });
   return isXaiObjectSchema(normalized) ? normalized : rooted;
 }

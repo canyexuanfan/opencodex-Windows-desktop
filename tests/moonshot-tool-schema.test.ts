@@ -165,7 +165,7 @@ describe("Moonshot tool schema normalization (issue #2673)", () => {
     });
   });
 
-  test("drops an unresolvable $ref instead of forwarding a rejected node", async () => {
+  test("keeps an unresolvable $ref rather than silently discarding what it constrained", async () => {
     const parameters = await emittedParameters("https://api.kimi.com/coding/v1", {
       name: "remote_ref_tool",
       parameters: {
@@ -178,7 +178,71 @@ describe("Moonshot tool schema normalization (issue #2673)", () => {
 
     expect(siblingRefPaths(parameters)).toEqual([]);
     const properties = parameters?.properties as Record<string, Record<string, unknown>>;
-    expect(properties.value).toEqual({ type: "string" });
+    // Both outcomes are lossy. Dropping the ref keeps the node's own keywords but throws away
+    // whatever the reference constrained, and nothing downstream can tell that happened. The
+    // bare ref loses the siblings instead, which preserves the identity of what was asked for
+    // and is still a shape Moonshot accepts.
+    expect(properties.value).toEqual({ $ref: "https://example.com/schema.json#/Thing" });
+  });
+
+
+  test("composes duplicate required, properties, and same-key assertions", async () => {
+    // The reviewer's first blocker. `$ref` under 2020-12 is an in-place applicator: the
+    // node and its target BOTH apply. Overwriting made a tool that required `a` and `b`
+    // ship requiring only `b`, and dropped `a` from properties entirely - a weaker contract
+    // than either side asked for, emitted silently.
+    const parameters = await emittedParameters("https://api.moonshot.ai/v1", {
+      name: "conjunction_tool",
+      parameters: {
+        type: "object",
+        $defs: {
+          Base: {
+            type: "object",
+            required: ["a"],
+            properties: { a: { type: "string", minLength: 2 } },
+            enum: ["x", "y"],
+          },
+        },
+        properties: {
+          value: {
+            $ref: "#/$defs/Base",
+            required: ["b"],
+            properties: { b: { type: "number" } },
+            minLength: 5,
+          },
+        },
+      },
+    });
+
+    expect(siblingRefPaths(parameters)).toEqual([]);
+    const properties = parameters?.properties as Record<string, Record<string, unknown>>;
+    const value = properties.value!;
+    // Set-valued assertions compose: neither side loses a member.
+    expect(value.required).toEqual(["a", "b"]);
+    expect(Object.keys(value.properties as Record<string, unknown>).sort()).toEqual(["a", "b"]);
+    // Scalar assertions keep the narrowing overwrite - the node means the tighter bound.
+    expect(value.minLength).toBe(5);
+    // A keyword only the target carries survives.
+    expect(value.enum).toEqual(["x", "y"]);
+  });
+
+  test("a deeply nested ref-free schema is bounded instead of exhausting the stack", async () => {
+    // The second blocker: the expansion budget counts $ref inlines only, so a schema with
+    // no refs at all walked unbounded. This nests far past any real tool.
+    // 20k deep. A bounded walk returns; an unbounded one blows the JS stack, which is
+    // exactly the provider-facing failure the budget exists to prevent.
+    let deep: Record<string, unknown> = { type: "string" };
+    for (let i = 0; i < 20_000; i += 1) {
+      deep = { type: "object", properties: { next: deep } };
+    }
+    const parameters = await emittedParameters("https://api.moonshot.ai/v1", {
+      name: "deep_tool",
+      parameters: { type: "object", properties: { root: deep } },
+    });
+
+    // It returns rather than throwing, and what it returns is still valid.
+    expect(parameters?.type).toBe("object");
+    expect(siblingRefPaths(parameters)).toEqual([]);
   });
 
   test("still stamps the root object type Moonshot requires (issue #228)", async () => {
