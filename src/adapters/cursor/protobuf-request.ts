@@ -4,6 +4,7 @@ import { ValueSchema } from "@bufbuild/protobuf/wkt";
 import type { OcxAssistantContentPart, OcxMessage, OcxToolResultMessage } from "../../types";
 import { namespacedToolName } from "../../types";
 import type { CursorRunRequest } from "./types";
+import { decodeCursorCallId } from "./call-id";
 import { cursorNeedsExternalToolContinuation, isCursorExternalWireModel } from "./discovery";
 import { normalizeCursorToolResultText } from "./tool-result-normalize";
 import { debugProviderDiagnostic } from "../../lib/debug";
@@ -531,7 +532,7 @@ function toolResultToText(message: OcxToolResultMessage): string {
   const normalized = normalizedToolResult(message, contentToText(message.content));
   return [
     "[tool_result]",
-    `call_id: ${message.toolCallId}`,
+    `call_id: ${decodeCursorCallId(message.toolCallId)}`,
     `name: ${namespacedToolName(message.toolNamespace, message.toolName)}`,
     `is_error: ${normalized.isError}`,
     "output:",
@@ -592,7 +593,7 @@ function toolCallStep(
             args: create(McpArgsSchema, {
               name: toolName,
               toolName,
-              toolCallId: part.id,
+              toolCallId: decodeCursorCallId(part.id),
               providerIdentifier: OCX_RESPONSES_TOOL_PROVIDER,
               args,
             }),
