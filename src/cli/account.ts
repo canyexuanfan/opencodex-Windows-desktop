@@ -150,8 +150,8 @@ async function cmdList(rest: string[], deps: AccountDeps): Promise<number> {
     };
     push("openai", "codex");
     const providersRes = await apiJson(deps, baseUrl, "GET", "/api/oauth/providers");
-    if (providersRes.status === 0) return proxyUnreachable();
-    if (providersRes.status !== 200) return apiError(providersRes.json, "failed to list OAuth providers");
+    if (providersRes.status === 0) return proxyUnreachable(providersRes.transportError);
+    if (providersRes.status !== 200) return apiError(providersRes.json, "failed to list OAuth providers", providersRes.status);
     if (Array.isArray(providersRes.json.providers)) {
       for (const p of providersRes.json.providers) {
         if (typeof p === "string") push(p, "live-oauth-list");
@@ -166,7 +166,7 @@ async function cmdList(rest: string[], deps: AccountDeps): Promise<number> {
     const r = await fetchRows(deps, baseUrl, t.name, t.type, wantsQuota ? { refresh: refreshQuota } : undefined);
     if (r.networkDown) return proxyUnreachable();
     if (r.errorJson) {
-      if (name) return apiError(r.errorJson, `failed to list ${t.name}`);
+      if (name) return apiError(r.errorJson, `failed to list ${t.name}`, r.status);
       const errorText = typeof r.errorJson.error === "string" ? r.errorJson.error : "";
       const skipUnknownKey = t.type === "api-key"
         && r.status === 404
@@ -176,7 +176,7 @@ async function cmdList(rest: string[], deps: AccountDeps): Promise<number> {
         && r.status === 400
         && errorText.includes("unknown oauth provider");
       if (skipUnknownKey || skipConfigOAuth) continue;
-      return apiError(r.errorJson, `failed to list ${t.name}`);
+      return apiError(r.errorJson, `failed to list ${t.name}`, r.status);
     }
     if (r.rows.length === 0) {
       if (showAll) notes.push(`${t.name}: no stored accounts or keys`);
@@ -223,7 +223,7 @@ async function cmdCurrent(rest: string[], deps: AccountDeps): Promise<number> {
   if (!baseUrl) return proxyUnreachable();
   const r = await fetchRows(deps, baseUrl, name, c.type);
   if (r.networkDown) return proxyUnreachable();
-  if (r.errorJson) return apiError(r.errorJson, `failed to read ${name}`);
+  if (r.errorJson) return apiError(r.errorJson, `failed to read ${name}`, r.status);
 
   const activeRow = r.rows.find(row => row.active) ?? null;
   if (wantsJson) {
@@ -277,8 +277,8 @@ async function cmdUse(rest: string[], deps: AccountDeps): Promise<number> {
     activeId = id;
     res = await apiJson(deps, baseUrl, "PUT", "/api/providers/keys/active", { name, id });
   }
-  if (res.status === 0) return proxyUnreachable();
-  if (res.status !== 200) return apiError(res.json, `failed to switch ${name}`);
+  if (res.status === 0) return proxyUnreachable(res.transportError);
+  if (res.status !== 200) return apiError(res.json, `failed to switch ${name}`, res.status);
 
   if (wantsJson) console.log(JSON.stringify({ ok: true, provider: name, type: c.type, activeId }, null, 2));
   else console.log(`${name}: active ${c.type === "api-key" ? "key" : "account"} is now ${displayId(activeId)}`);

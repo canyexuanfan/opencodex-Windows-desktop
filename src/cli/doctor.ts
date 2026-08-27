@@ -159,7 +159,9 @@ export function dataPlaneCredentialCollisionCheck(env: NodeJS.ProcessEnv = proce
   if (!dataPlane) {
     return { level: "OK", message: "No data-plane token is set, so it cannot collide with the management token." };
   }
-  const admin = configuredAdminToken();
+  // Pass the env seam through: reading process.env here while the caller injected a
+  // different env made half the comparison depend on real machine state.
+  const admin = configuredAdminToken(getConfigDir(), env);
   const collides = dataPlane.startsWith("ocx_admin_") || (admin !== null && dataPlane === admin);
   if (!collides) {
     return { level: "OK", message: "Data-plane and management credentials are distinct." };

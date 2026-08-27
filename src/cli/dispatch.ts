@@ -315,8 +315,12 @@ const commandRunners: Record<string, CommandRunner> = {
   },
   tray: async deps => {
     const { windowsTrayCommand } = await import("../tray/windows");
+    // windowsTrayCommand reports failure through process.exitCode (tray/windows.ts sets
+    // it for bad usage and for a failed install/start/stop/uninstall) and returns void,
+    // so a literal 0 here made `ocx tray install` print an error and exit 0 (#2697).
+    process.exitCode = 0;
     await windowsTrayCommand(deps.args.slice(1));
-    return 0;
+    return Number(process.exitCode ?? 0);
   },
   "codex-shim": async deps => {
     const { codexShimStatus, diagnoseCodexShim, installCodexShim, uninstallCodexShim } = await import("../codex/shim");

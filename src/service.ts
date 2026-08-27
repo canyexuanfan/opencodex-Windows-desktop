@@ -383,8 +383,12 @@ const ADMIN_TOKEN_PREFIX = "ocx_admin_";
  * installing shell. This function is the chokepoint that should refuse it rather than
  * writing a file that produces a broken service.
  */
-export function assertNotAdminToken(token: string): void {
-  if (!token.startsWith(ADMIN_TOKEN_PREFIX)) return;
+export function assertNotAdminToken(token: string, env: NodeJS.ProcessEnv = process.env): void {
+  // Prefix covers a minted management token; the equality arm covers an operator-set
+  // admin token that does not carry the prefix, which the prefix test alone would miss.
+  const admin = env.OPENCODEX_ADMIN_AUTH_TOKEN?.trim();
+  const collides = token.startsWith(ADMIN_TOKEN_PREFIX) || (Boolean(admin) && token === admin);
+  if (!collides) return;
   throw new Error(
     "OPENCODEX_API_AUTH_TOKEN holds a management (admin) token. The service exports it "
       + "as the data-plane secret, which fences the whole management API closed and makes "

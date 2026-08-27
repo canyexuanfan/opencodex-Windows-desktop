@@ -19,31 +19,63 @@ import type { AccountDeps } from "../src/cli/account-api";
 const DISPATCH_SOURCE = readFileSync(join(import.meta.dir, "..", "src", "cli", "dispatch.ts"), "utf8");
 
 /**
- * Matches `await handleX(...); return 0;` — the shape that silently discards a
+ * Matches `await someHandler(...); return 0;` — the shape that silently discards a
  * handler's failure.
  *
- * `[^;]*` rather than `[^)]*` is deliberate and load-bearing: the argument lists here
- * contain nested calls (`deps.args.slice(1)`), so a `[^)]*` form stops at the inner
- * `)` and matches neither the provider nor the models runner — it would green while
- * the regression it guards is present. The red-first test below proves this pattern
- * actually sees the defect.
+ * Two scoping decisions, both learned from a review that caught this test being too
+ * narrow:
+ *
+ * - `[^;]*` rather than `[^)]*`: argument lists here contain nested calls
+ *   (`deps.args.slice(1)`), so a `[^)]*` form stops at the inner `)` and matches
+ *   neither the provider nor the models runner. It would have greened while the
+ *   regression it guards was present.
+ * - `[\w.]+` rather than `handle\w+`: anchoring on the `handle*` naming convention made
+ *   the guard blind to `tray`, whose handler is `windowsTrayCommand` and which carried
+ *   the identical defect. The defect class is "await a handler, then return a literal
+ *   0", not "await a function whose name begins with handle".
+ *
+ * Exemptions belong in the allowlist below, where they need a stated reason — not in
+ * the pattern, where they would be invisible.
  */
-const SWALLOWED_EXIT_CODE = /await\s+handle\w+\([^;]*\);\s*\n\s*return 0;/g;
+const SWALLOWED_EXIT_CODE = /await\s+[\w.]+\([^;]*\);\s*\n\s*return 0;/g;
 
 /**
- * Runners whose handler cannot return a failure, so a literal 0 is honest.
+ * Runners whose handler cannot return a failure through `process.exitCode`, so a
+ * literal 0 is honest.
  *
- * Both entries were found by this guard rather than assumed, and both are accurate for
- * a specific reason: `handleDebugCommand` and `handleLogin` report every failure with
- * `process.exit(1)` from inside the handler (debug.ts does so on 11 paths), so control
- * only reaches `return 0` on success.
+ * Every entry was found by this guard rather than assumed, and each was verified by
+ * reading its handler. The mechanism differs between them, which is why the reason
+ * matters more than the name:
  *
- * That is a narrower claim than "these commands always succeed". `login` reporting
- * success for a failed OAuth flow is a real gap, but it belongs to the uniform
- * exit-code contract in wp3b (devlog 025), not to this phase's management-transport
- * scope. Adding a name here must come with a reason of this kind.
+ * - `debug` — `handleDebugCommand` calls `process.exit(1)` on every failure path (12
+ *   sites in debug.ts, including the fallthrough), so control cannot reach `return 0`
+ *   after a failure.
+ * - `login` — exits 1 for an unknown provider; for a real OAuth failure `runLogin`
+ *   THROWS and the error propagates out past the runner.
+ * - `update` — `runUpdate` calls `process.exit(1)` on every failure path (6 sites in
+ *   update/index.ts). Its early `return 0` is the deliberate `--help` short-circuit.
+ * - `__refresh-version`, `__tray-host`, `__gui-update-worker` — hidden helpers whose
+ *   handlers never assign `process.exitCode`, so there is no code to preserve.
+ *   `__gui-update-worker` returns 1 directly for a missing job id.
+ *
+ * This is narrower than "these commands always succeed", and it is not a claim that
+ * their exit-code handling is ideal — a throw-based failure produces an unhandled
+ * rejection rather than a chosen exit code. Making that uniform belongs to wp3b
+ * (devlog 025), not to this phase's management-transport scope.
+ *
+ * Adding a name here requires a reason of this kind, verified in the handler. A review
+ * of this phase caught `tray` sitting outside the then-narrower pattern with the
+ * identical defect, which is why the pattern is now name-agnostic and the exemptions
+ * live here instead.
  */
-const CANNOT_FAIL_ALLOWLIST = new Set(["debug", "login"]);
+const CANNOT_FAIL_ALLOWLIST = new Set([
+  "debug",
+  "login",
+  "update",
+  "__refresh-version",
+  "__tray-host",
+  "__gui-update-worker",
+]);
 
 function swallowingRunners(source: string): string[] {
   const found: string[] = [];
@@ -82,6 +114,43 @@ describe("#2697 dispatch runners preserve handler exit codes", () => {
       expect(upToNext, `${runner} runner must propagate process.exitCode`)
         .toContain("Number(process.exitCode ?? 0)");
     }
+  });
+});
+
+describe("#2698 the status mapping and transport cause are actually reachable", () => {
+  /**
+   * The first review of this phase found both additions were dead code: apiError
+   * accepted a status no caller passed, and apiJson recorded a transportError no caller
+   * read. A capability that exists only in its own unit test is not a fix, so these
+   * assertions are about the CALL SITES rather than the helpers.
+   */
+  const SOURCES = ["account.ts", "account-extended.ts", "account-main.ts"].map(name =>
+    readFileSync(join(import.meta.dir, "..", "src", "cli", name), "utf8"));
+
+  test("every apiError call site forwards the response status", () => {
+    const bare: string[] = [];
+    for (const source of SOURCES) {
+      for (const line of source.split("\n")) {
+        if (!line.includes("apiError(")) continue;
+        if (line.includes("export function apiError")) continue;
+        // Third argument present means the 404 -> 4 / 409 -> 5 mapping can fire.
+        if (!/\.status\s*\)\s*;?\s*$/.test(line.trim())) bare.push(line.trim());
+      }
+    }
+    expect(bare).toEqual([]);
+  });
+
+  test("proxyUnreachable call sites guarded by status === 0 forward the cause", () => {
+    const bare: string[] = [];
+    for (const source of SOURCES) {
+      for (const line of source.split("\n")) {
+        if (!/status === 0.*proxyUnreachable\(/.test(line)) continue;
+        if (!line.includes("transportError")) bare.push(line.trim());
+      }
+    }
+    // One site reads a quota-report shape that carries no transportError field; it is
+    // allowed to call proxyUnreachable() bare rather than inventing a cause.
+    expect(bare.length).toBeLessThanOrEqual(1);
   });
 });
 

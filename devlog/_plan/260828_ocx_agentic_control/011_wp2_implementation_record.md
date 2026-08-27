@@ -63,3 +63,59 @@ in this diff touches that harness or `handleAgentCommand`.
 Not claimed as fixed and not dismissed as flaky. If it recurs in wp9's CI, the first
 thing to check is the harness's port allocation, not this phase's changes.
 
+## Review round: two blockers, both real, both folded
+
+Two independent read-only reviewers were dispatched on the committed diff. Both
+returned `GO-WITH-FIXES (blockers=2)`, and between them they found three defects I had
+missed. Each was re-verified against source before being fixed.
+
+### The fix was half-inert (both reviewers, independently)
+
+`apiError` gained a `status` parameter and `apiJson` gained `transportError` — and
+**no production caller passed or read either.** All 19 `apiError` call sites passed two
+arguments, so the 404→4 / 409→5 mapping never executed; all 30 `proxyUnreachable()`
+call sites passed no argument, so the retained transport cause was never printed. The
+behavior existed only in this phase's own unit tests, while the commit message and
+`010.3` claimed it shipped.
+
+That is worse than an incomplete fix: it is a false claim backed by a passing test.
+Fixed by threading the status through all 19 call sites and the cause through the 14
+`status === 0` guards (one quota-report site legitimately has no such field). Two new
+tests assert the **call sites**, not the helpers, so the capability cannot go inert
+again.
+
+### `tray` had the identical #2697 defect and the guard could not see it
+
+`windowsTrayCommand` reports failure through `process.exitCode` (tray/windows.ts:742,
+:755) and returns void, so `ocx tray install` printed an error and exited 0 — exactly
+the defect this phase claimed to close.
+
+The recurrence guard missed it because `SWALLOWED_EXIT_CODE` was anchored on
+`await handle\w+\(`, scoping it to the `handle*` naming convention rather than to the
+defect class. A guard that only sees defects that follow a naming convention is a guard
+against tidy code, not against the bug.
+
+Pattern broadened to `await [\w.]+\(`. That immediately surfaced four more candidates
+(`update`, `__refresh-version`, `__tray-host`, `__gui-update-worker`), each verified in
+its handler before being allowlisted with its own stated reason: `runUpdate` exits 1 on
+all six failure paths, and the three hidden helpers never assign `process.exitCode`.
+
+### Corrected: the `login` allowlist reason
+
+The committed comment said `login` exits 1 on failure. It exits 1 only for an unknown
+provider; a real OAuth failure makes `runLogin` **throw**, propagating past the runner.
+The conclusion (`return 0` is unreachable after a failure) holds, but via a different
+mechanism. Corrected, because an allowlist entry justified by the wrong mechanism is
+one refactor away from being wrong.
+
+### Findings accepted as out of scope
+
+- Doctor reports the collision as WARN while the plane is fully fenced. `OAuthDoctorCheck`
+  has no FAIL level and doctor's exit code belongs to wp3b (`025`). Recorded there.
+- `dataPlaneCredentialCollisionCheck` takes an injectable `env` but calls
+  `configuredAdminToken()` without it, so half the comparison reads real machine state.
+  Real seam defect; folded now since it is one argument.
+- The multi-line error message reaches line-oriented log consumers as orphan lines.
+  Intended tradeoff of #2698, recorded not contested.
+- `assertNotAdminToken`'s prefix-only test misses an env-set admin token without the
+  `ocx_admin_` prefix, which the doctor equality check does catch. Asymmetry folded.
