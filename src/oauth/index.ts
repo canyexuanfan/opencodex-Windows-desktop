@@ -58,7 +58,7 @@ export interface OAuthAccessSnapshot {
   /** Cloud Code Assist project selected during Antigravity login. */
   projectId?: string;
   /** Safe request-routing subset; refresh-only Kiro client secrets never leave the credential store. */
-  kiro?: Pick<KiroOAuthMetadata, "profileArn" | "apiRegion" | "ssoRegion">;
+  kiro?: Pick<KiroOAuthMetadata, "profileArn" | "apiRegion" | "ssoRegion" | "authType">;
   /**
    * Allowlisted GitHub Copilot API origin belonging to THIS account.
    *
@@ -359,11 +359,20 @@ export function publicOAuthAuthenticationErrorMessage(error: unknown): string {
 }
 
 function accessSnapshot(provider: string, accountId: string, cred: OAuthCredentials): OAuthAccessSnapshot {
+  // Derived, not read back: a stored `authType` is trusted when present, but a credential imported
+  // before the field existed still routes correctly because the client pair implies SSO OIDC.
+  const kiroAuthType = cred.kiro?.authType
+    ?? (cred.kiro?.clientId && cred.kiro?.clientSecret ? "aws_sso_oidc" as const : undefined);
   const storedKiroRouting = {
     ...(cred.kiro?.profileArn ? { profileArn: cred.kiro.profileArn } : {}),
     ...(cred.kiro?.apiRegion ? { apiRegion: cred.kiro.apiRegion } : {}),
     ...(cred.kiro?.ssoRegion ? { ssoRegion: cred.kiro.ssoRegion } : {}),
   };
+  // `authType` is a property OF the account, not routing the environment can substitute for, so it
+  // is merged after the environment fallback decision rather than counting as stored routing.
+  // Folding it into `storedKiroRouting` would make a client-pair-only credential look non-empty
+  // and silently disable `environmentKiroRoutingMetadata()` for it.
+  const kiroAuthTypeRouting = kiroAuthType ? { authType: kiroAuthType } : {};
   // Validated here, not at the call site: an unvalidated origin from a legacy or crafted
   // credential must never travel with a bearer, and dropping it makes the transport fall back to
   // the canonical host rather than to whatever the previous account was using.
@@ -381,9 +390,12 @@ function accessSnapshot(provider: string, accountId: string, cred: OAuthCredenti
     // may use explicit environment routing, but never borrow the currently signed-in local CLI account.
     ...(provider === "kiro"
       ? {
-          kiro: Object.keys(storedKiroRouting).length > 0
-            ? storedKiroRouting
-            : environmentKiroRoutingMetadata() ?? {},
+          kiro: {
+            ...(Object.keys(storedKiroRouting).length > 0
+              ? storedKiroRouting
+              : environmentKiroRoutingMetadata() ?? {}),
+            ...kiroAuthTypeRouting,
+          },
         }
       : {}),
   };
