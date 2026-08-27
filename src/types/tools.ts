@@ -32,16 +32,17 @@ export function namespacedToolName(namespace: string | undefined, name: string):
 }
 
 /**
- * Codex 0.149 unified-exec name normalization.
+ * Codex unified-exec name normalization.
  *
  * Codex's code-mode shell tool is declared as `exec` (a freeform custom tool whose own
  * description mentions the nested `await tools.exec_command(...)` helper). Routed models —
  * DeepSeek in particular — sometimes echo that helper name as the tool-call name, emitting
- * `exec_command` instead of the declared `exec`. Accept the legacy shell bridge names only
- * when the request catalog actually declares `exec` and does not itself declare the legacy
- * name (an MCP server may legitimately advertise `exec_command` under its own namespace).
+ * `exec_command` or `apply_patch` instead of the declared `exec`. Accept these nested helper
+ * names only when the request catalog actually declares `exec` and does not itself declare the
+ * emitted name (an MCP server may legitimately advertise one under its own namespace).
  */
 const LEGACY_SHELL_BRIDGE_TOOL_NAMES = ["exec_command", "shell_command"] as const;
+const CODE_MODE_HELPER_TOOL_NAMES = [...LEGACY_SHELL_BRIDGE_TOOL_NAMES, "apply_patch"] as const;
 
 export function normalizeDeclaredToolName(
   name: string,
@@ -49,13 +50,14 @@ export function normalizeDeclaredToolName(
 ): string {
   if (!declared || !declared.has("exec")) return name;
   if (declared.has(name)) return name;
+  if (name === "apply_patch") return "exec";
   // When the catalog explicitly declares any legacy shell bridge name, the environment
   // genuinely exposes that tool — turn normalization off so a call is never mis-routed
   // to `exec`.
   if ((LEGACY_SHELL_BRIDGE_TOOL_NAMES as readonly string[]).some(legacy => declared.has(legacy))) {
     return name;
   }
-  return (LEGACY_SHELL_BRIDGE_TOOL_NAMES as readonly string[]).includes(name) ? "exec" : name;
+  return (CODE_MODE_HELPER_TOOL_NAMES as readonly string[]).includes(name) ? "exec" : name;
 }
 
 export function toolChoiceAliases(tool: Pick<OcxTool, "namespace" | "name">): string[] {

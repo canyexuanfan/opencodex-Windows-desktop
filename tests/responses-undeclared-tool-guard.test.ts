@@ -237,25 +237,23 @@ describe("undeclared tool call guard", () => {
     expect(await relay(upstream, declared)).toBe(upstream);
   });
 
-  test("replaces an undeclared apply_patch with a compatibility failure", async () => {
-    // The reported shape: the request-visible catalog holds exec/wait/request_user_input, and
-    // `apply_patch` arrives anyway because code mode nests it inside the exec description.
+  test("replaces an undeclared tool with a compatibility failure", async () => {
     const upstream = sse("response.output_item.added", {
       output_index: 0,
-      item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "apply_patch", arguments: "{}" },
+      item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "other_tool", arguments: "{}" },
     });
 
     const out = await relay(upstream, declared);
     expect(out).toContain("event: response.failed");
     expect(out).toContain(`"code":"${UNDECLARED_TOOL_CALL_ERROR_CODE}"`);
-    expect(out).toContain('routed provider emitted undeclared client tool \\"apply_patch\\"');
+    expect(out).toContain('routed provider emitted undeclared client tool \\"other_tool\\"');
     expect(out).toEndWith("data: [DONE]\n\n");
   });
 
   test("drops the rest of the turn so a later completed cannot contradict the failure", async () => {
     const upstream = sse("response.output_item.added", {
       output_index: 0,
-      item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "apply_patch", arguments: "" },
+      item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "other_tool", arguments: "" },
     })
       + sse("response.function_call_arguments.delta", { item_id: "fc_1", delta: "{\"input\":\"" })
       + sse("response.completed", { response: { id: "resp_1", status: "completed", output: [] } })
@@ -274,7 +272,7 @@ describe("undeclared tool call guard", () => {
         status: "completed",
         output: [
           { type: "message", id: "msg_0", role: "assistant" },
-          { type: "function_call", id: "fc_1", call_id: "call_1", name: "apply_patch", arguments: "{}" },
+          { type: "function_call", id: "fc_1", call_id: "call_1", name: "other_tool", arguments: "{}" },
         ],
       },
     });
@@ -422,7 +420,7 @@ describe("the reported turn, end to end through handleResponses", () => {
   }
 
 
-  test("streaming: the leaked apply_patch becomes a named failure instead of a silent abort", async () => {
+  test("streaming: a top-level apply_patch is bridged through unified exec", async () => {
     const response = await post(true, () => new Response([
       frame("response.output_item.added", { output_index: 0, item: { ...leakedCall, arguments: "", status: "in_progress" } }),
       frame("response.output_item.done", { output_index: 0, item: leakedCall }),
@@ -431,23 +429,22 @@ describe("the reported turn, end to end through handleResponses", () => {
     ].join("\n\n") + "\n\n", { headers: { "content-type": "text/event-stream" } }));
 
     const body = await response.text();
-    expect(body).toContain("response.failed");
-    expect(body).toContain(`"code":"${UNDECLARED_TOOL_CALL_ERROR_CODE}"`);
-    expect(body).toContain("apply_patch");
-    // Before the guard this reached Codex as a call it has no handler for, and the turn showed
-    // only `aborted`. The client must not see a completed turn now.
-    expect(body).not.toContain("response.completed");
+    expect(body).not.toContain("response.failed");
+    expect(body).toContain("response.completed");
+    expect(body).toContain('"name":"exec"');
+    expect(body).toContain("await tools.apply_patch");
   });
 
-  test("non-streaming: the same call is refused rather than answered", async () => {
+  test("non-streaming: the same call is bridged through unified exec", async () => {
     const response = await post(false, () => new Response(
       JSON.stringify({ id: "resp_1", status: "completed", output: [leakedCall] }),
       { headers: { "content-type": "application/json" } },
     ));
 
-    expect(response.status).toBe(502);
-    const body = await response.json() as { error: { message: string } };
-    expect(body.error.message).toContain('undeclared client tool "apply_patch"');
+    expect(response.status).toBe(200);
+    const body = await response.json() as { output: Array<Record<string, unknown>> };
+    expect(body.output[0]).toMatchObject({ type: "custom_tool_call", name: "exec" });
+    expect(body.output[0]?.input).toContain("await tools.apply_patch");
   });
 
   test("a declared exec call still completes normally", async () => {
@@ -536,9 +533,85 @@ describe("a refused turn does not become continuation state", () => {
     expect(expandedInputLength("resp_accepted")).toBeGreaterThan(1);
   });
 
+  test("a bridged apply_patch turn is remembered as the declared exec call", async () => {
+    const accepted = await turn("resp_apply_patch_bridged", {
+      type: "function_call",
+      id: "fc_patch",
+      call_id: "call_patch",
+      name: "apply_patch",
+      arguments: JSON.stringify({ input: "*** Begin Patch\n*** End Patch" }),
+      status: "completed",
+    });
+
+    expect(accepted.status).toBe(200);
+    const expanded = expandPreviousResponseInput({
+      model: "fixture/deepseek-v4-flash",
+      previous_response_id: "resp_apply_patch_bridged",
+      input: [{ role: "user", content: [{ type: "input_text", text: "and again" }] }],
+      tools: declaredTools,
+    }) as { input?: Array<Record<string, unknown>> };
+    const rememberedCall = expanded.input?.find(item => item.call_id === "call_patch");
+
+    expect(rememberedCall).toMatchObject({ type: "custom_tool_call", name: "exec" });
+    expect(rememberedCall?.input).toContain("tools.apply_patch");
+    expect(JSON.stringify(expanded)).not.toContain('"name":"apply_patch"');
+  });
+
+  test("a streamed bridged apply_patch turn is remembered as the declared exec call", async () => {
+    const responseId = "resp_stream_apply_patch_bridged";
+    const call = {
+      type: "function_call",
+      id: "fc_stream_patch",
+      call_id: "call_stream_patch",
+      name: "apply_patch",
+      arguments: JSON.stringify({ input: "*** Begin Patch\n*** End Patch" }),
+      status: "completed",
+    };
+    const sse = [
+      `data: ${JSON.stringify({ type: "response.created", response: { id: responseId, status: "in_progress" } })}\n\n`,
+      `data: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: call })}\n\n`,
+      `data: ${JSON.stringify({ type: "response.completed", response: { id: responseId, status: "completed", output: [call] } })}\n\n`,
+      "data: [DONE]\n\n",
+    ].join("");
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(sse, {
+      headers: { "content-type": "text/event-stream" },
+    })) as typeof fetch;
+    let response: Response;
+    try {
+      response = await handleResponses(new Request("http://localhost/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "fixture/deepseek-v4-flash",
+          stream: true,
+          input: [{ role: "user", content: [{ type: "input_text", text: "edit the file" }] }],
+          tools: declaredTools,
+        }),
+      }), config, { model: "", provider: "" });
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+
+    const clientStream = await response.text();
+    expect(clientStream).toContain('"name":"exec"');
+    expect(clientStream).not.toContain("response.failed");
+    await Bun.sleep(50);
+
+    const expanded = expandPreviousResponseInput({
+      model: "fixture/deepseek-v4-flash",
+      previous_response_id: responseId,
+      input: [{ role: "user", content: [{ type: "input_text", text: "and again" }] }],
+      tools: declaredTools,
+    }) as { input?: Array<Record<string, unknown>> };
+    const rememberedCall = expanded.input?.find(item => item.call_id === "call_stream_patch");
+    expect(rememberedCall).toMatchObject({ type: "custom_tool_call", name: "exec" });
+    expect(rememberedCall?.input).toContain("tools.apply_patch");
+  });
+
   test("a refused turn is not", async () => {
     const refused = await turn("resp_refused", {
-      type: "function_call", id: "fc_bad", call_id: "call_bad", name: "apply_patch", arguments: "{}", status: "completed",
+      type: "function_call", id: "fc_bad", call_id: "call_bad", name: "other_tool", arguments: "{}", status: "completed",
     });
 
     expect(refused.status).toBe(502);
@@ -557,7 +630,7 @@ describe("a refused turn does not become continuation state", () => {
       `data: ${JSON.stringify({
         type: "response.output_item.added",
         output_index: 0,
-        item: { type: "function_call", id: "fc_bad", call_id: "call_bad", name: "apply_patch", arguments: "{}" },
+        item: { type: "function_call", id: "fc_bad", call_id: "call_bad", name: "other_tool", arguments: "{}" },
       })}\n\n`,
       `data: ${JSON.stringify({ type: "response.completed", response: { id: responseId, status: "completed", output: [] } })}\n\n`,
       "data: [DONE]\n\n",
@@ -1233,7 +1306,7 @@ describe("undeclaredToolCallNameInResponse", () => {
       ],
     };
 
-    expect(undeclaredToolCallNameInResponse(response, new Set(["exec"]))).toBe("apply_patch");
+    expect(undeclaredToolCallNameInResponse(response, new Set(["exec"]))).toBeUndefined();
     expect(undeclaredToolCallNameInResponse(response, new Set(["exec", "apply_patch"]))).toBeUndefined();
   });
 

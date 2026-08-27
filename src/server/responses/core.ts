@@ -314,7 +314,7 @@ import {
   payloadRewriteAsBlockRewrite,
   relaySseWithBlockRewrite,
 } from "../sse-payload-rewrite";
-import { restoreRoutedCustomCallsInJson } from "../../responses/custom-tool-compat";
+import { restoreRoutedCustomCalls, restoreRoutedCustomCallsInJson } from "../../responses/custom-tool-compat";
 import { createRoutedCustomToolRestoreBlockRewrite } from "../responses-custom-tool-repair";
 import { restoreRoutedToolSearchCallsInJson } from "../../responses/tool-search-compat";
 import { createRoutedToolSearchRestoreBlockRewrite } from "../responses-tool-search-repair";
@@ -3283,10 +3283,16 @@ async function handleResponsesInner(
     const rememberPassthroughResponseChecked = rememberPassthroughResponse
       ? (response: { id?: unknown; output?: unknown; status?: unknown }) => {
         if (inspectionSawUndeclaredTool) return;
+        const restoredResponse = restoreRoutedCustomCalls(
+          response,
+          routedCustomToolNames,
+          routedCustomToolRepairNames,
+          declaredWireToolNames,
+        ).value as { id?: unknown; output?: unknown; status?: unknown };
         if (
           undeclaredToolGuardActive
           && undeclaredToolCallNameInResponse(
-            response,
+            restoredResponse,
             declaredWireToolNames,
             declaredNamelessClientCallTypes,
             providerExecutedCallTypes,
@@ -3294,7 +3300,7 @@ async function handleResponsesInner(
         ) {
           return;
         }
-        rememberPassthroughResponse(response);
+        rememberPassthroughResponse(restoredResponse);
       }
       : undefined;
     recordAdapterReasoning(logCtx, request);
@@ -3923,6 +3929,7 @@ async function handleResponsesInner(
             routedCustomToolNames,
             translatorBudget,
             routedCustomToolRepairNames,
+            declaredWireToolNames,
           )
           : undefined,
         routedToolSearchNames.size > 0
@@ -4133,6 +4140,7 @@ async function handleResponsesInner(
           restoredNamespace,
           routedCustomToolNames,
           routedCustomToolRepairNames,
+          declaredWireToolNames,
         );
         const restoredToolSearch = restoreRoutedToolSearchCallsInJson(
           restored,
