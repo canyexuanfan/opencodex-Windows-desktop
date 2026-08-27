@@ -174,6 +174,20 @@ const commandRunners: Record<string, CommandRunner> = {
   },
   doctor: async deps => {
     const doctorArgs = deps.args.slice(1);
+    // `--json` was silently ignored here: runDoctor scans for its own flags and prints human
+    // output regardless, so a caller that asked for JSON got prose and exit 0 -- and the skill
+    // recipes recommended exactly that invocation. Refusing it is worse than supporting it and
+    // better than lying about it.
+    //
+    // Not implemented rather than deferred silently: runDoctor has no report collection at all
+    // (a module-level failure bit plus ~90 direct console emissions), and this runner appends
+    // the Codex Log Guard's human output after it returns, so emitting a JSON document here
+    // would interleave prose with JSON on one stdout -- unparseable, which is worse than the
+    // ignored flag. The structured-report refactor is tracked as its own work-phase.
+    if (doctorArgs.includes("--json")) {
+      console.error("ocx doctor does not support --json yet. Run `ocx doctor` for the human report, or use `ocx status --json` and `ocx ready --json` for machine-readable health.");
+      return 2;
+    }
     const { RECOVER_ZERO_BYTE_COORDINATOR_FLAG, runDoctor, doctorFailed } = await import("./doctor");
     await runDoctor(doctorArgs);
     if (!doctorArgs.includes("--fix-codex-runtime") && !doctorArgs.includes(RECOVER_ZERO_BYTE_COORDINATOR_FLAG)) {
@@ -205,10 +219,42 @@ const commandRunners: Record<string, CommandRunner> = {
     return 0;
   },
   logout: async deps => {
-    const { removeCredential } = await import("../oauth/store");
-    const name = (deps.args[1] ?? "").trim().toLowerCase();
+    // Argv is parsed BEFORE any store access, which is the whole point of this shape.
+    // Previously `args[1]` was taken as the provider name with no parsing, so
+    // `ocx logout --json` called removeCredential("--json"), printed "Logged out of
+    // --json." and exited 0 -- a silent false success, the worst outcome for a caller
+    // that can only see the exit code.
+    //
+    // That is not merely a wasted call. `normalizeAuthStore` copies every top-level key
+    // it finds, so a hand-edited, legacy, or corrupted auth.json containing a `--json`
+    // key would have its active account deleted -- and the key dropped entirely if that
+    // was its last account. A flag must never reach the store as a provider name.
+    const logoutArgs = deps.args.slice(1);
+    const wantsJson = logoutArgs.includes("--json");
+    const positionals = logoutArgs.filter(arg => !arg.startsWith("--"));
+    const unknownFlags = logoutArgs.filter(arg => arg.startsWith("--") && arg !== "--json");
+    const name = (positionals[0] ?? "").trim().toLowerCase();
+
+    // Usage failures exit 2 and touch nothing. A missing provider is a usage error; a
+    // provider that simply has no credential is a not-found (4) further down, because the
+    // vocabulary distinguishes "you called this wrong" from "the thing is not there".
+    if (unknownFlags.length > 0 || positionals.length > 1 || !name) {
+      const problem = unknownFlags.length > 0
+        ? `unknown option ${unknownFlags[0]}`
+        : positionals.length > 1 ? "too many arguments" : "missing provider";
+      console.error(`Usage: ocx logout <provider> [--json]  (${problem})`);
+      return 2;
+    }
+
+    const { getAccountSet, removeCredential } = await import("../oauth/store");
+    if (!getAccountSet(name)) {
+      if (wantsJson) console.log(JSON.stringify({ schemaVersion: 1, ok: false, provider: name, removed: false, reason: "not_found" }, null, 2));
+      else console.error(`No stored credential for '${name}'.`);
+      return 4;
+    }
     await removeCredential(name);
-    console.log(`Logged out of ${name || "(none)"}.`);
+    if (wantsJson) console.log(JSON.stringify({ schemaVersion: 1, ok: true, provider: name, removed: true }, null, 2));
+    else console.log(`Logged out of ${name}.`);
     return 0;
   },
   sync: async deps => {
