@@ -42,6 +42,15 @@ interface UsageReportInput {
 
 const MAX_MODEL_ROWS = 10;
 
+function terminalText(value: string): string {
+  return value.replace(/[\x00-\x1f\x7f-\x9f]/g, character => {
+    const code = character.charCodeAt(0);
+    return code <= 0x7f
+      ? `\\x${code.toString(16).padStart(2, "0")}`
+      : `\\u${code.toString(16).padStart(4, "0")}`;
+  });
+}
+
 function count(value: number | undefined): string {
   return (value ?? 0).toLocaleString("en-US");
 }
@@ -58,6 +67,8 @@ function usd(value: number | undefined): string {
 
 function table(header: string[], rows: string[][]): string[] {
   if (rows.length === 0) return [];
+  header = header.map(terminalText);
+  rows = rows.map(row => row.map(terminalText));
   const widths = header.map((h, i) => Math.max(h.length, ...rows.map(r => (r[i] ?? "").length)));
   const line = (cols: string[]): string => cols.map((c, i) => (c ?? "").padEnd(widths[i]!)).join("  ").trimEnd();
   return [line(header), ...rows.map(line)];
@@ -68,7 +79,7 @@ function describeScope(data: UsageReportInput): string {
   if (data.surface && data.surface !== "all") parts.push(`surface=${data.surface}`);
   if (data.filter?.provider) parts.push(`provider=${data.filter.provider}`);
   if (data.filter?.model) parts.push(`model=${data.filter.model}`);
-  return parts.join(", ");
+  return terminalText(parts.join(", "));
 }
 
 export function formatUsageReport(data: UsageReportInput): string[] {
@@ -78,7 +89,7 @@ export function formatUsageReport(data: UsageReportInput): string[] {
   if (data.filter && !data.filter.matched) {
     const what = [data.filter.provider && `provider "${data.filter.provider}"`, data.filter.model && `model "${data.filter.model}"`]
       .filter(Boolean).join(" and ");
-    lines.push(`No usage recorded for ${what} in this range.`);
+    lines.push(`No usage recorded for ${terminalText(what)} in this range.`);
     lines.push("Check the spelling against `ocx usage --json`, or widen --range.");
     return lines;
   }
