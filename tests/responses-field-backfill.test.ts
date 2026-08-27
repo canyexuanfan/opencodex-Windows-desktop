@@ -350,6 +350,236 @@ describe("responses-field-backfill", () => {
     expect(result.output[0].id).toBe("msg_real");
   });
 
+  test("backfills missing status on output_item.done message", () => {
+    const event = {
+      type: "response.output_item.done",
+      output_index: 0,
+      item: {
+        type: "message",
+        id: "msg_1",
+        role: "assistant",
+        content: [{ type: "output_text", text: "hi" }],
+      },
+    };
+    const [out] = apply(sseBlock(event));
+    const parsed = parseData([out])[0];
+    expect(parsed.item.status).toBe("completed");
+  });
+
+  test("preserves existing status on message items", () => {
+    const event = {
+      type: "response.output_item.done",
+      output_index: 0,
+      item: {
+        type: "message",
+        id: "msg_1",
+        role: "assistant",
+        status: "in_progress",
+        content: [{ type: "output_text", text: "hi" }],
+      },
+    };
+    const [out] = apply(sseBlock(event));
+    const parsed = parseData([out])[0];
+    expect(parsed.item.status).toBe("in_progress");
+  });
+
+  test("backfills missing status on response.completed output items", () => {
+    const event = {
+      type: "response.completed",
+      sequence_number: 42,
+      response: {
+        id: "resp_1",
+        object: "response",
+        status: "completed",
+        output: [
+          {
+            type: "message",
+            id: "msg_1",
+            role: "assistant",
+            content: [{ type: "output_text", text: "hello" }],
+          },
+        ],
+      },
+    };
+    const [out] = apply(sseBlock(event));
+    const parsed = parseData([out])[0];
+    expect(parsed.response.output[0].status).toBe("completed");
+  });
+
+  test("does not add status to non-message items", () => {
+    const event = {
+      type: "response.output_item.done",
+      output_index: 0,
+      item: {
+        type: "function_call",
+        id: "fc_1",
+        call_id: "call_1",
+        name: "do_thing",
+        arguments: "{}",
+      },
+    };
+    const [out] = apply(sseBlock(event));
+    const parsed = parseData([out])[0];
+    expect(parsed.item).not.toHaveProperty("status");
+  });
+
+  test("backfillResponsesFieldsJson backfills missing status on message items", () => {
+    const response = {
+      id: "resp_1",
+      object: "response",
+      status: "completed",
+      output: [
+        {
+          type: "message",
+          id: "msg_1",
+          role: "assistant",
+          content: [{ type: "output_text", text: "hello" }],
+        },
+      ],
+    };
+    const result = JSON.parse(backfillResponsesFieldsJson(JSON.stringify(response))) as typeof response;
+    expect(result.output[0].status).toBe("completed");
+  });
+
+  test("backfillResponsesFieldsJson derives incomplete status on message items", () => {
+    const response = {
+      id: "resp_1",
+      object: "response",
+      status: "incomplete",
+      output: [
+        {
+          type: "message",
+          id: "msg_1",
+          role: "assistant",
+          content: [{ type: "output_text", text: "partial" }],
+        },
+      ],
+    };
+    const result = JSON.parse(backfillResponsesFieldsJson(JSON.stringify(response))) as typeof response;
+    expect(result.output[0].status).toBe("incomplete");
+  });
+
+  test("backfills in_progress status on output_item.added message", () => {
+    const event = {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: {
+        type: "message",
+        id: "msg_1",
+        role: "assistant",
+        content: [{ type: "output_text", text: "" }],
+      },
+    };
+    const [out] = apply(sseBlock(event));
+    const parsed = parseData([out])[0];
+    // output_item.added means the item is still being generated; marking it "completed"
+    // would misrepresent the stream state to strict clients.
+    expect(parsed.item.status).toBe("in_progress");
+  });
+
+  test("backfills in_progress status on response.created output items", () => {
+    const event = {
+      type: "response.created",
+      sequence_number: 1,
+      response: {
+        id: "resp_1",
+        object: "response",
+        status: "in_progress",
+        model: "grok-4.5",
+        output: [
+          {
+            type: "message",
+            id: "msg_1",
+            role: "assistant",
+            content: [{ type: "output_text", text: "" }],
+          },
+        ],
+      },
+    };
+    const [out] = apply(sseBlock(event));
+    const parsed = parseData([out])[0];
+    expect(parsed.response.output[0].status).toBe("in_progress");
+  });
+
+  test("backfills in_progress when both response status and item status are absent", () => {
+    // response.created with no status on either the response or the message item:
+    // the event type alone must drive the inference, not a "completed" default.
+    const event = {
+      type: "response.created",
+      sequence_number: 1,
+      response: {
+        id: "resp_1",
+        object: "response",
+        model: "grok-4.5",
+        output: [
+          {
+            type: "message",
+            id: "msg_1",
+            role: "assistant",
+            content: [{ type: "output_text", text: "" }],
+          },
+        ],
+      },
+    };
+    const [out] = apply(sseBlock(event));
+    const parsed = parseData([out])[0];
+    expect(parsed.response.output[0].status).toBe("in_progress");
+  });
+
+  test("backfills incomplete status on response.incomplete output items", () => {
+    const event = {
+      type: "response.incomplete",
+      sequence_number: 10,
+      response: {
+        id: "resp_1",
+        object: "response",
+        status: "incomplete",
+        model: "grok-4.5",
+        output: [
+          {
+            type: "message",
+            id: "msg_1",
+            role: "assistant",
+            content: [{ type: "output_text", text: "partial" }],
+          },
+        ],
+      },
+    };
+    const [out] = apply(sseBlock(event));
+    const parsed = parseData([out])[0];
+    expect(parsed.response.output[0].status).toBe("incomplete");
+  });
+
+  test("maps response.failed to incomplete message status", () => {
+    // response.failed carries status: "failed" on the response object, but
+    // OutputMessage.status only accepts in_progress/completed/incomplete.
+    // "failed" means the message did not finish generating, so "incomplete"
+    // is the correct semantic mapping — not "completed", which would falsely
+    // claim the message is whole.
+    const event = {
+      type: "response.failed",
+      sequence_number: 5,
+      response: {
+        id: "resp_1",
+        object: "response",
+        status: "failed",
+        model: "grok-4.5",
+        output: [
+          {
+            type: "message",
+            id: "msg_1",
+            role: "assistant",
+            content: [{ type: "output_text", text: "partial" }],
+          },
+        ],
+      },
+    };
+    const [out] = apply(sseBlock(event));
+    const parsed = parseData([out])[0];
+    expect(parsed.response.output[0].status).toBe("incomplete");
+  });
+
+
   test("the canonical image_generation_call type gets its own prefix", () => {
     const response = {
       id: "resp_1",
