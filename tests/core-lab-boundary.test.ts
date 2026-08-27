@@ -389,7 +389,8 @@ describe("activation window stays synchronous", () => {
     // enclosing function and must be reported.
     expect(bodyLevelAwaitLines("await first();\n")).toEqual([1]);
     expect(bodyLevelAwaitLines("if (flag) {\n  await gate();\n}\n")).toEqual([2]);
-    expect(bodyLevelAwaitLines("try {\n  await risky();\n} catch {}\n")).toEqual([2]);
+    const emptyCatch = `catch ${"{"}${"}"}`;
+    expect(bodyLevelAwaitLines(`try {\n  await risky();\n} ${emptyCatch}\n`)).toEqual([2]);
     expect(bodyLevelAwaitLines("for (const x of xs) {\n  await x;\n}\n")).toEqual([2]);
     expect(bodyLevelAwaitLines("for await (const x of xs) {\n  void x;\n}\n")).toEqual([1]);
 
