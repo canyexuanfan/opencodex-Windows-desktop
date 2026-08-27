@@ -279,6 +279,8 @@ const commandRunners: Record<string, CommandRunner> = {
     const { withCatalogWriteSerialization } = await import("../codex/catalog-write-serialization");
     const { invalidateCodexModelsCacheWithPermit } = await import("../codex/catalog/sync");
     const { getCodexHome } = await import("../codex/paths");
+    const { readCodexCatalogPathForHome } = await import("../codex/catalog/parsing");
+    const { existsSync } = await import("node:fs");
     const owningCodexHome = getCodexHome();
     const desiredDisabled = !shouldSyncCodexOnStart(deps.loadConfig());
     const invalidated = withCatalogWriteSerialization(owningCodexHome, permit =>
@@ -304,30 +306,42 @@ const commandRunners: Record<string, CommandRunner> = {
     // would read as a flake rather than a bug. `codex-retained-root-serialization.test.ts`
     // pins exactly that: contended lock, no cache write, exit 0.
     //
-    // `desiredDisabled` is NOT a skip here, which is the subtle part. This call passes
-    // `allowWhenDesiredDisabled: true`, so the OFF gate in refreshCodexModelCatalog never
-    // fires and the refresh genuinely runs -- an explicit `ocx sync-cache` means the user
-    // asked for it regardless of the toggle. So a falsy result while integration is off is a
-    // real failure (unreadable catalog, I/O error), and treating it as a deliberate skip
-    // would report exit 0 and `skipped: true` for a refresh that actually failed. Only
-    // `database` and `unsafe-path` never reach a skip classification.
+    // `desiredDisabled` is deliberately NOT part of the success test, which is the subtle
+    // part. This call passes `allowWhenDesiredDisabled: true`, so the OFF gate inside the
+    // refresh never fires and the work is genuinely attempted -- an explicit `ocx sync-cache`
+    // means the user asked for it regardless of the toggle. Treating OFF as automatic success
+    // would report exit 0 and `skipped: true` for a refresh that actually failed.
+    //
+    // But `invalidateCodexModelsCacheWithPermit` returns a bare boolean for four different
+    // situations -- wrote it, no catalog file exists, the OFF gate fired, or it threw -- so
+    // `false` alone cannot be read as failure either. `!existsSync(catalogPath)` is a
+    // legitimate nothing-to-do: with no catalog there is no cache to derive, which is the
+    // normal state of a fully native home and the case
+    // `codex-composed-acceptance.test.ts` pins at exit 0. It is checked here rather than by
+    // widening that function's return type, because its boolean is consumed by a dozen
+    // management routes that have no use for the distinction.
     const wrote = invalidated.kind === "completed" && Boolean(invalidated.value);
     const contended = invalidated.kind === "unavailable" && invalidated.reason === "busy";
-    const ok = wrote || contended;
+    const noCatalog = !wrote && !existsSync(readCodexCatalogPathForHome(owningCodexHome));
+    const ok = wrote || contended || noCatalog;
     if (cacheJson) {
       console.log(JSON.stringify({
         schemaVersion: 1,
         ok,
         wrote,
-        skipped: contended,
+        skipped: contended || noCatalog,
         outcome: invalidated.kind,
         // `outcome` alone cannot separate a contended lock from a hard serialization
         // failure -- both are `unavailable`. Carry the reason so a caller can.
         reason: invalidated.kind === "unavailable" ? invalidated.reason : undefined,
+        // Which of the two benign skips this was, so `skipped: true` is never opaque.
+        skippedReason: contended ? "contended" : noCatalog ? "no_catalog" : undefined,
         codexHome: owningCodexHome,
       }, null, 2));
     } else if (contended) {
       console.log("Another process owns the catalog write; cache sync skipped.");
+    } else if (noCatalog) {
+      console.log("No Codex catalog to derive a cache from; nothing to sync.");
     } else if (!ok) {
       console.error(`Cache refresh did not complete (${invalidated.kind}). The Codex model cache was not rewritten.`);
     }
