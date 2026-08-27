@@ -513,7 +513,10 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
     // to useCallback and completing the dep array turns ONE warning into five react-compiler
     // errors - two PreserveManualMemo, two Immutability (they are declared ~430 lines below this
     // effect), and one EffectSetState - so the note above still holds against oxlint 1.78.
-    // react-doctor-disable-next-line react-doctor/exhaustive-deps -- same intentional exception
+    // Both gates suppress this one rule for this one file by config rather than by comment:
+    // gui/.oxlintrc.json (override) and gui/doctor.config.json (ignore.overrides). An in-file
+    // react-doctor-disable comment was tried and removed - it changed nothing, and
+    // react/react-compiler penalises a component for carrying suppressions at all.
   }, [catalogActive, loadShadowCall, loadV2]);
 
   const groups = useMemo(
