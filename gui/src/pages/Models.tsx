@@ -509,7 +509,11 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
     // oxlint-disable-next-line react/react-compiler -- existing exhaustive-deps exception is intentional
     // eslint-disable-next-line react-hooks/exhaustive-deps -- loadPresets is a plain async loader
     // like the rest of this file's; a useCallback wrapper trips PreserveManualMemo, and the
-    // effect only ever needs the current closure.
+    // effect only ever needs the current closure. Verified 2026-08-27: converting both loaders
+    // to useCallback and completing the dep array turns ONE warning into five react-compiler
+    // errors - two PreserveManualMemo, two Immutability (they are declared ~430 lines below this
+    // effect), and one EffectSetState - so the note above still holds against oxlint 1.78.
+    // react-doctor-disable-next-line react-doctor/exhaustive-deps -- same intentional exception
   }, [catalogActive, loadShadowCall, loadV2]);
 
   const groups = useMemo(
