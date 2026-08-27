@@ -41,6 +41,19 @@ added only to a writer would let a mutation bypass the state users saw.
 `fileFingerprint` records the exact whole-file result for restore and for serializers that may lose
 comments. `blockFingerprint` records the exact generated contribution and detects catalog, model,
 port, or provider drift. `fragmentPaths` bounds disable to the paths OpenCodex actually created.
+New records pair the exact contribution fingerprints with semantic fingerprints that recursively
+sort JSON object keys while preserving array order. Existing records without the semantic companion
+fall back to comparing the recorded generated contribution when the catalog has not moved. This
+keeps old records readable while preventing a client's formatting-only key reorder from
+masquerading as a protected edit.
+
+[Decision Log]
+- 목적과 의도: Treat JSON object-key order as formatting while retaining safe ownership proof across upgrades.
+- 기존 구현 및 제약 조건: Existing records contain order-sensitive hashes, and replacing their hash format in place would make every installed integration look foreign-edited.
+- 검토한 주요 대안: Replace the hash format globally; ignore key order only for ZCode; store a semantic companion beside the existing exact hash.
+- 선택한 방식: Preserve the exact hashes for compatibility and add object-key-independent semantic companions to new records, with a bounded desired-contribution fallback for old records.
+- 다른 대안 대신 이 방식을 선택한 이유: A global replacement cannot validate old records, while a ZCode-only exception would leave the shared JSON ownership rule inconsistent.
+- 장점, 단점 및 영향: New records tolerate key normalization even across catalog refreshes; old records recover when the recorded catalog is still reconstructible, and ambiguous old-record drift remains fail-closed.
 
 Clients normally protect every field in every recorded fragment. A client that writes documented,
 runtime-derived fields back into an owned fragment may additionally record:

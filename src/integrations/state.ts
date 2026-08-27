@@ -12,10 +12,11 @@ import { ClientPathError, EXPORT_CLIENTS, opencodeProxyBaseUrl, type ExportModel
 import type { OcxConfig } from "../types";
 import { PARSE_FAILED, loadTarget, parseConfig, type IntegrationIO } from "./config-io";
 import { SNAPSHOT_RETENTION } from "./journal";
-import { canonicalContribution, fingerprint, type OwnershipRecord } from "./ownership";
+import { canonicalContribution, fingerprint, semanticContribution, type OwnershipRecord } from "./ownership";
 import {
   protectedContributionFingerprint,
   refreshablePathsOf,
+  semanticProtectedContributionFingerprint,
   validRefreshablePaths,
 } from "./ownership-policy";
 import { INTEGRATION_CLIENTS, type IntegrationClientId } from "./registry";
@@ -153,21 +154,49 @@ function recordedBlockIsOwned(
   if (!observed) return false;
   if (fingerprint(canonicalContribution(observed)) === record.blockFingerprint) return true;
 
+  const observedSemanticFingerprint = fingerprint(semanticContribution(observed));
+  if (
+    typeof record.semanticBlockFingerprint === "string"
+    && observedSemanticFingerprint === record.semanticBlockFingerprint
+  ) return true;
+
+  const desiredFingerprint = fingerprint(canonicalContribution(desired));
+  if (
+    desiredFingerprint === record.blockFingerprint
+    && observedSemanticFingerprint === fingerprint(semanticContribution(desired))
+  ) return true;
+
   if (
     typeof record.protectedBlockFingerprint === "string"
     && validRefreshablePaths(observed, record.refreshablePaths)
     && record.refreshablePaths.length > 0
   ) {
-    return protectedContributionFingerprint(observed, record.refreshablePaths)
-      === record.protectedBlockFingerprint;
+    const observedProtectedFingerprint = protectedContributionFingerprint(
+      observed,
+      record.refreshablePaths,
+    );
+    if (observedProtectedFingerprint === record.protectedBlockFingerprint) return true;
+
+    const observedSemanticProtectedFingerprint = semanticProtectedContributionFingerprint(
+      observed,
+      record.refreshablePaths,
+    );
+    if (
+      typeof record.semanticProtectedBlockFingerprint === "string"
+      && observedSemanticProtectedFingerprint === record.semanticProtectedBlockFingerprint
+    ) return true;
+
+    return protectedContributionFingerprint(desired, record.refreshablePaths)
+        === record.protectedBlockFingerprint
+      && observedSemanticProtectedFingerprint
+        === semanticProtectedContributionFingerprint(desired, record.refreshablePaths);
   }
 
-  const desiredFingerprint = fingerprint(canonicalContribution(desired));
   if (desiredFingerprint !== record.blockFingerprint) return false;
   const legacyPaths = refreshablePathsOf(desired);
   return legacyPaths.length > 0
-    && protectedContributionFingerprint(observed, legacyPaths)
-      === protectedContributionFingerprint(desired, legacyPaths);
+    && semanticProtectedContributionFingerprint(observed, legacyPaths)
+      === semanticProtectedContributionFingerprint(desired, legacyPaths);
 }
 
 /**
@@ -257,7 +286,11 @@ export function classifyIntegration(input: {
     }
     return { state: "stale" };
   }
-  return input.record.blockFingerprint === fingerprint(canonicalContribution(input.contribution))
+  const desiredFingerprint = typeof input.record.semanticBlockFingerprint === "string"
+    ? fingerprint(semanticContribution(input.contribution))
+    : fingerprint(canonicalContribution(input.contribution));
+  const recordedFingerprint = input.record.semanticBlockFingerprint ?? input.record.blockFingerprint;
+  return recordedFingerprint === desiredFingerprint
     ? { state: "current" }
     : { state: "stale" };
 }

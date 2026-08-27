@@ -119,6 +119,16 @@ function input(overrides: Partial<IntegrationWriteInput> = {}): IntegrationWrite
   };
 }
 
+function reverseJsonObjectKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(reverseJsonObjectKeys);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .reverse()
+      .map(([key, nested]) => [key, reverseJsonObjectKeys(nested)]),
+  );
+}
+
 describe("apply", () => {
   test("refuses a client that is not installed, and writes nothing", () => {
     const result = applyIntegration(input());
@@ -216,6 +226,8 @@ describe("apply", () => {
 
     const record = store.readRecords().zcode!;
     expect(record.protectedBlockFingerprint).toMatch(/^[0-9a-f]{16}$/);
+    expect(record.semanticBlockFingerprint).toMatch(/^[0-9a-f]{16}$/);
+    expect(record.semanticProtectedBlockFingerprint).toMatch(/^[0-9a-f]{16}$/);
     expect(record.refreshablePaths).toContainEqual([
       "provider", "opencodex", "models", "mystery/model", "limit", "context",
     ]);
@@ -249,6 +261,58 @@ describe("apply", () => {
     expect(after.provider.opencodex!.models["anthropic/claude-opus-4-8"]!.reasoning).toBeUndefined();
     expect((after.provider.opencodex!.models["anthropic/claude-opus-4-8"]!.limit as Record<string, unknown>).output).toBeUndefined();
     expect(after.provider.opencodex!.models["mystery/model"]!.limit).toBeUndefined();
+  });
+
+  test("ZCode key-order normalization stays refreshable with derived metadata (#2759)", () => {
+    const configPath = installZcode();
+    const models: ExportModel[] = [
+      ...MODELS,
+      { namespaced: "mystery/model", provider: "mystery", id: "model" },
+    ];
+    const request = input({ clientId: "zcode", models });
+    expect(applyIntegration(request).ok).toBe(true);
+
+    const document = JSON.parse(readFileSync(configPath, "utf8")) as {
+      provider: Record<string, { models: Record<string, Record<string, unknown>> }>;
+    };
+    document.provider.opencodex!.models["mystery/model"]!.limit = {
+      context: 128_000,
+      output: 32_000,
+    };
+    document.provider.opencodex!.models["mystery/model"]!.reasoning = { enabled: false };
+    const reordered = reverseJsonObjectKeys(document);
+    writeFileSync(configPath, `${JSON.stringify(reordered, null, 2)}\n`);
+
+    expect(readIntegrationState(request)).toMatchObject({ state: "stale" });
+    const refreshed = applyIntegration(request);
+    expect(refreshed.ok).toBe(true);
+    if (refreshed.ok) expect(refreshed.changed).toBe(true);
+    expect(readIntegrationState(request)).toMatchObject({ state: "current" });
+  });
+
+  test("legacy ZCode records tolerate key reordering when the catalog is unchanged (#2759)", () => {
+    const configPath = installZcode();
+    const request = input({ clientId: "zcode" });
+    expect(applyIntegration(request).ok).toBe(true);
+
+    const legacy = { ...store.readRecords().zcode! };
+    delete legacy.semanticBlockFingerprint;
+    delete legacy.semanticProtectedBlockFingerprint;
+    store.putRecord(legacy);
+
+    const document = JSON.parse(readFileSync(configPath, "utf8")) as {
+      provider: Record<string, { models: Record<string, Record<string, unknown>> }>;
+    };
+    document.provider.opencodex!.models["anthropic/claude-opus-4-8"]!.reasoning = {
+      enabled: true,
+    };
+    writeFileSync(
+      configPath,
+      `${JSON.stringify(reverseJsonObjectKeys(document), null, 2)}\n`,
+    );
+
+    expect(readIntegrationState(request)).toMatchObject({ state: "stale" });
+    expect(applyIntegration(request).ok).toBe(true);
   });
 
   test("a legacy ZCode record accepts derived drift only while its generated catalog is unchanged (#2389)", () => {
