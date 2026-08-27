@@ -145,3 +145,197 @@ describe("ocx capabilities output", () => {
     expect(unknown).toEqual([]);
   });
 });
+/**
+ * The 139 management routes that have neither a CLI capability nor a justified
+ * `route.exempt`, as of 2026-08-28. This list is a RATCHET, not an allowlist: the parity
+ * test below fails on any route that is not in it, so new drift is blocked while the
+ * existing debt is visible, counted and dated.
+ *
+ * It exists because the forward gate was one-directional. `cli-capabilities.test.ts`
+ * asserted every capability's route exists and never the converse, so 139 routes carried no
+ * verb and nothing failed. The user-visible consequence is that `ocx capabilities --route
+ * /api/keys` -- an agent's discovery entry point -- returns an empty list and exits 4 while
+ * `ocx access key` works.
+ *
+ * Most of these are NOT internal plumbing, which is the important correction: 122 of the 139
+ * paths are already referenced from CLI source, and of the remainder only about two are
+ * plausibly pure plumbing (`/api/update/badge`, `/api/system/windows-replace-retries`). So
+ * the debt is overwhelmingly "a working command exists but declares no capability", not
+ * "these routes should never have verbs". Declaring them is wp11's job.
+ *
+ * Shrinking this list is the point. Adding to it requires the same justification a
+ * `route.exempt` needs, and the test prints the exact key to add or remove.
+ */
+const UNDECLARED_ROUTES_2026_08_28: readonly string[] = [
+  "DELETE /api/codex-auth/accounts",
+  "DELETE /api/combos",
+  "DELETE /api/custom-models/{id}",
+  "DELETE /api/keys",
+  "DELETE /api/oauth/accounts",
+  "DELETE /api/providers",
+  "DELETE /api/providers/keys",
+  "DELETE /api/routing-profiles",
+  "GET /api/aliases",
+  "GET /api/claude-code",
+  "GET /api/claude-desktop",
+  "GET /api/claude-desktop/status",
+  "GET /api/claude/inbound-debug",
+  "GET /api/client-integrations",
+  "GET /api/client-integrations/journal",
+  "GET /api/client-integrations/{clientId}",
+  "GET /api/codex-auth/login-status",
+  "GET /api/codex-auth/quota",
+  "GET /api/codex-auth/reset-credits",
+  "GET /api/combos",
+  "GET /api/custom-models",
+  "GET /api/debug",
+  "GET /api/debug/injection-logs",
+  "GET /api/debug/logs",
+  "GET /api/debug/usage-logs",
+  "GET /api/diagnostics/project-config",
+  "GET /api/effort-caps",
+  "GET /api/grok",
+  "GET /api/injection-model",
+  "GET /api/keys",
+  "GET /api/model-discovery",
+  "GET /api/model-presets",
+  "GET /api/models",
+  "GET /api/native-main-profiles",
+  "GET /api/native-main-profiles/doctor",
+  "GET /api/oauth/accounts",
+  "GET /api/oauth/providers",
+  "GET /api/oauth/status",
+  "GET /api/provider-context-caps",
+  "GET /api/provider-presets",
+  "GET /api/provider-quotas",
+  "GET /api/providers/keys",
+  "GET /api/request-history",
+  "GET /api/request-history/{id}",
+  "GET /api/request-history/{id}/route-decision",
+  "GET /api/routing-profiles",
+  "GET /api/selected-models",
+  "GET /api/settings",
+  "GET /api/shadow-call-settings",
+  "GET /api/sidecar-settings",
+  "GET /api/startup-health",
+  "GET /api/storage/codex-logs",
+  "GET /api/subagent-model-fallback",
+  "GET /api/subagent-models",
+  "GET /api/system/codex-app-server",
+  "GET /api/system/memory",
+  "GET /api/system/windows-replace-retries",
+  "GET /api/update/badge",
+  "GET /api/update/check",
+  "GET /api/update/status",
+  "GET /api/v2",
+  "PATCH /api/codex-auth/pool-strategy",
+  "PATCH /api/keys",
+  "PATCH /api/oauth/accounts/pool",
+  "PATCH /api/providers",
+  "POST /api/claude-desktop/apply",
+  "POST /api/client-integrations/restore",
+  "POST /api/codex-auth/accounts",
+  "POST /api/codex-auth/accounts/clear-cooldown",
+  "POST /api/codex-auth/login",
+  "POST /api/codex-auth/login/cancel",
+  "POST /api/codex-auth/login/code",
+  "POST /api/codex-auth/reset-credits/consume",
+  "POST /api/custom-models",
+  "POST /api/grok/apply",
+  "POST /api/keys",
+  "POST /api/model-discovery/acknowledge",
+  "POST /api/native-main-profiles/recover",
+  "POST /api/native-main-profiles/register",
+  "POST /api/native-main-profiles/stage",
+  "POST /api/native-main-profiles/stage/cancel",
+  "POST /api/native-main-profiles/stage/finish",
+  "POST /api/native-main-profiles/stage/heartbeat",
+  "POST /api/native-main-profiles/switch",
+  "POST /api/oauth/accounts/clear-cooldown",
+  "POST /api/oauth/accounts/import",
+  "POST /api/oauth/login",
+  "POST /api/oauth/login/cancel",
+  "POST /api/oauth/login/code",
+  "POST /api/oauth/logout",
+  "POST /api/providers",
+  "POST /api/providers/keys",
+  "POST /api/providers/test",
+  "POST /api/routing-profiles/dry-run",
+  "POST /api/startup-action",
+  "POST /api/stop",
+  "POST /api/storage/codex-logs/compact",
+  "POST /api/storage/codex-logs/protect",
+  "POST /api/storage/codex-logs/repair",
+  "POST /api/storage/codex-logs/unprotect",
+  "POST /api/sync",
+  "POST /api/system/codex-restart",
+  "POST /api/system/restart",
+  "POST /api/update/run",
+  "POST /api/windows-tray",
+  "PUT /api/claude-code",
+  "PUT /api/claude-desktop",
+  "PUT /api/client-integrations/{clientId}",
+  "PUT /api/codex-auth/accounts/alias",
+  "PUT /api/codex-auth/accounts/priority",
+  "PUT /api/codex-auth/active",
+  "PUT /api/codex-auth/auto-switch",
+  "PUT /api/codex-auth/failover",
+  "PUT /api/combos",
+  "PUT /api/custom-models/{id}",
+  "PUT /api/debug",
+  "PUT /api/default-aliases",
+  "PUT /api/disabled-models",
+  "PUT /api/effort-caps",
+  "PUT /api/grok/selection",
+  "PUT /api/injection-model",
+  "PUT /api/model-discovery",
+  "PUT /api/model-presets",
+  "PUT /api/model-visibility",
+  "PUT /api/oauth/accounts/active",
+  "PUT /api/oauth/accounts/alias",
+  "PUT /api/provider-context-caps",
+  "PUT /api/providers/keys/active",
+  "PUT /api/providers/keys/alias",
+  "PUT /api/providers/{provider}/alias",
+  "PUT /api/providers/{provider}/model-aliases",
+  "PUT /api/routing-profiles",
+  "PUT /api/selected-models",
+  "PUT /api/settings",
+  "PUT /api/shadow-call-settings",
+  "PUT /api/sidecar-settings",
+  "PUT /api/subagent-model-fallback",
+  "PUT /api/subagent-models",
+  "PUT /api/v2",
+];
+
+describe("capability/route parity is bidirectional", () => {
+  test("every management route is capability-covered, exempt, or in the dated ratchet", async () => {
+    // The reverse direction. Without it, 139 routes carried no verb and no exemption and the
+    // suite stayed green -- which is how `capabilities --route /api/keys` came to return an
+    // empty list while `ocx access key` worked.
+    const { MANAGEMENT_ROUTES } = await import("../src/server/management/route-registry");
+    const covered = capabilityRouteKeys();
+    const ratchet = new Set(UNDECLARED_ROUTES_2026_08_28);
+    const unexplained = MANAGEMENT_ROUTES
+      .filter(r => {
+        const k = `${r.method} ${r.path}`;
+        return !covered.has(k) && !r.exempt && !ratchet.has(k);
+      })
+      .map(r => `${r.method} ${r.path}`);
+    expect(unexplained).toEqual([]);
+  });
+
+  test("the ratchet only shrinks: every listed route is still unexplained", async () => {
+    // A stale entry is as bad as a missing one. Once a route gains a capability or an
+    // exemption it must leave this list, or the count stops being evidence of progress.
+    const { MANAGEMENT_ROUTES } = await import("../src/server/management/route-registry");
+    const covered = capabilityRouteKeys();
+    const byKey = new Map(MANAGEMENT_ROUTES.map(r => [`${r.method} ${r.path}`, r] as const));
+    const stale = UNDECLARED_ROUTES_2026_08_28.filter(k => {
+      const route = byKey.get(k);
+      if (!route) return true;
+      return covered.has(k) || Boolean(route.exempt);
+    });
+    expect(stale).toEqual([]);
+  });
+});
