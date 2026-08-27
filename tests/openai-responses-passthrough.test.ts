@@ -1754,27 +1754,57 @@ describe("OpenAI Responses passthrough sanitization", () => {
     },
   );
 
-  test("keeps caller-sent prompt_cache_options while dropping the retired retention", () => {
-    const adapter = createResponsesPassthroughAdapter(provider);
-    const request = adapter.buildRequest({
-      modelId: "gpt-5.6-sol",
-      context: { messages: [] },
-      stream: true,
-      options: {},
-      _rawBody: {
-        model: "gpt-5.6-sol",
-        input: "hi",
-        prompt_cache_retention: "24h",
-        prompt_cache_options: { ttl: "30m" },
-      },
-    }, { headers: new Headers({ authorization: "Bearer token" }) });
-    const body = JSON.parse(request.body) as {
-      prompt_cache_retention?: string;
-      prompt_cache_options?: { ttl?: string };
-    };
+  test.each(["gpt-5.5", "gpt-5.6-luna"])(
+    "drops caller-sent prompt_cache_options for canonical forward model %s",
+    modelId => {
+      const adapter = createResponsesPassthroughAdapter(provider);
+      const request = adapter.buildRequest({
+        modelId,
+        context: { messages: [] },
+        stream: true,
+        options: {},
+        _rawBody: {
+          model: modelId,
+          input: "hi",
+          prompt_cache_options: { ttl: "30m" },
+        },
+      }, { headers: new Headers({ authorization: "Bearer token" }) });
+      const body = JSON.parse(request.body) as { prompt_cache_options?: { ttl?: string } };
 
-    expect(body.prompt_cache_retention).toBeUndefined();
-    expect(body.prompt_cache_options).toEqual({ ttl: "30m" });
+      expect(body.prompt_cache_options).toBeUndefined();
+    },
+  );
+
+  test("keeps prompt_cache_options for noncanonical forward and API-key providers", () => {
+    for (const configuredProvider of [
+      {
+        adapter: "openai-responses",
+        baseUrl: "https://gateway.example/v1",
+        authMode: "forward" as const,
+      },
+      {
+        adapter: "openai-responses",
+        baseUrl: "https://api.openai.com/v1",
+        authMode: "key" as const,
+        apiKey: "test-key",
+      },
+    ]) {
+      const adapter = createResponsesPassthroughAdapter(configuredProvider);
+      const request = adapter.buildRequest({
+        modelId: "gpt-5.6-sol",
+        context: { messages: [] },
+        stream: true,
+        options: {},
+        _rawBody: {
+          model: "gpt-5.6-sol",
+          input: "hi",
+          prompt_cache_options: { ttl: "30m" },
+        },
+      }, { headers: new Headers({ authorization: "Bearer token" }) });
+      const body = JSON.parse(request.body) as { prompt_cache_options?: { ttl?: string } };
+
+      expect(body.prompt_cache_options).toEqual({ ttl: "30m" });
+    }
   });
 
   test("a near-miss model id is not swept up by the gpt-5.6 family match", () => {
