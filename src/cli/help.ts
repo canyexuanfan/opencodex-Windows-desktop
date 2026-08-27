@@ -64,11 +64,12 @@ Usage:
   ocx combo <sub>             Combo failover/round-robin routing
   ocx agent <sub>             Subagents, injection, effort caps, and sidecars
   ocx observe <sub>           Logs, usage, storage, memory, and debug data
+  ocx inspect <sub>           Effective config, catalog, analytics, pacing, client-config
   ocx route <sub>             Routing features (combo, policy)
   ocx logs [filters]          Alias of ocx observe logs
   ocx usage [--range <today|1d|7d|30d|all>] [--provider <name>] [--model <id>]
                               Token and estimated-cost report (alias of ocx observe usage)
-  ocx storage [--json]        Alias of ocx observe storage
+  ocx storage <sub>           Storage report, cleanup, trash, and the cleanup policy
   ocx memory [--json]         Alias of ocx observe memory
   ocx api-key <sub>           Alias of ocx access key
   ocx access <sub>            External API keys and endpoint information

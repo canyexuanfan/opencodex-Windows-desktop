@@ -29,7 +29,8 @@ const USAGE = `Usage:
   ocx agent fallback <status|set|clear> [model,model...] [--poll-ms <5000-600000>] [--json]
   ocx agent sidecar <status|web|vision> [--list] [--model <id|->]
       [--backend web:<openai|anthropic|xai|gemini|exa|-> vision:<openai|anthropic|routed|->]
-      [--reasoning <level>] [--max-descriptions <n>] [--json]`;
+      [--reasoning <level>] [--max-descriptions <n>] [--json]
+  ocx agent request-user-input [on|off] [--json]`;
 
 function clearable(value: string | undefined): string | null | undefined {
   return value === "-" ? null : value;
@@ -221,6 +222,12 @@ export async function handleAgentCommand(argv: string[], deps: RuntimeApiDeps = 
     else if (sub === "subagents" || sub === "roster") await subagents(rest, deps);
     else if (sub === "fallback") await fallback(rest, deps);
     else if (sub === "sidecar") await sidecar(rest, deps);
+    // Lives here rather than as a top-level verb because it is an agent-behavior feature flag:
+    // it controls whether default mode may ask the operator a question mid-task.
+    else if (sub === "request-user-input") {
+      const { requestUserInputAction } = await import("./inspect");
+      await requestUserInputAction(rest, deps);
+    }
     else throw new CliUsageError(`unknown agent command ${sub}`, USAGE);
   });
 }
