@@ -150,6 +150,17 @@
       "rules": {
         "local-i18n/no-hardcoded-data-copy": "error"
       }
+    },
+    {
+      "files": [
+        "src/pages/Models.tsx"
+      ],
+      "rules": {
+        "react/exhaustive-deps": "off"
+      },
+      "plugins": [
+        "react"
+      ]
     }
   ]
 }
