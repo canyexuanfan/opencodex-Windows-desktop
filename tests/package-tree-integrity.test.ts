@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import {
   createPackageTreeIntegrityGuard,
+  createRuntimePackageTreeIntegrityGuard,
   type PackageTreeObservation,
 } from "../src/lib/package-tree-integrity";
 import { startServer } from "../src/server";
@@ -45,6 +46,52 @@ afterEach(() => {
 });
 
 describe("package tree integrity", () => {
+  test("source checkouts stay live when package.json changes during development", () => {
+    let observation: PackageTreeObservation = {
+      device: 1n,
+      inode: 10n,
+      contentTimeNs: 100n,
+      size: 500n,
+    };
+    let clock = 0;
+    const sourceGuard = createRuntimePackageTreeIntegrityGuard(
+      "source",
+      () => observation,
+      () => clock,
+    );
+    const installedGuard = createPackageTreeIntegrityGuard(
+      () => observation,
+      () => clock,
+    );
+
+    expect(sourceGuard.status()).toEqual({ ok: true });
+    expect(installedGuard.status()).toEqual({ ok: true });
+    observation = { device: 1n, inode: 11n, contentTimeNs: 200n, size: 700n };
+    clock += 2_000;
+    expect(sourceGuard.status()).toEqual({ ok: true });
+    expect(installedGuard.status()).toEqual({ ok: false, reason: "package_tree_replaced" });
+  });
+
+  test.each(["npm", "bun"] as const)("%s installs still refuse a replaced package tree", installer => {
+    let observation: PackageTreeObservation = {
+      device: 1n,
+      inode: 10n,
+      contentTimeNs: 100n,
+      size: 500n,
+    };
+    let clock = 0;
+    const guard = createRuntimePackageTreeIntegrityGuard(
+      installer,
+      () => observation,
+      () => clock,
+    );
+
+    expect(guard.status()).toEqual({ ok: true });
+    observation = { ...observation, inode: 11n, contentTimeNs: 200n };
+    clock += 2_000;
+    expect(guard.status()).toEqual({ ok: false, reason: "package_tree_replaced" });
+  });
+
   test("detects replacement even when the package version and file size are unchanged", () => {
     let observation: PackageTreeObservation = {
       device: 1n,
