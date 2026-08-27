@@ -1093,6 +1093,21 @@ the shared Ark hostname is too broad because the two endpoint families reject op
 
 ## Chat structured-output compatibility
 
+First-party Kimi and Moonshot Chat destinations normalize a `$ref` with sibling keywords because
+their wire rejects that valid JSON Schema 2020-12 shape. Inlining preserves conjunction semantics:
+`required` members are unioned, lower numeric bounds take the maximum, upper numeric bounds take the
+minimum, and overlapping `properties` recurse with the same rules. The walk remains depth-, node-,
+and expansion-bounded. Unresolvable or cyclic references keep the existing bare-`$ref` fallback,
+and unrelated OpenAI-compatible providers retain the caller's schema unchanged.
+
+[Decision Log]
+- 목적과 의도: Make Moonshot's compatibility rewrite remove rejected sibling `$ref` shapes without silently weakening a tool schema.
+- 기존 구현 및 제약 조건: The target and sibling both apply under JSON Schema 2020-12, but a shallow shared-property merge let sibling bounds replace stricter target bounds; Moonshot still requires the local bounded rewrite.
+- 검토한 주요 대안: Keep shallow sibling precedence; emit `allOf`; intersect only top-level bounds; recursively compose the supported set-valued and ordered assertions.
+- 선택한 방식: Reuse the existing bound and required intersection rules recursively for overlapping object properties inside the first-party destination gate.
+- 다른 대안 대신 이 방식을 선택한 이유: Shallow precedence weakens constraints, while a new `allOf` wire shape needs separate provider evidence; recursive composition fixes the demonstrated loss without broadening normalization to custom providers.
+- 장점, 단점 및 영향: Looser siblings cannot relax nested constraints and tighter siblings still narrow them; non-ordered conflicting keywords retain the existing sibling precedence and are not treated as a complete JSON Schema algebra.
+
 The `openai-chat` adapter translates Responses `text.format` and Chat Completions
 `response_format` through one internal format, then emits `response_format` on the upstream chat
 wire. That remains the default because silently returning prose breaks clients that requested a
