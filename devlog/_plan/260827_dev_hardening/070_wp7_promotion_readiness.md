@@ -58,3 +58,26 @@ the version line, locale docs, and the local gates. It did not audit provider ad
 the GUI beyond its lint configuration, or the release workflow itself. A green suite at
 this head is evidence about the code that has tests, which is the ordinary limit of this
 kind of statement and worth saying out loud rather than implying otherwise.
+
+## Addendum — `dev` has advanced past the sha above
+
+The statement was written at `2a72cc017` and `dev` has since moved twice, so the head it
+names is no longer the tip. Recorded here rather than left to rot, because a readiness
+statement whose sha is stale is worse than no statement.
+
+| Head | What it added | Proven |
+| --- | --- | --- |
+| `2a72cc017` | wp6 invariant locks | remote suite rc=0, 15,324 pass; CI green |
+| `c457c7085` | this document (#2752) | docs only, no code differs from `2a72cc017` |
+| `eeb774026` | #2750, Kiro code-mode delegation surface | remote suite rc=0, 15,334 pass; CI green |
+
+#2750 was 14 commits behind `dev` when it came up for merge — past the 10-commit
+threshold the readiness gate documents — so it was rebased onto `c457c7085` first and
+re-verified at the rebased head `942193852` rather than merged on a stale base. The
+rebase replayed all five commits with no conflicts. Alongside its own 68 Kiro tests, the
+invariant guards and version-line locks that landed during this unit were re-run against
+it (167 pass, 0 fail) to confirm the two lines of work do not interfere.
+
+Everything the body of this document says about promotion still holds at `eeb774026`: the
+version line, the gates, the invariant locks, and the deferral of #2745 are all unchanged
+by the two commits above.
