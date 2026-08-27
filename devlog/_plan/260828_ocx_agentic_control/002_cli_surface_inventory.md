@@ -51,7 +51,7 @@ agent, system, route-policy, export, integrations, v2.
 **Client 2 — `src/cli/account-api.ts:88` `apiJson`.** Used by the whole `account`
 family. Same base-URL and header resolution, but it **never throws**: it returns
 `{status, json}` and collapses every network error to sentinel `status: 0` inside a
-bare `catch {}` (line 106), discarding the underlying message. Failures funnel
+catch block with an empty body (line 106), discarding the underlying message. Failures funnel
 through `apiError` -> exit 1 always; no 404->4 / 409->5 mapping.
 
 ## Error bodies are dropped: `reason` and `hint`

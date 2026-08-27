@@ -143,7 +143,7 @@ The 400-char cap stays for opaque string bodies; the structured path gets a wide
 MODIFY `src/cli/account-api.ts`.
 
 `apiJson` (line ~88) currently collapses any thrown fetch into `{status: 0}` inside
-a bare `catch {}`, discarding the message. Change the sentinel to carry it:
+a catch block with an empty body, discarding the message. Change the sentinel to carry it:
 
 ```ts
 export type ApiResult = { status: number; json: unknown; transportError?: string };
