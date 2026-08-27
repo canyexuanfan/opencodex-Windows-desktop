@@ -468,12 +468,18 @@ describe("Command Code provider", () => {
     expect(JSON.parse(generated[1]!.body!).params).not.toHaveProperty("reasoning_effort");
   });
 
-  // The three ids added for #2647 must resolve to their canonical public profile
-  // URLs, because refreshCommandCodeReasoningEfforts() is what corrects a wrong
-  // ladder after the first upstream rejection. A typo'd profileUrl silently
-  // disables that self-correction, which is the only reason it is acceptable to
-  // record the ladders from the reporter rather than from a live read.
-  test("fetches the #2647 effort profiles from their canonical public URLs", async () => {
+  // Pins the profileUrl of each id added for #2647 — nothing more.
+  //
+  // Be clear about what this does NOT prove: the stubbed response below returns
+  // prose that commandcode.ai never actually emits, so a green run here is not
+  // evidence that a real profile page can be parsed. It cannot: the live pages
+  // carry no "Reasoning efforts ... are supported;" text at all (measured 0 for
+  // every row in the table on 2026-08-27), so the refresh path returns undefined
+  // in production. See the provenance note in command-code-efforts.ts.
+  //
+  // What it does catch is a typo'd or drifted profileUrl, which is worth pinning
+  // on its own: the URL is the only handle a future parser fix would have.
+  test("resolves the #2647 effort profiles to their canonical public URLs", async () => {
     const urls: string[] = [];
     const fetch = (async (url: string | URL | Request) => {
       urls.push(String(url));

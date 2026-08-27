@@ -14,15 +14,27 @@ const COMMAND_CODE_MODEL_EFFORTS = {
    * Without a row here the model advertises no efforts at all, so a client that
    * sends one gets it stripped or rejected rather than honored.
    *
-   * Provenance: the ladders below are the reporter's (darwintree, #2647), taken
-   * as reported. All three profile URLs were confirmed to resolve (HTTP 200 on
-   * 2026-08-27), but commandcode.ai renders these pages client-side, so the
-   * ladder text is not verifiable from the fetched HTML at review time. That is
-   * tolerable HERE and nowhere else in this file: an effort this table gets
-   * wrong is self-correcting, because refreshCommandCodeReasoningEfforts()
-   * re-reads the public profile after the first upstream rejection and replaces
-   * the row. A wrong MODEL ID, by contrast, is not self-correcting — see the
-   * exact-id warning below.
+   * PROVENANCE, stated plainly: these three ladders are the reporter's
+   * (darwintree, #2647), recorded as reported and NOT independently verified.
+   * All three profileUrls return HTTP 200, but commandcode.ai renders these
+   * pages client-side and ships the ladder inside a serialized React payload
+   * whose `reasoningEfforts` array is EMPTY in the delivered HTML. There is no
+   * fetchable statement of these ladders to check them against.
+   *
+   * Do not assume the refresh path launders this. It does not:
+   * `parsedProfileEfforts` below matches prose of the form
+   * "Reasoning efforts ... are supported;", and `grep -c -i 'reasoning efforts'`
+   * against the live pages returns 0 — for these three AND for the older rows
+   * (deepseek-v4-pro, GLM-5.3, muse-spark-1.2 all measured 0 on 2026-08-27).
+   * So `refreshCommandCodeReasoningEfforts` returns undefined and the caller
+   * keeps whatever is written here, indefinitely. The self-correction mechanism
+   * is currently dead for EVERY row in this table, which is a pre-existing
+   * defect worth its own fix (teach the parser to read the embedded payload),
+   * not something these three rows introduced.
+   *
+   * The practical consequence: a wrong ladder here stays wrong until a human
+   * changes it. It degrades safely — an effort the upstream rejects surfaces as
+   * an error rather than silent corruption — but it does not self-heal.
    */
   "deepseek/deepseek-v4-flash-vision-exp": {
     efforts: ["high", "max"],
