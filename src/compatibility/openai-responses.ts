@@ -9,7 +9,7 @@ const FIXTURE_ID = "openai-codex-forward-gpt56-sol-v1";
 export const OPENAI_CODEX_FORWARD_GPT56_SOL_MANIFEST = defineCompatibilityManifest({
   schemaVersion: 1,
   id: "openai.codex-forward.gpt-5-6-sol.responses",
-  version: "1.0.0",
+  version: "1.1.0",
   subject: {
     providerId: "openai",
     baseUrl: "https://chatgpt.com/backend-api/codex",
@@ -68,6 +68,22 @@ export const OPENAI_CODEX_FORWARD_GPT56_SOL_MANIFEST = defineCompatibilityManife
       summary: "Caller metadata is not forwarded to the ChatGPT Codex backend.",
       limitation: "The field is removed before dispatch.",
       evidence: [{ kind: "fixture", id: FIXTURE_ID, assertionIds: ["metadata-removed"] }],
+    },
+    {
+      id: "system-input-messages",
+      feature: "request.input.system_messages",
+      disposition: "translated",
+      summary: "Text-only input system messages are folded into top-level instructions.",
+      limitation: "The destination does not accept system-role input items; multimodal system messages stay unchanged rather than being dropped.",
+      evidence: [{ kind: "fixture", id: FIXTURE_ID, assertionIds: ["system-message-folded", "system-message-removed"] }],
+    },
+    {
+      id: "truncation",
+      feature: "request.truncation",
+      disposition: "unsupported",
+      summary: "The ChatGPT Codex forward route does not receive truncation.",
+      limitation: "The field is removed only for the canonical forward destination; public and custom Responses providers keep it.",
+      evidence: [{ kind: "fixture", id: FIXTURE_ID, assertionIds: ["truncation-removed"] }],
     },
     {
       id: "prompt-cache-retention",
