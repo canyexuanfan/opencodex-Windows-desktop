@@ -16,9 +16,14 @@ sleep 2
 rm -f "$HOME/.opencodex/ocx.pid"
 
 echo "[ocx-restart] starting detached proxy (log: $LOG_FILE)..."
-# setsid + nohup fully detaches from the controlling terminal and process group, so the proxy
-# survives the agent turn. </dev/null prevents any stdin coupling.
-setsid nohup bun run src/cli/index.ts start >"$LOG_FILE" 2>&1 </dev/null &
+# setsid + nohup fully detaches from the controlling terminal and process group where setsid
+# is available. macOS does not ship setsid, so fall back to nohup there. </dev/null prevents
+# stdin coupling, and disown below removes the job from this shell's lifecycle.
+if command -v setsid >/dev/null 2>&1; then
+  setsid nohup bun run src/cli/index.ts start >"$LOG_FILE" 2>&1 </dev/null &
+else
+  nohup bun run src/cli/index.ts start >"$LOG_FILE" 2>&1 </dev/null &
+fi
 disown || true
 
 for i in $(seq 1 30); do

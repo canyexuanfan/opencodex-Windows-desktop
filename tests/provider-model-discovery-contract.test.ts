@@ -442,6 +442,7 @@ describe("registry-owned provider model discovery", () => {
       "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
       "@cf/moonshotai/kimi-k2.7-code",
       "@cf/zai-org/glm-5.3",
+      "@cf/zai-org/glm-5.3-flash",
       "@cf/zai-org/glm-5.2",
       "@cf/mistralai/mistral-small-3.1-24b-instruct",
     ]);

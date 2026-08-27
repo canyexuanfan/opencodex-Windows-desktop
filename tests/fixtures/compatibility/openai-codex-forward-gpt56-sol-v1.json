@@ -15,10 +15,31 @@
       },
       "request": {
         "model": "gpt-5.6-sol",
-        "input": "ping",
+        "input": [
+          {
+            "type": "message",
+            "role": "system",
+            "content": [{ "type": "input_text", "text": "Fixture system instruction" }]
+          },
+          {
+            "type": "message",
+            "role": "user",
+            "content": [{
+              "type": "input_text",
+              "text": "ping",
+              "prompt_cache_breakpoint": { "type": "ephemeral" }
+            }]
+          },
+          {
+            "type": "item_reference",
+            "id": "rs_unpersisted"
+          }
+        ],
+        "instructions": "Fixture instructions",
         "previous_response_id": "resp_fixture",
         "stream": true,
         "store": false,
+        "truncation": "disabled",
         "max_output_tokens": 32000,
         "metadata": { "fixture": "not-forwarded" },
         "reasoning": { "effort": "low" },
@@ -54,6 +75,20 @@
         },
         { "id": "max-output-tokens-removed", "operator": "absent", "path": "/body/max_output_tokens" },
         { "id": "metadata-removed", "operator": "absent", "path": "/body/metadata" },
+        { "id": "system-message-folded", "operator": "equals", "path": "/body/instructions", "expected": "Fixture instructions\n\nFixture system instruction" },
+        {
+          "id": "system-message-removed",
+          "operator": "equals",
+          "path": "/body/input/0",
+          "expected": {
+            "type": "message",
+            "role": "user",
+            "content": [{ "type": "input_text", "text": "ping" }]
+          }
+        },
+        { "id": "truncation-removed", "operator": "absent", "path": "/body/truncation" },
+        { "id": "prompt-cache-breakpoint-removed", "operator": "absent", "path": "/body/input/0/content/0/prompt_cache_breakpoint" },
+        { "id": "unstored-item-reference-removed", "operator": "absent", "path": "/body/input/1" },
         { "id": "previous-response-id-removed", "operator": "absent", "path": "/body/previous_response_id" },
         { "id": "prompt-cache-key-preserved", "operator": "equals", "path": "/body/prompt_cache_key", "expected": "project-cache-v1" },
         { "id": "prompt-cache-retention-removed", "operator": "absent", "path": "/body/prompt_cache_retention" }

@@ -72,6 +72,7 @@ differing backup and rewrites known legacy namespaced selected ids to bare ids.
 | `supportsServiceTier?` | `boolean` | Tri-state canonical Fast capability fallback. `true` publishes Fast in the catalog, satisfies service-tier routing requirements, contributes a supported fingerprint, and lets fast mode inject the provider's canonical wire value on a compatible final adapter. `false` strips the field and never injects, and exact model declarations cannot reopen it. Absent leaves the provider unclassified: fast mode does not inject or normalize a canonical caller value, and caller values obey the final wire's forwarding permission (`chatServiceTier` on Chat; passthrough on Responses). The registry classifies canonical OpenAI (`true`), DeepSeek, and Volcengine Ark (`false`); set it explicitly only for custom gateways that genuinely support tiers. |
 | `modelSupportsServiceTier?` | `Record<string, boolean>` | Exact upstream model capability overrides. Exact `true` enables canonical Fast for that model; exact `false` narrows provider defaults. An explicit provider-level `supportsServiceTier: false` remains fail-closed and cannot be reopened. Exact `true` does not authorize foreign caller-tier forwarding on Chat. Undeclared models fall back to provider-wide behavior. Management `PATCH /api/providers` merges entries and accepts `null` to clear one. |
 | `chatServiceTier?` | `boolean` | Provider-wide Chat-wire opt-in for forwarding caller `service_tier` values. On a classified route it governs foreign values such as `flex`, not proxy-owned canonical Fast after capability validation; on an unclassified route it governs every caller value because no Fast capability has been validated. Exact model capability does not authorize foreign forwarding. Responses routes retain their capability-based caller forwarding behavior. |
+| `promptCacheKey?` | `boolean` | Provider-wide `openai-chat` opt-in for forwarding a `prompt_cache_key`. The adapter forwards the key it is given and never invents one, but the key is not always the caller's: Claude Messages translation derives one from `metadata.user_id`, or from a model/system/tools cohort when no metadata is sent. Default off. Enable only when the upstream documents support, because strict gateways may reject the unknown field with HTTP 400. |
 | `preserveResponsesReasoningContent?` | `boolean` | Keep plaintext reasoning content on replayed Responses reasoning items instead of blanking it (blanking is the ChatGPT backend's rule). Enable for upstreams whose contract accepts reasoning replay, such as DeepSeek. Proxy-minted `ocxr1` envelopes are always stripped. |
 | `disabled?` | `boolean` | Keep the provider on disk but exclude it from routing and model/catalog listings. |
 | `apiKey?` | `string` | API key, or an `${ENV_VAR}` / `$ENV_VAR` reference resolved at request time. |
@@ -131,6 +132,21 @@ differing backup and rewrites known legacy namespaced selected ids to bare ids.
 | `desktopExecutor?` | `DesktopExecutorConfig` | Cursor only: external computer-use and record-screen commands. |
 | `unsafeAllowNativeLocalExec?` | `boolean` | Cursor legacy boolean, equivalent to `nativeLocalExec: "on"` only when the newer field is unset. |
 | `nativeLocalExec?` | `"off" \| "codex-sandbox" \| "on"` | Cursor local-exec policy. `off` is default; `codex-sandbox` currently fails closed like `off`. |
+
+## Codex catalog and root `config.toml` settings
+
+These settings belong in the root of `$CODEX_HOME/config.toml`, alongside
+`approvals_reviewer`; they are not provider fields.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `auto_review_model` | `string` | Public catalog selector in `provider/model` form, for example `opencode-go/deepseek-v4-flash`. After each catalog merge, OpenCodex resolves it against the final catalog and stamps the trimmed value as `auto_review_model_override` on catalog entries. Boundary whitespace is removed; the selector's slash-delimited components are otherwise unchanged. If the value is absent or blank, existing routed overrides are cleared and normal upstream auto-review selection is preserved. If it is syntactically invalid or absent from the final catalog (including after provider/model removal), OpenCodex fails closed for the override only: it clears the dead override, preserves normal upstream behavior, and emits a diagnostic. Re-adding the provider/model on a later sync allows the configured selector to be stamped again. |
+
+The setting is evaluated after provider discovery, model filtering, native/account-row
+projection, and merge precedence, so only a selector present in the catalog produced by
+that sync can become an override. Native upstream values are preserved when the setting is
+cleared or unresolved. The persisted catalog field is read by Codex for the current turn's
+model, which is why a valid configured selector is copied to each applicable entry.
 
 ### FastWire B1 capability migration
 
@@ -277,6 +293,63 @@ as needing reauthentication. If all eligible accounts are cooling, clients recei
 :::caution[Experimental]
 Leave this disabled unless you understand Anthropic account policy risk. Prefer manual
 `ocx account use anthropic <id>` switching when unsure.
+:::
+
+### `oauthAccountFailover`
+
+Rotates to another logged-in account of the same provider when one is rate-limited, for OAuth
+providers that have no pool of their own — xAI, Cursor, Kimi, GitHub Copilot, Google Antigravity,
+and Nous.
+
+**Logging in a second account is what turns this on.** With no configuration, rotation activates
+for any of those providers holding 2 or more accounts that are not flagged for reauthentication —
+the same rule `apiKeyPool` already applies to a 2+ key pool. A provider with one stored account
+behaves exactly as before.
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `oauthAccountFailover.enabled?` | `boolean` | presence-driven | Global override. `false` forces single-account behaviour everywhere; `true` forces rotation on. |
+| `providers.<name>.oauthAccountFailover.enabled?` | `boolean` | inherits | Per-provider override; beats the global setting and beats account presence. |
+
+To keep strict single-account behaviour for one provider whose terms you would rather not test:
+
+```json
+{
+  "providers": {
+    "cursor": {
+      "oauthAccountFailover": { "enabled": false }
+    }
+  }
+}
+```
+
+That setting survives logging in, adding an account, and reauthenticating.
+
+Deliberately narrower than `anthropicAccountPool`: no session affinity, no quota-ranked
+selection, no probe leases. It answers one question — the account that just returned 429 is
+cooled, is there another one available.
+
+The Codex pool and the Anthropic pool are excluded and keep their own rotation; enabling this
+changes neither. A provider with a single stored account is a strict no-op, and no cooldown is
+recorded for it.
+
+On a 429 the failed account is cooled using `Retry-After` when present (capped at 15 minutes)
+or a default backoff, and the request is replayed on the next eligible account, up to three
+rotations per request. An account flagged for reauthentication is never selected. Cooldowns are
+process-local, so a restart forgets them.
+
+Rotation carries the alternate account's **full** credential snapshot, not just its bearer, so a
+provider that pairs routing metadata with its token — Antigravity's Cloud Code Assist project id,
+for example — cannot end up sending one account's token with another account's metadata.
+
+Current scope is the ordinary Responses request paths. Cursor reports rate limits as adapter
+events rather than an HTTP status, and the standalone Antigravity image endpoint has its own
+request path; neither rotates yet.
+
+:::caution[Experimental]
+Rotating across subscription accounts spends a second account's quota and may violate some
+providers' terms. If that is not a tradeoff you want, set `enabled: false` globally or for the
+provider in question.
 :::
 
 ### Managed record shapes

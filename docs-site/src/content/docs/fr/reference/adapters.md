@@ -1,6 +1,6 @@
 ---
 title: Adaptateurs
-description: Les sept adaptateurs de fournisseurs — leurs cibles, la construction des requêtes et leurs particularités.
+description: Les adaptateurs de fournisseurs — leurs cibles, la construction des requêtes et leurs particularités.
 ---
 
 Un **adaptateur** traduit les échanges entre le modèle interne de requête/réponse d’opencodex et le protocole d’un fournisseur. Chaque adaptateur implémente l’interface `ProviderAdapter` (`src/adapters/base.ts`) :
@@ -30,7 +30,7 @@ interface ProviderAdapter {
 - **Réécrit le prompt d’identité GPT-5 de Codex** sous une forme indépendante du modèle afin que les modèles routés ne prétendent pas être OpenAI.
 - **Limite `reasoning_effort`** au sous-ensemble annoncé par le modèle lorsque le niveau exact n’est pas disponible ; `xhigh` et `max` restent des libellés distincts, sauf si un fournisseur configure explicitement un alias. L’adaptateur **omet entièrement ce champ** pour les identifiants figurant dans `provider.noReasoningModels`.
 - Diffuse `delta.content` (texte), `delta.reasoning_content` (raisonnement) et `delta.tool_calls[]`, et recueille `usage`.
-- ClinePass utilise le format de passerelle vérifié en conditions réelles `reasoning: { enabled: true, effort: "low" }` (ou `{ enabled: false }` lorsque le raisonnement est désactivé). Sa documentation publique d’API ne précise pas encore cette forme de requête. L’adaptateur limite les autres niveaux demandés au niveau `low` vérifié, accepte les deltas de raisonnement provenant de `delta.reasoning_content` ou de `delta.reasoning`, demande les données d’utilisation en flux avec `stream_options.include_usage` et lit ces données dans les enveloppes de réponse hors flux.
+- ClinePass utilise le format de passerelle vérifié en conditions réelles `reasoning: { enabled: true, effort }` (ou `{ enabled: false }` lorsque le raisonnement est désactivé). Sa documentation publique d’API ne précise pas encore cette forme de requête. L’adaptateur préserve les niveaux `low`, `medium`, `high`, `xhigh` et `max` demandés, accepte les deltas de raisonnement provenant de `delta.reasoning_content` ou de `delta.reasoning`, demande les données d’utilisation en flux avec `stream_options.include_usage` et lit ces données dans les enveloppes de réponse hors flux.
 
 ## `openai-responses`
 

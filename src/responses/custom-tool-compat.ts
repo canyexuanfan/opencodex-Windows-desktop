@@ -1,9 +1,10 @@
-import { namespacedToolName } from "../types";
+import { namespacedToolName, normalizeDeclaredToolName } from "../types";
 import {
   normalizeApplyPatchDelimiters,
   repairFreeformToolInput,
   unwrapFreeformToolInput,
 } from "./apply-patch-envelope";
+import { compileCodeModeHelperInput } from "./code-mode-helper-compat";
 import { collectResponsesToolGroups } from "./tool-groups";
 
 const ROUTED_CUSTOM_TOOL_PASSTHROUGH = new Set(["apply_patch"]);
@@ -63,6 +64,20 @@ export function routedCustomToolWireName(value: unknown): string | undefined {
     typeof value.namespace === "string" ? value.namespace : undefined,
     value.name,
   );
+}
+
+/** Resolve a provider-emitted wire name to the routed custom tool the client declared. */
+export function routedCustomToolTargetName(
+  value: unknown,
+  names: ReadonlySet<string>,
+  declaredNames?: ReadonlySet<string>,
+): string | undefined {
+  const wireName = routedCustomToolWireName(value);
+  if (wireName === undefined) return undefined;
+  if (names.has(wireName)) return wireName;
+  if (!isPlainObject(value) || typeof value.namespace === "string") return undefined;
+  const normalized = normalizeDeclaredToolName(wireName, declaredNames);
+  return normalized !== wireName && names.has(normalized) ? normalized : undefined;
 }
 
 /**
@@ -250,29 +265,37 @@ export function restoreRoutedCustomCalls(
   value: unknown,
   names: ReadonlySet<string>,
   repairNames: ReadonlySet<string> = new Set(),
+  declaredNames?: ReadonlySet<string>,
 ): { value: unknown; changed: boolean } {
   if (!isPlainObject(value)) return { value, changed: false };
 
   const restoreItem = (item: unknown): { value: unknown; changed: boolean } => {
     if (!isPlainObject(item)) return { value: item, changed: false };
     const wireName = routedCustomToolWireName(item);
+    const targetName = routedCustomToolTargetName(item, names, declaredNames);
     if (
-      item.type === "function_call"
+      (item.type === "function_call" || item.type === "custom_tool_call")
       && typeof item.name === "string"
       && wireName !== undefined
-      && names.has(wireName)
+      && targetName !== undefined
     ) {
+      const sourceInput = item.type === "function_call" ? item.arguments : item.input;
+      const aliased = targetName !== wireName;
       const restored: Record<string, unknown> = {
         ...item,
         type: "custom_tool_call",
         id: customToolItemId(item.id),
-        input: repairFreeformToolInput(
-          item.arguments,
-          item.name,
-          typeof item.namespace === "string" ? item.namespace : undefined,
-        ),
+        name: aliased ? targetName : item.name,
+        input: aliased && sourceInput !== ""
+          ? compileCodeModeHelperInput(sourceInput, item.name)
+          : repairFreeformToolInput(
+            sourceInput,
+            targetName,
+            typeof item.namespace === "string" ? item.namespace : undefined,
+          ),
       };
       delete restored.arguments;
+      if (aliased) delete restored.namespace;
       return { value: restored, changed: true };
     }
     if (
@@ -323,7 +346,7 @@ export function restoreRoutedCustomCalls(
     && value.type.startsWith("response.")
     && isPlainObject(value.response)
   ) {
-    const response = restoreRoutedCustomCalls(value.response, names, repairNames);
+    const response = restoreRoutedCustomCalls(value.response, names, repairNames, declaredNames);
     if (response.changed) {
       restored.response = response.value;
       changed = true;
@@ -337,6 +360,7 @@ export function restoreRoutedCustomCallsInJson(
   text: string,
   names: ReadonlySet<string>,
   repairNames: ReadonlySet<string> = new Set(),
+  declaredNames?: ReadonlySet<string>,
 ): string {
   if (names.size === 0 && repairNames.size === 0) return text;
   let payload: unknown;
@@ -345,7 +369,7 @@ export function restoreRoutedCustomCallsInJson(
   } catch {
     return text;
   }
-  const restored = restoreRoutedCustomCalls(payload, names, repairNames);
+  const restored = restoreRoutedCustomCalls(payload, names, repairNames, declaredNames);
   return restored.changed ? JSON.stringify(restored.value) : text;
 }
 

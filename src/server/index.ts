@@ -1,4 +1,5 @@
 import { markActivity } from "../lib/sidecar-tracker";
+import { knownModelIdsForProvider } from "../router";
 import {
   buildWarmupCompletionFrames,
   buildWsErrorFrame,
@@ -109,6 +110,7 @@ import {
   type RequestLogContext,
   type RequestLogEntry,
 } from "./request-log";
+import { sessionLaneIdFromRequest } from "./request-log-conversation";
 export {
   addFinalRequestLog,
   filterRequestLogs,
@@ -200,6 +202,11 @@ import {
 import { SYSTEM_RESTART_CAPABILITY_VERSION } from "../lib/system-restart-contract";
 import { LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION } from "../lib/local-provider-reload-contract";
 import { createReadinessGate, type ReadinessGate } from "./readiness";
+import {
+  createRuntimePackageTreeIntegrityGuard,
+  type PackageTreeIntegrityGuard,
+} from "../lib/package-tree-integrity";
+import { detectInstall } from "../update/index";
 
 export const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
@@ -452,6 +459,8 @@ export interface StartServerDeps {
   localAttestationSecret?: string;
   /** Optional readiness gate; a fresh pending gate is created when omitted. */
   readinessGate?: ReadinessGate;
+  /** Test-only package-tree observation; production captures package.json identity at boot. */
+  packageTreeIntegrity?: PackageTreeIntegrityGuard;
 }
 
 function inspectStartupOwnership(
@@ -696,12 +705,21 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
     }), req, policy);
   }
 
+  function packageTreeChangedResponse(req: Request, policy: RequestPolicyView, message: string): Response {
+    return withCors(new Response(JSON.stringify({
+      error: { type: "server_error", code: "package_tree_changed", message },
+    }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" },
+    }), req, policy);
+  }
+
   async function runAdmittedHttpTurn(
     req: Request,
     policy: RequestPolicyView,
     work: (lease: ActiveTurnLease) => Promise<Response>,
   ): Promise<Response> {
-    const lease = tryAdmitTurn();
+    const lease = tryAdmitTurn(sessionLaneIdFromRequest(req.headers));
     if (!lease) return serverBusyResponse(req, "active turns", policy);
     let response: Response;
     try {
@@ -722,6 +740,8 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   // passes it in, and transitions it after the post-startup sync settles. When
   // no gate is supplied (tests, ad-hoc starts) a fresh pending gate is created.
   const readinessGate = deps.readinessGate ?? createReadinessGate();
+  const packageTreeIntegrity = deps.packageTreeIntegrity
+    ?? createRuntimePackageTreeIntegrityGuard(detectInstall());
   // Actual bound port, filled in after Bun.serve binds so /readyz reports the
   // real ephemeral port for startServer(0). /healthz keeps its existing port
   // field (the requested listenPort) byte-for-byte.
@@ -848,6 +868,29 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         if (decoded === "/readyz" || decoded === "/readyz/") readyzPath = decoded;
       } catch { /* malformed encoding — not a readiness path */ }
 
+      const packageTreeStatus = packageTreeIntegrity.status();
+      if (!packageTreeStatus.ok && (
+        url.pathname === "/healthz"
+        || readyzPath !== undefined
+        || url.pathname.startsWith("/v1/")
+      )) {
+        const message = "OpenCodex package files changed while this proxy was running; restart OpenCodex before retrying.";
+        const response = url.pathname === "/healthz" || readyzPath !== undefined
+          ? jsonResponse({
+              status: "restart_required",
+              service: "opencodex",
+              version: VERSION,
+              uptime: process.uptime(),
+              pid: process.pid,
+              port: boundPort ?? requestServer.port ?? listenPort,
+              error: { code: "package_tree_changed", message },
+            }, 503, req, policy)
+          : packageTreeChangedResponse(req, policy, message);
+        const headers = new Headers(response.headers);
+        headers.set("Retry-After", "5");
+        return new Response(response.body, { status: 503, headers });
+      }
+
       if (req.method === "OPTIONS") {
         // /readyz is exact-GET only; OPTIONS (like POST and the trailing-slash
         // path) must answer the deterministic JSON 404, never the generic 204
@@ -896,7 +939,12 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         // unauthenticated loopback listener (#1102) is a second Bun.serve, and handing its
         // request to the public server's upgrade would fail or cross sockets.
         if (requestServer.upgrade(req, {
-          data: buildResponsesWsData(selectForwardHeaders(req.headers), admission, websocketLease),
+          data: buildResponsesWsData(
+            selectForwardHeaders(req.headers),
+            admission,
+            websocketLease,
+            sessionLaneIdFromRequest(req.headers),
+          ),
         })) return undefined as unknown as Response;
         websocketLease.release();
         return withCors(formatErrorResponse(426, "upgrade_required", "WebSocket upgrade failed"), req, policy);
@@ -1027,6 +1075,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           : [];
         const disabledNatives = disabledNativeSlugs(config);
         const disabledModels = new Set(config.disabledModels ?? []);
+        const exactComboSlugs = exactComboCatalogSlugs(config);
         const shadowedNativeSlugs = configuredNativeAliasSlugs(config);
         const suppressedBareNativeSlugs = new Set([
           ...desktopAllowlistSuppressedNativeSlugs(config),
@@ -1112,7 +1161,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
             config.subagentModels,
             websocketsEnabled(config),
             maMode as "v1" | "default" | "v2",
-            exactComboCatalogSlugs(config),
+            exactComboSlugs,
             accountSelectors,
             suppressedBareNativeSlugs,
             new Set(),
@@ -1189,12 +1238,29 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
         const data = [
           ...visibleNatives.map(id => nativeModelRow(id)),
           ...visibleAccountNatives.map(({ id, metadataId }) => nativeModelRow(id, metadataId)),
-          ...uniqueCatalogModelsForRawPublicList(goOrdered).map(m => ({
-            id: m.alias ?? `${m.provider}/${m.id}`,
-            object: "model",
-            created: 0,
-            owned_by: m.owned_by ?? m.provider,
-            ...grokEffortFields(m.reasoningEfforts ?? [], m.defaultReasoningEffort),
+          ...await Promise.all(uniqueCatalogModelsForRawPublicList(goOrdered).map(async m => {
+            const publicId = m.alias ?? `${m.provider}/${m.id}`;
+            const isCombo = m.provider === "combo" && exactComboSlugs.has(publicId);
+            const provider = config.providers[m.provider];
+            const effective = provider
+              ? (await import("../providers/default-aliases")).effectiveModelAliases(
+                  config,
+                  provider,
+                  knownModelIdsForProvider(m.provider, provider, config),
+                ).get(m.id)
+              : undefined;
+            return {
+              id: publicId,
+              object: "model",
+              created: 0,
+              // This endpoint is an OpenAI-compatible inbound contract. Some clients use
+              // owned_by as an adapter selector, so a virtual combo must name that wire
+              // adapter rather than the internal catalog authority marker.
+              owned_by: isCombo ? "openai" : (m.owned_by ?? m.provider),
+              ...(isCombo ? { is_combo: true } : {}),
+              ...(effective ? { alias_of: `${provider?.alias || m.provider}/${effective.alias}` } : {}),
+              ...grokEffortFields(m.reasoningEfforts ?? [], m.defaultReasoningEffort),
+            };
           })),
         ];
         return jsonResponse({ object: "list", data }, 200, req, policy);
@@ -1501,7 +1567,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           provider: "unknown",
           ...admissionFields(admission),
         };
-        const turnAdmissionLease = tryAdmitTurn();
+        const turnAdmissionLease = tryAdmitTurn(sessionLaneIdFromRequest(req.headers));
         if (!turnAdmissionLease) return serverBusyResponse(req, "active turns", policy);
         let resolved;
         try {
@@ -1653,7 +1719,7 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
           return;
         }
 
-        const turnAdmissionLease = tryAdmitTurn();
+        const turnAdmissionLease = tryAdmitTurn(ws.data.sessionLaneId);
         if (!turnAdmissionLease) {
           sendJsonFrame(ws, buildWsErrorFrame(503, {
             type: "server_error",

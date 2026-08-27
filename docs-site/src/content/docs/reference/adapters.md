@@ -1,6 +1,6 @@
 ---
 title: Adapters
-description: The seven provider adapters — what each targets, how it builds requests, and its quirks.
+description: The provider adapters — what each targets, how it builds requests, and its quirks.
 ---
 
 An **adapter** translates between opencodex's internal request/response model and one provider wire
@@ -59,6 +59,18 @@ Noncanonical Responses gateways receive Codex's client-executed `tool_search` de
 collision-safe public function tool. Matching request history and JSON/SSE function calls are
 translated back to the private `tool_search` lifecycle for the client. Canonical OpenAI forward
 keeps the native private type unchanged.
+
+The canonical ChatGPT Codex forward destination also normalizes two public Responses shapes that
+its stricter backend rejects: fully textual `system` messages inside `input` are appended to the
+top-level `instructions` string in request order, and the top-level `truncation` field is removed.
+This rewrite is destination-scoped. Key-auth public/custom Responses providers and noncanonical
+forward gateways keep both fields unchanged; a multimodal system message is never partially folded
+or silently dropped.
+
+For canonical forward continuations, client-only `prompt_cache_breakpoint` properties are removed
+recursively within bounded traversal limits. When `store: false`, `item_reference` rows are also
+omitted because the destination cannot resolve an item it did not persist. Function/tool `call_id`
+pairs and `reasoning.effort` are preserved.
 
 For `key` auth, [`retryOn429`](/reference/configuration/) applies here too: a pre-stream 429
 waits and replays the identical request on the same key before any other handling, exactly like
@@ -151,6 +163,11 @@ of the HTTP retry loop.
   Kiro remains serialized: the routed catalog advertises no parallel-tool capability and the
   adapter sends no parallel-control field upstream, but ordinary Codex tool turns are not rejected
   solely because the client permits parallel calls.
+- Accepts Responses `text` controls that are not structured output — `text.verbosity` and
+  `text.format: {"type":"text"}` — without forwarding them. Kiro has no wire field for either, so
+  they are ignored rather than rejected. Structured output (`text.format` of type `json_schema`
+  or `json_object`) is still refused: the Kiro wire cannot constrain the response shape, and a
+  caller expecting JSON would otherwise receive prose.
 - Decodes `application/vnd.amazon.eventstream`, reconstructs text/thinking/tool events, detects
   truncated tool JSON, and estimates usage because the upstream does not return token counts.
 - Uses the configured `baseUrl` verbatim when it is custom. A canonical
@@ -226,10 +243,18 @@ compatibility pair: `agent.v1.AgentService/RunSSE` for server output and
   in a process-local store and reuses that checkpoint on the next validated linear continuation
   instead of rebuilding the full root history. Tool-result turns reuse the last completed-turn
   checkpoint plus only the uncovered suffix when the covered message boundary is known.
+  Ref-less prefix lookup requires a remembered Cursor conversation or stable client thread
+  (including the bounded Desktop session/thread fallback) and a checkpoint owned by that same
+  provider conversation; otherwise it full-replays.
   Compaction, helper/shadow isolation, account/model mismatch, missing refs, decode failures,
   forced-fresh recovery, and invalid_argument retries fall back to the existing full replay. A
   process restart drops the in-memory store and full-replays. Cursor Connect still does not expose
   authoritative cache_read_tokens, so OpenCodex usage is not a cache-hit counter.
+  The bounded Desktop fallback stores only a process-local HMAC-derived owner; raw session/thread
+  headers and OAuth/authorization material are never written to checkpoint state. Cursor's
+  OAuth-backed live transport and account-filtered model discovery remain experimental; see the
+  [provider guide](/guides/providers/) and [Cursor provider configuration](/reference/configuration/providers/#cursor-provider-adapter-cursor)
+  for login and transport settings. Checkpoint reuse itself is automatic and has no user setting.
 - Honors `upstreamHttpVersion` for both live model discovery and inference. `auto`, `http2`, and `h2`
   preserve the existing HTTP/2 transport; only `http1.1` and `h1` select compatibility mode.
 - Exposes Cursor Router as `cursor/auto` plus explicit `cursor/auto-cost`,

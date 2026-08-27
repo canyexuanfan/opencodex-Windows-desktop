@@ -4,7 +4,7 @@
  * Explicit temp paths only — these functions write a user's live Codex config.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -264,5 +264,96 @@ describe("transaction", () => {
     const first = readPromptLayers(paths).revision;
     setToggle("apps", false, first, paths);
     expect(readPromptLayers(paths).revision).not.toBe(first);
+  });
+
+  // BUG-R2: a BOM-prefixed config was corrupted by an insert at line 0.
+  //
+  // Each of these parses the RESULT. Asserting the bytes we meant to write is what
+  // let the defect ship: the write verified its own intent and the file it produced
+  // could not be loaded. Bun.TOML is not what Codex uses, so a pass here is not
+  // proof Codex accepts the file - but a FAILURE is proof it does not, and that is
+  // the direction this assertion needs to be sound in.
+  describe("a UTF-8 BOM survives every write", () => {
+    const BOM = "\ufeff";
+
+    test("the projection insert keeps the BOM at byte 0", () => {
+      const paths = fixture(BOM + "model = \"x\"\n");
+      const snap = readPromptLayers(paths);
+      const result = writeCustomLayers([layer()], snap.revision, paths);
+      expect(result.ok).toBe(true);
+
+      const after = read(paths.configPath)!;
+      expect(after.startsWith(BOM)).toBe(true);
+      expect(after.indexOf(BOM)).toBe(0);
+      // Exactly one: a second BOM mid-document is as unparseable as a displaced one.
+      expect(after.split(BOM).length - 1).toBe(1);
+      expect(after).toContain(MARKER);
+      expect(() => Bun.TOML.parse(after)).not.toThrow();
+    });
+
+    test("a root toggle keeps the BOM at byte 0", () => {
+      const paths = fixture(BOM + "model = \"x\"\n");
+      const snap = readPromptLayers(paths);
+      expect(setToggle("apps", false, snap.revision, paths).ok).toBe(true);
+
+      const after = read(paths.configPath)!;
+      expect(after.indexOf(BOM)).toBe(0);
+      expect(after.split(BOM).length - 1).toBe(1);
+      expect(Bun.TOML.parse(after)).toMatchObject({ include_apps_instructions: false });
+    });
+
+    test("a table toggle keeps the BOM at byte 0", () => {
+      const paths = fixture(BOM + "model = \"x\"\n");
+      const snap = readPromptLayers(paths);
+      expect(setToggle("skills", false, snap.revision, paths).ok).toBe(true);
+
+      const after = read(paths.configPath)!;
+      expect(after.indexOf(BOM)).toBe(0);
+      expect(Bun.TOML.parse(after)).toMatchObject({ skills: { include_instructions: false } });
+    });
+
+    test("removing the projection does not leave the BOM behind", () => {
+      const paths = fixture(BOM + "model = \"x\"\n");
+      const added = writeCustomLayers([layer()], readPromptLayers(paths).revision, paths);
+      expect(added.ok).toBe(true);
+      const removed = writeCustomLayers([], readPromptLayers(paths).revision, paths);
+      expect(removed.ok).toBe(true);
+
+      const after = read(paths.configPath)!;
+      expect(after.indexOf(BOM)).toBe(0);
+      expect(after).not.toContain(MARKER);
+      expect(() => Bun.TOML.parse(after)).not.toThrow();
+    });
+
+    test("a file with no BOM does not gain one", () => {
+      const paths = fixture("model = \"x\"\n");
+      expect(writeCustomLayers([layer()], readPromptLayers(paths).revision, paths).ok).toBe(true);
+      expect(read(paths.configPath)!).not.toContain(BOM);
+    });
+  });
+
+  // BUG-R3: an unwritable store left config.toml mutated and the journal orphaned.
+  test("a store the filesystem refuses rolls the config back", () => {
+    const paths = fixture("model = \"x\"\n");
+    // A DIRECTORY on the store path. Only config readability was pre-checked, so
+    // durableWrite threw here AFTER the config had already been renamed into place -
+    // and the throw escaped the transaction, skipping rollback entirely.
+    mkdirSync(paths.storePath, { recursive: true });
+    const before = read(paths.configPath);
+
+    const result = writeCustomLayers([layer()], readPromptLayers(paths).revision, paths);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toBe("write_failed");
+    // The three things the old behaviour got wrong, asserted separately because each
+    // one is independently damaging.
+    expect(read(paths.configPath)).toBe(before);
+    expect(existsSync(join(paths.root, "opencodex-prompt.journal"))).toBe(false);
+    expect(existsSync(join(paths.root, "opencodex-prompt.lock"))).toBe(false);
+
+    // And the next write is not poisoned by the failed one.
+    rmSync(paths.storePath, { recursive: true, force: true });
+    expect(writeCustomLayers([layer()], readPromptLayers(paths).revision, paths).ok).toBe(true);
   });
 });

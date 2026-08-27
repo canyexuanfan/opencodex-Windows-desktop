@@ -79,6 +79,10 @@ describe("provider registry parity", () => {
         "kimi-k3": { none: "none", low: "low", medium: "high", high: "high", xhigh: "max", max: "max" },
       },
     });
+    expect(KEY_LOGIN_PROVIDERS["opencode-go"].modelReasoningEfforts?.["gpt-5.6-luna"])
+      .toEqual(KEY_LOGIN_PROVIDERS["openai-apikey"].modelReasoningEfforts?.["gpt-5.6-luna"]);
+    expect(KEY_LOGIN_PROVIDERS["opencode-go"].modelReasoningEfforts?.["qwen3.8-max"])
+      .toEqual(KEY_LOGIN_PROVIDERS["alibaba-token-plan"].modelReasoningEfforts?.["qwen3.8-max"]);
     expect(KEY_LOGIN_PROVIDERS["opencode-go"].noTemperatureModels).toContain("kimi-k3");
     expect(KEY_LOGIN_PROVIDERS["opencode-go"].noTopPModels).toContain("kimi-k3");
     expect(KEY_LOGIN_PROVIDERS["opencode-go"].noPenaltyModels).toContain("kimi-k3");
@@ -303,7 +307,7 @@ describe("provider registry parity", () => {
       liveModels: false,
       models: [
         "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
-        "glm-5.3", "glm-5.2", "deepseek-v4-pro",
+        "glm-5.3", "glm-5.3-flash", "glm-5.2", "deepseek-v4-pro",
       ],
       modelInputModalities: {
         "qwen3.8-max": ["text", "image"],
@@ -336,6 +340,7 @@ describe("provider registry parity", () => {
     const neuralwatt = PROVIDER_REGISTRY.find(entry => entry.id === "neuralwatt");
     expect(neuralwatt?.models).toEqual([
       "glm-5.3", "glm-5.3-fast", "glm-5.3-short", "glm-5.3-short-fast",
+      "glm-5.3-flash",
       "glm-5.2", "glm-5.2-fast", "glm-5.2-short", "glm-5.2-short-fast",
       "kimi-k2.6", "kimi-k2.6-fast", "kimi-k2.7-code",
       "qwen3.5-397b", "qwen3.5-397b-fast", "qwen3.6-35b", "qwen3.6-35b-fast",
@@ -363,9 +368,43 @@ describe("provider registry parity", () => {
     const optedInProviders = PROVIDER_REGISTRY
       .filter(entry => entry.modelSuffixBracketStrip)
       .map(entry => entry.id);
-    expect(zai?.modelContextWindows).toEqual({ "glm-5.3": 1_000_000, "glm-5.3[1m]": 1_000_000, "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 });
-    expect(zai?.modelDefaultReasoningEfforts).toEqual({ "glm-5.3": "max", "glm-5.3[1m]": "max" });
-    expect(zai?.modelMaxOutputTokens).toEqual({ "glm-5.3": 131_072, "glm-5.3[1m]": 131_072 });
+    expect(zai?.modelContextWindows).toEqual({ "glm-5.3": 1_000_000, "glm-5.3[1m]": 1_000_000, "glm-5.3-flash": 1_000_000, "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 });
+    // BUG-R5: glm-5.3-flash is a native VLM (docs.z.ai/guides/vlm/glm-5.3-flash), so it
+    // must never sit in noVisionModels - that list routes a model's images through the
+    // proxy's vision sidecar, which hands the model a text description of a picture it
+    // can read itself. The seeding pass classified it from the family name; the
+    // correction pass fixed the Alibaba entries and missed eight other providers.
+    //
+    // Asserted across the WHOLE registry rather than per provider, because the defect
+    // was not one entry being wrong - it was a set of entries drifting apart, and only
+    // a global assertion catches the next provider to seed it.
+    for (const entry of PROVIDER_REGISTRY) {
+      const flashIds = (entry.models ?? []).filter(id => String(id).includes("glm-5.3-flash"));
+      for (const id of flashIds) {
+        expect(entry.noVisionModels ?? []).not.toContain(id);
+        // An explicit modality declaration must include image. Absent is allowed: an
+        // unclassified model falls through to native passthrough, which is correct here.
+        const declared = entry.modelInputModalities?.[id];
+        if (declared) expect(declared).toContain("image");
+      }
+    }
+    // The sibling it is most often confused with stays text-only, so the assertion above
+    // cannot pass by making every GLM row a VLM.
+    expect(zai?.noVisionModels ?? []).toContain("glm-5.3");
+    // `glm-5.3-flash` belongs in all three maps. It was seeded into the model list
+    // and the context map alone, so it advertised a 1M window with no effort ladder,
+    // no default effort and no output cap - and this assertion pinned that gap in
+    // place rather than catching it, because it was written from the incomplete
+    // state instead of from the family definition.
+    expect(zai?.modelDefaultReasoningEfforts).toEqual({ "glm-5.3": "max", "glm-5.3[1m]": "max", "glm-5.3-flash": "max" });
+    expect(zai?.modelMaxOutputTokens).toEqual({ "glm-5.3": 131_072, "glm-5.3[1m]": 131_072, "glm-5.3-flash": 131_072 });
+    // Every 5.3 row carries the same three-tier ladder. Asserted per member rather
+    // than as one object literal so adding a member cannot quietly skip it.
+    for (const id of ["glm-5.3", "glm-5.3[1m]", "glm-5.3-flash"]) {
+      expect(zai?.modelReasoningEfforts?.[id]).toEqual(["low", "high", "max"]);
+      expect(zai?.modelDefaultReasoningEfforts?.[id]).toBe("max");
+      expect(zai?.modelMaxOutputTokens?.[id]).toBe(131_072);
+    }
     expect(providerConfigSeed(zai!).modelSuffixBracketStrip).toBe(true);
     expect(providerConfigSeed(zai!).modelDefaultReasoningEfforts?.["glm-5.3"]).toBe("max");
     expect(deriveKeyLoginMap().zai.modelMaxOutputTokens?.["glm-5.3[1m]"]).toBe(131_072);
@@ -578,7 +617,7 @@ describe("provider registry parity", () => {
     const ollamaCloud = PROVIDER_REGISTRY.find(entry => entry.id === "ollama-cloud");
 
     expect(ollamaCloud?.models).toEqual([
-      "glm-5.3", "glm-5.2", "deepseek-v4-pro", "qwen3-coder:480b", "gpt-oss:120b",
+      "glm-5.3", "glm-5.3-flash", "glm-5.2", "deepseek-v4-pro", "qwen3-coder:480b", "gpt-oss:120b",
       "kimi-k2.6", "minimax-m3", "qwen3.5:397b", "gemma4:31b",
     ]);
     expect(ollamaCloud?.models).not.toContain("qwen3-coder");

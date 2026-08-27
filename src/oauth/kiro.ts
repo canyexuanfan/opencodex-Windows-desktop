@@ -28,6 +28,7 @@ import {
 } from "./kiro-credentials";
 import { homedir } from "node:os";
 import { getAccountSet, saveAccountCredential } from "./store";
+import { KIRO_BUILDER_ID_SERVICE_PROFILE_ARN } from "../adapters/kiro-constants";
 
 const DEFAULT_REGION = "us-east-1";
 const REFRESH_URL = "https://prod.{region}.auth.desktop.kiro.dev/refreshToken";
@@ -471,6 +472,50 @@ export function resolveKiroProfileArn(account?: Pick<KiroOAuthMetadata, "profile
   const env = process.env.KIRO_PROFILE_ARN;
   if (env) return env;
   return readImportedKiroCredential()?.profileArn;
+}
+
+/**
+ * Resolve the profileArn actually SENT upstream, which is not always the account's own.
+ *
+ * An AWS Builder ID account authenticates through SSO OIDC and never receives an account-scoped
+ * profile ARN, so gated models reject its requests with a `profileArn`-demanding
+ * `ValidationException`. The Kiro CLI handles this by carrying a fixed service profile on Builder
+ * ID requests, and this mirrors that.
+ *
+ * Deliberately separate from `resolveKiroProfileArn`: that resolver answers "what is this
+ * account's profile", and callers that ask it — region inference, account matching, continuation
+ * scoping — must keep receiving `undefined` here. Only request construction uses this function.
+ *
+ * The fallback is gated on `authType === "aws_sso_oidc"` rather than on a missing ARN, so a
+ * `kiro_desktop` account whose profile import failed keeps producing its actionable error instead
+ * of silently borrowing a service profile that does not describe it.
+ */
+export function resolveKiroRequestProfileArn(
+  account?: Pick<KiroOAuthMetadata, "profileArn" | "authType">,
+): string | undefined {
+  return resolveKiroRequestProfile(account).profileArn;
+}
+
+/**
+ * The profileArn to send, together with WHY it was chosen.
+ *
+ * The request builder must decide the wire envelope from the same evaluation that produced the
+ * ARN. Re-deriving "is this Builder ID" from the account context alone would miss the accountless
+ * path, where the auth type comes from the locally imported credential instead: the fallback would
+ * be sent while the request was shaped as an enterprise IDE call, which is not a combination the
+ * vendor client ever produces.
+ */
+export function resolveKiroRequestProfile(
+  account?: Pick<KiroOAuthMetadata, "profileArn" | "authType">,
+): { profileArn: string | undefined; builderIdFallback: boolean } {
+  const own = resolveKiroProfileArn(account);
+  if (own) return { profileArn: own, builderIdFallback: false };
+  const authType = account !== undefined
+    ? account.authType
+    : readImportedKiroCredential()?.authType;
+  return authType === "aws_sso_oidc"
+    ? { profileArn: KIRO_BUILDER_ID_SERVICE_PROFILE_ARN, builderIdFallback: true }
+    : { profileArn: undefined, builderIdFallback: false };
 }
 
 async function kiroTokenRefreshError(response: Response): Promise<KiroTokenRefreshError> {

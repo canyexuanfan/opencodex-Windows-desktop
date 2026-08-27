@@ -9,12 +9,44 @@ const COMMAND_CODE_MODEL_EFFORTS = {
     efforts: ["high", "max"],
     profileUrl: "https://commandcode.ai/models/deepseek-v4-flash",
   },
-  // Ox Alpha (stealth preview, added in Command Code v1.31.0): free 1M-context
-  // reasoning model on every plan. The profile does not publish an effort ladder,
-  // so mirror the OpenRouter contract (reasoning mandatory; max/high/low).
-  "stealth/ox-alpha": {
-    efforts: ["low", "high", "max"],
-    profileUrl: "https://commandcode.ai/models/ox-alpha",
+  /*
+   * Three live routes that reached the catalog without an effort ladder (#2647).
+   * Without a row here the model advertises no efforts at all, so a client that
+   * sends one gets it stripped or rejected rather than honored.
+   *
+   * PROVENANCE, stated plainly: these three ladders are the reporter's
+   * (darwintree, #2647), recorded as reported and NOT independently verified.
+   * All three profileUrls return HTTP 200, but commandcode.ai renders these
+   * pages client-side and ships the ladder inside a serialized React payload
+   * whose `reasoningEfforts` array is EMPTY in the delivered HTML. There is no
+   * fetchable statement of these ladders to check them against.
+   *
+   * Do not assume the refresh path launders this. It does not:
+   * `parsedProfileEfforts` below matches prose of the form
+   * "Reasoning efforts ... are supported;", and `grep -c -i 'reasoning efforts'`
+   * against the live pages returns 0 — for these three AND for the older rows
+   * (deepseek-v4-pro, GLM-5.3, muse-spark-1.2 all measured 0 on 2026-08-27).
+   * So `refreshCommandCodeReasoningEfforts` returns undefined and the caller
+   * keeps whatever is written here, indefinitely. The self-correction mechanism
+   * is currently dead for EVERY row in this table, which is a pre-existing
+   * defect worth its own fix (teach the parser to read the embedded payload),
+   * not something these three rows introduced.
+   *
+   * The practical consequence: a wrong ladder here stays wrong until a human
+   * changes it. It degrades safely — an effort the upstream rejects surfaces as
+   * an error rather than silent corruption — but it does not self-heal.
+   */
+  "deepseek/deepseek-v4-flash-vision-exp": {
+    efforts: ["high", "max"],
+    profileUrl: "https://commandcode.ai/models/deepseek-v4-flash-vision-exp",
+  },
+  "gpt-5.6-luna": {
+    efforts: ["low", "medium", "high", "xhigh", "max"],
+    profileUrl: "https://commandcode.ai/models/gpt-5-6-luna",
+  },
+  "google/gemini-3.7-flash": {
+    efforts: ["low", "medium", "high"],
+    profileUrl: "https://commandcode.ai/models/gemini-3-7-flash",
   },
   // Keys must match the EXACT upstream /provider/v1/models ids (GLM ships as
   // `zai-org/GLM-5.3`, not `zai-org/glm-5.3`). The table doubles as the router's

@@ -43,11 +43,11 @@ function codexNativeMutationRefusal(operation: "write" | "delete", structuredEdi
   const structuredHint = structuredEditAvailable
     ? " Use the structured edit tools (`edit_file` / `multi_edit`) or the `apply_patch` tool for file edits so Codex can approve the change, enforce sandbox policy, show diffs, and record rollout."
     : " Use the `apply_patch` tool for file edits so Codex can approve the change, enforce sandbox policy, show diffs, and record rollout.";
-  return `Cursor-native ${operation} is disabled for this Codex request because apply_patch is available.${structuredHint} No file was changed.`;
+  return `Make this ${operation} through the Codex edit path instead.${structuredHint} No file was changed. Do NOT narrate this redirect or comment on tool availability — just make the edit call.`;
 }
 
 const NATIVE_LOCAL_EXEC_DISABLED =
-  "Cursor-native filesystem tools are not executed locally. Use a catalog tool for this work: `shell_command` / `exec_command` (or the listed `mcp_opencodex-responses_*` display alias) with host-shell-safe equivalents: POSIX (`cat`, `head`, `ls`, `rg`, `grep`) or Windows PowerShell (`Get-Content`, `Get-ChildItem`, `Select-String`); use `apply_patch` for file edits.";
+  "Re-issue this operation NOW through the catalog shell tool (`shell_command` / `exec_command`, or the listed `mcp_opencodex-responses_*` display alias) with the host-shell-safe equivalent: POSIX (`cat`, `head`, `ls`, `rg`, `grep`) or Windows PowerShell (`Get-Content`, `Get-ChildItem`, `Select-String`); use `apply_patch` for file edits. Do NOT narrate this redirect, do NOT comment on tool availability, and do NOT re-announce the task — just make the bridge call.";
 
 export function rejectReadExecForPolicy(execMsg: ExecServerMessage): Uint8Array {
   if (execMsg.message.case !== "readArgs") throw new Error("invalid read exec");

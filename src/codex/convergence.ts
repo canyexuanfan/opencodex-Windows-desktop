@@ -1,6 +1,7 @@
 import { join } from "node:path";
 
-import { getConfigDir, websocketsEnabled, withExpectedConfigGenerationSync } from "../config";
+import { getConfigDir, saveConfigPreservingClaudeCode, websocketsEnabled, withExpectedConfigGenerationSync } from "../config";
+import { reconcileSuccessfulModelDiscoveries } from "../providers/new-model-policy";
 import { COMBO_NAMESPACE } from "../combos";
 import { getAuthStorePath } from "../oauth/store";
 import type { OcxConfig } from "../types";
@@ -41,6 +42,7 @@ import {
   import {
   buildCatalogEntriesFromObservedState,
   CANONICAL_NATIVE_CATALOG_CONTENT_POLICY,
+  finalizeAutoReviewModelOverride,
   mergeCatalogEntriesFromObservedState,
   mergeCatalogModelsWithNativeRecovery,
   orderForSubagents,
@@ -135,6 +137,7 @@ interface CandidateState {
   readonly changed: boolean;
   readonly notices: readonly CatalogNotice[];
   readonly modelEntitlements: CodexModelEntitlementSnapshot;
+  readonly discoveryConfig?: OcxConfig;
 }
 
 const candidateStates = new WeakMap<object, CandidateState>();
@@ -369,6 +372,7 @@ function prepareCatalog(
       ? supportedCodexReasoningEffortsFromObservedCatalog(source.runtimeSupport.catalog)
       : null,
   );
+  finalizeAutoReviewModelOverride(mergedModels, catalogModels);
   catalog.models = mergedModels;
   return catalog;
 }
@@ -436,8 +440,17 @@ export async function gatherCodexCatalogCandidate(
           ? active
           : !hasRoutedEntries(source.catalog) ? source.catalog : null)
         : null);
+    const discoveryConfig = structuredClone(snapshot.config) as OcxConfig;
+    const discoveryChanged = reconcileSuccessfulModelDiscoveries({
+      config: discoveryConfig,
+      models: routedModels,
+      authoritativeProviders: providerModelOutcomes
+        .filter(outcome => outcome.state === "authoritative")
+        .map(outcome => outcome.provider),
+      now: new Date().toISOString(),
+    });
     const preparedCatalog = prepareCatalog(
-      snapshot.config,
+      discoveryConfig,
       source,
       active,
       routedModels,
@@ -502,6 +515,7 @@ export async function gatherCodexCatalogCandidate(
         || Buffer.from(cacheBytes ?? []).toString("utf8") !== preparedCacheBytes,
       notices: Object.freeze([...notices]),
       modelEntitlements,
+      ...(discoveryChanged ? { discoveryConfig } : {}),
     });
     return { kind: "candidate", candidate };
   } catch (error) {
@@ -649,6 +663,12 @@ export async function convergeCodexCatalog(
   const state = candidateStates.get(gathered.candidate as object)!;
   lifecycle.onCommitBegin?.();
   const committed = await commitCodexCatalogCandidate(gathered.candidate, request.deadlineMs);
+  if (committed.kind === "committed" && state.discoveryConfig) {
+    const mutable = snapshot.config as OcxConfig;
+    mutable.modelDiscovery = state.discoveryConfig.modelDiscovery;
+    mutable.disabledModels = state.discoveryConfig.disabledModels;
+    saveConfigPreservingClaudeCode(mutable);
+  }
   return {
     changed: committed.kind === "committed" ? committed.changed : false,
     catalogRefresh: projectCommit(committed, state.notices),

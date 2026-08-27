@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   accountBoundNativeOpenAiSlugs,
   accountBoundNativeDisplayName,
@@ -22,6 +22,7 @@ import {
 } from "../src/codex/catalog";
 import { handleManagementAPI } from "../src/server/management-api";
 import { applyMultiAgentMode, applyNativeOpenAiContextOverride } from "../src/codex/catalog/parsing";
+import { NATIVE_GPT56_CONTEXT_WINDOW, NATIVE_GPT56_OPT_IN_CONTEXT_WINDOW, nativeOpenAiContextWindow } from "../src/codex/catalog";
 import type { OcxConfig } from "../src/types";
 import { ACCOUNT_GATED_NATIVE_OPENAI_MODELS } from "../src/codex/catalog/native-models";
 import {
@@ -30,6 +31,13 @@ import {
 } from "../src/codex/model-entitlements";
 
 afterEach(() => resetCodexModelEntitlementCacheForTests());
+
+// Most of this file exercises visibility/window mechanics on Sol/Terra/Luna rows. They are
+// account-gated now, so give them a confirmed main roster up front; the two gating-specific
+// tests below reset the cache to assert the unconfirmed baseline first.
+beforeEach(() => {
+  seedCodexModelEntitlementsForTests("main", ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+});
 
 function makeConfig(overrides: Partial<OcxConfig> = {}): OcxConfig {
   return { port: 10100, providers: {}, defaultProvider: "openai", ...overrides } as OcxConfig;
@@ -71,16 +79,23 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
   });
 
   test("nativeModelRows hides account-gated ids until an authenticated roster confirms them", () => {
+    resetCodexModelEntitlementCacheForTests();
     const rows = nativeModelRows({ disabledModels: ["gpt-5.6-sol"] });
     expect(rows.map(r => r.slug)).toEqual(
       NATIVE_OPENAI_MODELS.filter(slug => !ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(slug)),
     );
-    expect(rows.find(r => r.slug === "gpt-5.6-sol")?.disabled).toBe(true);
-    expect(rows.find(r => r.slug === "gpt-5.5")?.disabled).toBe(false);
-    // Known context metadata rides along for the dashboard.
-    expect(rows.find(r => r.slug === "gpt-5.6-sol")?.contextWindow).toBe(272_000);
 
-    seedCodexModelEntitlementsForTests("main", ["gpt-daybreak-blue-latest"]);
+    seedCodexModelEntitlementsForTests(
+      "main",
+      ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-daybreak-blue-latest"],
+    );
+    const confirmed = nativeModelRows({ disabledModels: ["gpt-5.6-sol"] });
+    expect(confirmed.map(r => r.slug)).toEqual(NATIVE_OPENAI_MODELS);
+    expect(confirmed.find(r => r.slug === "gpt-5.6-sol")?.disabled).toBe(true);
+    expect(confirmed.find(r => r.slug === "gpt-5.5")?.disabled).toBe(false);
+    // Known context metadata rides along for the dashboard.
+    expect(confirmed.find(r => r.slug === "gpt-5.6-sol")?.contextWindow).toBe(272_000);
+
     expect(nativeModelRows({ disabledModels: [] }).map(row => row.slug))
       .toContain("gpt-daybreak-blue-latest");
   });
@@ -648,6 +663,7 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
   });
 
   test("management API surfaces: /api/models leads with native rows; subagent available drops disabled bare slugs", async () => {
+    resetCodexModelEntitlementCacheForTests();
     const config = makeConfig({ disabledModels: ["gpt-5.6-sol"] });
 
     const modelsRes = await handleManagementAPI(
@@ -658,7 +674,16 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
     expect(nativeRows.map(r => r.namespaced)).toEqual(
       NATIVE_OPENAI_MODELS.filter(slug => !ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(slug)),
     );
-    expect(nativeRows.find(r => r.namespaced === "gpt-5.6-sol")?.disabled).toBe(true);
+
+    // A confirmed roster makes the gated rows selectable again; a bare disable still wins.
+    seedCodexModelEntitlementsForTests("main", ["gpt-5.6-sol"]);
+    const confirmedRes = await handleManagementAPI(
+      new Request("http://localhost/api/models"), new URL("http://localhost/api/models"), config,
+    );
+    const confirmedRows = (await confirmedRes!.json() as Array<{ namespaced: string; native?: boolean; disabled: boolean }>)
+      .filter(r => r.native);
+    expect(confirmedRows.map(r => r.namespaced)).toContain("gpt-5.6-sol");
+    expect(confirmedRows.find(r => r.namespaced === "gpt-5.6-sol")?.disabled).toBe(true);
     // Native rows lead the response so the GUI pins the group first.
     expect(rows[0]?.native).toBe(true);
 
@@ -672,3 +697,56 @@ describe("native GPT model toggles (bare slugs in disabledModels)", () => {
   });
 });
 import { ManagementRequest as Request } from "./helpers/management-auth";
+
+describe("#2574 a stale on-disk row is what a subagent reads", () => {
+  /**
+   * Reproduced against a live install: the resolver returns 922,000 for gpt-5.6-sol while
+   * ~/.codex/opencodex-catalog.json still held 272,000 from an earlier sync. With
+   * effective_context_window_percent = 95 that renders as 258,400 — the exact number reported.
+   *
+   * The subagent roster reads the persisted catalog rather than re-deriving from config, so a
+   * row that predates the current limits is served verbatim. The override is correct; what is
+   * missing is any assertion that the WRITTEN row matches what the resolver would produce.
+   */
+  test("a raised cap opts the family into the wider window, and the row follows", () => {
+    // The 1M opt-in is expressed as a raised providerContextCaps.openai, not a per-model
+    // window. With the default cap the family stays at 272k; raising it past the opt-in
+    // threshold is what makes 922k the correct width.
+    const optedIn = nativeContextLimits({ providerContextCaps: { openai: 1_050_000 } } as never);
+    expect(nativeOpenAiContextWindow("gpt-5.6-sol", optedIn)).toBe(NATIVE_GPT56_OPT_IN_CONTEXT_WINDOW);
+
+    // A row written before that opt-in carries the narrow width. Re-applying the override with
+    // the current limits is what repairs it — which is exactly what a stale on-disk catalog
+    // never gets, because the subagent roster reads the file rather than re-deriving.
+    const stale: Record<string, unknown> = {
+      slug: "gpt-5.6-sol",
+      context_window: NATIVE_GPT56_CONTEXT_WINDOW,
+      effective_context_window_percent: 95,
+    };
+    applyNativeOpenAiContextOverride(stale as never, optedIn);
+    expect(stale.context_window).toBe(NATIVE_GPT56_OPT_IN_CONTEXT_WINDOW);
+
+    // 272,000 x 95% = 258,400 — the number reported in the issue, and what a client renders
+    // from the stale row.
+    expect(Math.floor(NATIVE_GPT56_CONTEXT_WINDOW * 0.95)).toBe(258_400);
+  });
+
+  test("the written row agrees with the resolver for the whole 5.6 family", () => {
+    // This is the invariant whose absence let a stale row survive unnoticed: whatever a
+    // subagent reads from disk must equal what the request path would compute.
+    const limits = nativeContextLimits({ providerContextCaps: { openai: 1_050_000 } } as never);
+    for (const slug of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      const row: Record<string, unknown> = { slug, context_window: NATIVE_GPT56_CONTEXT_WINDOW };
+      applyNativeOpenAiContextOverride(row as never, limits);
+      expect(row.context_window).toBe(nativeOpenAiContextWindow(slug, limits));
+    }
+  });
+
+  test("a provider cap still narrows the family below the opt-in window", () => {
+    // The lift must not become unconditional: an operator cap is still authoritative.
+    const capped = nativeContextLimits({ providerContextCaps: { openai: 300_000 } } as never);
+    const row: Record<string, unknown> = { slug: "gpt-5.6-sol", context_window: NATIVE_GPT56_CONTEXT_WINDOW };
+    applyNativeOpenAiContextOverride(row as never, capped);
+    expect(row.context_window).toBe(300_000);
+  });
+});

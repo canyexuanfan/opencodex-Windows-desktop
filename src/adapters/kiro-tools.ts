@@ -1,6 +1,7 @@
 import type { OcxParsedRequest, OcxTool } from "../types";
 import { namespacedToolName } from "../types";
 import { normalizeKiroModelId } from "../providers/kiro-models";
+import { isCodexCodeModeExecTool } from "./tool-catalog-nudge";
 import { createKiroToolNameRegistry, type KiroToolNameRegistry } from "./kiro-wire";
 
 const MAX_KIRO_TOOL_DESCRIPTION_UNVERIFIED = 1024;
@@ -103,7 +104,7 @@ function ensureRootObjectType(schema: unknown): Record<string, unknown> {
   // Seed with the root's own properties/required so a schema like
   // { type:"object", properties:{path}, required:["path"], oneOf:[...] } keeps them.
   if (obj.properties && typeof obj.properties === "object") {
-    Object.assign(props, sanitizeKiroSchema(obj.properties) as Record<string, unknown>);
+    Object.assign(props, sanitizeSchemaMap(obj.properties) as Record<string, unknown>);
   }
   if (Array.isArray(obj.required)) {
     for (const r of obj.required) if (typeof r === "string") required.add(r);
@@ -118,7 +119,7 @@ function ensureRootObjectType(schema: unknown): Record<string, unknown> {
       if (!variant || typeof variant !== "object" || Array.isArray(variant)) continue;
       const v = variant as Record<string, unknown>;
       if (v.properties && typeof v.properties === "object") {
-        Object.assign(props, sanitizeKiroSchema(v.properties) as Record<string, unknown>);
+        Object.assign(props, sanitizeSchemaMap(v.properties) as Record<string, unknown>);
       }
       if (mergeRequired && Array.isArray(v.required)) {
         for (const r of v.required) if (typeof r === "string") required.add(r);
@@ -174,8 +175,14 @@ function omittedToolCatalogNotice(kept: number, omitted: readonly OcxTool[], reg
 
 function boundedCatalogPriority(tool: OcxTool): number {
   if (tool.loadedFromToolSearch) return 0;
-  if (tool.toolSearch) return 1;
-  return 2;
+  // Codex code mode reaches shell, file edits, apply_patch and every MCP helper ONLY as nested
+  // `tools.<name>(...)` calls inside this one tool. Dropping it does not shrink the catalog, it
+  // makes the rest of the catalog uncallable -- so it outranks the search gateway and filler.
+  // It stays BEHIND `loadedFromToolSearch` because those are tools the model asked for by name
+  // this turn (#2475). Cursor pins its execution path the same way (request-builder.ts, #399).
+  if (isCodexCodeModeExecTool(tool)) return 1;
+  if (tool.toolSearch) return 2;
+  return 3;
 }
 
 export function convertKiroToolContext(
@@ -209,19 +216,40 @@ export function convertKiroToolContext(
   const candidates = exceedsBudget
     ? convertedEntries.toSorted((a, b) => boundedCatalogPriority(a.tool) - boundedCatalogPriority(b.tool) || a.index - b.index)
     : convertedEntries;
-  const convertedTools: unknown[] = [];
-  let omittedAt = candidates.length;
-  for (const [index, entry] of candidates.entries()) {
+  // Reserve a seat for the code-mode execution path before filling the rest.
+  //
+  // Priority alone cannot save it. `loadedFromToolSearch` tools outrank it and arrive unbounded
+  // (the Responses parser pushes every `tool_search_output` spec), so a session that accumulated
+  // MAX_KIRO_TOOL_COUNT loaded tools would exhaust the budget before reaching tier 1 and drop the
+  // one tool through which all of them are actually callable.
+  //
+  // Reservation rather than eviction: this lowers the room the fill loop sees, so it admits one
+  // fewer tool. It never removes a tool that already fit, which is what keeps #2475's loaded-result
+  // guarantee intact -- Cursor's `evictNonExecutionPath` exempts only the execution path and could
+  // evict a loaded tool instead.
+  const reserved = candidates.find(entry => isCodexCodeModeExecTool(entry.tool));
+  const admitted = new Set<number>();
+  const filled: unknown[] = [];
+  for (const entry of candidates) {
+    if (entry === reserved) continue;
+    // Measure the projected FINAL array: the byte budget is computed over the serialized array, so
+    // subtracting a standalone size would misjudge it by the separators JSON adds between entries.
+    const projected = reserved ? [...filled, entry.converted, reserved.converted] : [...filled, entry.converted];
     if (
-      convertedTools.length >= MAX_KIRO_TOOL_COUNT
-      || serializedToolCatalogBytes([...convertedTools, entry.converted]) > MAX_KIRO_TOOL_CATALOG_BYTES
-    ) {
-      omittedAt = index;
-      break;
-    }
-    convertedTools.push(entry.converted);
+      projected.length > MAX_KIRO_TOOL_COUNT
+      || serializedToolCatalogBytes(projected) > MAX_KIRO_TOOL_CATALOG_BYTES
+    ) break;
+    filled.push(entry.converted);
+    admitted.add(entry.index);
   }
-  const omittedTools = candidates.slice(omittedAt).map(entry => entry.tool);
+  if (reserved) admitted.add(reserved.index);
+  // Rebuild in sorted-candidate order so the wire order stays loaded -> exec -> gateway -> filler.
+  // Pushing the reserved entry after the loop would place it last instead.
+  const convertedTools = candidates.filter(entry => admitted.has(entry.index)).map(entry => entry.converted);
+  // Derive omissions by set difference. The old `candidates.slice(omittedAt)` assumed every
+  // candidate after the first rejection was omitted, which stops being true once one of them was
+  // reserved and admitted: the notice would name `exec` unavailable while it is on the wire.
+  const omittedTools = candidates.filter(entry => !admitted.has(entry.index)).map(entry => entry.tool);
   return {
     tools: convertedTools,
     systemAdditions: omittedTools.length > 0 ? [omittedToolCatalogNotice(convertedTools.length, omittedTools, registry)] : [],

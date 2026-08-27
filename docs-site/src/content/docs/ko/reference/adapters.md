@@ -139,8 +139,11 @@ commentary로 유지하고 비공개 완료 툴을 한 번 검증합니다.
 
 ## `cursor`
 
-**대상:** `api2.cursor.sh`의 HTTP/2 Connect 스트리밍
-`agent.v1.AgentService/Run`.
+**대상:** 기본값은 `api2.cursor.sh`의 HTTP/2 Connect 스트리밍
+`agent.v1.AgentService/Run`입니다. `upstreamHttpVersion: "http1.1"` 또는 `"h1"`을 설정하면
+Cursor의 HTTP/1.1 호환 조합을 사용합니다. 서버 출력은 `agent.v1.AgentService/RunSSE`, 클라이언트
+메시지는 `aiserver.v1.BidiService/BidiAppend`로 전송합니다. 이 설정은 추론과 live model
+discovery에 모두 적용됩니다.
 **인증:** `provider.apiKey` 또는 전달된 authorization 헤더의 Cursor OAuth/access token.
 
 - 일반 fetch/parse 경로 대신 `runTurn`을 사용합니다. 요청, 서버 이벤트, 툴 인자, 사용량 checkpoint,
@@ -151,16 +154,26 @@ commentary로 유지하고 비공개 완료 툴을 한 번 검증합니다.
   재시도합니다.
 - 도구 없이 정상 완료된 턴 뒤에는 Cursor가 돌려준 ConversationStateStructure를 프로세스 로컬
   store에 보관하고, 검증된 선형 이어말하기에서는 전체 root history를 다시 만들지 않고 그
-  checkpoint를 재사용합니다. tool-result 턴은 마지막 정상 완료 턴의 checkpoint에 커버되지 않은
-  suffix만 붙입니다. compaction, helper/shadow 격리, 계정/모델 불일치, 없는 ref, decode 실패,
+  checkpoint를 재사용합니다. tool-result 턴은 커버된 메시지 경계를 알 수 있을 때만 마지막 정상
+  완료 턴의 checkpoint에 커버되지 않은 suffix를 붙입니다. ref 없는 prefix 조회는 기억된 Cursor
+  대화 또는 안정적인 클라이언트 스레드
+  (범위가 제한된 Desktop session/thread 대체 식별자 포함)와 같은 provider 대화가 소유한
+  checkpoint가 있을 때만 허용하며, 그 외에는 full replay합니다.
+  compaction, helper/shadow 격리, 계정/모델 불일치, 없는 ref, decode 실패,
   forced-fresh 복구, invalid_argument 재시도는 기존 full replay로 돌아갑니다. 프로세스 재시작은
   메모리 store를 버리고 full replay합니다. Cursor Connect는 권위 있는 cache_read_tokens를 주지
   않으므로 OpenCodex usage만 보고 cache hit라고 단정하지 않습니다.
+  범위가 제한된 Desktop 대체 식별자는 프로세스 로컬 HMAC 파생 소유자만 보관하며, 원본
+  session/thread 헤더나 OAuth/authorization 자료를 checkpoint 상태에 쓰지 않습니다. OAuth 기반
+  live transport와 계정별 live model discovery는 아직 실험 기능입니다. 로그인과 transport 설정은
+  [공급자 가이드](/ko/guides/providers/)와 [Cursor 공급자 설정](/ko/reference/configuration/providers/#cursor-provider-adapter-cursor)을
+  참고하세요. checkpoint 재사용 자체는 자동이며 사용자 설정이 없습니다.
 - `cursor/grok-4.5-fast`는 선택 가능한 모델로 유지하되, Cursor에는 정식 `grok-4.5` 모델을 보내고
   별도의 `effort`, `fast=true` 값은 `requested_model.parameters`에 담습니다.
 - Cursor 네이티브 로컬 파일시스템/shell/network 실행은 기본적으로 거부합니다. 명시적인
-  `mcpServers`와 `desktopExecutor` 통합은 각각 별도 opt-in입니다. `unsafeAllowNativeLocalExec`은
-  더 넓은 내장 executor를 켜며 Codex 승인/샌드박스 규칙을 우회합니다.
+  `mcpServers`와 `desktopExecutor` 통합은 각각 별도 opt-in입니다. `nativeLocalExec: "on"`은
+  더 넓은 내장 executor를 켜며 Codex 승인/샌드박스 규칙을 우회합니다. 예전 설정인
+  `unsafeAllowNativeLocalExec: true`는 `nativeLocalExec`을 지정하지 않았을 때만 같은 뜻입니다.
 
 ## `azure-openai` (별칭: `azure`)
 

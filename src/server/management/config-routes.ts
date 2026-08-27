@@ -5,6 +5,7 @@ import { catalogModelSlug, invalidateCodexModelsCache, nativeContextLimits, nati
 import {
   DEFAULT_SUBAGENT_MODELS,
   codexAutoStartEnabled,
+  deleteConfigTopLevelKey,
   hasOwnProvider,
   isValidProviderName,
   multiAgentGuidanceEnabled,
@@ -298,6 +299,9 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       streamMode: config.streamMode ?? "auto",
       appOwnedMemoryBudgetMb: config.appOwnedMemoryBudgetMb ?? 256,
       codexAccountPickerEnabled: codexAccountPickerEnabled(config),
+      // Absent means hidden, so the GUI renders the switch without having to know that
+      // `undefined` and `false` mean the same thing.
+      showCodexSparkQuota: config.showCodexSparkQuota === true,
       // Absent means the historical auto-open, so the GUI can render the toggle
       // without having to know that `undefined` and `true` mean the same thing.
       oauthOpenBrowser: config.oauthOpenBrowser !== false,
@@ -386,13 +390,15 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       appOwnedMemoryBudgetMb?: unknown;
       codexAccountPickerEnabled?: unknown;
       oauthOpenBrowser?: unknown;
+      showCodexSparkQuota?: unknown;
     };
     if (body.codexAutoStart === undefined
       && body.streamMode === undefined
       && body.appOwnedMemoryBudgetMb === undefined
       && body.codexAccountPickerEnabled === undefined
-      && body.oauthOpenBrowser === undefined) {
-      return jsonResponse({ error: "provide codexAutoStart, streamMode, appOwnedMemoryBudgetMb, codexAccountPickerEnabled, or oauthOpenBrowser" }, 400);
+      && body.oauthOpenBrowser === undefined
+      && body.showCodexSparkQuota === undefined) {
+      return jsonResponse({ error: "provide codexAutoStart, streamMode, appOwnedMemoryBudgetMb, codexAccountPickerEnabled, oauthOpenBrowser, or showCodexSparkQuota" }, 400);
     }
     if (body.codexAutoStart !== undefined && typeof body.codexAutoStart !== "boolean") {
       return jsonResponse({ error: "codexAutoStart boolean is required" }, 400);
@@ -406,6 +412,9 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     if (body.codexAccountPickerEnabled !== undefined
       && typeof body.codexAccountPickerEnabled !== "boolean") {
       return jsonResponse({ error: "codexAccountPickerEnabled boolean is required" }, 400);
+    }
+    if (body.showCodexSparkQuota !== undefined && typeof body.showCodexSparkQuota !== "boolean") {
+      return jsonResponse({ error: "showCodexSparkQuota boolean is required" }, 400);
     }
     if (body.appOwnedMemoryBudgetMb !== undefined && (
       typeof body.appOwnedMemoryBudgetMb !== "number"
@@ -428,6 +437,8 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       hasCodexAccountPickerEnabled: Object.hasOwn(config, "codexAccountPickerEnabled"),
       oauthOpenBrowser: config.oauthOpenBrowser,
       hasOauthOpenBrowser: Object.hasOwn(config, "oauthOpenBrowser"),
+      showCodexSparkQuota: config.showCodexSparkQuota,
+      hasShowCodexSparkQuota: Object.hasOwn(config, "showCodexSparkQuota"),
     };
     const pickerWasEnabled = codexAccountPickerEnabled(config);
     let pickerIsEnabled = pickerWasEnabled;
@@ -437,7 +448,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       }
       if (body.streamMode !== undefined) {
         if (body.streamMode === "auto") {
-          delete config.streamMode;
+          deleteConfigTopLevelKey(config, "streamMode");
         } else {
           config.streamMode = body.streamMode as "legacy-tee" | "eager-relay";
         }
@@ -454,25 +465,31 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       if (typeof body.oauthOpenBrowser === "boolean") {
         config.oauthOpenBrowser = body.oauthOpenBrowser;
       }
+      if (typeof body.showCodexSparkQuota === "boolean") {
+        config.showCodexSparkQuota = body.showCodexSparkQuota;
+      }
       pickerIsEnabled = codexAccountPickerEnabled(config);
       (deps.saveConfigPreservingClaudeCode ?? saveConfigPreservingClaudeCode)(config);
     } catch (error) {
       if (previousSettings.hasCodexAutoStart) config.codexAutoStart = previousSettings.codexAutoStart;
-      else delete config.codexAutoStart;
+      else deleteConfigTopLevelKey(config, "codexAutoStart");
       if (previousSettings.hasStreamMode) config.streamMode = previousSettings.streamMode;
-      else delete config.streamMode;
+      else deleteConfigTopLevelKey(config, "streamMode");
       if (previousSettings.hasAppOwnedMemoryBudgetMb) {
         config.appOwnedMemoryBudgetMb = previousSettings.appOwnedMemoryBudgetMb;
-      } else delete config.appOwnedMemoryBudgetMb;
+      } else deleteConfigTopLevelKey(config, "appOwnedMemoryBudgetMb");
       if (previousSettings.hasCodexAccountNamespaces) {
         config.codexAccountNamespaces = previousSettings.codexAccountNamespaces;
-      } else delete config.codexAccountNamespaces;
+      } else deleteConfigTopLevelKey(config, "codexAccountNamespaces");
       if (previousSettings.hasCodexAccountPickerEnabled) {
         config.codexAccountPickerEnabled = previousSettings.codexAccountPickerEnabled;
-      } else delete config.codexAccountPickerEnabled;
+      } else deleteConfigTopLevelKey(config, "codexAccountPickerEnabled");
       if (previousSettings.hasOauthOpenBrowser) {
         config.oauthOpenBrowser = previousSettings.oauthOpenBrowser;
-      } else delete config.oauthOpenBrowser;
+      } else deleteConfigTopLevelKey(config, "oauthOpenBrowser");
+      if (previousSettings.hasShowCodexSparkQuota) {
+        config.showCodexSparkQuota = previousSettings.showCodexSparkQuota;
+      } else deleteConfigTopLevelKey(config, "showCodexSparkQuota");
       throw error;
     }
     if (typeof body.appOwnedMemoryBudgetMb === "number") {
@@ -494,6 +511,7 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
       codexAccountPickerEnabled: pickerIsEnabled,
       oauthOpenBrowser: config.oauthOpenBrowser !== false,
       catalogRefreshPending,
+      showCodexSparkQuota: config.showCodexSparkQuota === true,
       startupHealth: await readStartupHealth(config),
     });
   }

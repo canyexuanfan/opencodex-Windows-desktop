@@ -351,8 +351,8 @@ describe("Responses bridge reasoning and usage parity", () => {
 
   test("non-streaming bridge fails closed when upstream calls an undeclared tool", () => {
     const json = buildResponseJSON([
-      { type: "tool_call_start", id: "call_bad", name: "apply_patch" },
-      { type: "tool_call_delta", arguments: '{"input":"*** Begin Patch"}' },
+      { type: "tool_call_start", id: "call_bad", name: "other_tool" },
+      { type: "tool_call_delta", arguments: "{}" },
       { type: "tool_call_end" },
       { type: "done" },
     ], "deepseek/deepseek-v4-flash", { declaredToolNames: new Set(["exec"]) });

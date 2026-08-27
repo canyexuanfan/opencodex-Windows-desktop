@@ -9,6 +9,7 @@ import type { OcxConfig, OcxParsedRequest } from "../src/types";
 
 const OFFICIAL_CLINE_PASS_MODELS = [
   "cline-pass/glm-5.3",
+  "cline-pass/glm-5.3-flash",
   "cline-pass/glm-5.2",
   "cline-pass/kimi-k3",
   "cline-pass/kimi-k2.7-code",

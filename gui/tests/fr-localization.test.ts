@@ -17,7 +17,24 @@ const INTENTIONAL_ENGLISH = new Set<TKey>([
   // Units, symbols, protocol values, machine labels, and product names.
   "uptime.hour",
   "uptime.second",
+  // "auto" is the same word in French, and it labels a machine-derived alias source rather
+  // than prose. Translating it would invent a difference the UI does not have.
+  "models.aliasAuto",
   "common.github",
+  // A filename and a product name. "AGENTS.md" is the literal file Codex reads,
+  // and translating "Plugins" would invent a difference French does not have.
+  "codexSet.layer.agents-md",
+  "codexSet.layer.plugins",
+  // "{position} / {total}" is punctuation and two placeholders - no words to
+  // translate. A French-specific variant would have to invent a difference.
+  "codexSet.custom.navPosition",
+  // Same string, same reason, in the base-variant picker. Listing it here rather
+  // than writing a French spelling of "1 / 2" keeps the check meaningful for keys
+  // that really do carry prose.
+  "codexSet.base.position",
+  // "Instructions" is the same word in French. Inventing a synonym to make this
+  // check happy would be worse copy for a French reader.
+  "codexSet.custom.bodyLabel",
   "common.ok",
   "nav.api",
   "nav.grok",

@@ -250,6 +250,18 @@ export interface ProviderRegistryEntry {
   preserveResponsesReasoningContent?: boolean;
   /** Registry defaults for per-model Codex reasoning propagation; explicit user keys win during enrichment. */
   modelSupportsReasoningSummaries?: Record<string, boolean>;
+  /** Registry defaults for per-model Codex Responses verbosity support. */
+  modelSupportsVerbosity?: Record<string, boolean>;
+  /**
+   * Registry default applied to EVERY model of this provider, including ids that arrive from
+   * live discovery after this table was written.
+   *
+   * `modelSupportsVerbosity` only covers the ids enumerated here, so a newly discovered model
+   * fell through and re-advertised a control the upstream accepts and ignores. Where the opt-out
+   * is a property of the provider's API rather than of one model, declare it here; a per-model
+   * entry still wins over it.
+   */
+  supportsVerbosity?: boolean;
   modelDiscovery?: ProviderModelDiscoverySpec;
   contextWindow?: number;
   modelContextWindows?: Record<string, number>;
@@ -328,9 +340,31 @@ const ANTHROPIC_MODEL_CONTEXT_WINDOWS: Record<string, number> = { "claude-sonnet
 // The non-Z.AI providers below are speculative on purpose: they carry 5.2 today and are
 // expected to pick 5.3 up on their usual lag. Providers whose live /v1/models discovery is
 // enabled self-correct on the next successful fetch; static ones need a follow-up refresh.
-const ZAI_GLM_53_MODELS = ["glm-5.3", "glm-5.3[1m]"];
+// Every 5.3 family member, so the effort ladder, the default effort and the output
+// cap are derived in ONE place. `glm-5.3-flash` was seeded into the model list and
+// the context map by hand and left out of this constant, which meant it advertised
+// a 1M context with a null effort ladder, no default effort and no output cap while
+// its siblings carried three tiers, a `max` default and 131072 tokens. A member
+// added to the list but not to the family is a model whose metadata silently
+// disappears.
+const ZAI_GLM_53_MODELS = ["glm-5.3", "glm-5.3[1m]", "glm-5.3-flash"];
 const ZAI_GLM_52_MODELS = ["glm-5.2", "glm-5.2[1m]"];
 const ZAI_GLM_5X_MODELS = [...ZAI_GLM_53_MODELS, ...ZAI_GLM_52_MODELS];
+/**
+ * The 5.x rows whose images the PROXY has to describe, which is NOT the same set as
+ * the 5.x rows themselves.
+ *
+ * `glm-5.3-flash` is a native VLM (docs.z.ai/guides/vlm/glm-5.3-flash), so listing it
+ * in `noVisionModels` sent an image through the vision sidecar and handed the model a
+ * text description of a picture it could have read itself - no error, worse answer,
+ * extra call. The correction commit fixed the Alibaba entries and left the eight
+ * providers that reach this constant behind.
+ *
+ * Kept separate from ZAI_GLM_5X_MODELS rather than filtered at each use site: that
+ * constant also drives `modelSupportsReasoningSummaries` and
+ * `preserveReasoningContentModels`, where flash DOES belong.
+ */
+const ZAI_GLM_5X_SIDECAR_VISION_MODELS = ZAI_GLM_5X_MODELS.filter(id => id !== "glm-5.3-flash");
 const ZAI_GLM_52_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 /**
  * GLM-5.3 does NOT share 5.2's five-tier ladder. docs.z.ai/devpack/latest-model folds every
@@ -416,6 +450,15 @@ const OPENAI_DAYBREAK_REASONING_EFFORTS: Record<string, string[]> = Object.fromE
   OPENAI_DAYBREAK_MODELS.map(id => [id, [] as string[]]),
 );
 const OPENROUTER_GPT56_MODELS = OPENAI_GPT56_MODELS.map(id => `openai/${id}`);
+const XAI_MODELS = [
+  "grok-4.6",
+  "grok-4.5",
+  "grok-4.3",
+  "grok-4.20-0309-reasoning",
+  "grok-4.20-0309-non-reasoning",
+  "grok-build-0.1",
+  "grok-composer-2.5-fast",
+];
 // OpenRouter's live /endpoints routes report 1,050,000; keep this separate from the
 // unverified OpenAI API-key seed. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
 const OPENROUTER_GPT56_CONTEXT_WINDOW = 1_050_000;
@@ -450,13 +493,15 @@ const OPENCODE_GO_THINKING_TOGGLE_MODELS = [
  * images through the proxy's vision sidecar (src/codex/catalog/provider-fetch.ts), a claim nobody
  * has verified for BigModel-hosted GLM.
  */
+// `glm-5.3-flash` is deliberately absent: it is a native VLM
+// (docs.z.ai/guides/vlm/glm-5.3-flash), unlike glm-5.3 itself.
 const ZHIPU_BIGMODEL_TEXT_MODELS = ["glm-4.6", "glm-4.7", "glm-4.7-flash", "glm-5", "glm-5.1", "glm-5.2", "glm-5.3"];
 const ZHIPU_BIGMODEL_MODELS = [...ZHIPU_BIGMODEL_TEXT_MODELS, "glm-4.6v"];
 const ZHIPU_BIGMODEL_INPUT_MODALITIES: Record<string, string[]> = {
   ...Object.fromEntries(ZHIPU_BIGMODEL_TEXT_MODELS.map(id => [id, ["text"]])),
   "glm-4.6v": ["text", "image"],
 };
-const ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS = ["glm-4.6", "glm-4.7", "glm-5", "glm-5.1", "glm-5.2", "glm-5.3"];
+const ZHIPU_BIGMODEL_THINKING_TOGGLE_MODELS = ["glm-4.6", "glm-4.7", "glm-5", "glm-5.1", "glm-5.2", "glm-5.3", "glm-5.3-flash"];
 const THINKING_BUDGET_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 // Qwen3.8-Max is the first Qwen3.x model with official direct `reasoning_effort` support.
 // Evidence: https://qwen.ai/blog?id=qwen3.8
@@ -474,16 +519,27 @@ const DEEPSEEK_THINKING_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"];
  * at which point this id retires the same way deepseek-chat/reasoner did.
  */
 const DEEPSEEK_VISION_PREVIEW_MODEL = "deepseek-v4-flash-vision-exp";
-const OPENCODE_FREE_DEEPSEEK_MODELS = ["deepseek-v4-flash-free"];
-/*
- * OpenCode Zen's free slug for the OpenRouter stealth model "Ox Alpha"
- * (openrouter.ai/stealth/ox-alpha): 1,048,576-token context, multimodal
- * (text+image+video upstream; Zen serves text+image), mandatory reasoning,
- * free during the stealth window. Zen displays it as "Ox Alpha Free" under
- * this exact id (opencode.ai/docs/zen, verified 2026-08-21).
+/**
+ * CommandCode routes verified to accept image input end-to-end (#2406).
+ *
+ * Verified-negative and therefore deliberately ABSENT: deepseek/deepseek-v4-flash,
+ * deepseek/deepseek-v4-pro, zai-org/GLM-5.2, zai-org/GLM-5.3, xai/grok-4.6. Those
+ * routes accept the request and drop the image, which is worse than declining it — the
+ * model answers about an image it never saw. Do not add an id here on family resemblance;
+ * capability intersection trusts this map.
  */
-const OPENCODE_OX_ALPHA_FREE_MODEL = "x-preview-f-free";
-const OX_ALPHA_CONTEXT_WINDOW = 1_048_576;
+const COMMAND_CODE_IMAGE_MODELS = [
+  `deepseek/${DEEPSEEK_VISION_PREVIEW_MODEL}`,
+  "gpt-5.6-luna",
+  "gpt-5.6-sol",
+  "MiniMaxAI/MiniMax-M3",
+  "moonshotai/Kimi-K3",
+  "meta/muse-spark-1.2",
+  "meta/muse-spark-1.2-contributor",
+] as const;
+const COMMAND_CODE_MODEL_INPUT_MODALITIES: Record<string, ["text", "image"]> =
+  Object.fromEntries(COMMAND_CODE_IMAGE_MODELS.map(id => [id, ["text", "image"]]));
+const OPENCODE_FREE_DEEPSEEK_MODELS = ["deepseek-v4-flash-free"];
 /*
  * Zen free models that reject `image_url` upstream (#1043, and the reproducible
  * half of #1024).
@@ -570,7 +626,7 @@ const deepseekReasoningMapFor = (modelId: string): Record<string, string> =>
 //           https://help.aliyun.com/en/model-studio/token-plan-quickstart
 const ALIBABA_TOKEN_PLAN_MODELS = [
   "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
-  "glm-5.3", "glm-5.2", "deepseek-v4-pro",
+  "glm-5.3", "glm-5.3-flash", "glm-5.2", "deepseek-v4-pro",
 ];
 const ALIBABA_TOKEN_PLAN_QWEN_MODELS = [
   "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash",
@@ -581,6 +637,7 @@ const ALIBABA_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
   "qwen3.7-plus": ["text", "image"],
   "qwen3.6-flash": ["text", "image"],
   "glm-5.3": ["text"],
+  "glm-5.3-flash": ["text", "image"],
   "glm-5.2": ["text"],
   "deepseek-v4-pro": ["text"],
 };
@@ -593,7 +650,7 @@ const ALIBABA_INTL_TOKEN_PLAN_MODELS = [
   "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash",
   "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.2",
   "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5",
-  "glm-5.3", "glm-5.2", "glm-5.1", "glm-5",
+  "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5",
   "MiniMax-M2.5",
 ];
 const ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS = [
@@ -643,6 +700,7 @@ const VOLCENGINE_CODING_PLAN_MODELS = [
   "deepseek-v4-pro",
   "deepseek-v4-flash",
   "glm-5.3",
+  "glm-5.3-flash",
   "glm-5.2",
   "kimi-k2.6",
   "minimax-m3",
@@ -651,6 +709,7 @@ const VOLCENGINE_AGENT_PLAN_MODELS = [
   "deepseek-v4-pro",
   "deepseek-v4-flash",
   "glm-5.3",
+  "glm-5.3-flash",
   "glm-5.2",
   "kimi-k2.6",
   "minimax-m3",
@@ -659,6 +718,9 @@ const VOLCENGINE_AGENT_PLAN_MODELS = [
 const VOLCENGINE_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
   "kimi-k2.6": ["text", "image"],
   "minimax-m3": ["text", "image"],
+  // Native VLM (docs.z.ai/guides/vlm/glm-5.3-flash), so it is declared here and left
+  // out of the text-only list below.
+  "glm-5.3-flash": ["text", "image"],
 };
 // Every other Plan model is text-only. Declaring this explicitly keeps the vision
 // sidecar from advertising image input for models that cannot accept it — the same
@@ -685,6 +747,7 @@ const ALIBABA_INTL_TOKEN_PLAN_INPUT_MODALITIES: Record<string, string[]> = {
   "kimi-k2.6": ["text", "image"],
   "kimi-k2.5": ["text", "image"],
   "glm-5.3": ["text"],
+  "glm-5.3-flash": ["text", "image"],
   "glm-5.2": ["text"],
   "glm-5.1": ["text"],
   "glm-5": ["text"],
@@ -775,6 +838,7 @@ const NVIDIA_NIM_VISION_MODELS = [
   "minimaxai/minimax-m3", "moonshotai/kimi-k2.6", "moonshotai/kimi-k2.5",
   "stepfun-ai/step-3.7-flash", "thinkingmachines/inkling",
   "mistralai/mistral-medium-3.5-128b",
+  "z-ai/glm-5.3-flash",
 ];
 /**
  * The catalog advertises image input only for `noVisionModels` members, so a natively
@@ -808,6 +872,10 @@ const NVIDIA_NIM_NO_VISION_MODELS = [
   "nvidia/nemotron-3-ultra-550b-a55b", "nvidia/nemotron-mini-4b-instruct",
   "nvidia/nvidia-nemotron-nano-9b-v2",
   "openai/gpt-oss-120b", "openai/gpt-oss-20b",
+  // z-ai/glm-5.3-flash belongs in NVIDIA_NIM_VISION_MODELS, not here: Z.AI documents
+  // it under docs.z.ai/guides/vlm/. The header above says an id must be classified
+  // deliberately rather than assumed from its name, and inheriting glm-5.3's
+  // text-only verdict because of the shared prefix is exactly that mistake.
   "poolside/laguna-xs-2.1", "z-ai/glm-5.3", "z-ai/glm-5.2",
 ];
 const KIMI_CODING_MODEL_CONTEXT_WINDOWS: Record<string, number> = Object.fromEntries(
@@ -817,7 +885,7 @@ const KIMI_CODING_MODEL_INPUT_MODALITIES = Object.fromEntries(
   KIMI_CODING_K3_MODELS.map(id => [id, ["text", "image"]]),
 );
 const NEURALWATT_REASONING_HISTORY_MODELS = [
-  "glm-5.3", "glm-5.3-short",
+  "glm-5.3", "glm-5.3-short", "glm-5.3-flash",
   "glm-5.2", "glm-5.2-short",
   "kimi-k2.6", "kimi-k2.7-code",
   "qwen3.5-397b", "qwen3.6-35b",
@@ -898,6 +966,7 @@ const DIGITALOCEAN_CHAT_COMPLETION_MODELS = [
   "nemotron-nano-12b-v2-vl",
   "mimo-v2.5-pro",
   "glm-5.3",
+  "glm-5.3-flash",
   "glm-5.2",
   "glm-5.1",
   "glm-5",
@@ -906,6 +975,7 @@ const DIGITALOCEAN_CHAT_COMPLETION_MODELS = [
 ] as const;
 const SCALEWAY_SERVERLESS_CHAT_MODELS = [
   "glm-5.3",
+  "glm-5.3-flash",
   "glm-5.2",
   // gpt-oss-120b is intentionally omitted: Scaleway requires Responses API for tool calling,
   // while this preset routes Codex agent tools through Chat Completions.
@@ -927,6 +997,7 @@ const UMANS_MODELS = [
   "umans-kimi-k2.7",
   "umans-flash",
   "umans-glm-5.3",
+  "umans-glm-5.3-flash",
   "umans-glm-5.2",
   "umans-glm-5.1",
   "umans-qwen3.6-35b-a3b",
@@ -936,12 +1007,19 @@ const UMANS_GLM_REASONING_EFFORTS = ["high", "xhigh", "max"];
 // 260814: Z.AI folds GLM-5.3 efforts into low/high/max, so `low` is a real tier here and
 // `xhigh` is not distinct from `max` (docs.z.ai/devpack/latest-model).
 const UMANS_GLM_53_REASONING_EFFORTS = ["low", "high", "max"];
+// `umans-glm-5.3-flash` is NOT here: Z.AI documents glm-5.3-flash under
+// docs.z.ai/guides/vlm/, so it takes images natively and does not need the proxy's
+// vision sidecar. The seeding pass classified it from the family name and a later
+// pass corrected only some of the providers; this is one it missed.
 const UMANS_TEXT_ONLY_MODELS = ["umans-glm-5.3", "umans-glm-5.2", "umans-glm-5.1"];
 const UMANS_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "umans-coder": 262_144,
   "umans-kimi-k2.7": 262_144,
   "umans-flash": 262_144,
   "umans-glm-5.3": 405_504,
+  // Mirrors the sibling this provider already carries. Umans has not published a
+  // separate window for the flash tier; asserting a different number would be a guess.
+  "umans-glm-5.3-flash": 405_504,
   "umans-glm-5.2": 405_504,
   "umans-glm-5.1": 202_752,
   "umans-qwen3.6-35b-a3b": 262_144,
@@ -951,6 +1029,7 @@ const UMANS_MODEL_INPUT_MODALITIES: Record<string, string[]> = Object.fromEntrie
 );
 const CLINE_PASS_MODELS = [
   "cline-pass/glm-5.3",
+  "cline-pass/glm-5.3-flash",
   "cline-pass/glm-5.2",
   "cline-pass/kimi-k3",
   "cline-pass/kimi-k2.7-code",
@@ -966,6 +1045,7 @@ const CLINE_PASS_MODELS = [
 ];
 const CLINE_PASS_MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "cline-pass/glm-5.3": 1_048_576,
+  "cline-pass/glm-5.3-flash": 1_048_576,
   "cline-pass/glm-5.2": 1_048_576,
   "cline-pass/kimi-k3": 1_048_576,
   "cline-pass/kimi-k2.7-code": 262_144,
@@ -985,6 +1065,11 @@ const CLINE_PASS_IMAGE_MODELS = new Set([
   "cline-pass/mimo-v2.5",
   "cline-pass/minimax-m3",
   "cline-pass/qwen3.7-plus",
+  // Native VLM (docs.z.ai/guides/vlm/), so its images do not go through the proxy's
+  // sidecar. Adding it here moves it out of CLINE_PASS_TEXT_ONLY_MODELS and flips its
+  // declared modalities to ["text", "image"] in one edit, because both are derived
+  // from this set.
+  "cline-pass/glm-5.3-flash",
 ]);
 const CLINE_PASS_MODALITY_KNOWN_MODELS = CLINE_PASS_MODELS.filter(id => id !== "cline-pass/qwen3.8-max");
 const CLINE_PASS_TEXT_ONLY_MODELS = CLINE_PASS_MODALITY_KNOWN_MODELS.filter(id => !CLINE_PASS_IMAGE_MODELS.has(id));
@@ -1067,7 +1152,18 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // transport returns 400 ("Multi Agent requests are not allowed on chat completions").
     // 260813: grok-4.6 added per docs.x.ai/developers/grok-4-6. Context/vision still match
     // grok-4.5; the reasoning ladder does not — 4.6 adds the documented xhigh rung.
-    models: ["grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-build-0.1", "grok-composer-2.5-fast"],
+    models: XAI_MODELS,
+    // Measured only on grok-4.6 against cli-chat-proxy.grok.com: even an invalid
+    // `text.verbosity` value is accepted and low/high/omitted output length is non-monotonic.
+    // Apply the resulting opt-out to the whole xAI lineup because `text.verbosity` is an OpenAI
+    // Responses parameter absent from xAI's documented API, not because every model was probed.
+    // Keep this separate from reasoning-summary support: that bit gates Codex's
+    // entire Responses reasoning object, including reasoning.effort.
+    modelSupportsVerbosity: Object.fromEntries(XAI_MODELS.map(id => [id, false])),
+    // Provider-wide, not merely per-model: `text.verbosity` is an OpenAI Responses parameter
+    // absent from xAI's documented API, so a model discovered later has no more support for it
+    // than the seeded ones do.
+    supportsVerbosity: false,
     defaultModel: "grok-4.5",
     // Keep Codex Responses callers on the compatibility Chat wire until xAI can replay
     // opaque reasoning continuation and compaction state across later turns. The scoped
@@ -1142,17 +1238,12 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // Unknown/new live models deliberately do not advertise a reasoning picker.
     reasoningEfforts: [],
     modelReasoningEfforts: COMMAND_CODE_MODEL_REASONING_EFFORTS,
-    // Ox Alpha (stealth preview, changelog v1.31.0): free 1M multimodal reasoning
-    // model on every plan. DeepSeek vision preview id is preemptive metadata —
-    // it is expected to merge into deepseek-v4-flash later.
+    // The DeepSeek vision preview id is preemptive metadata — it is expected to
+    // merge into deepseek-v4-flash later.
     modelContextWindows: {
-      "stealth/ox-alpha": OX_ALPHA_CONTEXT_WINDOW,
       [`deepseek/${DEEPSEEK_VISION_PREVIEW_MODEL}`]: 1_048_576,
     },
-    modelInputModalities: {
-      "stealth/ox-alpha": ["text", "image"],
-      [`deepseek/${DEEPSEEK_VISION_PREVIEW_MODEL}`]: ["text", "image"],
-    },
+    modelInputModalities: COMMAND_CODE_MODEL_INPUT_MODALITIES,
     defaultMaxOutputTokens: 64_000,
     // The proprietary generate wire has no verified per-request serialization flag.
     parallelToolCalls: false,
@@ -1237,6 +1328,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // Per-model context metadata is maintained next to the Kiro model list.
     modelContextWindows: KIRO_MODEL_CONTEXT_WINDOWS,
     modelReasoningEfforts: KIRO_MODEL_REASONING_EFFORTS,
+    modelSupportsVerbosity: Object.fromEntries(KIRO_MODELS.map(id => [id, false])),
   },
   {
     // Nous Portal — Nous Research subscription gateway (same backend Hermes Agent
@@ -1321,6 +1413,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "umans-kimi-k2.7": UMANS_REASONING_EFFORTS,
       "umans-flash": UMANS_REASONING_EFFORTS,
       "umans-glm-5.3": UMANS_GLM_53_REASONING_EFFORTS,
+      "umans-glm-5.3-flash": UMANS_GLM_53_REASONING_EFFORTS,
       "umans-glm-5.2": UMANS_GLM_REASONING_EFFORTS,
       "umans-glm-5.1": UMANS_GLM_REASONING_EFFORTS,
       "umans-qwen3.6-35b-a3b": UMANS_REASONING_EFFORTS,
@@ -1336,31 +1429,36 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // finish_reason or [DONE] (#2260). The adapter still rejects incomplete argument JSON.
     openaiChatEofTolerance: true,
     /* [Decision Log]
-    - 목적과 의도: Route GPT 5.6 Luna to the Responses endpoint that OpenCode Go documents for that exact model.
+    - 목적과 의도: Route the exact models OpenCode Go documents on the Responses endpoint — GPT 5.6 Luna, and Muse Spark 1.2 Contributor (#2617).
     - 기존 구현 및 제약 조건: The provider is mixed-wire but its provider-wide `openai-chat` adapter sent Luna to `/chat/completions`; explicit user `modelAdapters` entries must remain authoritative.
     - 검토한 주요 대안: Change the whole provider to Responses; infer the wire from model-family names; add one registry-only exact-model default.
-    - 선택한 방식: Declare only `gpt-5.6-luna` as `openai-responses` through the existing registry default mechanism.
+    - 선택한 방식: Declare only the named models as `openai-responses` through the existing registry default mechanism; the map stays an exact-model allowlist rather than a family or provider-wide rule.
     - 다른 대안 대신 이 방식을 선택한 이유: OpenCode Go documents sibling models on Chat or Anthropic endpoints, and an exact registry default preserves both those routes and explicit opt-out precedence.
-    - 장점, 단점 및 영향: Luna reaches `/responses` from every inbound surface without changing siblings; a future upstream endpoint change requires an evidence-backed registry update.
+    - 장점, 단점 및 영향: Each listed model reaches `/responses` from every inbound surface without changing siblings; a future upstream endpoint change requires an evidence-backed registry update.
     */
-    modelWireDefaults: { "gpt-5.6-luna": "openai-responses" },
+    modelWireDefaults: { "gpt-5.6-luna": "openai-responses", "muse-spark-1.2-contributor": "openai-responses" },
     modelContextWindows: {
       "kimi-k3": KIMI_K3_STANDARD_CONTEXT_WINDOW,
-      // Ox Alpha (stealth 1M multimodal) and the DeepSeek vision preview are
-      // metadata-only here: the Go roster is discovered live, so these apply
-      // the moment the gateway starts serving the ids.
-      [OPENCODE_OX_ALPHA_FREE_MODEL]: OX_ALPHA_CONTEXT_WINDOW,
+      // The DeepSeek vision preview id is metadata-only here: the Go roster is
+      // discovered live, so it applies the moment the gateway serves the id.
       [DEEPSEEK_VISION_PREVIEW_MODEL]: 1_048_576,
     },
     modelInputModalities: {
       "kimi-k3": ["text", "image"],
-      [OPENCODE_OX_ALPHA_FREE_MODEL]: ["text", "image"],
       // Experimental DeepSeek vision preview — expected to merge into deepseek-v4-flash later.
       [DEEPSEEK_VISION_PREVIEW_MODEL]: ["text", "image"],
+      // Muse Spark 1.2 Contributor is natively multimodal on Zen Go: it accepts input_image
+      // parts over /responses (probed 2026-08-26). Without this declaration the catalog
+      // advertises it text-only and the Codex app blocks image attachments client-side with
+      // "This model does not support image inputs" before the request ever reaches the proxy.
+      "muse-spark-1.2-contributor": ["text", "image"],
     },
     modelReasoningEfforts: {
+      "gpt-5.6-luna": OPENAI_API_GPT56_REASONING_EFFORTS,
       "glm-5.3": ZAI_GLM_53_REASONING_EFFORTS,
+      "glm-5.3-flash": ZAI_GLM_53_REASONING_EFFORTS,
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
+      "qwen3.8-max": QWEN38_REASONING_EFFORTS,
       "kimi-k3": KIMI_CODING_K3_REASONING_EFFORTS,
       "kimi-k2.7-code": [],
       "kimi-k2.7-code-highspeed": [],
@@ -1378,6 +1476,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     },
     modelSupportsReasoningSummaries: {
       "glm-5.3": true,
+      "glm-5.3-flash": true,
       "glm-5.2": true,
       "glm-5.1": true,
       "glm-5": true,
@@ -1401,7 +1500,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     noPenaltyModels: ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     autoToolChoiceOnlyModels: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"],
     // Issue #78: DeepSeek V4 thinking mode requires reasoning_content replay on tool-call turns.
-    preserveReasoningContentModels: ["glm-5.3", "glm-5.2", "kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", ...DEEPSEEK_THINKING_MODELS],
+    preserveReasoningContentModels: ["glm-5.3", "glm-5.3-flash", "glm-5.2", "kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", ...DEEPSEEK_THINKING_MODELS],
   },
   {
     id: "neuralwatt",
@@ -1417,6 +1516,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md and https://api.neuralwatt.com/v1/models.
     models: [
       "glm-5.3", "glm-5.3-fast", "glm-5.3-short", "glm-5.3-short-fast",
+      "glm-5.3-flash",
       "glm-5.2", "glm-5.2-fast", "glm-5.2-short", "glm-5.2-short-fast",
       "kimi-k2.6", "kimi-k2.6-fast",
       "kimi-k2.7-code",
@@ -1428,6 +1528,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "glm-5.3-fast": [],
       "glm-5.3-short": ZAI_GLM_53_REASONING_EFFORTS,
       "glm-5.3-short-fast": [],
+      // No `-fast`/`-short` variants are asserted for the flash tier: those suffixes
+      // encode routing Neuralwatt documents per model, and this seed has no source for them.
+      "glm-5.3-flash": ZAI_GLM_53_REASONING_EFFORTS,
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
       "glm-5.2-fast": [],
       "glm-5.2-short": ZAI_GLM_52_REASONING_EFFORTS,
@@ -1460,16 +1563,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     featured: true,
     dashboardUrl: "https://openrouter.ai/keys",
     jawcodeBundle: "openrouter",
-    // stealth/ox-alpha: free stealth-window frontier model (launched 2026-08-20).
-    // /api/v1/models reports 1,048,576 context, 131,072 max output, text+image+video
-    // input, $0 pricing, mandatory reasoning. Single provider slug: `stealth`.
-    models: ["anthropic/claude-sonnet-5", "stealth/ox-alpha", ...OPENROUTER_GPT56_MODELS],
+    models: ["anthropic/claude-sonnet-5", ...OPENROUTER_GPT56_MODELS],
     modelContextWindows: {
       "anthropic/claude-sonnet-5": 1_000_000,
-      "stealth/ox-alpha": OX_ALPHA_CONTEXT_WINDOW,
       ...OPENROUTER_GPT56_CONTEXT_WINDOWS,
     },
-    modelInputModalities: { "stealth/ox-alpha": ["text", "image"] },
     // OpenRouter documents priority support for OpenAI endpoints, but not Anthropic. Keep the
     // provider unclassified and opt in only the exact OpenAI-backed slugs we ship. These facts
     // belong only to the canonical destination; a same-named custom gateway is unknown to us.
@@ -1880,17 +1978,12 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     // slash ids — so a Codex-facing slug like `commandcode/deepseek-deepseek-v4-pro`
     // is sent upstream verbatim and rejected with `unsupported_model`.
     modelReasoningEfforts: COMMAND_CODE_MODEL_REASONING_EFFORTS,
-    // Ox Alpha (stealth preview, Command Code changelog v1.31.0) ships with a
-    // 1.05M-token multimodal context; the DeepSeek vision preview id is
-    // preemptive for when the catalog serves it (merges into v4-flash later).
+    // The DeepSeek vision preview id is preemptive for when the catalog serves it
+    // (merges into v4-flash later).
     modelContextWindows: {
-      "stealth/ox-alpha": OX_ALPHA_CONTEXT_WINDOW,
       [`deepseek/${DEEPSEEK_VISION_PREVIEW_MODEL}`]: 1_048_576,
     },
-    modelInputModalities: {
-      "stealth/ox-alpha": ["text", "image"],
-      [`deepseek/${DEEPSEEK_VISION_PREVIEW_MODEL}`]: ["text", "image"],
-    },
+    modelInputModalities: COMMAND_CODE_MODEL_INPUT_MODALITIES,
     modelDiscovery: {
       path: "models",
       maxResponseBytes: 256 * 1024,
@@ -2147,11 +2240,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     id: "zai", label: "Z.AI — GLM Coding Plan", baseUrl: "https://api.z.ai/api/coding/paas/v4", adapter: "openai-chat", authKind: "key",
     dashboardUrl: "https://z.ai/manage-apikey/apikey-list", defaultModel: "glm-5.3",
     note: "GLM-5.3 coding subscription",
-    models: ["glm-5.3", "glm-5.3[1m]", "glm-5.2", "glm-5.2[1m]", "glm-5.1", "glm-5", "glm-4.6"],
-    modelContextWindows: { "glm-5.3": 1_000_000, "glm-5.3[1m]": 1_000_000, "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 },
+    models: ["glm-5.3", "glm-5.3[1m]", "glm-5.3-flash", "glm-5.2", "glm-5.2[1m]", "glm-5.1", "glm-5", "glm-4.6"],
+    modelContextWindows: { "glm-5.3": 1_000_000, "glm-5.3[1m]": 1_000_000, "glm-5.3-flash": 1_000_000, "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 },
     // Z.AI's OpenAI path returns 400 code 1211 for bracketed model ids.
     modelSuffixBracketStrip: true,
-    noVisionModels: ZAI_GLM_5X_MODELS,
+    noVisionModels: ZAI_GLM_5X_SIDECAR_VISION_MODELS,
     modelReasoningEfforts: ZAI_GLM_5X_REASONING_EFFORTS,
     modelDefaultReasoningEfforts: Object.fromEntries(ZAI_GLM_53_MODELS.map(id => [id, "max"])),
     modelMaxOutputTokens: Object.fromEntries(ZAI_GLM_53_MODELS.map(id => [id, 131_072])),
@@ -2228,11 +2321,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     authKind: "key",
     dashboardUrl: "https://bigmodel.cn/console/usercenter/apikeys",
     defaultModel: "glm-5.3",
-    models: ["glm-5.3", "glm-5.3[1m]", "glm-5.2", "glm-5.2[1m]", "glm-5.1", "glm-5", "glm-4.6"],
+    models: ["glm-5.3", "glm-5.3[1m]", "glm-5.3-flash", "glm-5.2", "glm-5.2[1m]", "glm-5.1", "glm-5", "glm-4.6"],
     jawcodeBundle: "zai",
-    modelContextWindows: { "glm-5.3": 1_000_000, "glm-5.3[1m]": 1_000_000, "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 },
+    modelContextWindows: { "glm-5.3": 1_000_000, "glm-5.3[1m]": 1_000_000, "glm-5.3-flash": 1_000_000, "glm-5.2": 1_000_000, "glm-5.2[1m]": 1_000_000 },
     modelSuffixBracketStrip: true,
-    noVisionModels: ZAI_GLM_5X_MODELS,
+    noVisionModels: ZAI_GLM_5X_SIDECAR_VISION_MODELS,
     modelReasoningEfforts: ZAI_GLM_5X_REASONING_EFFORTS,
     modelSupportsReasoningSummaries: Object.fromEntries(ZAI_GLM_5X_MODELS.map(id => [id, true])),
     preserveReasoningContentModels: ZAI_GLM_5X_MODELS,
@@ -2374,12 +2467,13 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelInputModalities: ALIBABA_TOKEN_PLAN_INPUT_MODALITIES,
     modelContextWindows: {
       "qwen3.8-max": 983_616, "qwen3.7-max": 1_000_000, "qwen3.7-plus": 1_000_000,
-      "qwen3.6-flash": 1_000_000, "glm-5.3": 1_000_000, "glm-5.2": 1_000_000, "deepseek-v4-pro": 1_000_000,
+      "qwen3.6-flash": 1_000_000, "glm-5.3": 1_000_000, "glm-5.3-flash": 1_000_000, "glm-5.2": 1_000_000, "deepseek-v4-pro": 1_000_000,
     },
     modelReasoningEfforts: {
       ...Object.fromEntries(ALIBABA_TOKEN_PLAN_QWEN_MODELS.map(id => [id, THINKING_BUDGET_EFFORTS])),
       "qwen3.8-max": QWEN38_REASONING_EFFORTS,
       "glm-5.3": ZAI_GLM_53_REASONING_EFFORTS,
+      "glm-5.3-flash": ZAI_GLM_53_REASONING_EFFORTS,
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
       "deepseek-v4-pro": deepseekThinkingEffortsFor("deepseek-v4-pro"),
     },
@@ -2387,7 +2481,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelReasoningEffortMap: { "deepseek-v4-pro": deepseekReasoningMapFor("deepseek-v4-pro") },
     directReasoningEffortModels: ["qwen3.8-max"],
     thinkingBudgetModels: ALIBABA_TOKEN_PLAN_QWEN_MODELS.filter(id => id !== "qwen3.8-max"),
-    preserveReasoningContentModels: ["glm-5.3", "glm-5.2", "deepseek-v4-pro", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash"],
+    preserveReasoningContentModels: ["glm-5.3", "glm-5.3-flash", "glm-5.2", "deepseek-v4-pro", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash"],
     noVisionModels: ["glm-5.3", "glm-5.2", "deepseek-v4-pro"],
   },
   {
@@ -2410,13 +2504,14 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "qwen3.7-max": 1_000_000, "qwen3.7-plus": 1_000_000, "qwen3.6-plus": 1_000_000, "qwen3.6-flash": 1_000_000,
       "deepseek-v4-pro": 1_000_000, "deepseek-v4-flash": 1_000_000, "deepseek-v3.2": 131_072,
       "kimi-k2.7-code": 262_144, "kimi-k2.6": 262_144, "kimi-k2.5": 262_144,
-      "glm-5.3": 1_000_000, "glm-5.2": 1_000_000, "glm-5.1": 1_000_000, "glm-5": 1_000_000,
+      "glm-5.3": 1_000_000, "glm-5.3-flash": 1_000_000, "glm-5.2": 1_000_000, "glm-5.1": 1_000_000, "glm-5": 1_000_000,
       "MiniMax-M2.5": 204_800,
     },
     modelReasoningEfforts: {
       ...Object.fromEntries(ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS.map(id => [id, THINKING_BUDGET_EFFORTS])),
       "qwen3.8-max": QWEN38_REASONING_EFFORTS,
       "glm-5.3": ZAI_GLM_53_REASONING_EFFORTS,
+      "glm-5.3-flash": ZAI_GLM_53_REASONING_EFFORTS,
       "glm-5.2": ZAI_GLM_52_REASONING_EFFORTS,
       "deepseek-v4-pro": deepseekThinkingEffortsFor("deepseek-v4-pro"),
       "deepseek-v4-flash": deepseekThinkingEffortsFor("deepseek-v4-flash"),
@@ -2427,7 +2522,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     },
     directReasoningEffortModels: ["qwen3.8-max"],
     thinkingBudgetModels: ALIBABA_INTL_TOKEN_PLAN_QWEN_MODELS.filter(id => id !== "qwen3.8-max"),
-    preserveReasoningContentModels: ["glm-5.3", "glm-5.2", "deepseek-v4-pro", "deepseek-v4-flash", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash"],
+    preserveReasoningContentModels: ["glm-5.3", "glm-5.3-flash", "glm-5.2", "deepseek-v4-pro", "deepseek-v4-flash", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash"],
     noVisionModels: ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v3.2", "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "MiniMax-M2.5"],
     noReasoningModels: ["kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "deepseek-v3.2", "glm-5.1", "glm-5", "MiniMax-M2.5"],
     modelDefaultReasoningEfforts: { "qwen3.8-max": "xhigh" },
@@ -2460,9 +2555,11 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     authKind: "key",
     dashboardUrl: "https://ollama.com/settings/keys",
     // Live IDs verified 2026-07-10; qwen3-coder:480b retires 2026-07-15.
-    models: ["glm-5.3", "glm-5.2", "deepseek-v4-pro", "qwen3-coder:480b", "gpt-oss:120b", "kimi-k2.6", "minimax-m3", "qwen3.5:397b", "gemma4:31b"],
+    models: ["glm-5.3", "glm-5.3-flash", "glm-5.2", "deepseek-v4-pro", "qwen3-coder:480b", "gpt-oss:120b", "kimi-k2.6", "minimax-m3", "qwen3.5:397b", "gemma4:31b"],
     defaultModel: "glm-5.3",
     noVisionModels: [
+      // glm-5.3-flash is absent on purpose: native VLM
+      // (docs.z.ai/guides/vlm/glm-5.3-flash), so its images skip the sidecar.
       "glm-5.3", "glm-5.2", "glm-5.1", "glm-5", "glm-4.7",
       "minimax-m2.7", "minimax-m2.5", "minimax-m2.1",
       "nemotron-3-ultra", "nemotron-3-super",
@@ -2535,14 +2632,12 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       [...DEEPSEEK_THINKING_MODELS, ...OPENCODE_FREE_DEEPSEEK_MODELS].map(id => [id, deepseekReasoningMapFor(id)]),
     ),
     preserveReasoningContentModels: [...DEEPSEEK_THINKING_MODELS, ...OPENCODE_FREE_DEEPSEEK_MODELS],
-    // Same Zen gateway as opencode-free: Ox Alpha Free (1M multimodal stealth model)
-    // and the DeepSeek vision preview (merges into deepseek-v4-flash later).
+    // Same Zen gateway as opencode-free: the DeepSeek vision preview id
+    // (merges into deepseek-v4-flash later).
     modelContextWindows: {
-      [OPENCODE_OX_ALPHA_FREE_MODEL]: OX_ALPHA_CONTEXT_WINDOW,
       [DEEPSEEK_VISION_PREVIEW_MODEL]: 1_048_576,
     },
     modelInputModalities: {
-      [OPENCODE_OX_ALPHA_FREE_MODEL]: ["text", "image"],
       [DEEPSEEK_VISION_PREVIEW_MODEL]: ["text", "image"],
     },
     noVisionModels: [...OPENCODE_ZEN_TEXT_ONLY_MODELS, ...DEEPSEEK_THINKING_MODELS],
@@ -2575,16 +2670,12 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     modelReasoningEfforts: Object.fromEntries(OPENCODE_FREE_DEEPSEEK_MODELS.map(id => [id, deepseekThinkingEffortsFor(id)])),
     modelReasoningEffortMap: Object.fromEntries(OPENCODE_FREE_DEEPSEEK_MODELS.map(id => [id, deepseekReasoningMapFor(id)])),
     preserveReasoningContentModels: OPENCODE_FREE_DEEPSEEK_MODELS,
-    // Ox Alpha Free (`x-preview-f-free`): the OpenRouter stealth model on Zen's
-    // free tier — 1,048,576 context, text+image input. Deliberately NOT in the
-    // text-only list below. The DeepSeek vision preview id is preemptive
-    // metadata for when Zen starts serving it (merges into v4-flash later).
+    // The DeepSeek vision preview id is preemptive metadata for when Zen starts
+    // serving it (merges into v4-flash later).
     modelContextWindows: {
-      [OPENCODE_OX_ALPHA_FREE_MODEL]: OX_ALPHA_CONTEXT_WINDOW,
       [DEEPSEEK_VISION_PREVIEW_MODEL]: 1_048_576,
     },
     modelInputModalities: {
-      [OPENCODE_OX_ALPHA_FREE_MODEL]: ["text", "image"],
       [DEEPSEEK_VISION_PREVIEW_MODEL]: ["text", "image"],
     },
     // Same Zen roster behind the same base URL, so it carries the same measured
@@ -2676,6 +2767,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
       "@cf/moonshotai/kimi-k2.7-code",
       "@cf/zai-org/glm-5.3",
+      "@cf/zai-org/glm-5.3-flash",
       "@cf/zai-org/glm-5.2",
       "@cf/mistralai/mistral-small-3.1-24b-instruct",
     ],

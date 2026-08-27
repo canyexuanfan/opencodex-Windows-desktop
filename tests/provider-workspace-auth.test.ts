@@ -168,7 +168,9 @@ describe("workspace account integration seam", () => {
     // add-provider modal could, which stranded remote/SSH re-authentication.
     expect(panel).toContain("/api/oauth/login/code");
     // Add Provider account row CTA: OAuth uses loginOAuth; openai deep-links to Codex Auth.
-    expect(page).toContain('href: "#codex-auth"');
+    // The page is now Codex Set; `#codex-auth` still resolves through the legacy
+    // redirect, but the CTA links to the live route rather than the old one.
+    expect(page).toContain('href: "#codex-set"');
     expect(panel).toContain("onReauth");
     expect(panel).toContain("pws.reauthenticate");
     expect(panel).toContain("onCancelLogin");

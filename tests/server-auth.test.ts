@@ -150,7 +150,7 @@ afterEach(() => {
   if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
 });
 
-const POOL_RETRY_MODEL = "gpt-5.6-sol";
+const POOL_RETRY_MODEL = "gpt-5.5";
 
 function unsupportedModelBody(model = POOL_RETRY_MODEL): string {
   return JSON.stringify({
@@ -2167,7 +2167,10 @@ describe("server local API auth", () => {
     const harness = await startPoolRetryHarness(
       async (_accountId, request) => {
         upstreamBody = await request.json() as Record<string, unknown>;
-        return Response.json({ id: "canonical-wire-success", status: "completed", output: [] });
+        return Response.json(
+          { id: "canonical-wire-success", status: "completed", output: [], usage: { input_tokens: 1000, output_tokens: 100 } },
+          { headers: { "openai-model": "gpt-5.6-sol" } },
+        );
       },
       {
         secondAccount: false,
@@ -2183,6 +2186,14 @@ describe("server local API auth", () => {
       expect(upstreamBody?.model).toBe("gpt-5.6-sol");
       expect(upstreamBody).not.toHaveProperty("prompt_cache_retention");
       expect(harness.dispatches).toEqual(["acct-pool-a"]);
+
+      const logs = logsFromApiBody(await fetch(new URL("/api/logs?tail=1", harness.server.url), { headers: managementHeaders() }).then(r => r.json()));
+      expect(logs.at(-1)).toMatchObject({
+        model: "gpt-daybreak-blue-latest",
+        status: 200,
+      });
+      expect(logs.at(-1)?.resolvedModel).toBeUndefined();
+      expect(logs.at(-1)?.displayMetrics?.cost?.kind).toBe("value");
     } finally {
       await stopPoolRetryHarness(harness);
     }
@@ -2232,7 +2243,11 @@ describe("server local API auth", () => {
     } finally {
       await stopPoolRetryHarness(harness);
     }
-  });
+    // Same budget as the other harness cases in this file: this one starts a real server and
+    // was left on Bun's 5s default, so it timed out at 5003ms under full-suite parallel load
+    // while passing 3/3 in isolation on two machines. A server-backed case measured against a
+    // default meant for pure unit tests is a load flake, not a signal.
+  }, { timeout: SERVER_BUDGET_MS });
 
   test("#2097: a confirmed entitled account survives two transient unsupported-model 400s in place", async () => {
     const model = "gpt-daybreak-blue-latest";
@@ -3415,7 +3430,7 @@ describe("server local API auth", () => {
       await server.stop(true);
       await upstream.stop(true);
     }
-  });
+  }, { timeout: SERVER_BUDGET_MS });
 
   test("passthrough SSE cyber terminal is logged as 400 cyber_policy", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
