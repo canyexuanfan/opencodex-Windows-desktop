@@ -2,7 +2,20 @@
 import { loadConfig } from "../config";
 import { providerCodexAccountMode } from "../providers/registry";
 import type { OcxConfig } from "../types";
-import { cmdAddKey, cmdAlias, cmdAutoSwitch, cmdClearCooldown, cmdImport, cmdPriority, cmdRefresh, cmdRemove } from "./account-extended";
+import {
+  cmdAddKey,
+  cmdAlias,
+  cmdAutoSwitch,
+  cmdClearCooldown,
+  cmdImport,
+  cmdPause,
+  cmdPauseExhausted,
+  cmdPriority,
+  cmdRefresh,
+  cmdRemove,
+  cmdSticky,
+  cmdStrategy,
+} from "./account-extended";
 import { apiError, apiJson, classifyAccount, fetchRows, proxyUnreachable, resolveBaseUrl, type AccountDeps, type AccountRow, type AccountType, type ApiResult }
   from "./account-api";
 
@@ -23,6 +36,11 @@ const ACCOUNT_USAGE = `Usage:
   ocx account auto-switch <provider> <on|off|status|threshold <0-100>> [--json]
   ocx account alias <provider> <account-or-key-id> <display-name|-> [--json]
   ocx account priority <provider> <account-id|main> [<-100..100|first|earlier|normal|later|last|reset>] [--json]
+  ocx account pause <provider> <account-id|main> [--json]
+  ocx account resume <provider> <account-id|main> [--json]
+  ocx account pause-exhausted <provider> [--json]
+  ocx account strategy <provider> [<quota|round-robin|fill-first>] [--json]
+  ocx account sticky <provider> [<1-100>] [--json]
   ocx account remove <provider> <account-or-key-id|main> --yes [--json]
   ocx account clear-cooldown <provider> <account-id|main> [--json]
   ocx account add-key <provider> [--label <label>] [--json]
@@ -306,6 +324,13 @@ export async function cmdAccount(args: string[], deps: AccountDeps = {}): Promis
     if (sub === "auto-switch") return await cmdAutoSwitch(rest, deps);
     if (sub === "alias" || sub === "rename") return await cmdAlias(rest, deps);
     if (sub === "priority") return await cmdPriority(rest, deps);
+    // #2702: the server routes existed and only the CLI caller was missing, so these were
+    // dashboard-only capabilities.
+    if (sub === "pause") return await cmdPause(rest, deps, true);
+    if (sub === "resume") return await cmdPause(rest, deps, false);
+    if (sub === "pause-exhausted") return await cmdPauseExhausted(rest, deps);
+    if (sub === "strategy") return await cmdStrategy(rest, deps);
+    if (sub === "sticky") return await cmdSticky(rest, deps);
     if (sub === "remove") return await cmdRemove(rest, deps);
     if (sub === "clear-cooldown") return await cmdClearCooldown(rest, deps);
     if (sub === "add-key") return await cmdAddKey(rest, deps);

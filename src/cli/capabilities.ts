@@ -160,6 +160,73 @@ export const CAPABILITIES: readonly Capability[] = [
       "An `(ambiguous)` account row aggregates several accounts; do not read it as one identity.",
     ],
   },
+  {
+    command: ["account", "pause"],
+    summary: "Stop routing new requests to one account in the Codex pool.",
+    // One route, both directions: `resume` is the same PUT with `paused: false`.
+    routes: [{ method: "PUT", path: "/api/codex-auth/accounts/pause" }],
+    flags: [{ name: "--json", value: "boolean", summary: "Emit the pause result as JSON." }],
+    mutates: true,
+    json: "envelope",
+    details: [
+      "Pausing also unbinds threads pinned to the account and selects a fallback if it was active -- side effects of the route, not of the word `pause`.",
+      "The issue that requested this reported the route as POST; it is PUT.",
+    ],
+  },
+  {
+    command: ["account", "resume"],
+    summary: "Return a paused account to the Codex pool.",
+    routes: [{ method: "PUT", path: "/api/codex-auth/accounts/pause" }],
+    flags: [{ name: "--json", value: "boolean", summary: "Emit the resume result as JSON." }],
+    mutates: true,
+    json: "envelope",
+  },
+  {
+    command: ["account", "pause-exhausted"],
+    summary: "Pause every Codex account whose quota is spent.",
+    routes: [{ method: "PUT", path: "/api/codex-auth/accounts/pause-exhausted" }],
+    flags: [{ name: "--json", value: "boolean", summary: "Emit paused ids and the checked/failed counts as JSON." }],
+    mutates: true,
+    json: "envelope",
+    details: [
+      "The route refreshes quota per account and can partially fail; a non-zero failed count is reported, because silence would read as `none were exhausted`.",
+    ],
+  },
+  {
+    command: ["account", "strategy"],
+    summary: "Show or set how an account pool picks the next account.",
+    // Both pools, because both have the setting. The Codex pool reads its applied values
+    // from the active payload; the Anthropic pool has its own GET.
+    routes: [
+      { method: "GET", path: "/api/codex-auth/active" },
+      { method: "PUT", path: "/api/codex-auth/pool-strategy" },
+      { method: "GET", path: "/api/oauth/accounts/pool" },
+      { method: "PUT", path: "/api/oauth/accounts/pool" },
+    ],
+    flags: [{ name: "--json", value: "boolean", summary: "Emit the applied strategy and sticky limit as JSON." }],
+    mutates: true,
+    json: "envelope",
+    details: [
+      "A bare invocation reads and never writes.",
+      "The APPLIED value is echoed, not the requested one, so a server-side normalization stays visible.",
+      "Values are not re-validated in the CLI: the server owns the strategy names and the 1-100 sticky bound.",
+      "`anthropic` is the only OAuth pool with this setting; other OAuth providers are refused without a round-trip.",
+    ],
+  },
+  {
+    command: ["account", "sticky"],
+    summary: "Show or set how many consecutive requests stay on one account.",
+    routes: [
+      { method: "GET", path: "/api/codex-auth/active" },
+      { method: "PUT", path: "/api/codex-auth/pool-strategy" },
+      { method: "GET", path: "/api/oauth/accounts/pool" },
+      { method: "PUT", path: "/api/oauth/accounts/pool" },
+    ],
+    flags: [{ name: "--json", value: "boolean", summary: "Emit the applied strategy and sticky limit as JSON." }],
+    mutates: true,
+    json: "envelope",
+    details: ["Only meaningful under the sticky-capable strategies; the pool strategy is the other half of this setting."],
+  },
 ];
 
 /** Capabilities that drive `route`, for `ocx capabilities --route`. */

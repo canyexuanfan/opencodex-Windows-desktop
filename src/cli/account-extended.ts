@@ -40,6 +40,11 @@ const EXTENDED_USAGE = `Usage:
   ocx account auto-switch <provider> <on|off|status|threshold <0-100>> [--json]
   ocx account alias <provider> <id|main> <display-name|-> [--json]
   ocx account priority <provider> <id|main> [<-100..100|first|earlier|normal|later|last|reset>] [--json]
+  ocx account pause <provider> <id|main> [--json]
+  ocx account resume <provider> <id|main> [--json]
+  ocx account pause-exhausted <provider> [--json]
+  ocx account strategy <provider> [<quota|round-robin|fill-first>] [--json]
+  ocx account sticky <provider> [<1-100>] [--json]
   ocx account remove <provider> <id|main> --yes [--json]
   ocx account clear-cooldown <provider> <id|main> [--json]
   ocx account add-key <provider> [--label <label>] [--json]
@@ -698,6 +703,230 @@ export async function cmdPriority(args: string[], deps: AccountDeps): Promise<nu
   // this line that is a silent side effect of a command that looks purely declarative.
   console.error('Also releases any manual "use this account now" pin, on any account.');
   return 0;
+}
+
+/**
+ * `ocx account pause|resume <provider> <id>` (#2702).
+ *
+ * The server routes have always existed; only the CLI caller was missing, so pausing an
+ * account was dashboard-only. The issue reports these as POST; the code is PUT
+ * (`auth-api.ts:1494`), and the route is shared by both directions with a `paused` boolean
+ * rather than being two endpoints.
+ */
+export async function cmdPause(args: string[], deps: AccountDeps, paused: boolean): Promise<number> {
+  const wantsJson = flag(args, "--json");
+  const name = args.shift();
+  const requestedId = args.shift();
+  const verb = paused ? "pause" : "resume";
+  if (!name || !requestedId || args.length) return usage();
+  const classified = configAndType(deps, name);
+  if ("error" in classified) return usage(`Error: ${classified.error}`);
+  if (classified.type !== "codex") {
+    return usage(`Error: ${verb} applies to the openai Codex account pool`);
+  }
+  const id = requestedId === "main" ? MAIN_ID : requestedId;
+
+  const baseUrl = await resolveBaseUrl(deps);
+  if (!baseUrl) return proxyUnreachable();
+
+  const response = await apiJson(deps, baseUrl, "PUT", "/api/codex-auth/accounts/pause", { id, paused });
+  // Transport sentinel first: status 0 means the proxy never answered, and comparing it to
+  // 200 would report an unreachable proxy as a management error.
+  if (response.status === 0) return proxyUnreachable(response.transportError);
+  if (response.status !== 200) return apiError(response.json, `failed to ${verb} ${requestedId}`, response.status);
+
+  if (wantsJson) {
+    console.log(JSON.stringify({ ok: true, provider: name, id, paused }, null, 2));
+  } else {
+    console.log(`${name}: ${requestedId} ${paused ? "paused" : "resumed"}`);
+  }
+  if (paused) {
+    // Both are server-side effects of this route (auth-api.ts:1508-1510), not consequences
+    // the operator would infer from the word "pause".
+    console.error("Threads bound to this account are unbound, and a fallback account is selected if this one was active.");
+  }
+  return 0;
+}
+
+/**
+ * `ocx account pause-exhausted [--off]` (#2702).
+ *
+ * Pauses every account whose quota is spent. The route refreshes quota for each account, so
+ * it can partially fail; the response distinguishes "checked none and some failed" from
+ * "checked some", and that distinction is reported rather than flattened into ok/not-ok.
+ */
+export async function cmdPauseExhausted(args: string[], deps: AccountDeps): Promise<number> {
+  const wantsJson = flag(args, "--json");
+  const name = args.shift();
+  if (!name || args.length) return usage();
+  const classified = configAndType(deps, name);
+  if ("error" in classified) return usage(`Error: ${classified.error}`);
+  if (classified.type !== "codex") {
+    return usage("Error: pause-exhausted applies to the openai Codex account pool");
+  }
+
+  const baseUrl = await resolveBaseUrl(deps);
+  if (!baseUrl) return proxyUnreachable();
+
+  const response = await apiJson(deps, baseUrl, "PUT", "/api/codex-auth/accounts/pause-exhausted", {});
+  if (response.status === 0) return proxyUnreachable(response.transportError);
+  if (response.status !== 200) return apiError(response.json, "failed to pause exhausted accounts", response.status);
+
+  const pausedIds = Array.isArray(response.json.pausedAccountIds)
+    ? (response.json.pausedAccountIds as unknown[]).filter((value): value is string => typeof value === "string")
+    : [];
+  const checked = typeof response.json.checkedAccountCount === "number" ? response.json.checkedAccountCount : null;
+  const failed = typeof response.json.failedAccountCount === "number" ? response.json.failedAccountCount : null;
+
+  if (wantsJson) {
+    console.log(JSON.stringify({ ok: true, provider: name, pausedAccountIds: pausedIds, checkedAccountCount: checked, failedAccountCount: failed }, null, 2));
+    return 0;
+  }
+  console.log(pausedIds.length > 0
+    ? `${name}: paused ${pausedIds.length} exhausted account(s): ${pausedIds.join(", ")}`
+    : `${name}: no exhausted accounts to pause`);
+  // A quota refresh that failed for some accounts means those were not evaluated at all, so
+  // silence here would read as "none were exhausted" -- a different and wrong conclusion.
+  if (failed !== null && failed > 0) {
+    console.error(`Quota refresh failed for ${failed} account(s); those were not evaluated.`);
+  }
+  return 0;
+}
+
+/**
+ * Two pools expose strategy and sticky, and they are NOT reached the same way:
+ *
+ * |  | Codex pool | Anthropic pool |
+ * |---|---|---|
+ * | read | `GET /api/codex-auth/active` | `GET /api/oauth/accounts/pool?provider=` |
+ * | write | `PUT /api/codex-auth/pool-strategy` | `PUT /api/oauth/accounts/pool` |
+ * | keys | `accountPoolStrategy`/`accountPoolStickyLimit` | `strategy`/`stickyLimit` |
+ * | body | bare field | field **plus** a mandatory `provider` |
+ *
+ * Omitting `provider` from the Anthropic write body earns a 400
+ * (`oauth-account-routes.ts:344`), so the asymmetry has to be encoded somewhere. Encoding it
+ * here keeps ONE verb pair working on both pools. The alternative the plan left open -- a second
+ * `provider-strategy`/`provider-sticky` pair -- would double the surface an operator must learn
+ * to express one idea, and a CLI that can steer one pool and not the other is exactly the trap
+ * this unit exists to remove.
+ */
+interface PoolTransport {
+  readPath: string;
+  writePath: string;
+  /** Response key carrying the applied strategy. */
+  strategyKey: string;
+  /** Response key carrying the applied sticky limit. */
+  stickyKey: string;
+  writeBody: (field: "strategy" | "stickyLimit", value: unknown) => Record<string, unknown>;
+}
+
+const CODEX_POOL_TRANSPORT: PoolTransport = {
+  readPath: "/api/codex-auth/active",
+  writePath: "/api/codex-auth/pool-strategy",
+  strategyKey: "accountPoolStrategy",
+  stickyKey: "accountPoolStickyLimit",
+  writeBody: (field, value) => ({ [field]: value }),
+};
+
+function anthropicPoolTransport(provider: string): PoolTransport {
+  return {
+    readPath: `/api/oauth/accounts/pool?provider=${encodeURIComponent(provider)}`,
+    writePath: "/api/oauth/accounts/pool",
+    strategyKey: "strategy",
+    stickyKey: "stickyLimit",
+    writeBody: (field, value) => ({ provider, [field]: value }),
+  };
+}
+
+/**
+ * The pool-config route supports `anthropic` only and says so with a 400. Any other OAuth
+ * provider is refused here with the same wording rather than spending a round-trip to learn it.
+ */
+function poolTransportFor(
+  classified: { type: "codex" | "oauth" | "api-key" },
+  name: string,
+): PoolTransport | string {
+  if (classified.type === "codex") return CODEX_POOL_TRANSPORT;
+  if (classified.type === "oauth" && name === "anthropic") return anthropicPoolTransport(name);
+  return `pool settings apply to the openai Codex pool and the anthropic pool, not "${name}"`;
+}
+
+/**
+ * `ocx account strategy <provider> [<name>]` and `ocx account sticky <provider> [<n>]` (#2702).
+ *
+ * One implementation rather than two near-duplicates, because strategy and sticky are two
+ * fields of one setting on every pool that has them.
+ *
+* Values are NOT re-validated here. The server owns both contracts -- three strategy names,
+* a 1-100 sticky bound -- and a duplicated bound is a second thing to keep in sync. Its 400
+* is actionable now that the CLI prints `reason`.
+*/
+async function poolSetting(
+  args: string[],
+  deps: AccountDeps,
+  field: "strategy" | "stickyLimit",
+): Promise<number> {
+  const wantsJson = flag(args, "--json");
+  const name = args.shift();
+  const requested = args.shift();
+  const label = field === "strategy" ? "pool strategy" : "sticky limit";
+  if (!name || args.length) return usage();
+  const classified = configAndType(deps, name);
+  if ("error" in classified) return usage(`Error: ${classified.error}`);
+  const transport = poolTransportFor(classified, name);
+  if (typeof transport === "string") return usage(`Error: ${transport}`);
+
+  const baseUrl = await resolveBaseUrl(deps);
+  if (!baseUrl) return proxyUnreachable();
+
+  // No value means show. A read must not rewrite what it is reporting.
+  if (requested === undefined) {
+    const response = await apiJson(deps, baseUrl, "GET", transport.readPath);
+    if (response.status === 0) return proxyUnreachable(response.transportError);
+    if (response.status !== 200) return apiError(response.json, `failed to read ${label}`, response.status);
+    const strategy = response.json[transport.strategyKey];
+    const sticky = response.json[transport.stickyKey];
+    if (wantsJson) {
+      // Pool-neutral key names: the two routes spell the same two settings differently, and a
+      // `--json` consumer should not have to branch on which pool answered.
+      console.log(JSON.stringify({ ok: true, provider: name, strategy, stickyLimit: sticky }, null, 2));
+    } else {
+      console.log(`${name}: ${label} is ${String(field === "strategy" ? strategy : sticky)}`);
+    }
+    return 0;
+  }
+
+  // Sent as a number when it parses as one so the server sees the type it validates;
+  // a non-numeric string still goes through and earns the server's own 400.
+  const value = field === "strategy"
+    ? requested
+    : (Number.isNaN(Number(requested)) ? requested : Number(requested));
+  const response = await apiJson(deps, baseUrl, "PUT", transport.writePath, transport.writeBody(field, value));
+  if (response.status === 0) return proxyUnreachable(response.transportError);
+  if (response.status !== 200) return apiError(response.json, `failed to set ${label}`, response.status);
+
+  if (wantsJson) {
+    console.log(JSON.stringify({
+      ok: true,
+      provider: name,
+      strategy: response.json[transport.strategyKey],
+      stickyLimit: response.json[transport.stickyKey],
+    }, null, 2));
+  } else {
+    // Echo the APPLIED value from the response, not the requested one: the server normalizes,
+    // and printing the request would hide a normalization the operator should see.
+    const applied = field === "strategy" ? response.json[transport.strategyKey] : response.json[transport.stickyKey];
+    console.log(`${name}: ${label} is now ${String(applied)}`);
+  }
+  return 0;
+}
+
+export function cmdStrategy(args: string[], deps: AccountDeps): Promise<number> {
+  return poolSetting(args, deps, "strategy");
+}
+
+export function cmdSticky(args: string[], deps: AccountDeps): Promise<number> {
+  return poolSetting(args, deps, "stickyLimit");
 }
 
 export async function cmdAlias(args: string[], deps: AccountDeps): Promise<number> {
