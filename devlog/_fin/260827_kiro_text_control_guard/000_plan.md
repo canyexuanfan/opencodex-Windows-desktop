@@ -250,3 +250,67 @@ braces rather than load-bearing — worth noting, not worth removing.
    guard is a denylist of one concept now instead of an allowlist of none; if
    such a member appears, it gets its own condition. Recorded here so the next
    reader knows it was a decision, not an oversight.
+
+## Outcome — DONE (2026-08-27)
+
+Shipped as [#2725](https://github.com/lidge-jun/opencodex/pull/2725), open against
+`dev`, head `314d41d8a`, all 23 CI checks green at that exact SHA, `MERGEABLE`,
+awaiting maintainer review. Merging is not the agent's to do.
+
+### What shipped
+
+| Commit | Change |
+|---|---|
+| `56be8f671` | This planning unit |
+| `524a294f8` | Regression tests, red against the old guard |
+| `a0d1ebbe4` | The guard narrowed to `_structuredOutput` |
+| `ce52a0016` | docs-site bullet, structure Decision Log, two stale comments |
+| `314d41d8a` | Made the third wire-absence assertion non-vacuous |
+
+### Verified
+
+`bun x tsc --noEmit` 0 · `bun run test` 0 (15279 pass / 0 fail) ·
+`bun run privacy:scan` 0 · `docs-site` build 0 (401 pages) ·
+`tests/kiro-adapter.test.ts` 58 pass / 306 expects.
+
+Activation evidence was captured *before* the fix and committed, so the defect is
+reproducible from history rather than asserted.
+
+### What the plan got wrong
+
+Worth recording, because both were caught by review rather than by me:
+
+1. **The verifier claim was false.** `000` asserted `tsconfig.json` covered
+   `src/` and `tests/`. It is `"include": ["src"]`. The command had been run and its
+   exit code recorded — but the *reads-the-target* half was asserted from the
+   config's reputation instead of its contents. PLAN-VERIFIER-REAL-01 asks for the
+   `include` entry to be quoted; it was not, and the claim was wrong.
+2. **A vacuous assertion nearly shipped.** The wire-absence check asserted
+   `context?.text` on a fixture that advertised no tool, so the adapter never built
+   `userInputMessageContext` and the assertion passed for the wrong reason. The
+   reviewer judged it test tightness rather than a hole; tightened anyway, and the
+   expect count moving 303 → 306 is the proof the assertions now run.
+
+### What did not improve (LOOP-PESSIMIST-01)
+
+- **The catalog remains unable to prevent this class of failure.** `support_verbosity: false`
+  is correct and was already correct while the 400s were happening. It cannot reach a
+  client holding a cached catalog, and it does not govern `text.format: {"type":"text"}`
+  at all. This unit did not fix that, and no capability flag will.
+- **The translated `adapters.md` locales still lack the new bullet** — as they already
+  lacked the `parallel_tool_calls` one. They do not contradict the English source, so
+  this is drift, not a defect, and it was left alone rather than half-fixed.
+- **Evidence that this direction is wrong, if it appears:** a Kiro turn that carries a
+  `text` member the wire genuinely cannot ignore. The guard is now a denylist of one
+  concept rather than an allowlist of none, so such a member would need its own
+  condition. Nothing in OpenAI's current `ResponseTextConfig` (`format`, `verbosity`)
+  is such a member.
+
+### Deferred, deliberately
+
+Both observed in the same `service.log` while diagnosing, both out of scope:
+
+- Kiro OAuth refresh repeating (54 `OAuth refresh started provider=kiro` entries).
+- Cursor model discovery failing over to a stale catalog and dropping 13 configured
+  model ids.
+
