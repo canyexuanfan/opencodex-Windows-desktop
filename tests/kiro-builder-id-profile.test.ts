@@ -1,11 +1,36 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKiroAdapter } from "../src/adapters/kiro";
 import { KIRO_BUILDER_ID_SERVICE_PROFILE_ARN } from "../src/adapters/kiro-constants";
 import { getValidAccessTokenSnapshot } from "../src/oauth";
 import { resolveKiroApiRegion, resolveKiroProfileArn, resolveKiroRequestProfileArn } from "../src/oauth/kiro";
+
+/** Mirrors resolveKiroCliNativeSessionEntries so an accountless request reads a real local import. */
+function seedKiroCliBuilderIdSession(): void {
+  const dir = process.platform === "win32"
+    ? join(tmp, "AppData", "Local", "Kiro-Cli")
+    : process.platform === "darwin"
+      ? join(tmp, "Library", "Application Support", "kiro-cli")
+      : join(tmp, ".local", "share", "kiro-cli");
+  mkdirSync(dir, { recursive: true });
+  const db = new Database(join(dir, "data.sqlite3"));
+  db.run("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)");
+  db.run("INSERT INTO auth_kv (key, value) VALUES (?, ?)", [
+    "kirocli:social:token",
+    // Builder ID shape: a device-registration client pair and NO profile_arn.
+    JSON.stringify({
+      access_token: "local-access",
+      refresh_token: "local-refresh",
+      region: "us-east-1",
+      client_id: "local-client-id",
+      client_secret: "local-client-secret",
+    }),
+  ]);
+  db.close();
+}
 import { saveCredential } from "../src/oauth/store";
 import type { OcxParsedRequest, OcxProviderConfig } from "../src/types";
 
@@ -179,5 +204,22 @@ describe("kiro Builder ID request-scoped service profile", () => {
     expect(snapshot.kiro?.authType).toBe("aws_sso_oidc");
     const { payload } = await buildBody(parsedWith({ ...snapshot.kiro }));
     expect(payload.profileArn).toBe(KIRO_BUILDER_ID_SERVICE_PROFILE_ARN);
+  });
+
+  test("an accountless Builder ID import sends the fallback inside the CLI envelope, not the IDE one", async () => {
+    // Regression for the wire-path/resolver split: the auth type here comes from the local import,
+    // never from _kiroAuthContext, so a guard that re-derived Builder ID from the request context
+    // would send the fallback ARN while shaping the call as an enterprise IDE request.
+    seedKiroCliBuilderIdSession();
+
+    const parsed = parsedWith(undefined);
+    expect(parsed._kiroAuthContext).toBeUndefined();
+
+    const { headers, payload } = await buildBody(parsed);
+
+    expect(payload.profileArn).toBe(KIRO_BUILDER_ID_SERVICE_PROFILE_ARN);
+    expect(headers["x-amzn-kiro-profile-arn"]).toBe(KIRO_BUILDER_ID_SERVICE_PROFILE_ARN);
+    expect(headers.accept).toBe("*/*");
+    expect(headers["x-amzn-kiro-agent-mode"]).toBeUndefined();
   });
 });

@@ -1,7 +1,7 @@
 import { decodeEventStream } from "../lib/eventstream-decoder";
 import { estimateTokens } from "../lib/token-estimate";
 import { debugProviderDiagnostic } from "../lib/debug";
-import { resolveKiroApiRegion, resolveKiroRequestProfileArn } from "../oauth/kiro";
+import { resolveKiroApiRegion, resolveKiroRequestProfile } from "../oauth/kiro";
 import { KIRO_MODEL_CONTEXT_WINDOWS, normalizeKiroModelId } from "../providers/kiro-models";
 import { modelRecordValue } from "../reasoning-effort";
 import { parseKiroEvent } from "./kiro-events";
@@ -1725,15 +1725,16 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
     const region = resolveKiroApiRegion(parsed._kiroAuthContext);
     // Request-scoped: an AWS Builder ID account has no profile of its own and resolves to Kiro's
     // fixed service profile here, without that value ever becoming the account's stored identity.
-    const resolvedProfileArn = resolveKiroRequestProfileArn(parsed._kiroAuthContext);
+    const requestProfile = resolveKiroRequestProfile(parsed._kiroAuthContext);
+    const resolvedProfileArn = requestProfile.profileArn;
     const isApiKey = provider.apiKey.trim().startsWith("ksk_");
     const profileArn = isApiKey ? undefined : resolvedProfileArn;
     // Builder ID and Kiro API keys are accepted only on Kiro's CLI request path; enterprise
     // profiles retain the IDE-shaped request. Builder ID now carries a profile ARN, so a truthy
-    // `profileArn` no longer implies "enterprise" and the wire path keys off the account's auth
-    // type instead. Selecting "ide" here would send a Builder ID account a request shape the
-    // vendor client never uses for it.
-    const isBuilderId = parsed._kiroAuthContext?.authType === "aws_sso_oidc";
+    // `profileArn` no longer implies "enterprise". The wire path reads the resolver's own verdict
+    // rather than re-deriving it, so the accountless path — where the auth type comes from the
+    // local import, not the request context — cannot send the fallback inside an IDE-shaped call.
+    const isBuilderId = requestProfile.builderIdFallback;
     const wireClient: KiroWireClient = isApiKey || isBuilderId || !profileArn ? "cli" : "ide";
     const fp = fingerprint().slice(0, 64);
     const headers: Record<string, string> = wireClient === "cli" ? {

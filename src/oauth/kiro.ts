@@ -493,12 +493,29 @@ export function resolveKiroProfileArn(account?: Pick<KiroOAuthMetadata, "profile
 export function resolveKiroRequestProfileArn(
   account?: Pick<KiroOAuthMetadata, "profileArn" | "authType">,
 ): string | undefined {
+  return resolveKiroRequestProfile(account).profileArn;
+}
+
+/**
+ * The profileArn to send, together with WHY it was chosen.
+ *
+ * The request builder must decide the wire envelope from the same evaluation that produced the
+ * ARN. Re-deriving "is this Builder ID" from the account context alone would miss the accountless
+ * path, where the auth type comes from the locally imported credential instead: the fallback would
+ * be sent while the request was shaped as an enterprise IDE call, which is not a combination the
+ * vendor client ever produces.
+ */
+export function resolveKiroRequestProfile(
+  account?: Pick<KiroOAuthMetadata, "profileArn" | "authType">,
+): { profileArn: string | undefined; builderIdFallback: boolean } {
   const own = resolveKiroProfileArn(account);
-  if (own) return own;
+  if (own) return { profileArn: own, builderIdFallback: false };
   const authType = account !== undefined
     ? account.authType
     : readImportedKiroCredential()?.authType;
-  return authType === "aws_sso_oidc" ? KIRO_BUILDER_ID_SERVICE_PROFILE_ARN : undefined;
+  return authType === "aws_sso_oidc"
+    ? { profileArn: KIRO_BUILDER_ID_SERVICE_PROFILE_ARN, builderIdFallback: true }
+    : { profileArn: undefined, builderIdFallback: false };
 }
 
 async function kiroTokenRefreshError(response: Response): Promise<KiroTokenRefreshError> {
