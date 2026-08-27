@@ -67,6 +67,42 @@ area asserts on source text, which cannot catch a rotation site that forgets a s
 2. HTTP 429 rotation: assert `replayOAuthCredentialSnapshot` names the rotated account.
 3. Cursor sidecar 429: assert `_cursorConversationId` does not survive the rotation.
 
+## Independent verification (2026-08-27)
+
+A second read-only audit checked every claim above against `dev` rather than trusting
+the first pass. Two things changed.
+
+**Confirmed.** The stale snapshot is real: `applyFailoverSnapshot` never updates
+`sentOAuthSnapshot`, and `forceRefreshOAuthAccessSnapshot` refreshes the SNAPSHOT's
+account (`src/oauth/index.ts:500`), which after a rotation is still A. The
+three-site asymmetry is real too, exactly as tabled above. Generic 429 failover never
+promotes the active account, so the active-credential helper still names A.
+
+**Corrected.** The 429-then-401 cross-origin send is NOT reachable on today's control
+flow, so the table above overstated the consequence. Copilot Responses models take an
+early passthrough return that has no generic 429 rotator at all, and in the HTTP
+recovery loop the 401 handler sits ABOVE the 429 rotator while the 429 branch does not
+`continue recovery` - so a 401 after rotation falls out of the loop and is returned as
+an upstream error rather than re-entering the refresh. The runTurn and sidecar paths
+never re-enter those 401 blocks either.
+
+That reframes the phase without weakening it. What exists today is latent identity
+drift; the missing `continue recovery` is an ACCIDENTAL guard, not a designed one.
+Adding that continue - a plausible future improvement to 429 recovery - would activate
+the defect. So the fix order matters: rebind identity inside `applyFailoverSnapshot`
+FIRST, and only then consider making 429 recovery continue.
+
+The audit also named the specific pairing that would leak if the 401 handler did run:
+not the allowlist itself, but the transport fallback that drops to `provider.baseUrl`
+when the refreshed account carries no allowlisted origin of its own. After a rotation
+that base URL is B's.
+
+Test placement, from the same audit: `tests/generic-oauth-failover.test.ts` already
+source-asserts the three `applyFailoverSnapshot` sites, and there is no Copilot
+429-then-401 coverage anywhere. The behavioral cases belong beside
+`tests/adapter-event-oauth-failover.test.ts` and
+`tests/server-xai-oauth-401-replay.test.ts`.
+
 ## Boundary
 
 This is an authentication/credential surface. `MAINTAINERS.md` requires explicit
