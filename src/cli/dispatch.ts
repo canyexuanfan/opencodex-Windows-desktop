@@ -9,6 +9,7 @@
  * never needs to import the entry module back (no cycle).
  */
 import { CLI_COMMANDS } from "./registry";
+import { isValidProviderName } from "../config/provider-name";
 import type { CliHead } from "./root";
 import type { ReadyArgs } from "./ready";
 import type { LiveProxy } from "../server/proxy-liveness";
@@ -233,7 +234,7 @@ const commandRunners: Record<string, CommandRunner> = {
     const wantsJson = logoutArgs.includes("--json");
     // Any leading dash is an option, not a provider. Matching only `--` left the same defect
     // one dash shorter: `ocx logout -j` treated `-j` as the provider name and, with a `-j` key
-    // present in the store, deleted it and exited 0. A provider id never starts with `-`.
+    // present in the store, deleted it and exited 0.
     const isOption = (arg: string): boolean => arg.startsWith("-");
     const positionals = logoutArgs.filter(arg => !isOption(arg));
     const unknownFlags = logoutArgs.filter(arg => isOption(arg) && arg !== "--json");
@@ -242,10 +243,21 @@ const commandRunners: Record<string, CommandRunner> = {
     // Usage failures exit 2 and touch nothing. A missing provider is a usage error; a
     // provider that simply has no credential is a not-found (4) further down, because the
     // vocabulary distinguishes "you called this wrong" from "the thing is not there".
-    if (unknownFlags.length > 0 || positionals.length > 1 || !name) {
+    //
+    // The shape check is `isValidProviderName`, not another dash test. Rejecting a leading
+    // ASCII `-` fixed `-j` and still let `logout —json` through with a Unicode dash, which is
+    // the same defect a third time: each patch named one spelling instead of the class. The
+    // canonical validator states the rule positively -- start and end alphanumeric, internal
+    // `._-` allowed -- so `github-copilot` and `google-antigravity` pass while every dash
+    // variant, empty string, and reserved name fails. Anything that is not a possible
+    // provider id cannot reach the store at all.
+    const malformedName = Boolean(name) && !isValidProviderName(name);
+    if (unknownFlags.length > 0 || positionals.length > 1 || !name || malformedName) {
       const problem = unknownFlags.length > 0
         ? `unknown option ${unknownFlags[0]}`
-        : positionals.length > 1 ? "too many arguments" : "missing provider";
+        : positionals.length > 1 ? "too many arguments"
+        : malformedName ? `not a valid provider name: ${name}`
+        : "missing provider";
       console.error(`Usage: ocx logout <provider> [--json]  (${problem})`);
       return 2;
     }

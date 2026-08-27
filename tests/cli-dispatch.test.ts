@@ -322,3 +322,71 @@ describe("logout reports only what it actually did", () => {
     expect(await removeCredential("never-stored")).toBe("not-found");
   });
 });
+
+describe("logout rejects anything that is not a possible provider id", () => {
+  /**
+   * Third round on the same defect, which is why the fix stopped naming spellings.
+   *
+   * `--json` was rejected, then `-j` was not; `-j` was rejected, then `—json` with a Unicode
+   * em dash was not. Each patch enumerated one more variant of "looks like a flag" while the
+   * store kept accepting anything that did not match that enumeration. The rule is now stated
+   * positively via `isValidProviderName`: start and end alphanumeric, internal `._-` allowed.
+   * Everything that cannot be a provider id is refused before the store is opened.
+   *
+   * Real providers contain dashes -- `github-copilot`, `google-antigravity` -- so a blanket
+   * dash ban would have been wrong; this is why the check is a shape rule, not a character ban.
+   */
+  const run = async (arg: string): Promise<number> => {
+    const argv = ["logout", arg];
+    const log = console.log;
+    const error = console.error;
+    console.log = () => {};
+    console.error = () => {};
+    try {
+      return await dispatchCommand(
+        { kind: "command", command: "logout", args: argv },
+        { ...fakeDeps, args: argv } as unknown as CliDispatchDeps,
+      );
+    } finally {
+      console.log = log;
+      console.error = error;
+    }
+  };
+
+  test("Unicode dash tokens never reach the store", async () => {
+    // Em dash and minus sign. Both survived the ASCII-only guard and deleted sentinels.
+    for (const token of ["\u2014json", "\u2212json", "\u2013j"]) {
+      await saveCredential(token, { access: "sentinel", refresh: "r", expires: Date.now() + 600_000 });
+      expect(await run(token), `${JSON.stringify(token)} must be rejected`).toBe(2);
+      expect(getAccountSet(token), `${JSON.stringify(token)} sentinel must survive`).not.toBeNull();
+    }
+  });
+
+  test("reserved and malformed names are refused before any store access", async () => {
+    // `__proto__` is asserted without a sentinel: seeding it is impossible, because
+    // `saveCredential("__proto__")` corrupts the store object itself -- which is precisely why
+    // the validator reserves it. Trying to seed it threw inside the store, and that failure is
+    // the argument for rejecting the name at the CLI boundary.
+    expect(await run("__proto__")).toBe(2);
+    for (const token of ["policy", "-lead", "trail-", ".dot"]) {
+      await saveCredential(token, { access: "sentinel", refresh: "r", expires: Date.now() + 600_000 });
+      expect(await run(token), `${token} must be rejected`).toBe(2);
+      expect(getAccountSet(token), `${token} sentinel must survive`).not.toBeNull();
+    }
+  });
+
+  test("providers that legitimately contain dashes still work", async () => {
+    // The guard must not overshoot: these are real provider ids from listOAuthProviders().
+    for (const provider of ["github-copilot", "google-antigravity", "command-code"]) {
+      await saveCredential(provider, { access: "a", refresh: "r", expires: Date.now() + 600_000 });
+      expect(await run(provider), `${provider} must be accepted`).toBe(0);
+      expect(getAccountSet(provider)).toBeNull();
+    }
+  });
+
+  test("an uppercase provider is normalised, not rejected", async () => {
+    await saveCredential("github-copilot", { access: "a", refresh: "r", expires: Date.now() + 600_000 });
+    expect(await run("GITHUB-COPILOT")).toBe(0);
+    expect(getAccountSet("github-copilot")).toBeNull();
+  });
+});
