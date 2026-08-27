@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -216,3 +216,105 @@ describe("failed scheduler start leaves nothing dangling", () => {
     stopLabAutomationScheduler(dir);
   });
 });
+
+/**
+ * R3-1: a genuinely profile-less dry-run must register nothing.
+ *
+ * `devlog/_fin/260814_lab_core_decoupling/090_audit_round3_closeout.md:47` required this as a
+ * behavioral assertion, and it was never written. The existing gate test above only proves
+ * that a bare CONFIG does not activate — it never exercises the management route, which is
+ * where the activation call actually lives
+ * (`src/server/management/routing-profile-routes.ts:293` and `:368`).
+ *
+ * That distinction is the whole point. Audit round 3 was about a guard that passes while the
+ * property is violated: the dry-run route activates Lab so an operator preview agrees with
+ * production, and if that call ever stopped being conditional, a profile-less install would
+ * start filling slots from an HTTP request and nothing here would notice.
+ */
+describe("R3-1 a profile-less dry-run registers no slot", () => {
+  let previousHome: string | undefined;
+  let homeDir = "";
+
+  beforeEach(() => {
+    previousHome = process.env.OPENCODEX_HOME;
+    homeDir = scratch();
+    // getConfigDir() reads this, and the route calls it rather than taking a directory, so
+    // the env var is the only seam that keeps this case off the real config directory.
+    process.env.OPENCODEX_HOME = homeDir;
+    resetLabActivationForTests();
+    resetServerResourceOwnershipForTests();
+    resetCompatibilityEvidenceProviderForTests();
+    resetPassiveRouteLinkerForTests();
+  });
+
+  afterEach(() => {
+    if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = previousHome;
+  });
+
+  test("an unknown profile on an install with no profiles fills neither slot", async () => {
+    const { handleManagementAPI } = await import("../src/server/management-api");
+    const { ManagementRequest } = await import("./helpers/management-auth");
+
+    const cfg = {
+      port: 10100,
+      defaultProvider: "a",
+      providers: { a: { adapter: "openai-responses", baseUrl: "https://a.example/v1", apiKey: "secret", models: ["m1"] } },
+      routingProfiles: {},
+    } as unknown as OcxConfig;
+
+    const req = new ManagementRequest("http://localhost/api/routing-profiles/dry-run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ profile: "does-not-exist" }),
+    });
+    const response = await handleManagementAPI(req, new URL(req.url), cfg, {
+      saveConfigPreservingClaudeCode: () => {},
+      createManagementConvergeCodex: () => async () => ({
+        kind: "catalog-only" as const,
+        catalogRefresh: { status: "committed" as const, changed: false, degraded: false, notices: [] },
+      }),
+    } as never);
+
+    // 404 rather than 500: an unknown profile is a client error, and the route answers it
+    // before any assembly work.
+    expect(response?.status).toBe(404);
+
+    // The property under test. Neither slot may be filled, and no activation record may
+    // exist for this config dir.
+    expect(resolveCompatibilityEvidenceProvider()).toBeNull();
+    expect(hasPassiveRouteLinker()).toBe(false);
+    expect(isLabActivated(homeDir)).toBe(false);
+  });
+
+  test("the same route DOES register once a profile exists, so the assertion above is not vacuous", async () => {
+    const { handleManagementAPI } = await import("../src/server/management-api");
+    const { ManagementRequest } = await import("./helpers/management-auth");
+
+    const cfg = {
+      port: 10100,
+      defaultProvider: "a",
+      providers: { a: { adapter: "openai-responses", baseUrl: "https://a.example/v1", apiKey: "secret", models: ["m1"] } },
+      routingProfiles: { compat: { candidates: [{ provider: "a", model: "m1" }] } },
+    } as unknown as OcxConfig;
+
+    const req = new ManagementRequest("http://localhost/api/routing-profiles/dry-run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ profile: "compat" }),
+    });
+    const response = await handleManagementAPI(req, new URL(req.url), cfg, {
+      saveConfigPreservingClaudeCode: () => {},
+      createManagementConvergeCodex: () => async () => ({
+        kind: "catalog-only" as const,
+        catalogRefresh: { status: "committed" as const, changed: false, degraded: false, notices: [] },
+      }),
+    } as never);
+
+    expect(response?.status).toBe(200);
+    // Same route, same process, one config field different: the slot is filled. Without
+    // this half, the case above would still pass if the route stopped activating entirely.
+    expect(resolveCompatibilityEvidenceProvider()).not.toBeNull();
+  });
+});
+

@@ -5191,10 +5191,14 @@ async function handleResponsesInner(
           break;
         }
       }
-      // Generic OAuth account failover (#2568) for providers with no pool of their own. Opt-in
-      // and a strict no-op otherwise, so a single-account install and every existing config are
-      // unchanged. Codex and Anthropic are excluded by isGenericFailoverProvider — their pools
-      // own quota scopes, probe leases and affinity that this must not reimplement.
+      // Generic OAuth account failover (#2568) for providers with no pool of their own.
+      // Presence is consent since #2568d: rotation is ON by default once two or more eligible
+      // accounts are stored for the provider, because a second deliberate login is read as the
+      // operator asking for it. A single-account install is still a strict no-op, and an
+      // explicit `oauthAccountFailover.enabled: false` (global or per provider) still wins --
+      // see isGenericOAuthFailoverEnabled in src/oauth/generic-account-failover.ts. Codex and
+      // Anthropic are excluded by isGenericFailoverProvider: their pools own quota scopes,
+      // probe leases and affinity that this must not reimplement.
       while (
         upstreamResponse.status === 429
         && genericFailoverAccountId
