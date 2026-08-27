@@ -892,11 +892,81 @@ describe("kiro adapter — buildRequest", () => {
     await expect(createKiroAdapter(provider).buildRequest({
       ...parsedWith([{ role: "user", content: "hi" }], [bashTool]),
       _structuredOutput: true,
-    } as OcxParsedRequest)).rejects.toThrow("Kiro does not support Responses text controls or structured output");
+    } as OcxParsedRequest)).rejects.toThrow("Kiro does not support Responses structured output");
 
     const none = { ...parsedWith([{ role: "user", content: "hi" }], [bashTool]), options: { toolChoice: "none" } } as OcxParsedRequest;
     const current = JSON.parse((await createKiroAdapter(provider).buildRequest(none)).body).conversationState.currentMessage.userInputMessage;
     expect(current.userInputMessageContext?.tools).toBeUndefined();
+  });
+
+  test("tolerates non-structured Responses text controls and keeps them off the Kiro wire", async () => {
+    // Regression: the guard used to reject the PRESENCE of any \`text\` member, so a verbosity
+    // hint or a plain \`format: {type:"text"}\` produced HTTP 400 while the identical turn
+    // without \`text\` succeeded. Neither is structured output, and Kiro has no wire field for
+    // either, so both belong on the tolerated side of the guard.
+    for (const text of [
+      { verbosity: "medium" },
+      { format: { type: "text" } },
+      {},
+    ]) {
+      const parsed = parseRequest({
+        model: "kiro/claude-haiku-4.5",
+        input: "test",
+        stream: true,
+        text,
+        tools: [{
+          type: "function",
+          name: "bash",
+          description: "Run a shell command",
+          parameters: { type: "object" },
+        }],
+      } as never);
+      expect(parsed._structuredOutput ?? false).toBe(false);
+      expect((parsed._rawBody as Record<string, unknown>).text).toBeDefined();
+
+      const payload = JSON.parse((await createKiroAdapter(provider).buildRequest(parsed)).body) as {
+        text?: unknown;
+        verbosity?: unknown;
+        conversationState?: {
+          text?: unknown;
+          verbosity?: unknown;
+          currentMessage: {
+            userInputMessage: {
+              userInputMessageContext?: { text?: unknown; verbosity?: unknown };
+            };
+          };
+        };
+      };
+
+      // The turn reached the wire at all — the point of the fix.
+      expect(payload.conversationState).toBeDefined();
+      // ...but the control itself is not forwarded, at any level that exists on the payload.
+      const context = payload.conversationState?.currentMessage.userInputMessage.userInputMessageContext;
+      // The fixture advertises a tool so userInputMessageContext really exists here; without
+      // one the adapter omits it and this third assertion would pass vacuously.
+      expect(context).toBeDefined();
+      for (const level of [payload, payload.conversationState, context]) {
+        expect(level?.text).toBeUndefined();
+        expect(level?.verbosity).toBeUndefined();
+      }
+    }
+  });
+
+  test("still refuses genuine structured output", async () => {
+    for (const text of [
+      { format: { type: "json_schema", name: "answer", schema: { type: "object" } } },
+      { format: { type: "json_object" } },
+    ]) {
+      const parsed = parseRequest({
+        model: "kiro/claude-haiku-4.5",
+        input: "test",
+        stream: true,
+        text,
+      } as never);
+      expect(parsed._structuredOutput).toBe(true);
+      await expect(createKiroAdapter(provider).buildRequest(parsed))
+        .rejects.toThrow("Kiro does not support Responses structured output");
+    }
   });
 
   test("accepts Codex's permissive parallel-tool hint while keeping the Kiro wire serialized", async () => {

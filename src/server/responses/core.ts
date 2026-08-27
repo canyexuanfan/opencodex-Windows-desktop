@@ -3094,8 +3094,9 @@ async function handleResponsesInner(
     delete parsed.options.parallelToolCalls;
     // The compaction turn is a plain prose summary; a surviving structured-output format
     // would force schema-constrained JSON into the synthetic compaction item. The flag and
-    // the raw `text` controls go too: Kiro's capability guard reads both and would reject
-    // the turn outright, and the key-mode openai-responses adapter builds from _rawBody.
+    // the raw `text` control go too: the key-mode openai-responses adapter builds from
+    // _rawBody, so a surviving format there would still reach the upstream. (The Kiro
+    // guard no longer reads _rawBody.text; it refuses structured output only.)
     delete parsed.options.textFormat;
     delete parsed._structuredOutput;
     if (parsed._rawBody && typeof parsed._rawBody === "object") {

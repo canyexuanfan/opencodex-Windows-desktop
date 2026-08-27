@@ -163,6 +163,11 @@ of the HTTP retry loop.
   Kiro remains serialized: the routed catalog advertises no parallel-tool capability and the
   adapter sends no parallel-control field upstream, but ordinary Codex tool turns are not rejected
   solely because the client permits parallel calls.
+- Accepts Responses `text` controls that are not structured output — `text.verbosity` and
+  `text.format: {"type":"text"}` — without forwarding them. Kiro has no wire field for either, so
+  they are ignored rather than rejected. Structured output (`text.format` of type `json_schema`
+  or `json_object`) is still refused: the Kiro wire cannot constrain the response shape, and a
+  caller expecting JSON would otherwise receive prose.
 - Decodes `application/vnd.amazon.eventstream`, reconstructs text/thinking/tool events, detects
   truncated tool JSON, and estimates usage because the upstream does not return token counts.
 - Uses the configured `baseUrl` verbatim when it is custom. A canonical
