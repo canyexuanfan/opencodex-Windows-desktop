@@ -33,6 +33,7 @@ import type {
   OcxTextContent,
   OcxToolCall,
   OcxToolResultMessage,
+  OcxTool,
   OcxUsage,
 } from "../types";
 import type { ProviderAdapter } from "./base";
@@ -42,7 +43,7 @@ import { sniffImageDimensions } from "./anthropic-image-guard";
 import { fetchKiroWithRetry, noteKiroTransientThrottle } from "./kiro-retry";
 import { convertKiroToolContext } from "./kiro-tools";
 import { identifyRoutedModel } from "./identity";
-import { buildNonOpenAIToolCatalogNudgeFromNames } from "./tool-catalog-nudge";
+import { buildNonOpenAIToolCatalogNudgeFromNames, isBareShellBridgeTool, isCodexCodeModeExecTool } from "./tool-catalog-nudge";
 import {
   KIRO_COMPLETION_INSTRUCTIONS,
   KIRO_COMPLETION_RETRY_MESSAGE,
@@ -474,9 +475,32 @@ export function buildKiroPayload(
   // name for a tool that was never advertised and pollute the collision domain.
   const advertisedAlias = new Map<string, string>();
   for (const [alias, wireName] of registry.nameMap) advertisedAlias.set(wireName, alias);
+  // Code mode is decided on the EMITTED catalog, not the requested list.
+  //
+  // `freeform` only exists on the requested tool objects -- `kiroToolWireNames` has already
+  // reduced the emitted catalog to strings -- so the predicates must read the objects. But the
+  // SHAPE that matters is the one the model receives: the count/byte budget can drop a requested
+  // `exec_command` while `exec` survives, and scanning the requested list would then find a shell
+  // bridge the model cannot call and suppress code mode for a catalog that is code-mode-shaped.
+  // Intersecting the two keeps `tool_choice: "none"` and budget omission correct for free: both
+  // empty the emitted set, so nothing can be named.
+  const emittedToolNames = new Set(kiroToolWireNames(kiroTools));
+  const emittedAlias = (tool: OcxTool): string | undefined => {
+    const wireName = namespacedToolName(tool.namespace, tool.name);
+    // Read the recorded mapping; `registry.alias()` would REGISTER a name here.
+    const alias = advertisedAlias.get(wireName) ?? wireName;
+    return emittedToolNames.has(alias) ? alias : undefined;
+  };
+  const requestedTools = parsed.context.tools ?? [];
+  const emittedCodeModeExec = requestedTools.find(tool => isCodexCodeModeExecTool(tool) && emittedAlias(tool));
+  const emittedShellBridge = requestedTools.some(tool => isBareShellBridgeTool(tool) && emittedAlias(tool));
+  const codeModeExecName = emittedCodeModeExec && !emittedShellBridge
+    ? emittedAlias(emittedCodeModeExec)
+    : undefined;
   const toolCatalogNudge = buildNonOpenAIToolCatalogNudgeFromNames(
     kiroToolWireNames(kiroTools),
     name => advertisedAlias.get(name) ?? name,
+    codeModeExecName,
   );
   const boundedNudge = toolCatalogNudge ? boundedInjectedInstruction(toolCatalogNudge, injectedChars) : undefined;
   if (boundedNudge) systemParts.push(boundedNudge);
