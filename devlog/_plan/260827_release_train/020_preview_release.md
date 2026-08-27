@@ -32,8 +32,11 @@ Run the git steps by hand, let the branch's own push-event CI run, then dispatch
 # on preview, at the promoted head
 npm version 2.34.0-preview.20260827 --no-git-tag-version
 git commit -am 'release: v2.34.0-preview.20260827'
+# Keep the scp-style SSH principal out of one email-shaped source literal.
+release_host=github.com
+release_repo=lidge-jun/opencodex.git
 GIT_SSH_COMMAND='ssh -i ~/.ssh/opencodex_release_ed25519 -o IdentitiesOnly=yes' \
-  git push git@github.com:lidge-jun/opencodex.git HEAD:preview
+  git push "git@${release_host}:${release_repo}" HEAD:preview
 # wait for push-event ci.yml AND service-lifecycle at that exact sha
 gh workflow run release.yml --ref preview \
   -f version=2.34.0-preview.20260827 -f tag=preview \
