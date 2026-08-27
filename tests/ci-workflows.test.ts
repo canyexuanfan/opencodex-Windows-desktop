@@ -160,7 +160,7 @@ describe("GitHub Actions hardening", () => {
     // how the first cut of that test shipped, so pin the flag rather than trusting a
     // comment. Asserted per job so a future edit cannot drop it from one leg while
     // the other still carries it.
-    for (const jobName of ["test", "platform-macos"]) {
+    for (const jobName of ["test", "platform-macos", "platform-windows"]) {
       const steps = (ci.jobs?.[jobName] as { steps?: Array<{ uses?: string; with?: Record<string, unknown> }> })?.steps ?? [];
       const checkout = steps.find(step => typeof step.uses === "string" && step.uses.includes("actions/checkout"));
       expect(`${jobName}:${String(checkout?.with?.["fetch-tags"])}`).toBe(`${jobName}:true`);
