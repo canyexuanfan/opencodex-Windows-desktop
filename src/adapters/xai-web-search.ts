@@ -1,8 +1,8 @@
 import type { OcxProviderConfig } from "../types";
+import { isXaiResponsesDestination } from "../providers/xai-transport";
 
 const CODEX_WEB_SEARCH_TOOL = "web_search";
 const CODEX_WEB_SEARCH_PREVIEW_TOOL = "web_search_preview";
-const XAI_API_HOST = "api.x.ai";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -10,18 +10,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function isCodexWebSearchToolType(value: unknown): boolean {
   return value === CODEX_WEB_SEARCH_TOOL || value === CODEX_WEB_SEARCH_PREVIEW_TOOL;
-}
-
-/** Match only xAI's documented public API, not arbitrary Responses-compatible gateways. */
-function isXaiPublicApi(provider: Pick<OcxProviderConfig, "baseUrl">): boolean {
-  try {
-    const url = new URL(provider.baseUrl);
-    return url.protocol === "https:"
-      && url.hostname.toLowerCase() === XAI_API_HOST
-      && (url.port === "" || url.port === "443");
-  } catch {
-    return false;
-  }
 }
 
 type ToolGroupRewrite = {
@@ -150,12 +138,20 @@ function normalizeToolChoice(body: Record<string, unknown>): Record<string, unkn
 /**
  * Make Codex's hosted web-search declaration acceptable to xAI Responses without changing other
  * providers or mutating the caller-owned request body.
+ *
+ * Scoped to BOTH xAI Responses hosts, not just the public API. The 2026-08-22 probe recorded in
+ * `normalizeToolGroup` and in `isXaiResponsesDestination` already found the two hosts to be one
+ * dialect, but this gate stayed on `api.x.ai` alone, so the Grok CLI proxy — the OAuth lane — was
+ * left unnormalized. Re-probed 2026-08-27 against `cli-chat-proxy.grok.com`:
+ * `web_search_preview` -> 422 `unknown variant`, `external_web_access` -> 400 on every value,
+ * `search_context_size` -> 400, while `user_location` and `search_content_types` -> 200. Identical
+ * to the public API, which is what makes one shared gate correct.
  */
 export function normalizeXaiResponsesWebSearch(
   body: unknown,
   provider: Pick<OcxProviderConfig, "baseUrl">,
 ): unknown {
-  if (!isXaiPublicApi(provider) || !isPlainObject(body)) return body;
+  if (!isXaiResponsesDestination(provider) || !isPlainObject(body)) return body;
 
   let next: Record<string, unknown> = body;
   if (Array.isArray(body.tools)) {
