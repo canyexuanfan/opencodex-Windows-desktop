@@ -1237,3 +1237,96 @@ describe("boundedInjectedInstruction surrogate safety", () => {
     expect(Buffer.byteLength(result!, "utf8")).toBeGreaterThan(0);
   });
 });
+
+describe("kiro code-mode catalog nudge", () => {
+  // Codex code mode advertises ONE freeform `exec` and reaches everything else through nested
+  // `tools.<name>(...)` helpers. The nudge sentence naming `ALL_TOOLS` is the only place a routed
+  // model learns those helpers are discoverable, and Kiro was the one adapter that never enabled
+  // it: `buildNonOpenAIToolCatalogNudgeFromNames` was called without `codeModeExecName`, so a
+  // Kiro model concluded no spawn/subagent tool existed and never delegated.
+  async function kiroSystemText(tools: unknown[], modelId = "claude-sonnet-4.5"): Promise<string> {
+    const { body } = await createKiroAdapter(provider).buildRequest(parsedWith([{ role: "user", content: "hi" }], tools, modelId));
+    return JSON.parse(body).conversationState.currentMessage.userInputMessage.content as string;
+  }
+
+  const codeModeExec = { name: "exec", description: "Run JavaScript", freeform: true, parameters: { type: "object" } };
+
+  test("names ALL_TOOLS when a freeform exec is advertised without a bare shell bridge", async () => {
+    const content = await kiroSystemText([codeModeExec, { name: "wait", description: "Resume", parameters: { type: "object" } }]);
+
+    expect(content).toContain("ALL_TOOLS");
+    expect(content).toContain("Codex code mode");
+    // The generic fallback must be gone, not merely accompanied.
+    expect(content).not.toContain("If a listed tool exposes nested helpers such as a tools.* API");
+  });
+
+  test("keeps the generic fallback for a STRUCTURED tool that merely shares the name exec", async () => {
+    // A provider may advertise an ordinary structured `exec` that takes a shell string. Telling
+    // that turn its body is JavaScript would be false, so the semantic `freeform` flag decides —
+    // not the name. This is the control: a name-only implementation passes every other assertion
+    // in this block and fails here.
+    const content = await kiroSystemText([{ name: "exec", description: "Run a shell command", parameters: { type: "object" } }]);
+
+    expect(content).not.toContain("ALL_TOOLS");
+    expect(content).toContain("If a listed tool exposes nested helpers such as a tools.* API");
+  });
+
+  test("does not claim code mode when a bare shell bridge sits beside exec", async () => {
+    const content = await kiroSystemText([codeModeExec, { name: "exec_command", description: "Run a shell command", parameters: { type: "object" } }]);
+
+    expect(content).not.toContain("ALL_TOOLS");
+  });
+
+  test("decides on the EMITTED catalog: a budget-omitted shell bridge no longer suppresses code mode", async () => {
+    // Resolving the predicates over the REQUESTED list is wrong in a reproducible way: the bridge
+    // can be dropped by the count budget while `exec` survives, so the model receives a
+    // code-mode-shaped catalog containing no shell bridge at all. Suppressing the nudge there
+    // withholds discovery in exactly the crowded-catalog sessions where delegation matters most.
+    const filler = Array.from({ length: MAX_KIRO_TOOL_COUNT - 1 }, (_, index) => ({
+      name: `filler_${String(index).padStart(3, "0")}`,
+      description: `Filler ${index}`,
+      parameters: { type: "object" },
+    }));
+    const { body } = await createKiroAdapter(provider).buildRequest(
+      parsedWith([{ role: "user", content: "hi" }], [...filler, codeModeExec, { name: "exec_command", description: "Run a shell command", parameters: { type: "object" } }]),
+    );
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+    const emitted = current.userInputMessageContext.tools.map((tool: { toolSpecification: { name: string } }) => tool.toolSpecification.name);
+
+    expect(emitted).toContain("exec");
+    expect(emitted).not.toContain("exec_command");
+    expect(current.content).toContain("ALL_TOOLS");
+  });
+
+  test("does not name a code-mode exec that the catalog budget dropped", async () => {
+    // The mirror of the case above, and the reason the fix intersects rather than unions: a tool
+    // the model cannot call must never be named as its execution surface. Equal-priority tools
+    // keep request order, so 48 fillers ahead of `exec` omit `exec` deterministically.
+    const filler = Array.from({ length: MAX_KIRO_TOOL_COUNT }, (_, index) => ({
+      name: `filler_${String(index).padStart(3, "0")}`,
+      description: `Filler ${index}`,
+      parameters: { type: "object" },
+    }));
+    const { body } = await createKiroAdapter(provider).buildRequest(
+      parsedWith([{ role: "user", content: "hi" }], [...filler, codeModeExec]),
+    );
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+    const emitted = current.userInputMessageContext.tools.map((tool: { toolSpecification: { name: string } }) => tool.toolSpecification.name);
+
+    expect(emitted).not.toContain("exec");
+    expect(current.content).not.toContain("ALL_TOOLS");
+  });
+
+  test("advertises no code mode for a tool_choice:none turn", async () => {
+    const parsed = {
+      modelId: "claude-sonnet-4.5",
+      stream: true,
+      options: { toolChoice: "none" },
+      context: { messages: [{ role: "user", content: "hi" }], tools: [codeModeExec] },
+    } as unknown as OcxParsedRequest;
+    const { body } = await createKiroAdapter(provider).buildRequest(parsed);
+    const content = JSON.parse(body).conversationState.currentMessage.userInputMessage.content as string;
+
+    expect(content).not.toContain("ALL_TOOLS");
+  });
+});
