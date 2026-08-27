@@ -10,6 +10,8 @@ import { collectStartupHealth, type StartupHealth } from "../codex/autostart-hea
 import { getCodexRoutingKind } from "../codex/inject";
 import { diagnoseCodexShim } from "../codex/shim";
 import { displayCodexRuntimePath, effortClampAppliesToRuntime, loadLastEffortClamp, resolveCodexRuntime } from "../codex/runtime";
+import { packageVersion } from "./help";
+import { computeVersionSkew, type VersionSkew } from "./version-skew";
 import { redactSecretString, redactUserPath } from "../lib/redact";
 import { collectOrcaCodexHomeDiagnostic, type OrcaCodexHomeDiagnostic } from "../codex/home";
 import { grokFenceEndpointDrift, readGrokStatus } from "../grok/status";
@@ -70,6 +72,13 @@ export type CliStatusJson = {
     };
   };
   codexHome: OrcaCodexHomeDiagnostic;
+  /**
+   * This CLI's version against the running proxy's (#2701).
+   *
+   * Additive and optional-by-value, so `schemaVersion` stays 1: an existing consumer that
+   * ignores the key is unaffected, and `proxyVersion` is null when nothing is live.
+   */
+  versionSkew: VersionSkew;
 };
 
 export type CliStatusView = {
@@ -180,6 +189,9 @@ export async function collectStatus(): Promise<CliStatusView> {
   const pidFile = readPid();
   // Preserve an authoritative null from orphan/legacy liveness — do not restore pidFile.
   const pid = resolveStatusPid(live, pidFile);
+  // No extra request: findLiveProxy's identity probe already parsed and validated the
+  // healthz body, so the version came back with the liveness result.
+  const versionSkew = computeVersionSkew(packageVersion(), live?.version);
   const listen = live
     ? {
       port: live.port,
@@ -347,6 +359,10 @@ export async function collectStatus(): Promise<CliStatusView> {
       codexPlugins,
       codexRuntime,
       codexHome,
+      // Own field rather than a line in `codexRuntime.warning`: a stale ocx on PATH is a
+      // fact about this install, not about the Codex runtime, and filing it there would
+      // print it under the wrong heading (#2701).
+      versionSkew,
     },
   };
 }

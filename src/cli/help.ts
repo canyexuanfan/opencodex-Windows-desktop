@@ -5,7 +5,14 @@ import { findCommand } from "./registry";
 
 const repoRoot = dirname(fileURLToPath(new URL("../../package.json", import.meta.url)));
 
-function packageVersion(): string {
+/**
+ * Version of the `ocx` bundle this process is running from.
+ *
+ * Exported so `status`/`doctor` can compare it against the version the live proxy reports,
+ * which is how a stale `ocx` earlier on PATH becomes visible (#2701). Returns `"unknown"`
+ * rather than throwing; callers must treat that as "cannot compare", not as a mismatch.
+ */
+export function packageVersion(): string {
   const raw = readFileSync(join(repoRoot, "package.json"), "utf8");
   const parsed = JSON.parse(raw) as { version?: unknown };
   return typeof parsed.version === "string" ? parsed.version : "unknown";

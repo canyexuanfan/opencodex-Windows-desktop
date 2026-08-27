@@ -848,6 +848,12 @@ async function handleStatus() {
     console.log(`❌ Proxy: ${status.proxyLabel}`);
   }
   console.log(`   Health: ${status.healthLabel}`);
+  // Printed here, not only in --json: a stale ocx on PATH is exactly the situation where
+  // the operator is reading human output and wondering why the CLI disagrees with the
+  // dashboard. Adding the JSON field alone would satisfy a test and help nobody (#2701).
+  if (status.json.versionSkew.warning) {
+    console.log(`   ⚠️  ${status.json.versionSkew.warning}`);
+  }
   for (const line of unusedProxyWarningLines({
     proxyUp: Boolean(status.json.proxy.pid || status.json.proxy.health.ok),
     routingKind: status.json.startup.routingKind,
