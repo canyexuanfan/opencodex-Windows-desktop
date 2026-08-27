@@ -914,6 +914,12 @@ describe("kiro adapter — buildRequest", () => {
         input: "test",
         stream: true,
         text,
+        tools: [{
+          type: "function",
+          name: "bash",
+          description: "Run a shell command",
+          parameters: { type: "object" },
+        }],
       } as never);
       expect(parsed._structuredOutput ?? false).toBe(false);
       expect((parsed._rawBody as Record<string, unknown>).text).toBeDefined();
@@ -936,6 +942,9 @@ describe("kiro adapter — buildRequest", () => {
       expect(payload.conversationState).toBeDefined();
       // ...but the control itself is not forwarded, at any level that exists on the payload.
       const context = payload.conversationState?.currentMessage.userInputMessage.userInputMessageContext;
+      // The fixture advertises a tool so userInputMessageContext really exists here; without
+      // one the adapter omits it and this third assertion would pass vacuously.
+      expect(context).toBeDefined();
       for (const level of [payload, payload.conversationState, context]) {
         expect(level?.text).toBeUndefined();
         expect(level?.verbosity).toBeUndefined();
