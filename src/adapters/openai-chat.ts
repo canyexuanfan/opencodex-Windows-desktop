@@ -1113,7 +1113,8 @@ function intersectBound(target: unknown, sibling: unknown, direction: "max" | "m
  * Compose two `properties` maps. A property named in BOTH the referenced target and the
  * node is the same conjunction problem `required` had: letting the sibling win discards
  * the target's constraints for that member. Merge the two member schemas so neither side
- * loses its keywords, and let the node narrow on a genuine conflict.
+ * loses its keywords. Shared member bounds are the same conjunction one level down,
+ * and nested object members recurse through this helper instead of replacing the target.
  */
 function composeProperties(
   target: Record<string, unknown>,
@@ -1127,7 +1128,20 @@ function composeProperties(
       const member: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
       for (const [k, v] of Object.entries(existing)) member[k] = v;
       for (const [k, v] of Object.entries(sub)) {
-        member[k] = k === "required" ? unionRequired(member[k], v) : v;
+        if (k === "required") {
+          member[k] = unionRequired(member[k], v);
+          continue;
+        }
+        if (k === "properties" && isXaiObjectSchema(member[k]) && isXaiObjectSchema(v)) {
+          member[k] = composeProperties(member[k] as Record<string, unknown>, v);
+          continue;
+        }
+        const boundDirection = MOONSHOT_BOUND_KEYWORDS[k];
+        if (boundDirection && k in member) {
+          member[k] = intersectBound(member[k], v, boundDirection);
+          continue;
+        }
+        member[k] = v;
       }
       combined[name] = member;
       continue;

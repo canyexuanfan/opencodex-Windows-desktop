@@ -325,6 +325,74 @@ describe("Moonshot tool schema normalization (issue #2673)", () => {
     expect(shared.type).toBe("string");
   });
 
+  test("intersects bounds when both sides define the same property", async () => {
+    const parameters = await emittedParameters("https://api.moonshot.ai/v1", {
+      name: "shared_property_bounds_tool",
+      parameters: {
+        type: "object",
+        $defs: {
+          Base: {
+            type: "object",
+            properties: {
+              looserSibling: { type: "string", minLength: 5, maxLength: 10 },
+              tighterSibling: { type: "string", minLength: 1, maxLength: 100 },
+            },
+          },
+        },
+        properties: {
+          value: {
+            $ref: "#/$defs/Base",
+            properties: {
+              looserSibling: { type: "string", minLength: 1, maxLength: 99 },
+              tighterSibling: { type: "string", minLength: 5, maxLength: 10 },
+            },
+          },
+        },
+      },
+    });
+
+    const value = (parameters?.properties as Record<string, Record<string, unknown>>).value!;
+    const properties = value.properties as Record<string, Record<string, unknown>>;
+    expect(properties.looserSibling).toMatchObject({ minLength: 5, maxLength: 10 });
+    expect(properties.tighterSibling).toMatchObject({ minLength: 5, maxLength: 10 });
+  });
+
+  test("intersects bounds recursively inside shared object properties", async () => {
+    const parameters = await emittedParameters("https://api.moonshot.ai/v1", {
+      name: "nested_shared_property_bounds_tool",
+      parameters: {
+        type: "object",
+        $defs: {
+          Base: {
+            type: "object",
+            properties: {
+              shared: {
+                type: "object",
+                properties: { leaf: { type: "string", minLength: 5, maxLength: 10 } },
+              },
+            },
+          },
+        },
+        properties: {
+          value: {
+            $ref: "#/$defs/Base",
+            properties: {
+              shared: {
+                type: "object",
+                properties: { leaf: { type: "string", minLength: 1, maxLength: 99 } },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const value = (parameters?.properties as Record<string, Record<string, unknown>>).value!;
+    const shared = (value.properties as Record<string, Record<string, unknown>>).shared!;
+    const leaf = (shared.properties as Record<string, Record<string, unknown>>).leaf!;
+    expect(leaf).toMatchObject({ minLength: 5, maxLength: 10 });
+  });
+
   test("leaves data-valued keywords alone, even when they look like schemas", async () => {
     // `enum` lists VALUES. Recursing into it treated a literal object carrying a "$ref"
     // string as a reference node and stripped the key, silently changing a value the tool
