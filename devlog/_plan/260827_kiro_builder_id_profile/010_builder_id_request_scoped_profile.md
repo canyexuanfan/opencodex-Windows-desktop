@@ -142,13 +142,22 @@ Builder ID accounts do not collapse into one continuation scope.
 
 ## Verification
 
-- `tests/kiro-adapter.test.ts` — Builder ID context yields the service ARN in
-  both the payload and the header, and stays on the `cli` wire path.
+The regression suite is `tests/kiro-builder-id-profile.test.ts`, kept separate
+from `tests/kiro-adapter.test.ts` so the Builder ID contract reads as one story
+rather than as scattered cases in the general adapter suite.
+
+- Builder ID context yields the service ARN in both the payload and the header,
+  and stays on the `cli` wire path.
 - Regression — enterprise account with its own ARN keeps that ARN and the `ide`
   path; `ksk_` keeps sending no profile.
 - Regression — a `kiro_desktop` account without an ARN still sends none, so the
   actionable failure survives for genuinely broken imports.
-- `bun run typecheck`.
+- Regression — the accountless path, where the auth type comes from the local
+  CLI import rather than the request context, still sends the fallback inside
+  the `cli` envelope. Driven red against the earlier context-derived guard
+  before being accepted.
+- Non-persistence asserted against the raw on-disk store, not a parsed view.
+- `bun run typecheck` and `bun run privacy:scan`.
 - Live: make the Builder ID account (B above) the active Kiro account, restart
   the service so the proxy loads this tree, and capture a real completion.
 
