@@ -59,7 +59,16 @@ import {
 } from "../server/local-management-read-client";
 export { resolveCodexHomeDir } from "../codex/home";
 
-export type OAuthDoctorCheck = { level: "OK" | "WARN"; message: string };
+/**
+ * `FAIL` exists for a condition that makes the surface unusable rather than degraded.
+ * A review of the #2696 work pointed out that reporting a fully fenced management plane
+ * — every `/api/*` returning 503 — at the same level as a directory-permission note
+ * misleads the reader about severity.
+ *
+ * Doctor's own exit code still belongs to the uniform contract in wp3b (devlog 025);
+ * this type only fixes what the operator is told.
+ */
+export type OAuthDoctorCheck = { level: "OK" | "WARN" | "FAIL"; message: string };
 
 function pathIsWritable(path: string): boolean {
   try {
@@ -167,7 +176,9 @@ export function dataPlaneCredentialCollisionCheck(env: NodeJS.ProcessEnv = proce
     return { level: "OK", message: "Data-plane and management credentials are distinct." };
   }
   return {
-    level: "WARN",
+    // Not a degradation: while this holds, every /api/* returns 503 and no ocx
+    // management command can work at all.
+    level: "FAIL",
     message:
       "OPENCODEX_API_AUTH_TOKEN holds the management (admin) token, so the proxy fences the "
       + "whole management API closed and every ocx management command fails with 503. "

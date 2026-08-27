@@ -167,9 +167,11 @@ describe("#2696 doctor names the credential collision", () => {
     expect(check.level).toBe("OK");
   });
 
-  test("warns and names the remedy when the admin token is the data-plane secret", () => {
+  test("fails and names the remedy when the admin token is the data-plane secret", () => {
     const check = dataPlaneCredentialCollisionCheck({ OPENCODEX_API_AUTH_TOKEN: ADMIN } as NodeJS.ProcessEnv);
-    expect(check.level).toBe("WARN");
+    // FAIL, not WARN: while this holds every /api/* returns 503, so the management
+    // surface is unusable rather than degraded.
+    expect(check.level).toBe("FAIL");
     expect(check.message).toContain("management (admin) token");
     expect(check.message).toContain("Action:");
     // Never echo the credential itself, even in a diagnostic.
