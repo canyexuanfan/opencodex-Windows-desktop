@@ -441,6 +441,55 @@ describe("responses-field-backfill", () => {
     expect(result.output[0].status).toBe("completed");
   });
 
+  // `queued` is a real Responses lifecycle status: the response exists but has not
+  // started generating. It is neither a valid OutputMessage status nor covered by the
+  // event-type table, so before these cases it fell through to the `completed`
+  // default — marking an unstarted message as finished, which is exactly the
+  // overclaim messageStatusFromResponseStatus exists to prevent.
+  test("a queued response marks its message items in_progress, not completed", () => {
+    const event = {
+      type: "response.queued",
+      sequence_number: 1,
+      response: {
+        id: "resp_1",
+        object: "response",
+        status: "queued",
+        model: "grok-4.5",
+        output: [
+          {
+            type: "message",
+            id: "msg_1",
+            role: "assistant",
+            content: [{ type: "output_text", text: "" }],
+          },
+        ],
+      },
+    };
+    const [out] = apply(sseBlock(event));
+    const parsed = parseData([out])[0];
+    expect(parsed.response.output[0].status).toBe("in_progress");
+  });
+
+  test("backfillResponsesFieldsJson treats a queued response as in_progress", () => {
+    const response = {
+      id: "resp_1",
+      object: "response",
+      status: "queued",
+      output: [
+        {
+          type: "message",
+          id: "msg_1",
+          role: "assistant",
+          content: [{ type: "output_text", text: "" }],
+        },
+      ],
+    };
+    const result = JSON.parse(backfillResponsesFieldsJson(JSON.stringify(response))) as {
+      output: { status?: string }[];
+    };
+    expect(result.output[0].status).toBe("in_progress");
+  });
+
   test("backfillResponsesFieldsJson derives incomplete status on message items", () => {
     const response = {
       id: "resp_1",

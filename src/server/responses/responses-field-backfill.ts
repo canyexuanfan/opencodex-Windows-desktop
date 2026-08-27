@@ -210,6 +210,10 @@ function inferredStatusForEventType(eventType: string): string {
   if (eventType === "response.output_item.added") return "in_progress";
   if (eventType === "response.output_item.done") return "completed";
   if (eventType === "response.created" || eventType === "response.in_progress") return "in_progress";
+  // `queued` is a real Responses lifecycle status: the response exists but has not
+  // started generating. Without this row it falls through to the `completed`
+  // default below, which would mark an unstarted message as finished.
+  if (eventType === "response.queued") return "in_progress";
   if (eventType === "response.incomplete" || eventType === "response.failed") return "incomplete";
   return "completed";
 }
@@ -226,6 +230,10 @@ function inferredStatusForEventType(eventType: string): string {
  */
 function messageStatusFromResponseStatus(status: string): string | null {
   if (status === "in_progress" || status === "completed" || status === "incomplete") return status;
+  // A queued response has not begun generating, so its message items are
+  // in_progress — never completed. Returning null here would fall back to the
+  // event-type inference, whose default is `completed`.
+  if (status === "queued") return "in_progress";
   if (status === "failed" || status === "cancelled") return "incomplete";
   return null;
 }
