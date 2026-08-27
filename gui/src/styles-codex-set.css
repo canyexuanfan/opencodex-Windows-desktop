@@ -30,6 +30,15 @@
   border-bottom: 0;
 }
 
+/* C1: Actionable rows carry a subtle left accent so the eye picks them out of the
+   read-only rows without scanning for a switch. */
+.codex-set-prompt__row[data-layer-class="config-toggle"],
+.codex-set-prompt__row[data-layer-class="base"] {
+  border-left: 3px solid var(--green);
+  padding-left: 8px;
+  margin-left: -11px;
+}
+
 .codex-set-prompt__name {
   flex: 0 0 auto;
   text-align: left;
@@ -51,6 +60,14 @@
   border-top: 1px solid var(--border);
 }
 
+/* C3: Transition-notices section heading reads as a distinct section label. */
+.codex-set-prompt__group strong {
+  font-size: var(--text-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--faint);
+}
+
 /* A row the user can act on carries more weight than one that only reports. */
 .codex-set-prompt__row[data-layer-class="config-toggle"] .codex-set-prompt__name {
   font-weight: 500;
@@ -65,6 +82,14 @@
   color: var(--faint);
 }
 
+/* C4: Toggle rows push the switch to the far right so its position is stable
+   whether or not a bytes badge is present. */
+.codex-set-prompt__row[data-layer-class="config-toggle"] .toggle,
+.codex-set-prompt__row[data-layer-class="base"] .toggle {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 .codex-set-prompt__key {
   flex: 1 1 auto;
   min-width: 0;
@@ -73,6 +98,12 @@
   white-space: nowrap;
   font-size: 12px;
   color: var(--muted);
+}
+
+/* C2: De-emphasize config keys so name->switch is the primary scan line. */
+.codex-set-prompt__row .codex-set-prompt__key {
+  font-size: var(--text-caption);
+  opacity: 0.6;
 }
 
 /* Pushed right so a row without a key still aligns its trailing element. */
@@ -350,4 +381,24 @@
 */
 .codex-set-base-dialog {
   touch-action: pan-y;
+}
+
+/* C5: Dot position indicator for the variant ring. */
+.codex-set-base-dialog__dots {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin: 8px 0 4px;
+}
+
+.codex-set-base-dialog__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-round);
+  background: var(--border);
+  transition: background 0.15s ease;
+}
+
+.codex-set-base-dialog__dot.active {
+  background: var(--green);
 }

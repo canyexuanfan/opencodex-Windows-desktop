@@ -174,6 +174,19 @@ export default function BaseVariantDialog({
 
         <p className="card-sub">{t("codexSet.base.swipeHint")}</p>
 
+        {/* C5: Dot indicator showing ring position — a swipe affordance the
+            text "1 / 2" alone does not provide. */}
+        {slots.length > 1 && (
+          <div className="codex-set-base-dialog__dots" aria-hidden="true">
+            {slots.map((_, i) => (
+              <span
+                key={i}
+                className={`codex-set-base-dialog__dot${i === index ? " active" : ""}`}
+              />
+            ))}
+          </div>
+        )}
+
         {external && (
           // Never silently retarget a key somebody else set. The panel already reports
           // this state; the picker refuses to act while it holds.

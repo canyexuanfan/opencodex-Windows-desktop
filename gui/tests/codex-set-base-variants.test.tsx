@@ -287,3 +287,21 @@ test("the new slot appears only while there is room under the cap", async () => 
   expect(labels.some(l => l.includes("delete"))).toBe(false);
   await act(async () => { root.unmount(); });
 });
+
+test("the dot indicator renders one dot per slot and marks the active one", async () => {
+  stubRoutes(() => json(snapshot({ baseVariants: [VARIANTS[0]!] })));
+  const { container, root } = await mount();
+  const dlg = await openBaseDialog(container);
+  // Default + one variant + one empty slot = 3 dots
+  const dots = dlg.querySelectorAll(".codex-set-base-dialog__dot");
+  expect(dots.length).toBe(3);
+  expect(dots[0]!.classList.contains("active")).toBe(true);
+  expect(dots[1]!.classList.contains("active")).toBe(false);
+  // Step forward and the active dot moves
+  const next = dlg.querySelectorAll(".codex-set-base-dialog__nav button")[1] as HTMLButtonElement;
+  await act(async () => { next.click(); });
+  const dotsAfter = dlg.querySelectorAll(".codex-set-base-dialog__dot");
+  expect(dotsAfter[0]!.classList.contains("active")).toBe(false);
+  expect(dotsAfter[1]!.classList.contains("active")).toBe(true);
+  await act(async () => { root.unmount(); });
+});
