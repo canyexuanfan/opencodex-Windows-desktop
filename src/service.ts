@@ -366,8 +366,39 @@ export function serviceRetryCommand(
   return diag.installed && !diag.conflict ? "ocx service repair" : "ocx service install";
 }
 
+const ADMIN_TOKEN_PREFIX = "ocx_admin_";
+
+/**
+ * Refuse a management (admin) token as the data-plane secret.
+ *
+ * The service exports the contents of the service token file as
+ * `OPENCODEX_API_AUTH_TOKEN` before starting the proxy. When that value is the admin
+ * token, the server treats the management credential as a data-plane admission secret
+ * and fails the ENTIRE management plane closed at boot, so every `/api/*` request
+ * returns 503 — even on a loopback install that never needed a data-plane secret.
+ * Exporting the admin token in the CLI cannot recover it, because the fence is decided
+ * server-side at startup (#2696).
+ *
+ * Nothing in this codebase puts an admin token in that env var; it arrives from the
+ * installing shell. This function is the chokepoint that should refuse it rather than
+ * writing a file that produces a broken service.
+ */
+export function assertNotAdminToken(token: string): void {
+  if (!token.startsWith(ADMIN_TOKEN_PREFIX)) return;
+  throw new Error(
+    "OPENCODEX_API_AUTH_TOKEN holds a management (admin) token. The service exports it "
+      + "as the data-plane secret, which fences the whole management API closed and makes "
+      + "every ocx management command fail with 503. Unset OPENCODEX_API_AUTH_TOKEN, or set "
+      + "it to a distinct data-plane key, then rerun the install.",
+  );
+}
+
 export function assertServiceAuthEnvironment(): void {
   const config = loadConfig();
+  // Check the collision before the loopback short-circuit: a loopback install writes
+  // the token file too, so returning early here is what let the broken state through.
+  const present = process.env.OPENCODEX_API_AUTH_TOKEN?.trim();
+  if (present) assertNotAdminToken(present);
   if (isLoopbackHostname(config.hostname)) return;
   if (process.env.OPENCODEX_API_AUTH_TOKEN?.trim()) return;
   // Reached from `service repair` as well as `install`, so name a command that can
@@ -383,6 +414,9 @@ export function assertServiceAuthEnvironment(): void {
 function writeServiceApiTokenFile(): string | null {
   const token = process.env.OPENCODEX_API_AUTH_TOKEN?.trim();
   if (!token) return null;
+  // Last line of defence: every install/repair path funnels through here, so a
+  // collision cannot reach disk regardless of which caller ran (#2696).
+  assertNotAdminToken(token);
   const path = serviceApiTokenFilePath();
   const dir = getConfigDir();
   recordOwnedConfigPath(dir, path);

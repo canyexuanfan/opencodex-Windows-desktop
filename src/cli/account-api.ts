@@ -83,6 +83,12 @@ export interface ApiResult {
   /** 0 = network-level failure (proxy unreachable). */
   status: number;
   json: Record<string, unknown>;
+  /**
+   * Message from the thrown transport error when `status` is 0. Previously the
+   * error was swallowed by a bare `catch {}`, so an unreachable proxy, a DNS
+   * failure and a TLS error were indistinguishable (#2698).
+   */
+  transportError?: string;
 }
 
 export async function apiJson(
@@ -103,8 +109,14 @@ export async function apiJson(
     });
     const json = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     return { status: res.status, json };
-  } catch {
-    return { status: 0, json: {} };
+  } catch (error) {
+    // status 0 stays the transport sentinel, but keep the cause: callers can now
+    // tell the operator why the request never reached the proxy (#2698).
+    return {
+      status: 0,
+      json: {},
+      transportError: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
@@ -115,18 +127,43 @@ export async function resolveBaseUrl(deps: AccountDeps): Promise<string | null> 
   return `http://${probeHostname(live.hostname)}:${live.port}`;
 }
 
-export function proxyUnreachable(): number {
+export function proxyUnreachable(transportError?: string): number {
   console.error("Proxy not reachable. Start it with 'ocx start' or 'ocx ensure'.");
+  // Naming the transport cause distinguishes "nothing is listening" from a refused
+  // or reset connection, which is what made #2696-class breakage undiagnosable.
+  if (transportError) console.error(`reason: ${transportError}`);
   return 1;
 }
 
-export function apiError(json: Record<string, unknown>, fallback: string): number {
-  const message = typeof json.error === "string" ? json.error : fallback;
-  console.error(`Error: ${message}`);
+function accountStringField(json: Record<string, unknown>, key: string): string | undefined {
+  const value = json[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/**
+ * Report a failed management call from the account family.
+ *
+ * `reason` and `hint` are the actionable fields on a refusal — the management plane
+ * sets both on a 503, and several routes return `reason` with no `error` key at all,
+ * which used to print only the generic fallback (#2698).
+ *
+ * `status` selects the exit code so the account client speaks the same vocabulary as
+ * runtime-api.ts: 4 for not-found, 5 for conflict, 1 otherwise. Previously every
+ * failure exited 1, so a script could not distinguish a missing account from a
+ * concurrent mutation.
+ */
+export function apiError(json: Record<string, unknown>, fallback: string, status?: number): number {
+  const primary = accountStringField(json, "error") ?? fallback;
+  const lines = [`Error: ${primary}`];
+  const reason = accountStringField(json, "reason");
+  if (reason && reason !== primary) lines.push(`reason: ${reason}`);
+  const hint = accountStringField(json, "hint");
+  if (hint && hint !== primary) lines.push(`hint: ${hint}`);
+  for (const line of lines) console.error(line);
   if (json.cleanupRequired === true) {
     console.error("Warning: native-login staging cleanup is still required; run 'ocx account main doctor'.");
   }
-  return 1;
+  return status === 404 ? 4 : status === 409 ? 5 : 1;
 }
 
 export interface FamilyRows {

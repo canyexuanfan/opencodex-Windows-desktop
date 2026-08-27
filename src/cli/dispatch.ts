@@ -419,7 +419,11 @@ const commandRunners: Record<string, CommandRunner> = {
   provider: async deps => {
     const { handleProviderCommand } = await import("./provider");
     await handleProviderCommand(deps.args.slice(1));
-    return 0;
+    // handleProviderCommand reports failure through process.exitCode, which it sets
+    // from handleProviderRuntimeCommand. Returning a literal 0 here made index.ts
+    // call process.exit(0) and erase it, so `ocx provider quota` against a stopped
+    // proxy printed an error and still exited 0 (#2697).
+    return Number(process.exitCode ?? 0);
   },
   account: async deps => {
     const { cmdAccount } = await import("./account");
@@ -428,7 +432,9 @@ const commandRunners: Record<string, CommandRunner> = {
   models: async deps => {
     const { handleModels } = await import("./models");
     await handleModels(deps.args.slice(1));
-    return 0;
+    // Same as the provider runner above: handleModels sets process.exitCode from
+    // handleModelsRuntimeCommand, and a literal 0 discarded it (#2697).
+    return Number(process.exitCode ?? 0);
   },
   alias: async deps => {
     const { handleAliasCommand } = await import("./alias");

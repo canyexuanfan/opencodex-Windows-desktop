@@ -16,6 +16,7 @@ import { findLiveProxy, type LiveProxy } from "../server/proxy-liveness";
 import { BUN_RUNTIME_SOURCES } from "../lib/bun-runtime";
 import type { BunRuntimeSource } from "../lib/bun-runtime";
 import { maskAccountId } from "../lib/privacy";
+import { configuredAdminToken } from "../lib/admin-secrets";
 import { PROXY_ENV_KEYS, proxyEnvPresent } from "../lib/proxy-env";
 import { LOCAL_MANAGEMENT_READ_PATHS } from "../lib/local-management-capability";
 import { readCodexTokens } from "../codex/auth-collision";
@@ -138,6 +139,42 @@ function describeDoctorHealth(entry: OAuthHealthEntry): string {
 }
 
 /**
+ * Detect the management/data-plane credential collision behind #2696.
+ *
+ * The service exports the service token file as `OPENCODEX_API_AUTH_TOKEN` before
+ * starting the proxy. When that value is the admin token, the server treats the
+ * management credential as a data-plane admission secret and fences the ENTIRE
+ * management plane closed at boot: every `/api/*` returns 503, including on a loopback
+ * install that never needed a data-plane secret.
+ *
+ * `assertNotAdminToken` in src/service.ts now refuses to create this state, but an
+ * install made before that guard existed is already broken on disk, and the symptom
+ * (every management command failing) points nowhere. This is the check that names it.
+ *
+ * Observe-only, like the rest of doctor: it compares shapes and never prints, logs, or
+ * returns a credential value.
+ */
+export function dataPlaneCredentialCollisionCheck(env: NodeJS.ProcessEnv = process.env): OAuthDoctorCheck {
+  const dataPlane = env.OPENCODEX_API_AUTH_TOKEN?.trim();
+  if (!dataPlane) {
+    return { level: "OK", message: "No data-plane token is set, so it cannot collide with the management token." };
+  }
+  const admin = configuredAdminToken();
+  const collides = dataPlane.startsWith("ocx_admin_") || (admin !== null && dataPlane === admin);
+  if (!collides) {
+    return { level: "OK", message: "Data-plane and management credentials are distinct." };
+  }
+  return {
+    level: "WARN",
+    message:
+      "OPENCODEX_API_AUTH_TOKEN holds the management (admin) token, so the proxy fences the "
+      + "whole management API closed and every ocx management command fails with 503. "
+      + "Action: unset OPENCODEX_API_AUTH_TOKEN (or set it to a distinct data-plane key), "
+      + "then re-run `ocx service install` and restart the proxy",
+  };
+}
+
+/**
  * OAuth reliability checks for `ocx doctor`. Observe-only: never mutates
  * credentials, locks, or networking. Every WARN includes a recovery Action.
  */
@@ -146,6 +183,8 @@ export async function collectOAuthDoctorChecks(
   deps: Parameters<typeof collectOAuthHealthEntriesForCli>[1] = {},
 ): Promise<OAuthDoctorCheck[]> {
   const checks: OAuthDoctorCheck[] = [];
+
+  checks.push(dataPlaneCredentialCollisionCheck());
 
   if (isOAuthCredentialStorageWritable()) {
     checks.push({ level: "OK", message: "OAuth credential storage directory is writable for atomic auth.json updates." });
