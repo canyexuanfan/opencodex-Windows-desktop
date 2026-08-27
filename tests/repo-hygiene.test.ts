@@ -227,4 +227,27 @@ describe("devlog is tracked, with no submodule left behind", () => {
 
     expect(offenders).toEqual([]);
   });
+  test("every relative README asset is actually shipped in the npm tarball", async () => {
+    // npm renders README.md on the package page, and a relative src there resolves inside the
+    // published tarball. Three GIFs were referenced relatively while `files` shipped only one, so
+    // the package page rendered three broken images - visible to every visitor, invisible to every
+    // gate. Absolute URLs are the deliberate alternative: the GIFs total ~3.3MB and there is no
+    // reason to put that in the install path of a proxy.
+    const readme = await Bun.file(new URL("../README.md", import.meta.url)).text();
+    const pkg = JSON.parse(await Bun.file(new URL("../package.json", import.meta.url)).text()) as {
+      files?: string[];
+    };
+    const shipped = new Set(pkg.files ?? []);
+
+    const relative = [...readme.matchAll(/src="(?!https?:)([^"]+)"/g)].map((match) => match[1]!);
+    // Guard against the regex silently matching nothing after a README rewrite.
+    expect(relative.length).toBeGreaterThan(0);
+
+    const missing = relative.filter((asset) => {
+      if (shipped.has(asset)) return false;
+      // A directory entry in `files` ships everything under it.
+      return ![...shipped].some((entry) => !entry.includes(".") && asset.startsWith(`${entry}/`));
+    });
+    expect(missing).toEqual([]);
+  });
 });

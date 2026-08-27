@@ -122,8 +122,9 @@ Kiro 的 assistant 文字本身沒有可靠的回合結束標記，但終止的 
 - 經 content-addressed blob 重放對話狀態，把 server tool call 對映回 Codex，用 protobuf
   `GetUsableModels` RPC 發現即時 Cursor 模型，並且只在 run request 尚未 commit 到 wire 前重試。
 - Cursor 原生本機 filesystem/shell/network 執行預設被拒絕。顯式 `mcpServers` 與
-  `desktopExecutor` 整合分別需要 opt-in；`unsafeAllowNativeLocalExec` 會啟用更廣泛的內建
-  executor，並繞過 Codex 審批和 sandbox 語義。
+  `desktopExecutor` 整合分別需要 opt-in；`nativeLocalExec: "on"` 會啟用更廣泛的內建
+  executor，並繞過 Codex 審批和 sandbox 語義；舊的 `unsafeAllowNativeLocalExec: true` 僅在
+  `nativeLocalExec` 未設定時等效。
 
 ## `azure-openai`（別名：`azure`）
 

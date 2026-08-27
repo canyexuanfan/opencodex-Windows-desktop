@@ -13,7 +13,7 @@ src/
 ├── server/             # Bun.serve, /v1/* proxy, /api/* management API, WS bridge
 ├── codex/              # Codex config injection, catalog sync, auth/account integration
 ├── providers/          # provider metadata, API-key pool, quota and labels
-├── adapters/           # seven wire adapters, shared guards/utilities, Cursor protobuf transport
+├── adapters/           # wire adapters, shared guards/utilities, Cursor protobuf transport
 ├── oauth/              # OAuth providers, API-key catalog, token store/refresh
 ├── usage/              # request usage extraction, JSONL logs, summaries, totals
 ├── lib/                # runtime, process, retry, privacy, token estimate helpers
