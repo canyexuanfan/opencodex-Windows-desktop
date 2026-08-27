@@ -1104,6 +1104,143 @@ function stripUnsupportedForwardParams(body: unknown): unknown {
   return rest;
 }
 
+/** Return the lossless text represented by one system message, or null when it is multimodal. */
+function canonicalForwardSystemText(item: Record<string, unknown>): string | null {
+  const content = item.content;
+  if (content === undefined) return "";
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+  let text = "";
+  for (const block of content) {
+    if (!isPlainObject(block)) return null;
+    if (block.type !== "input_text" && block.type !== "text") return null;
+    if (typeof block.text !== "string") return null;
+    text += block.text;
+  }
+  return text;
+}
+
+/**
+ * The public Responses API accepts input system messages and `truncation`, but the canonical
+ * ChatGPT Codex forward endpoint rejects both. Fold only fully textual system messages into the
+ * existing top-level instructions and remove the unsupported flag at this destination boundary.
+ *
+ * The fold is atomic: if any system message contains a non-text block, keep every message in
+ * place so the proxy never silently drops multimodal content. The backend may still reject that
+ * unsupported shape, but it will not receive a partially rewritten prompt.
+ */
+function normalizeCanonicalForwardPromptEnvelope(body: unknown): unknown {
+  if (!isPlainObject(body)) return body;
+  const stripTruncation = Object.hasOwn(body, "truncation");
+  const input = Array.isArray(body.input) ? body.input : undefined;
+  if (!input) {
+    if (!stripTruncation) return body;
+    const { truncation: _truncation, ...rest } = body;
+    return rest;
+  }
+
+  const foldedText: string[] = [];
+  let sawSystemMessage = false;
+  let canFoldAllSystemMessages = true;
+  for (const item of input) {
+    if (!isPlainObject(item) || item.role !== "system") continue;
+    sawSystemMessage = true;
+    const text = canonicalForwardSystemText(item);
+    if (text === null) {
+      canFoldAllSystemMessages = false;
+      break;
+    }
+    foldedText.push(text);
+  }
+  if (!stripTruncation && (!sawSystemMessage || !canFoldAllSystemMessages)) return body;
+
+  const next: Record<string, unknown> = { ...body };
+  if (stripTruncation) delete next.truncation;
+  if (sawSystemMessage && canFoldAllSystemMessages) {
+    next.input = input.filter(item => !isPlainObject(item) || item.role !== "system");
+    const folded = foldedText.join("\n\n");
+    if (folded !== "") {
+      const existing = typeof body.instructions === "string" ? body.instructions : "";
+      next.instructions = existing !== "" ? `${existing}\n\n${folded}` : folded;
+    }
+  }
+  return next;
+}
+
+const POSIT_CACHE_MARKER_MAX_DEPTH = 64;
+const POSIT_CACHE_MARKER_MAX_NODES = 100_000;
+
+type PromptCacheMarkerRewrite = {
+  value: unknown;
+  changed: boolean;
+  complete: boolean;
+};
+
+/**
+ * Remove Posit/Anthropic-style prompt-cache markers without trusting request nesting. The walk
+ * aborts atomically when its depth or node budget is exceeded, so a hostile extension object can
+ * neither overflow the stack nor receive a partially rewritten subtree.
+ */
+function stripPromptCacheBreakpoints(
+  value: unknown,
+  state: { nodes: number },
+  depth = 0,
+): PromptCacheMarkerRewrite {
+  state.nodes += 1;
+  if (depth > POSIT_CACHE_MARKER_MAX_DEPTH || state.nodes > POSIT_CACHE_MARKER_MAX_NODES) {
+    return { value, changed: false, complete: false };
+  }
+  if (Array.isArray(value)) {
+    let changed = false;
+    const next: unknown[] = [];
+    for (const entry of value) {
+      const rewritten = stripPromptCacheBreakpoints(entry, state, depth + 1);
+      if (!rewritten.complete) return { value, changed: false, complete: false };
+      changed ||= rewritten.changed;
+      next.push(rewritten.value);
+    }
+    return { value: changed ? next : value, changed, complete: true };
+  }
+  if (!isPlainObject(value)) return { value, changed: false, complete: true };
+
+  let changed = Object.hasOwn(value, "prompt_cache_breakpoint");
+  const next: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "prompt_cache_breakpoint") continue;
+    const rewritten = stripPromptCacheBreakpoints(entry, state, depth + 1);
+    if (!rewritten.complete) return { value, changed: false, complete: false };
+    changed ||= rewritten.changed;
+    next[key] = rewritten.value;
+  }
+  return { value: changed ? next : value, changed, complete: true };
+}
+
+/**
+ * Posit Assistant can replay client-only cache markers and stored-item references on a
+ * `store: false` continuation. The canonical ChatGPT Codex backend rejects both. Remove the
+ * markers recursively and drop only `item_reference` rows that cannot name persisted state;
+ * ordinary item ids are handled later by stripItemIdsWhenUnstored and tool call_id pairs remain.
+ */
+function normalizeCanonicalForwardContinuationEnvelope(body: unknown): unknown {
+  if (!isPlainObject(body) || !Array.isArray(body.input)) return body;
+  let input: unknown[] = body.input;
+  let changed = false;
+  if (body.store === false) {
+    const withoutReferences = input.filter(item => !isPlainObject(item) || item.type !== "item_reference");
+    if (withoutReferences.length !== input.length) {
+      input = withoutReferences;
+      changed = true;
+    }
+  }
+
+  const markerRewrite = stripPromptCacheBreakpoints(input, { nodes: 0 });
+  if (markerRewrite.complete && markerRewrite.changed) {
+    input = markerRewrite.value as unknown[];
+    changed = true;
+  }
+  return changed ? { ...body, input } : body;
+}
+
 const IMAGE_GEN_NAMESPACE = "image_gen";
 const HOSTED_IMAGE_GENERATION_TOOL = "image_generation";
 const IMAGE_GEN_DOTTED_PREFIX = `${IMAGE_GEN_NAMESPACE}.`;
@@ -1794,6 +1931,8 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         // third-party forward gateway may still accept it, so this must not be widened.
         if (isCanonicalOpenAiForwardProvider(provider)) {
           outBody = stripDeprecatedPromptCacheRetention(outBody, parsed.modelId);
+          outBody = normalizeCanonicalForwardPromptEnvelope(outBody);
+          outBody = normalizeCanonicalForwardContinuationEnvelope(outBody);
         }
       } else {
         outBody = preferConfiguredHostedTools(

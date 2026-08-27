@@ -60,6 +60,18 @@ collision-safe public function tool. Matching request history and JSON/SSE funct
 translated back to the private `tool_search` lifecycle for the client. Canonical OpenAI forward
 keeps the native private type unchanged.
 
+The canonical ChatGPT Codex forward destination also normalizes two public Responses shapes that
+its stricter backend rejects: fully textual `system` messages inside `input` are appended to the
+top-level `instructions` string in request order, and the top-level `truncation` field is removed.
+This rewrite is destination-scoped. Key-auth public/custom Responses providers and noncanonical
+forward gateways keep both fields unchanged; a multimodal system message is never partially folded
+or silently dropped.
+
+For canonical forward continuations, client-only `prompt_cache_breakpoint` properties are removed
+recursively within bounded traversal limits. When `store: false`, `item_reference` rows are also
+omitted because the destination cannot resolve an item it did not persist. Function/tool `call_id`
+pairs and `reasoning.effort` are preserved.
+
 For `key` auth, [`retryOn429`](/reference/configuration/) applies here too: a pre-stream 429
 waits and replays the identical request on the same key before any other handling, exactly like
 the translated `openai-chat` / Anthropic request path. Custom `runTurn` transports are not part
