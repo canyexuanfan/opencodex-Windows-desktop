@@ -321,9 +321,23 @@ function validateKiroCapabilities(parsed: OcxParsedRequest): void {
   if (parsed.options.serviceTier !== undefined) {
     throw new Error("Kiro does not support service tiers");
   }
-  const raw = parsed._rawBody as Record<string, unknown> | undefined;
-  if (parsed._structuredOutput || raw?.text !== undefined) {
-    throw new Error("Kiro does not support Responses text controls or structured output");
+  // Structured output is a real contract Kiro cannot honour: the wire has no
+  // schema-constrained response mode, so a caller expecting parseable JSON would receive
+  // prose and fail downstream. Refuse it.
+  //
+  // The rest of the Responses `text` object is not that. `text.verbosity` is a length
+  // preference and `text.format: {type:"text"}` is ordinary prose — the default output
+  // mode, which no capability flag governs and every correct client may send. Testing
+  // `_rawBody.text !== undefined` refused those turns for the mere PRESENCE of the key,
+  // the same mistake db040e70f removed one condition earlier where a permissive
+  // `parallel_tool_calls` hint was read as a requirement.
+  //
+  // Nothing needs stripping the way openai-responses strips a no-op verbosity:
+  // buildKiroPayload composes conversationState field by field from `parsed` and never
+  // spreads `_rawBody`, so a tolerated control is dropped by construction. The test
+  // asserts that absence so it stays true.
+  if (parsed._structuredOutput) {
+    throw new Error("Kiro does not support Responses structured output");
   }
 }
 

@@ -892,7 +892,7 @@ describe("kiro adapter — buildRequest", () => {
     await expect(createKiroAdapter(provider).buildRequest({
       ...parsedWith([{ role: "user", content: "hi" }], [bashTool]),
       _structuredOutput: true,
-    } as OcxParsedRequest)).rejects.toThrow("Kiro does not support Responses text controls or structured output");
+    } as OcxParsedRequest)).rejects.toThrow("Kiro does not support Responses structured output");
 
     const none = { ...parsedWith([{ role: "user", content: "hi" }], [bashTool]), options: { toolChoice: "none" } } as OcxParsedRequest;
     const current = JSON.parse((await createKiroAdapter(provider).buildRequest(none)).body).conversationState.currentMessage.userInputMessage;
