@@ -297,10 +297,9 @@ function rewriteEvent(event: Record<string, unknown>): Record<string, unknown> {
 
 /**
  * Create a stateless SSE block rewrite that backfills annotations and
- * on output_text content parts. Unconditional: the field is a required
- * canonical Responses field, so adding it when absent is safe for all
- * clients.
- *
+ * message status on output_text content parts and message items.
+ * Unconditional: both are required canonical Responses fields, so adding
+ * them when absent is safe for all clients.
  */
 export function createResponsesFieldBackfillBlockRewrite(): SseBlockRewrite {
   const rewrite: SseBlockRewrite = (block: string): readonly string[] => {
