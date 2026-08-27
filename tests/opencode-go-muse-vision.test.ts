@@ -48,4 +48,29 @@ describe("OpenCode Go Muse Spark image input (#vision)", () => {
     expect(prov.noVisionModels ?? []).not.toContain(MUSE_MODEL);
     expect(prov.modelInputModalities?.[MUSE_MODEL]).toEqual(["text", "image"]);
   });
+
+  // The registry declaration only matters if it survives a live discovery row that
+  // advertises Muse as text-only. Zen Go publishes no modality metadata, so a
+  // discovered row can arrive with ["text"] or with nothing at all; in both cases the
+  // configured value is authoritative (provider-fetch.ts applyProviderConfigHints reads
+  // configuredInputModalities first). Without this the PR would pass while the catalog
+  // still blocked image attachments in production.
+  test("the configured declaration overrides a text-only discovered row", () => {
+    const prov = opencodeGo();
+    const hinted = applyProviderConfigHints("opencode-go", prov, {
+      id: MUSE_MODEL,
+      provider: "opencode-go",
+      inputModalities: ["text"],
+    });
+    expect(hinted.inputModalities).toEqual(["text", "image"]);
+  });
+
+  test("the configured declaration fills in a discovered row with no modalities", () => {
+    const prov = opencodeGo();
+    const hinted = applyProviderConfigHints("opencode-go", prov, {
+      id: MUSE_MODEL,
+      provider: "opencode-go",
+    });
+    expect(hinted.inputModalities).toEqual(["text", "image"]);
+  });
 });
