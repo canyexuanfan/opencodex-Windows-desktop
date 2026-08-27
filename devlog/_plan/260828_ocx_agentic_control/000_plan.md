@@ -57,7 +57,8 @@ lands with no verb.
 | Session-only routes (never CLI) | 3 | 001 |
 | CLI dispatch runner keys | 57; registry 58 entries, 52 visible | 002 |
 | Disconnected help sources | 37 usage blocks (20 dead module exports) + 1 banner | 002 |
-| GUI-only capability classes | 13 | 003 |
+| GUI-only capability classes | 13 declared, 8 real gaps after exemptions | 003 |
+| Reviewer blockers folded at the A gate | 7 blockers + 4 medium + 2 low | 005 |
 
 ## Work-phase map (dependency-ordered, PHASE-SPLIT-01)
 
@@ -83,6 +84,15 @@ that lands while `ocx` still exits 0 on failure cannot be proven. wp3 comes seco
 because the registry it introduces is the thing every later phase registers into —
 adding verbs before the registry means writing them twice.
 
+wp3b exists because the uniform exit-code and `--json` contract *consumes* wp3's
+capability table (its tests read each capability's declared `json` mode), so it is a
+successor phase rather than a slice carved off to balance effort. PHASE-SPLIT-01
+forbids effort buckets, not dependency-ordered successors.
+
+wp6 follows wp4 rather than preceding it so that the `accounts` renderer already
+exists when the labels start being stamped — the phase's proof is then visible in
+`ocx usage` immediately instead of requiring a later phase to demonstrate it.
+
 ## Delivery shape
 
 A stacked pull-request chain (DEV-STACK-01), one PR per work-phase, each child
@@ -90,14 +100,15 @@ targeting its parent's head branch. Base of the stack is `origin/dev`.
 
 ```
 dev
- └── codex/ocx-agentic-control-roadmap   (this unit's docs)
-      └── codex/ocx-transport-honesty     wp2
-           └── codex/ocx-capability-registry   wp3
-                └── codex/ocx-dto-fidelity     wp4
-                     └── codex/ocx-new-verbs    wp5
-                          └── codex/ocx-account-attribution   wp6
-                               └── codex/ocx-gui-parity        wp7
-                                    └── codex/ocx-agent-skill  wp8
+ └── codex/ocx-agentic-control-roadmap        wp1  (this unit's docs, PR #2773)
+      └── codex/ocx-transport-honesty          wp2
+           └── codex/ocx-capability-registry     wp3
+                └── codex/ocx-uniform-contract     wp3b
+                     └── codex/ocx-dto-fidelity      wp4
+                          └── codex/ocx-new-verbs      wp5
+                               └── codex/ocx-account-attribution  wp6
+                                    └── codex/ocx-gui-parity        wp7
+                                         └── codex/ocx-agent-skill  wp8
 ```
 
 ## Accept criteria for the unit
