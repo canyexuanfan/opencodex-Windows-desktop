@@ -33,8 +33,13 @@ Four distinct defects:
 ## Why CI did not catch it
 
 The PR ran only `CodeRabbit`, `enforce-target`, `hygiene`, `label`, `resolve-pr`.
-None of those compile or test the tree. The full matrix (`ci`, `macos`, `test 1..4/4`)
-only appears on maintainer-authored PRs in this round (#2672, #2674).
+None of those compile or test the tree.
+
+An earlier version of this note claimed the full matrix "only appears on
+maintainer-authored PRs." That was wrong — see 007, finding 6. #2639 carries all 27
+checks and its author is not a maintainer, and `ci.yml` is `pull_request: {}` with no
+draft gating. Why some PRs here get five checks and others twenty-seven is not
+established; do not guess at it again.
 
 ## Second problem: the provider id is wrong
 
