@@ -318,8 +318,8 @@ function stripUnsupportedReasoningParams(body: unknown): unknown {
 }
 
 /**
- * GPT-5.6 replaced the legacy 24-hour retention field with `prompt_cache_options.ttl`, and the
- * ChatGPT backend 400s the whole request when the retired field is present (issue #2092).
+ * GPT-5.6 retired the legacy 24-hour retention field, and the ChatGPT backend 400s the whole
+ * request when that field is present (issue #2092).
  *
  * The retired field is NOT translated to the replacement: 5.6 carries a different TTL contract,
  * and implicit caching still applies when the caller sent no replacement options. Inventing a
@@ -336,6 +336,18 @@ function stripDeprecatedPromptCacheRetention(body: unknown, modelId: unknown): u
   if (modelId !== "gpt-5.6" && !modelId.startsWith("gpt-5.6-")) return body;
   if (!Object.hasOwn(body, "prompt_cache_retention")) return body;
   const { prompt_cache_retention: _retention, ...rest } = body;
+  return rest;
+}
+
+/**
+ * Public Responses clients can send `prompt_cache_options`, but the canonical ChatGPT Codex
+ * backend rejects the top-level field before inference (issue #2765). Custom forward gateways and
+ * API-key Responses providers own different wire contracts, so the caller applies this only after
+ * the canonical destination predicate succeeds.
+ */
+function stripCanonicalForwardPromptCacheOptions(body: unknown): unknown {
+  if (!isPlainObject(body) || !Object.hasOwn(body, "prompt_cache_options")) return body;
+  const { prompt_cache_options: _options, ...rest } = body;
   return rest;
 }
 
@@ -2001,6 +2013,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         // third-party forward gateway may still accept it, so this must not be widened.
         if (isCanonicalOpenAiForwardProvider(provider)) {
           outBody = stripDeprecatedPromptCacheRetention(outBody, parsed.modelId);
+          outBody = stripCanonicalForwardPromptCacheOptions(outBody);
           outBody = normalizeCanonicalForwardPromptEnvelope(outBody);
           outBody = normalizeCanonicalForwardContinuationEnvelope(outBody);
         }
