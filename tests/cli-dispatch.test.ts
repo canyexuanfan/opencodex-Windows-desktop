@@ -141,6 +141,23 @@ describe("logout parses argv before touching the credential store", () => {
   const authPath = (): string => join(getConfigDir(), "auth.json");
   const snapshot = (): string | null => existsSync(authPath()) ? readFileSync(authPath(), "utf8") : null;
 
+  /**
+   * Seed a real credential before every case, because otherwise these assertions are vacuous:
+   * the sandbox home starts with no `auth.json`, so `before` and `after` would both be null and
+   * a comparison between them would pass even if the command HAD written to the store. Found by
+   * probing the sandbox rather than by reading the test -- the file genuinely does not exist at
+   * `<tmp>/.opencodex/auth.json` when the suite starts.
+   *
+   * With a credential present the file exists, so "byte-identical before and after" is a claim
+   * with content: any write, including the destructive `--json`-as-provider-name path, changes it.
+   */
+  const seed = async (): Promise<string> => {
+    await saveCredential("claude", { access: "seed-access", refresh: "seed-refresh", expires: Date.now() + 600_000 });
+    const contents = snapshot();
+    expect(contents, "seeded auth.json must exist or the non-mutation assertions are vacuous").not.toBeNull();
+    return contents!;
+  };
+
   const runLogout = async (args: string[]): Promise<{ code: number; out: string[]; err: string[]; before: string | null; after: string | null }> => {
     const out: string[] = [];
     const err: string[] = [];
@@ -163,41 +180,51 @@ describe("logout parses argv before touching the credential store", () => {
   };
 
   test("a flag is never read as a provider name and leaves the store byte-identical", async () => {
+    await seed();
     const result = await runLogout(["--json"]);
     expect(result.code).toBe(2);
+    expect(result.before).not.toBeNull();
     expect(result.after).toEqual(result.before);
     expect(result.out.join("")).not.toContain("Logged out");
   });
 
   test("an omitted provider is a usage error, not a no-op success", async () => {
+    await seed();
     const result = await runLogout([]);
     expect(result.code).toBe(2);
+    expect(result.before).not.toBeNull();
     expect(result.after).toEqual(result.before);
   });
 
   test("an unknown option is rejected and the store is untouched", async () => {
+    await seed();
     const result = await runLogout(["claude", "--wat"]);
     expect(result.code).toBe(2);
+    expect(result.before).not.toBeNull();
     expect(result.after).toEqual(result.before);
   });
 
   test("extra positionals are a usage error", async () => {
+    await seed();
     const result = await runLogout(["claude", "gemini"]);
     expect(result.code).toBe(2);
+    expect(result.before).not.toBeNull();
     expect(result.after).toEqual(result.before);
   });
 
   test("a provider with no stored credential is not-found, not usage", async () => {
     // 4 rather than 2: the call was well-formed, the thing simply is not there. Collapsing
     // those two into one code is what made the account family unscriptable (#2698).
+    await seed();
     const result = await runLogout(["gemini", "--json"]);
     expect(result.code).toBe(4);
+    expect(result.before).not.toBeNull();
     expect(result.after).toEqual(result.before);
     expect(JSON.parse(result.out.join("\n"))).toMatchObject({ ok: false, removed: false, reason: "not_found" });
   });
 
   test("a stored provider is removed and reported in both modes", async () => {
-    await saveCredential("claude", { access: "a", refresh: "r", expires: Date.now() + 60_000 });
+    await seed();
     expect(getAccountSet("claude")).not.toBeNull();
 
     const human = await runLogout(["claude"]);
@@ -206,7 +233,7 @@ describe("logout parses argv before touching the credential store", () => {
     expect(getAccountSet("claude")).toBeNull();
 
     // Order-independent, and idempotent: a second logout is now a clean not-found.
-    await saveCredential("claude", { access: "a", refresh: "r", expires: Date.now() + 60_000 });
+    await seed();
     const json = await runLogout(["--json", "claude"]);
     expect(json.code).toBe(0);
     expect(JSON.parse(json.out.join("\n"))).toMatchObject({ ok: true, provider: "claude", removed: true });
