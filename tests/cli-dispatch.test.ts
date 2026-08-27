@@ -5,7 +5,7 @@ import type { CliDispatchDeps } from "../src/cli/dispatch";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "../src/config";
-import { getAccountSet, saveCredential } from "../src/oauth/store";
+import { getAccountSet, removeCredential, saveCredential } from "../src/oauth/store";
 
 /** Minimal fake deps. dispatchCommand only touches deps for real command
  * runners, which these tests never invoke, so an empty object is enough. */
@@ -238,5 +238,87 @@ describe("logout parses argv before touching the credential store", () => {
     expect(json.code).toBe(0);
     expect(JSON.parse(json.out.join("\n"))).toMatchObject({ ok: true, provider: "claude", removed: true });
     expect(getAccountSet("claude")).toBeNull();
+  });
+});
+
+describe("logout reports only what it actually did", () => {
+  /**
+   * Two defects an adversarial audit found in the first version of the argv fix, both
+   * reproduced before being fixed.
+   *
+   * The first was the same bug one dash shorter: the parser treated only `--*` as options, so
+   * `ocx logout -j` used `-j` as the provider name. With a `-j` key in the store -- which
+   * `normalizeAuthStore` happily preserves -- that deleted a credential and exited 0.
+   *
+   * The second was a non-atomic read-then-remove. `getAccountSet` followed by
+   * `removeCredential` leaves a window where a concurrent logout removes the same account and
+   * both callers report a removal. `removeCredential` now returns its disposition from inside
+   * the serialized mutation, so only the caller that actually removed something says so.
+   */
+  const authPath = (): string => join(getConfigDir(), "auth.json");
+  const snapshot = (): string | null => existsSync(authPath()) ? readFileSync(authPath(), "utf8") : null;
+
+  const run = async (args: string[]): Promise<{ code: number; out: string[] }> => {
+    const out: string[] = [];
+    const log = console.log;
+    const error = console.error;
+    console.log = (...v: unknown[]) => out.push(v.join(" "));
+    console.error = (...v: unknown[]) => out.push(v.join(" "));
+    const argv = ["logout", ...args];
+    try {
+      const code = await dispatchCommand(
+        { kind: "command", command: "logout", args: argv },
+        { ...fakeDeps, args: argv } as unknown as CliDispatchDeps,
+      );
+      return { code, out };
+    } finally {
+      console.log = log;
+      console.error = error;
+    }
+  };
+
+  test("a short flag is an option, not a provider, and its sentinel credential survives", async () => {
+    // The sentinel is the point: a store key named exactly like the malformed token. Seeding
+    // only a well-named provider cannot detect this class of bug, because removing `-j` would
+    // leave the rest of the file byte-identical.
+    await saveCredential("-j", { access: "sentinel", refresh: "r", expires: Date.now() + 600_000 });
+    expect(getAccountSet("-j")).not.toBeNull();
+
+    const result = await run(["-j"]);
+    expect(result.code).toBe(2);
+    expect(getAccountSet("-j"), "a flag must never reach the store as a provider name").not.toBeNull();
+    expect(result.out.join("")).not.toContain("Logged out");
+  });
+
+  test("a --json=... spelling is rejected rather than treated as a provider", async () => {
+    await saveCredential("--json=true", { access: "sentinel", refresh: "r", expires: Date.now() + 600_000 });
+    const result = await run(["--json=true"]);
+    expect(result.code).toBe(2);
+    expect(getAccountSet("--json=true")).not.toBeNull();
+  });
+
+  test("the malformed-token sentinel survives a --json invocation", async () => {
+    await saveCredential("--json", { access: "sentinel", refresh: "r", expires: Date.now() + 600_000 });
+    const before = snapshot();
+    const result = await run(["--json"]);
+    expect(result.code).toBe(2);
+    expect(getAccountSet("--json"), "the store must not be reached at all").not.toBeNull();
+    expect(snapshot()).toEqual(before);
+  });
+
+  test("concurrent logouts: exactly one reports the removal", async () => {
+    await saveCredential("gemini", { access: "a", refresh: "r", expires: Date.now() + 600_000 });
+    const [first, second] = await Promise.all([run(["gemini"]), run(["gemini"])]);
+    // One removal (0) and one not-found (4). Two zeroes would mean a caller claimed credit for
+    // a mutation it did not perform, which is what the preflight allowed.
+    expect([first.code, second.code].sort()).toEqual([0, 4]);
+    expect(getAccountSet("gemini")).toBeNull();
+  });
+
+  test("removeCredential returns its disposition from inside the mutation", async () => {
+    await saveCredential("claude", { access: "a", refresh: "r", expires: Date.now() + 600_000 });
+    expect(await removeCredential("claude")).toBe("removed");
+    expect(await removeCredential("claude")).toBe("not-found");
+    expect(await removeCredential("never-stored")).toBe("not-found");
   });
 });

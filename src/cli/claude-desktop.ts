@@ -25,6 +25,7 @@ function printDesktopHelp(): void {
   console.log(`Usage:
   ocx claude desktop [apply] [--static|--hybrid|--discovery-only]
   ocx claude desktop show [--json]
+  ocx claude desktop status [--json]
   ocx claude desktop move <provider/model> <opus|fable|sonnet|haiku> [--default]
   ocx claude desktop default <family> <provider/model|none>
   ocx claude desktop export <path|->
@@ -145,6 +146,22 @@ export async function handleClaudeDesktopCommand(argv: string[], deps: ApplyProf
 
   try {
     const config = loadConfig();
+    // `status` is API-backed and must NOT build local state first: the whole point of the
+    // route the GUI polls (/api/claude-desktop/status) is the applied-vs-desired comparison,
+    // including staleness, drift and health, which only the running proxy knows. `show`
+    // reports what this machine would write; `status` reports what is actually in effect.
+    if (command === "status") {
+      const wantsJson = argv[1] === "--json";
+      if (argv.length > 2 || (argv[1] && !wantsJson)) throw new Error("Usage: ocx claude desktop status [--json]");
+      const live = await runtimeRequest<Record<string, unknown>>("/api/claude-desktop/status", {});
+      if (wantsJson) console.log(JSON.stringify(live, null, 2));
+      else {
+        for (const [key, value] of Object.entries(live)) {
+          console.log(`${key}: ${typeof value === "object" ? JSON.stringify(value) : String(value)}`);
+        }
+      }
+      return 0;
+    }
     const state = await buildClaudeDesktopState(config);
     if (command === "show") {
       if (argv.length > 2 || (argv[1] && argv[1] !== "--json")) throw new Error("Usage: ocx claude desktop show [--json]");

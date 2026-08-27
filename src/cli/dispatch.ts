@@ -231,8 +231,12 @@ const commandRunners: Record<string, CommandRunner> = {
     // was its last account. A flag must never reach the store as a provider name.
     const logoutArgs = deps.args.slice(1);
     const wantsJson = logoutArgs.includes("--json");
-    const positionals = logoutArgs.filter(arg => !arg.startsWith("--"));
-    const unknownFlags = logoutArgs.filter(arg => arg.startsWith("--") && arg !== "--json");
+    // Any leading dash is an option, not a provider. Matching only `--` left the same defect
+    // one dash shorter: `ocx logout -j` treated `-j` as the provider name and, with a `-j` key
+    // present in the store, deleted it and exited 0. A provider id never starts with `-`.
+    const isOption = (arg: string): boolean => arg.startsWith("-");
+    const positionals = logoutArgs.filter(arg => !isOption(arg));
+    const unknownFlags = logoutArgs.filter(arg => isOption(arg) && arg !== "--json");
     const name = (positionals[0] ?? "").trim().toLowerCase();
 
     // Usage failures exit 2 and touch nothing. A missing provider is a usage error; a
@@ -246,13 +250,17 @@ const commandRunners: Record<string, CommandRunner> = {
       return 2;
     }
 
-    const { getAccountSet, removeCredential } = await import("../oauth/store");
-    if (!getAccountSet(name)) {
+    // The disposition comes from inside the store mutation, not from a read-then-remove
+    // preflight. `mutateStore` serializes writes, so a preflight leaves a window where a
+    // concurrent logout removes the same account and BOTH callers exit 0 claiming a removal --
+    // a false success again, just a narrower one than the flag bug above.
+    const { removeCredential } = await import("../oauth/store");
+    const outcome = await removeCredential(name);
+    if (outcome === "not-found") {
       if (wantsJson) console.log(JSON.stringify({ schemaVersion: 1, ok: false, provider: name, removed: false, reason: "not_found" }, null, 2));
       else console.error(`No stored credential for '${name}'.`);
       return 4;
     }
-    await removeCredential(name);
     if (wantsJson) console.log(JSON.stringify({ schemaVersion: 1, ok: true, provider: name, removed: true }, null, 2));
     else console.log(`Logged out of ${name}.`);
     return 0;

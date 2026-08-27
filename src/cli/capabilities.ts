@@ -409,6 +409,43 @@ export const CAPABILITIES: readonly Capability[] = [
     json: "payload",
   },
   {
+    command: ["system", "codex-app-server"],
+    summary: "Codex app-server reachability and process state, as the dashboard sees it.",
+    routes: [{ method: "GET", path: "/api/system/codex-app-server" }],
+    flags: [{ name: "--json", value: "boolean", summary: "Emit the app-server state as JSON." }],
+    mutates: false,
+    json: "payload",
+    details: [
+      "The GUI reads this state directly; without a verb an agent could not tell whether the Codex app-server was reachable at all.",
+    ],
+  },
+  {
+    command: ["system", "codex-restart"],
+    summary: "Restart the Codex app-server.",
+    routes: [{ method: "POST", path: "/api/system/codex-restart" }],
+    flags: [
+      { name: "--yes", value: "boolean", summary: "Required: restarts the operator's running Codex app-server." },
+      { name: "--json", value: "boolean", summary: "Emit the restart result as JSON." },
+    ],
+    mutates: true,
+    json: "payload",
+    details: [
+      "`sync --restart-codex` is not a substitute: it restarts only as a side effect after a catalog or cache write, so it cannot restart a healthy install on request.",
+      "--yes is mandatory because this interrupts a running editor session, which must never happen because an agent guessed a subcommand.",
+    ],
+  },
+  {
+    command: ["claude", "desktop", "status"],
+    summary: "Applied-vs-desired Claude Desktop state, including staleness, drift, and health.",
+    routes: [{ method: "GET", path: "/api/claude-desktop/status" }],
+    flags: [{ name: "--json", value: "boolean", summary: "Emit the live status as JSON." }],
+    mutates: false,
+    json: "payload",
+    details: [
+      "Distinct from `claude desktop show`, which reports what this machine WOULD write; this reports what is actually in effect, which only the running proxy knows.",
+    ],
+  },
+  {
     command: ["integration", "native"],
     summary: "Show or toggle the native Claude, Claude Desktop, Codex, and Grok integrations.",
     routes: [
