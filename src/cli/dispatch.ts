@@ -418,6 +418,9 @@ const commandRunners: Record<string, CommandRunner> = {
   },
   provider: async deps => {
     const { handleProviderCommand } = await import("./provider");
+    // Reset first, like the service runner below: reading process.exitCode only
+    // reports THIS command's outcome if nothing earlier in the process set it.
+    process.exitCode = 0;
     await handleProviderCommand(deps.args.slice(1));
     // handleProviderCommand reports failure through process.exitCode, which it sets
     // from handleProviderRuntimeCommand. Returning a literal 0 here made index.ts
@@ -431,6 +434,7 @@ const commandRunners: Record<string, CommandRunner> = {
   },
   models: async deps => {
     const { handleModels } = await import("./models");
+    process.exitCode = 0;
     await handleModels(deps.args.slice(1));
     // Same as the provider runner above: handleModels sets process.exitCode from
     // handleModelsRuntimeCommand, and a literal 0 discarded it (#2697).
