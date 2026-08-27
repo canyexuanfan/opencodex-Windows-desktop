@@ -188,8 +188,14 @@ describe("Command Code provider", () => {
 
     const config = withStubbedProviderFetch(commandcodeConfig());
     const models = (await gatherRoutedModels(config)).filter(row => row.provider === "commandcode");
-    // Full authenticated catalog snapshot: 60 rows, including the free-tier entries.
-    expect(models).toHaveLength(60);
+    // Full authenticated catalog snapshot: 59 rows, including the free-tier entries.
+    //
+    // #2647's fixture carried 60 because it predates 328931265, which removed Ox Alpha
+    // entirely — both ids, the Zen slug for the same stealth model, the context
+    // constant, the effort profile, and the OpenRouter entry. That stealth window has
+    // closed, so `stealth/ox-alpha` is dropped from the snapshot rather than being
+    // silently resurrected by a regenerated fixture.
+    expect(models).toHaveLength(59);
     expect(models.map(row => row.id)).toContain("deepseek/deepseek-v4-flash");
     expect(models.map(row => row.id)).toContain("moonshotai/Kimi-K2.7-Code");
     expect(models.map(row => row.id)).toContain("poolside/laguna-s-2.1-free");
