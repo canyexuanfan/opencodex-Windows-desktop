@@ -9,6 +9,33 @@ const COMMAND_CODE_MODEL_EFFORTS = {
     efforts: ["high", "max"],
     profileUrl: "https://commandcode.ai/models/deepseek-v4-flash",
   },
+  /*
+   * Three live routes that reached the catalog without an effort ladder (#2647).
+   * Without a row here the model advertises no efforts at all, so a client that
+   * sends one gets it stripped or rejected rather than honored.
+   *
+   * Provenance: the ladders below are the reporter's (darwintree, #2647), taken
+   * as reported. All three profile URLs were confirmed to resolve (HTTP 200 on
+   * 2026-08-27), but commandcode.ai renders these pages client-side, so the
+   * ladder text is not verifiable from the fetched HTML at review time. That is
+   * tolerable HERE and nowhere else in this file: an effort this table gets
+   * wrong is self-correcting, because refreshCommandCodeReasoningEfforts()
+   * re-reads the public profile after the first upstream rejection and replaces
+   * the row. A wrong MODEL ID, by contrast, is not self-correcting — see the
+   * exact-id warning below.
+   */
+  "deepseek/deepseek-v4-flash-vision-exp": {
+    efforts: ["high", "max"],
+    profileUrl: "https://commandcode.ai/models/deepseek-v4-flash-vision-exp",
+  },
+  "gpt-5.6-luna": {
+    efforts: ["low", "medium", "high", "xhigh", "max"],
+    profileUrl: "https://commandcode.ai/models/gpt-5-6-luna",
+  },
+  "google/gemini-3.7-flash": {
+    efforts: ["low", "medium", "high"],
+    profileUrl: "https://commandcode.ai/models/gemini-3-7-flash",
+  },
   // Keys must match the EXACT upstream /provider/v1/models ids (GLM ships as
   // `zai-org/GLM-5.3`, not `zai-org/glm-5.3`). The table doubles as the router's
   // known-ids decode source (via `knownModelIdsForProvider`), so a case mismatch
