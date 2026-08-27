@@ -297,3 +297,112 @@ rather than against any prior number.
 Criterion 5 replaces a claim with a demonstration. Given that `020`'s original gate
 would have failed on correct code while believing itself rigorous, a gate that has not
 been driven red is not yet evidence of anything.
+
+## A10 — self-audit: four defects in this amendment
+
+The A-gate audit of this document was attempted twice with an adversarial reviewer and
+both attempts died on provider rate limits (`429`), so the audit was performed directly
+instead. Recording that substitution honestly matters: an unaudited amendment claiming
+to fix an unaudited plan is the same failure one level up.
+
+Four defects were found in the amendment itself. Two are blocking.
+
+### A10.1 — A1's method resolution looks the wrong direction (blocking)
+
+A1 says resolve the method "from the same line, else the two following lines, else the
+enclosing block." In `lab-routes.ts` the method is fixed by a **preceding early-return
+guard**, not an enclosing block:
+
+```ts
+  if (req.method !== "GET") return null;      // lab-routes.ts:352
+
+  if (url.pathname === "/api/lab/status") {   // :354 — GET, decided 2 lines earlier
+```
+
+`storage-log-guard-routes.ts` inverts it again — the path is outer and the method is
+the **inner** early return:
+
+```ts
+  if (url.pathname === "/api/storage/codex-logs") {   // :112
+    if (req.method !== "GET") return null;            // :113
+```
+
+So three distinct shapes carry a method: same-line conjunction, a preceding sibling
+guard that narrows everything after it, and a nested guard inside the path block. A
+scanner that only looks forward and outward resolves none of the 8 lab reads.
+
+**Fix.** Resolve the method by walking the enclosing function's statements in order and
+maintaining a *method narrowing context*: a top-level `if (req.method !== X) return`
+narrows every subsequent sibling statement to X; a nested one narrows only its own
+block; a same-line conjunction binds only that route. This is a small interpreter over
+guard statements, not a regex, and A1 must say so — the honest cost of the fail-loud
+requirement is that the scanner cannot be a one-line `rg`.
+
+### A10.2 — A3's `owner` assertion cannot run in CI (blocking)
+
+A3 has `tests/cli-api-parity.test.ts` assert that every `deferred-verb` owner "is a
+phase that still exists in the goalplan." The goalplan is machine-local and
+**gitignored**:
+
+```
+$ rg -n 'codexclaw' .gitignore
+45:.codexclaw/
+46:**/.codexclaw/
+$ git ls-files .codexclaw      # empty
+```
+
+`tests/repo-hygiene.test.ts` additionally forbids tracking it. A test reading that file
+passes on this machine and cannot even find it in CI, which is the same class of
+vacuous gate this amendment exists to eliminate — and it would have been introduced by
+the fix, not the original.
+
+**Fix.** Bind the exemption to a **tracked** artifact instead. `deferred-verb` carries
+`owner: "wp7"` plus `ownerDoc: "devlog/_plan/260828_ocx_agentic_control/060_phase_gui_parity.md"`,
+and the test asserts the doc exists and names the route. `devlog/` is tracked ordinary
+markdown, so the assertion means the same thing in CI as locally. The debt stays
+visible in the repository rather than in one developer's state directory.
+
+### A10.3 — A5's lookup can silently produce empty usage text (major)
+
+A5 has each module's `const USAGE` become a lookup into the capability table. Those
+constants are **top-level**, evaluated at import time (`access.ts:12` and its 19
+siblings). ESM tolerates a top-level cycle by yielding `undefined` rather than
+throwing, so if the capability table ever imports a module that imports it back, every
+`rejectArgs(args, USAGE)` in that module quietly starts reporting empty usage — a
+silent regression in exactly the error-reporting surface these issues are about.
+
+Today the direction is clean (`help.ts` imports only `./registry`; nothing imports
+`access.ts`, `combo.ts`, or `observe.ts`), so the cycle is a risk introduced by the
+change, not a present defect.
+
+**Fix.** `src/cli/capabilities.ts` imports **nothing** from `src/cli/` — it is a leaf
+data module, same discipline A8 imposes on the route registry. Add a guard test
+asserting `capabilities.ts` has no `./`-relative import into a command module, and
+assert each generated `USAGE` is a non-empty string so an accidental cycle fails loudly
+instead of degrading.
+
+### A10.4 — A6's `--version` entry is wrong; `help` is deliberately excluded (major)
+
+A6 proposes capability entries for `help` and `--version`. Both are mis-specified.
+
+`--version`, `-v`, and `version` never reach the dispatch table at all. They are
+resolved in the CLI head (`root.ts:28`) and exit before dispatch, so `--version` has no
+runner key and an entry named `--version` would fail the assertion that every canonical
+entry is a direct runner key.
+
+`help` is not an oversight either. `tests/cli-registry.test.ts:14-21` documents the
+exclusion in a comment and encodes it in a `headHandled` set — `help`/`--help`/`-h` are
+"head-handled pseudo-cases, not commands." A6 read a deliberate decision as a gap.
+
+**Fix.** Neither becomes a `CLI_COMMANDS` entry. The capability table gains a separate
+`headCapabilities` list for head-handled surfaces, which contributes banner lines and
+`ocx capabilities --json` output without touching runner-key parity. The banner
+equality assertion then compares against `visible capabilities + headCapabilities`,
+which is satisfiable — A6's version was not.
+
+### Confirmed correct in A2
+
+`agent-settings-routes.ts` and `oauth-account-routes.ts` are rightly absent from the
+18-route table. Their `startsWith`/`slice` hits are payload manipulation
+(`oauth-account-routes.ts:584` truncates a key prefix; `agent-settings-routes.ts:900`
+filters model routes), not path guards. The omission was checked rather than assumed.
