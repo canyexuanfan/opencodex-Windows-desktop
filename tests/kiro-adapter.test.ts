@@ -1298,17 +1298,17 @@ describe("kiro code-mode catalog nudge", () => {
     expect(current.content).toContain("ALL_TOOLS");
   });
 
-  test("does not name a code-mode exec that the catalog budget dropped", async () => {
-    // The mirror of the case above, and the reason the fix intersects rather than unions: a tool
-    // the model cannot call must never be named as its execution surface. Equal-priority tools
-    // keep request order, so 48 fillers ahead of `exec` omit `exec` deterministically.
+  test("does not name a STRUCTURED exec that the catalog budget dropped", async () => {
+    // A tool the model cannot call must never be named as its execution surface. wp2 makes a
+    // code-mode `exec` survive the budget, so this invariant is now demonstrated on a structured
+    // `exec`: it stays ordinary filler, so 48 fillers ahead of it drop it deterministically.
     const filler = Array.from({ length: MAX_KIRO_TOOL_COUNT }, (_, index) => ({
       name: `filler_${String(index).padStart(3, "0")}`,
       description: `Filler ${index}`,
       parameters: { type: "object" },
     }));
     const { body } = await createKiroAdapter(provider).buildRequest(
-      parsedWith([{ role: "user", content: "hi" }], [...filler, codeModeExec]),
+      parsedWith([{ role: "user", content: "hi" }], [...filler, { name: "exec", description: "Run a shell command", parameters: { type: "object" } }]),
     );
     const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
     const emitted = current.userInputMessageContext.tools.map((tool: { toolSpecification: { name: string } }) => tool.toolSpecification.name);
@@ -1328,5 +1328,85 @@ describe("kiro code-mode catalog nudge", () => {
     const content = JSON.parse(body).conversationState.currentMessage.userInputMessage.content as string;
 
     expect(content).not.toContain("ALL_TOOLS");
+  });
+});
+
+describe("kiro code-mode exec survives the catalog budget", () => {
+  // Under code mode `exec` is not one tool among many: shell, file edits, apply_patch and every
+  // MCP helper are reachable ONLY as nested `tools.<name>(...)` calls inside it. A catalog that
+  // drops `exec` to keep more helpers admits tools the model cannot call at all. Cursor pins its
+  // execution path for the same reason (request-builder.ts, #399); Kiro ranked it as filler.
+  const codeModeExec = { name: "exec", description: "Run JavaScript", freeform: true, parameters: { type: "object" } };
+  const fillerTools = (count: number) => Array.from({ length: count }, (_, index) => ({
+    name: `ordinary_${String(index).padStart(3, "0")}`,
+    description: `Ordinary ${index}`,
+    parameters: { type: "object" },
+  }));
+
+  async function emitted(tools: unknown[]): Promise<{ names: string[]; notice: string }> {
+    const { body } = await createKiroAdapter(provider).buildRequest(parsedWith([{ role: "user", content: "hi" }], tools));
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+    return {
+      // Drop Kiro's private completion tool, which is appended after the client catalog.
+      names: current.userInputMessageContext.tools.slice(0, -1).map((tool: { toolSpecification: { name: string } }) => tool.toolSpecification.name),
+      notice: current.content.split("\n\n", 1)[0] as string,
+    };
+  }
+
+  test("a last-declared code-mode exec survives an over-budget catalog", async () => {
+    const { names } = await emitted([...fillerTools(MAX_KIRO_TOOL_COUNT + 20), codeModeExec]);
+
+    expect(names).toContain("exec");
+    expect(names).toHaveLength(MAX_KIRO_TOOL_COUNT);
+  });
+
+  test("reserving exec costs exactly one loaded tool, not the execution path", async () => {
+    // The reservation tradeoff, stated as a test. A session can accumulate an unbounded number of
+    // tool_search results (responses/parser.ts pushes every spec), all of which outrank exec. If
+    // the fill loop ran unreserved, 48 loaded tools would exhaust the count budget and drop the
+    // one tool that makes the other 48 callable.
+    const loaded = Array.from({ length: MAX_KIRO_TOOL_COUNT }, (_, index) => ({
+      name: `loaded_${String(index).padStart(3, "0")}`,
+      description: `Loaded ${index}`,
+      parameters: { type: "object" },
+      loadedFromToolSearch: true,
+    }));
+    const { names, notice } = await emitted([...loaded, codeModeExec]);
+
+    expect(names).toContain("exec");
+    expect(names).toHaveLength(MAX_KIRO_TOOL_COUNT);
+    // Exactly one loaded tool pays for the reservation, and the notice names it honestly.
+    expect(names.filter(name => name.startsWith("loaded_"))).toHaveLength(MAX_KIRO_TOOL_COUNT - 1);
+    expect(notice).toContain("loaded_047");
+    expect(notice).not.toContain("`exec`");
+  });
+
+  test("emits loaded -> exec -> gateway order in an over-budget catalog", async () => {
+    // Declared adversarially (gateway first, loaded last) so the assertion can only pass if the
+    // priority comparator actually ran. The sort is gated on exceedsBudget, so the fixture must
+    // exceed the count budget or this would pass identically without the change.
+    const gateway = { name: "tool_search", description: "Search deferred tools", parameters: { type: "object" }, toolSearch: true };
+    const loaded = { name: "codex_app__send_message_to_thread", description: "Send", parameters: { type: "object" }, loadedFromToolSearch: true };
+    const { names, notice } = await emitted([gateway, ...fillerTools(MAX_KIRO_TOOL_COUNT + 20), codeModeExec, loaded]);
+
+    expect(names.slice(0, 3)).toEqual([loaded.name, "exec", gateway.name]);
+    expect(notice).not.toContain(loaded.name);
+    expect(notice).not.toContain(gateway.name);
+  });
+
+  test("a byte-budget catalog still reserves room for exec", async () => {
+    // The count budget is the easy case. Bytes are where a naive reservation breaks: the budget is
+    // measured over the serialized ARRAY, so exec must be projected into every fit check rather
+    // than subtracted as a standalone size.
+    const heavy = Array.from({ length: 40 }, (_, index) => ({
+      name: `heavy_${String(index).padStart(3, "0")}`,
+      description: `Heavy ${index}`,
+      parameters: { type: "object", properties: { blob: { type: "string", description: "x".repeat(8_000) } } },
+    }));
+    const { names } = await emitted([...heavy, codeModeExec]);
+    const serialized = new TextEncoder().encode(JSON.stringify(names)).byteLength;
+
+    expect(names).toContain("exec");
+    expect(serialized).toBeGreaterThan(0);
   });
 });
