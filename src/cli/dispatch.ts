@@ -291,21 +291,30 @@ const commandRunners: Record<string, CommandRunner> = {
     } else if (desiredDisabled) {
       console.log("Codex integration is OFF; cache sync skipped (no catalog or cache write).");
     }
-    // `completed` with a falsy value means the cache was NOT rewritten, and any other kind
-    // means the write never completed (a permit it could not take, a busy catalog). Both
-    // previously exited 0, so a script could not tell a refreshed cache from a skipped one.
-    // A deliberate skip -- Codex integration off -- is not a failure.
+    // `completed` with a falsy value means the cache was NOT rewritten. Previously every
+    // outcome exited 0, so a script could not tell a refreshed cache from a skipped one.
+    //
+    // Two outcomes are skips rather than failures, and conflating them with failure is a
+    // defect rather than strictness. A deliberate skip -- Codex integration off -- is not a
+    // failure. Neither is losing the catalog write lock to another process: serialization
+    // working as designed is the expected outcome under concurrency, and a proxy startup
+    // holding the permit would otherwise make a perfectly healthy `ocx sync-cache` exit 1
+    // and fail the pipeline that called it. `tests/codex-retained-root-serialization.test.ts`
+    // pins exactly that: contended lock, no cache write, exit 0.
     const wrote = invalidated.kind === "completed" && Boolean(invalidated.value);
-    const ok = wrote || desiredDisabled;
+    const contended = invalidated.kind === "unavailable" && invalidated.reason === "busy";
+    const ok = wrote || desiredDisabled || contended;
     if (cacheJson) {
       console.log(JSON.stringify({
         schemaVersion: 1,
         ok,
         wrote,
-        skipped: !wrote && desiredDisabled,
+        skipped: !wrote && (desiredDisabled || contended),
         outcome: invalidated.kind,
         codexHome: owningCodexHome,
       }, null, 2));
+    } else if (contended) {
+      console.log("Another process owns the catalog write; cache sync skipped.");
     } else if (!ok) {
       console.error(`Cache refresh did not complete (${invalidated.kind}). The Codex model cache was not rewritten.`);
     }
