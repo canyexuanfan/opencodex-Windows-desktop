@@ -350,6 +350,15 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     details: ["Use --json for structured output: {ok, pid, port}."],
   },
   {
+    name: "capabilities",
+    usage: "ocx capabilities [--json] [--mutating-only] [--route <path>]",
+    summary: "Enumerate every CLI capability with the management routes it drives.",
+    details: [
+      "The machine-readable surface index: start here when driving ocx programmatically instead of parsing help text.",
+      "--route <path> answers the inverse question: which commands drive this management route.",
+    ],
+  },
+  {
     name: "ready",
     usage: "ocx ready [--json] [--wait [--timeout <seconds>]]",
     summary: "Check post-sync readiness. Exits 0 only when ready.",
