@@ -129,6 +129,23 @@ overlap (`scripts/test-run-lock.ts:164`). It is sound for this file set: every t
 `fetchImpl` or calls `filterRequestLogs` directly, so none binds a port, and `tests/preload.ts`
 sandboxes `HOME`/`CODEX_HOME` on every invocation regardless of the wrapper.
 
+## Criterion 4: the new surface is in `ocx capabilities`
+
+```
+ocx capabilities --json → invocations:
+  ocx status, ocx capabilities, ocx provider list, ocx account list, ocx usage,
+  ocx account pause, ocx account resume, ocx account pause-exhausted,
+  ocx account strategy, ocx account sticky, ocx logs
+
+ocx capabilities --route /api/oauth/accounts/pool
+  → ocx account strategy, ocx account sticky   (both, with all four routes listed)
+```
+
+`ocx logs` had no capability entry at all before this phase, even though it was already a
+shipped command. It gets one here rather than in a later phase, because this phase changed its
+filter contract: an entry added later would have documented the fixed behavior without ever
+having declared the broken one.
+
 ## Deferred, with an owner
 
 `ocx logs --model` now filters correctly, but the `--model` **flag** was already declared in

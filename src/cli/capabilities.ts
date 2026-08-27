@@ -227,6 +227,28 @@ export const CAPABILITIES: readonly Capability[] = [
     json: "envelope",
     details: ["Only meaningful under the sticky-capable strategies; the pool strategy is the other half of this setting."],
   },
+  {
+    command: ["logs"],
+    summary: "Recent request log rows, filterable by provider, model, conversation, and status.",
+    routes: [{ method: "GET", path: "/api/logs" }],
+    flags: [
+      { name: "--provider", value: "string", summary: "Restrict to one provider, matching failover attempts too." },
+      { name: "--model", value: "string", summary: "Restrict to one model id, matching failover attempts too." },
+      { name: "--conversation", value: "string", summary: "Restrict to one conversation id (`--conversationId` is accepted too)." },
+      { name: "--status", value: "string", summary: "An exact code (429) or a class (5xx)." },
+      { name: "--limit", value: "number", summary: "Row cap; defaults to 200." },
+      { name: "--follow", value: "boolean", summary: "Stream new rows as JSONL; implies --jsonl." },
+      { name: "--json", value: "boolean", summary: "Emit the server payload as JSON." },
+      { name: "--jsonl", value: "boolean", summary: "Emit one row per line." },
+    ],
+    mutates: false,
+    json: "payload",
+    details: [
+      "`--provider` and `--model` both match a failover attempt, so a request is findable by what actually served it, not only by what was asked for.",
+      "Rows print `conv=<id>` when the entry carries one, so a conversation filter can be told apart from an empty result.",
+      "`--follow` deduplicates by row id and cannot be combined with `--json`.",
+    ],
+  },
 ];
 
 /** Capabilities that drive `route`, for `ocx capabilities --route`. */
