@@ -64,6 +64,10 @@ function displayId(id: string): string {
 
 function statusText(row: AccountRow): string {
   const parts: string[] = [];
+  // `paused` leads, and does NOT replace `selected`. A paused-but-selected account is the
+  // state an operator most needs named -- requests route to it while the pool believes it is
+  // held out -- so printing only one of the two would hide exactly the confusing case (#2703).
+  if (row.paused) parts.push("paused");
   if (row.active) parts.push(row.type === "codex" ? "selected" : "active");
   if (row.needsReauth) parts.push("needs-reauth");
   return parts.join(" ");
