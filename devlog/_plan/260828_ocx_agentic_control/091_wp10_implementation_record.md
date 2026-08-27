@@ -11,7 +11,10 @@ and moves the rest into wp11 with the reasons written down.
 | `logout --json` silently no-ops | Fixed: argv parsed before any store I/O, three-way exit taxonomy |
 | `doctor --json` silently ignored | Refused with exit 2; skill recipe corrected |
 | parity gate one-directional | Fixed: bidirectional with a dated 139-route ratchet |
-| 3 GUI verbs missing (oauth logout, codex-app-server, claude desktop status) | wp11 |
+| `system codex-app-server` missing | Fixed |
+| `system codex-restart` missing | Fixed |
+| `claude desktop status` missing | Fixed |
+| API-backed OAuth logout missing | wp11 (needs live-proxy cache invalidation) |
 | no full-invocation skill oracle | wp11 |
 | structured doctor report | wp11 |
 
@@ -41,7 +44,11 @@ is ~137 working commands that never declared a capability. That is why the mecha
 ratchet rather than an allowlist -- an allowlist says "these are fine", and they are not fine,
 they are dated debt.
 
-## Two things deferred, and why that is not a dodge
+## Two deferrals that hold up, and one that did not
+
+A later audit accepted the two below and rejected a third I had bundled with them. That third
+one is in the second-round section further down; recording the split here so this section is not
+read as a clean bill of health.
 
 `doctor --json` cannot be a flag addition. `runDoctor` has no report collection: a
 module-level failure bit and ~90 direct `console.log` calls across a 1,309-line surface, and
@@ -59,16 +66,64 @@ hand-maintained subcommand table -- a third drifting source of truth. The real a
 declarative command grammar shared by parsing, help, capabilities and skill generation, which
 is wp11.
 
+## Second audit round: my own fix was incomplete, and one deferral was a dodge
+
+A verification audit of the first wp10 commit returned FAIL. It was right on all three counts,
+and two of them are about the fix I had just written and verified.
+
+**The flag guard was the same defect one dash shorter.** I wrote `arg.startsWith("--")` and
+tested `--json`, `--wat`, and extra positionals. `-j` was still accepted as a provider name, so
+with a `-j` key in the store the command deleted a credential and exited 0 -- the exact
+behaviour the commit claimed to have eliminated. The lesson is narrow and worth keeping: I
+tested the reported input rather than the input class. Any leading dash is now an option.
+
+**The non-mutation regression was vacuous, and I found that one myself.** It compared
+`auth.json` before and after; the sandbox home has no `auth.json`, so both sides were null and
+the assertion would have passed even if the store had been written. Found by probing the
+sandbox rather than re-reading the test. Every case now seeds a credential first, and the audit
+then pushed it further: seeding only `claude` cannot detect a bad `removeCredential("--json")`,
+because removing a key that is not there leaves the file byte-identical. The cases now seed a
+**sentinel credential under the malformed token itself**.
+
+**The preflight could claim credit for someone else's removal.** `getAccountSet` then
+`removeCredential` is not atomic: `mutateStore` serializes writes, so two concurrent logouts
+both saw a credential and both exited 0. `removeCredential` now returns its disposition from
+inside the mutation. This is a smaller false success than the flag bug but the same species,
+and it is the kind that only appears under concurrency -- so it would have read as a flake.
+
+**One deferral was scope-dodging.** I had deferred all three missing GUI verbs together. Two
+were nearly free: `system` already wraps `runtimeRequest` and the endpoints already return
+complete DTOs, so `codex-app-server` and `codex-restart --yes` are branches; `claude-desktop.ts`
+already imports `runtimeRequest`, so `status` is one action. Bundling them with the genuinely
+hard OAuth-logout case let a cheap gap ride along behind an expensive one. All three shipped;
+only API-backed OAuth logout remains deferred, and that one needs atomic disposition plus the
+five live-proxy cache invalidations.
+
+**The skill overclaimed.** `SKILL.md` said "Everything the dashboard can do, the CLI can do"
+while 136 routes had no declared capability. That is worse than a documentation nit: an agent
+that believes the index is exhaustive stops looking after `capabilities --route` returns empty,
+and `ocx access key` works. It now states that the index is authoritative for what it lists,
+that a verb can exist without appearing there, and that `ocx <group> help` is the fallback.
+
+The ratchet went 139 -> 136 on its first real test, and the shrink-only assertion is what
+forced the edit instead of letting the list quietly go stale.
+
+
 ## Verification
 
 - `tsc --noEmit` clean.
-- 15 pass in `cli-dispatch` (6 new logout assertions), 13 in `cli-capabilities` (2 new parity
-  assertions), 26 across dispatch + skill.
-- Red-first, three probes: restoring the original logout runner fails all six new assertions;
-  removing one ratchet entry fails the forward gate only; adding an already-covered route
-  fails the shrink gate only.
-- Behavioural check from the branch rather than the installed binary: `logout --json` exits 2
-  (was 0 with a false success), `logout nosuch --json` exits 4 with a JSON not-found envelope,
-  `logout foo bar` exits 2, `doctor --json` exits 2 with a pointer to the machine-readable
-  alternatives.
-
+- 57 pass across `cli-dispatch` (20, of which 11 are new logout assertions), `cli-capabilities`
+  (2 new parity assertions), `skill-ocx`, and `management-route-registry`.
+- Red-first, five probes, each failing only what it should: restoring the original logout runner
+  fails all six first-round assertions; restoring `--`-only flag detection fails the short-flag
+  sentinel case alone; restoring the read-then-remove preflight fails the concurrency case alone;
+  removing one ratchet entry fails the forward gate; adding an already-covered route fails the
+  shrink gate.
+- Behavioural checks run from the branch rather than the installed binary, after an early probe
+  used the released `ocx` and reported a stale "Unknown command" that was not evidence:
+  `logout --json` exits 2 (was 0 with a false success), `logout -j` exits 2 (was 0 **and
+  deleted a credential**), `logout --json=true` exits 2, `logout nosuch --json` exits 4 with a
+  JSON not-found envelope, `logout foo bar` exits 2, `doctor --json` exits 2.
+- Verified live against the running proxy: `system codex-app-server --json` returns app-server
+  state, `system codex-restart` without `--yes` exits 2, `claude desktop status --json` returns
+  the applied/desired DTO.
