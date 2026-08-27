@@ -8,7 +8,9 @@ Lanes: L1 commit-then-merge, L2 close + squash-merge, L3 cherry-pick, L4 reimple
 
 Every PR head was fetched to a local branch (`pr<n>-check`), checked out into an
 isolated worktree under `/tmp/ocx-tc-<n>`, and compiled with `bun x tsc --noEmit`
-against the repository's own `node_modules`. This is the gate the repository's
+against the repository's own `node_modules`. Note this compiles the PR HEAD, which is
+behind dev by 4 to 294 commits depending on the PR; the merged-tree gate a merge round
+actually needs is in 005. This is the gate the repository's
 `resolve-pr`-only CI does NOT run for draft PRs: a draft here gets
 `enforce-target`, `hygiene`, `label`, `resolve-pr` and CodeRabbit, none of which
 compile the tree. Two PRs (#2672, #2674) carry the full matrix because they are

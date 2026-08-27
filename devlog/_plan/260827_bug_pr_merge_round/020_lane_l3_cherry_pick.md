@@ -54,11 +54,12 @@ snapshot count, land, and comment on #2647 with the landed sha.
 It also adds 179 test lines to `openai-responses-passthrough.test.ts` and touches
 `src/server/responses/core.ts` — shared runtime.
 
-Conceptual overlap with #2684: both normalize tool schemas whose root is a union, for
-different destinations. #2684 is host-scoped to Azure and 92 lines; #2690 rewrites the
-xAI Responses lane. They do not textually conflict (different helper, different call
-site) but landing #2684 first keeps the smaller, provable change independent of the
-larger one.
+Overlap with #2684: both normalize tool schemas whose root is a union, for different
+destinations. They DO textually conflict — see 005. `git merge-tree` between the two
+heads reports a content conflict on `src/adapters/openai-chat.ts`, because #2690
+deletes the ~269-line xAI region and rewrites `toolsToChatFormatForProvider`, which is
+exactly what #2684 edits. Land #2684 first, then rebase #2690's extraction on top and
+resolve once.
 
 Take: the xAI root-schema normalization and its tests.
 Leave: the `openai-chat.ts` extraction, unless review concludes the fix is impossible

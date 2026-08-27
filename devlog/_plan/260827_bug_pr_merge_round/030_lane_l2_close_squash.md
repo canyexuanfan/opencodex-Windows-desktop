@@ -19,9 +19,14 @@ Landing it as one reviewed commit with a written rationale gives the history a s
 revert point, which a 12-file merge commit from a contributor branch does not.
 
 Why it lands at all: the tests are real (they exercise the repair and guard paths, not
-just the happy path), CI is green, and the defect class — a provider emitting a bare
-helper call instead of the code-mode `exec` wrapper — is the same class #2694 tried and
-failed to address.
+just the happy path), it compiles at its head AND in the merged tree, and the defect
+class — a provider emitting a bare helper call instead of the code-mode `exec` wrapper
+— is the same class #2694 tried and failed to address.
+
+Do NOT cite "CI is green" for this PR. It ran the same five non-compiling checks as
+#2694 (CodeRabbit, enforce-target, hygiene, label, resolve-pr); none of them build or
+test anything. See 005, correction 3. The full suite on the merged tree is the only
+behavioral evidence this PR will have, so it is mandatory before the squash.
 
 ## Sequencing consequence
 
