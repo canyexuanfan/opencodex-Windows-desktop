@@ -70,6 +70,25 @@ export { resolveCodexHomeDir } from "../codex/home";
  */
 export type OAuthDoctorCheck = { level: "OK" | "WARN" | "FAIL"; message: string };
 
+/**
+ * Whether any FAIL-level condition was seen during this `runDoctor` pass.
+ *
+ * Module-scoped and reset at the top of `runDoctor` rather than threaded through, because
+ * `runDoctor` reports by direct `console.log` across a dozen sections and has no checks
+ * collection to inspect. Reset matters for the test suite, which calls `runDoctor` several
+ * times in one process; a sticky flag would make the second call fail because the first did.
+ */
+let doctorSawFailure = false;
+
+function recordDoctorFailure(): void {
+  doctorSawFailure = true;
+}
+
+/** True when the last `runDoctor` pass saw a FAIL-level condition. */
+export function doctorFailed(): boolean {
+  return doctorSawFailure;
+}
+
 function pathIsWritable(path: string): boolean {
   try {
     // Directories need execute/search as well as write for create+rename.
@@ -987,6 +1006,9 @@ export async function runDoctor(args: string[] = []): Promise<void> {
   }
 
   console.log("opencodex doctor\n");
+  // Reset per pass: the suite drives runDoctor several times in one process, and a sticky
+  // flag would fail the second call because the first saw a problem.
+  doctorSawFailure = false;
 
   // Ordering note: the memory/runtime section renders after "Running proxy
   // process proxy env" below; helpers live above runDoctor for testability.
@@ -1214,6 +1236,12 @@ export async function runDoctor(args: string[] = []): Promise<void> {
   console.log("\nOAuth reliability");
   for (const check of await collectOAuthDoctorChecks()) {
     console.log(`  [${check.level}] ${check.message}`);
+    // A diagnostic that always exits 0 cannot gate anything, which defeats the point of
+    // running it from a script (#2697's sibling defect). FAIL is the level reserved for a
+    // surface that is unusable rather than degraded, so it -- and only it -- fails the
+    // command. WARN stays exit 0 on purpose: warning on a degraded-but-working install
+    // must not break a pipeline that is legitimately green.
+    if (check.level === "FAIL") recordDoctorFailure();
   }
 
   // #857: a running Codex app-server can keep an older in-memory catalog than

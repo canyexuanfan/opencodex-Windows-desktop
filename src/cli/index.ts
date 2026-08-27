@@ -26,6 +26,7 @@ import {
   writeRuntimePort,
 } from "../config/process-state";
 import { collectStatus, unusedProxyWarningLines } from "./status";
+import { takeFlag } from "./runtime-api";
 
 import {
   discoverStableProxyForRestart,
@@ -830,8 +831,12 @@ async function handleUninstall() {
 
 async function handleStatus() {
   const statusArgs = args.slice(1);
-  const wantsJson = statusArgs.length === 1 && statusArgs[0] === "--json";
-  if (statusArgs.length > 1 || (statusArgs.length === 1 && !wantsJson)) {
+  // Order-independent: the previous form only honoured `--json` as the LONE argument, so
+  // `ocx status --json --anything` silently printed human output to a caller that asked
+  // for JSON. Take the flag out of argv, then reject whatever is left over -- which keeps
+  // the strict unknown-argument behaviour rather than trading one defect for another.
+  const wantsJson = takeFlag(statusArgs, "--json");
+  if (statusArgs.length > 0) {
     console.error("Usage: ocx status [--json]");
     process.exit(1);
   }

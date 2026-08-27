@@ -69,7 +69,9 @@ const commandRunners: Record<string, CommandRunner> = {
     return Number(process.exitCode ?? 0);
   },
   restore: async deps => {
-    const restoreJson = deps.args[1] === "--json";
+    // Order-independent: matching at args[1] meant `ocx restore back --json` silently
+    // ignored the flag, because position 1 held `back`.
+    const restoreJson = deps.args.slice(1).includes("--json");
     if (deps.args[1] === "back") {
       // Reverse switch: re-point plain `codex` at the RUNNING proxy without touching its
       // lifecycle — the counterpart of `ocx restore`. Start/stop triggers are unchanged;
@@ -172,14 +174,21 @@ const commandRunners: Record<string, CommandRunner> = {
   },
   doctor: async deps => {
     const doctorArgs = deps.args.slice(1);
-    const { RECOVER_ZERO_BYTE_COORDINATOR_FLAG, runDoctor } = await import("./doctor");
+    const { RECOVER_ZERO_BYTE_COORDINATOR_FLAG, runDoctor, doctorFailed } = await import("./doctor");
     await runDoctor(doctorArgs);
     if (!doctorArgs.includes("--fix-codex-runtime") && !doctorArgs.includes(RECOVER_ZERO_BYTE_COORDINATOR_FLAG)) {
       console.log("");
       const { printCodexLogGuardDoctor } = await import("./codex-log-guard-doctor");
       printCodexLogGuardDoctor();
     }
-    return 0;
+    // A diagnostic that always exits 0 cannot gate a script. `runDoctor` reports by direct
+    // console.log with no checks collection, and signals its own special-flag failures
+    // through process.exitCode, so honour both: an explicit exitCode wins, otherwise a
+    // FAIL-level check fails the command. This is a BREAKING change for pipelines that ran
+    // `ocx doctor` and ignored the result; a diagnostic that cannot fail is worse.
+    const explicit = Number(process.exitCode ?? 0);
+    if (explicit !== 0) return explicit;
+    return doctorFailed() ? 1 : 0;
   },
   debug: async deps => {
     const { handleDebugCommand } = await import("./debug");
@@ -274,6 +283,7 @@ const commandRunners: Record<string, CommandRunner> = {
     const desiredDisabled = !shouldSyncCodexOnStart(deps.loadConfig());
     const invalidated = withCatalogWriteSerialization(owningCodexHome, permit =>
       invalidateCodexModelsCacheWithPermit(permit, owningCodexHome, { allowWhenDesiredDisabled: true }));
+    const cacheJson = cacheArgs.includes("--json");
     // Only warn/restart when models_cache was actually rewritten from a readable catalog.
     if (invalidated.kind === "completed" && invalidated.value) {
       afterCatalogWriteHandleAppServers({ restart: restartCodex, log: console });
@@ -281,7 +291,25 @@ const commandRunners: Record<string, CommandRunner> = {
     } else if (desiredDisabled) {
       console.log("Codex integration is OFF; cache sync skipped (no catalog or cache write).");
     }
-    return 0;
+    // `completed` with a falsy value means the cache was NOT rewritten, and any other kind
+    // means the write never completed (a permit it could not take, a busy catalog). Both
+    // previously exited 0, so a script could not tell a refreshed cache from a skipped one.
+    // A deliberate skip -- Codex integration off -- is not a failure.
+    const wrote = invalidated.kind === "completed" && Boolean(invalidated.value);
+    const ok = wrote || desiredDisabled;
+    if (cacheJson) {
+      console.log(JSON.stringify({
+        schemaVersion: 1,
+        ok,
+        wrote,
+        skipped: !wrote && desiredDisabled,
+        outcome: invalidated.kind,
+        codexHome: owningCodexHome,
+      }, null, 2));
+    } else if (!ok) {
+      console.error(`Cache refresh did not complete (${invalidated.kind}). The Codex model cache was not rewritten.`);
+    }
+    return ok ? 0 : 1;
   },
   gui: async deps => {
     const config = deps.loadConfig();
