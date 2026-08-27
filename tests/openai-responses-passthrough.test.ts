@@ -3,6 +3,7 @@ import { createResponsesPassthroughAdapter as createResponsesPassthroughAdapterP
 import { openaiResponsesUrl } from "../src/adapters/openai-responses-url";
 import { enrichProviderFromRegistry, providerConfigSeed } from "../src/providers/derive";
 import { getProviderRegistryEntry } from "../src/providers/registry";
+import { XAI_GROK_CLI_BASE_URL } from "../src/providers/xai-transport";
 import { routeModel } from "../src/router";
 import { resolveWireProtocolOverride } from "../src/server/adapter-resolve";
 import { handleResponses, sanitizeEncryptedContentInPlace } from "../src/server/responses";
@@ -872,6 +873,184 @@ describe("OpenAI Responses passthrough sanitization", () => {
       },
       { type: "function", name: "valid_schema", parameters: validParameters },
     ]);
+  });
+
+  test("normalizes or omits xAI CLI root unions after namespace lowering", () => {
+    const unsafeAutomationParameters = {
+      oneOf: [
+        {
+          type: "object",
+          properties: { mode: { type: "string", enum: ["view"] } },
+          required: ["mode"],
+        },
+        {
+          oneOf: [
+            {
+              type: "object",
+              properties: { id: { type: "string" }, mode: { const: "update" } },
+              required: ["id", "mode"],
+            },
+            {
+              type: "object",
+              properties: { name: { type: "string" }, mode: { const: "create" } },
+              required: ["name", "mode"],
+            },
+          ],
+        },
+      ],
+    };
+    const safeUnionParameters = {
+      type: "object",
+      properties: { token: { type: "string" } },
+      required: ["token"],
+      oneOf: [
+        { properties: { mode: { const: "view" } } },
+        { properties: { mode: { const: "delete" } } },
+      ],
+    };
+    const namespace = {
+      type: "namespace",
+      name: "mcp__codex_app",
+      tools: [
+        { type: "function", name: "automation_update", parameters: unsafeAutomationParameters },
+        { type: "function", name: "safe_union", parameters: safeUnionParameters },
+        { type: "function", name: "plain", parameters: {} },
+      ],
+    };
+    const adapter = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl: XAI_GROK_CLI_BASE_URL,
+      authMode: "oauth",
+      apiKey: "xai-test",
+    });
+    const build = (lite: boolean) => JSON.parse(adapter.buildRequest({
+      modelId: "grok-4.6",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "grok-4.6",
+        input: lite ? [{ type: "additional_tools", tools: [namespace] }] : [],
+        ...(lite ? {} : { tools: [namespace] }),
+      },
+    }, { headers: new Headers() }).body) as {
+      tools?: Array<{ name?: string; parameters?: Record<string, unknown> }>;
+      input: Array<{ type: string; tools?: Array<{ name?: string; parameters?: Record<string, unknown> }> }>;
+    };
+
+    for (const lite of [false, true]) {
+      const body = build(lite);
+      const tools = lite ? body.input[0]?.tools : body.tools;
+      expect(tools?.map(tool => tool.name)).toEqual([
+        "mcp__codex_app__safe_union",
+        "mcp__codex_app__plain",
+      ]);
+      const safe = tools?.find(tool => tool.name === "mcp__codex_app__safe_union")?.parameters;
+      expect(safe).toEqual({
+        type: "object",
+        properties: {
+          token: { type: "string" },
+          // Disjoint consts, so `anyOf` describes the same set the root `oneOf` did. `mode` is
+          // promoted into `required`: absent, it matched BOTH branches, which `oneOf` rejects.
+          mode: { anyOf: [{ const: "view" }, { const: "delete" }] },
+        },
+        required: ["token", "mode"],
+      });
+      expect(tools?.find(tool => tool.name === "mcp__codex_app__plain")?.parameters)
+        .toEqual({ type: "object" });
+    }
+  });
+
+  test("reconciles tool_choice against tools the xAI CLI schema policy omitted", () => {
+    // `oneOf` branches that disagree on which property names exist cannot be flattened, so this
+    // function is dropped. Namespace lowering already rewrote both the declaration and the
+    // selector to wire names, so the selector is left pointing at a tool that no longer ships.
+    const unsafe = {
+      oneOf: [
+        { type: "object", properties: { mode: { const: "view" } }, required: ["mode"] },
+        { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+      ],
+    };
+    const namespace = {
+      type: "namespace",
+      name: "mcp__codex_app",
+      tools: [
+        { type: "function", name: "automation_update", parameters: unsafe },
+        { type: "function", name: "plain", parameters: {} },
+      ],
+    };
+    const adapter = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl: XAI_GROK_CLI_BASE_URL,
+      authMode: "oauth",
+      apiKey: "xai-test",
+    });
+    const build = (toolChoice: unknown) => adapter.buildRequest({
+      modelId: "grok-4.6",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: { model: "grok-4.6", input: [], tools: [namespace], tool_choice: toolChoice },
+    }, { headers: new Headers() });
+
+    // A forced selection has no safe replacement: relaxing it to auto would quietly run the turn
+    // without the tool the caller required, so this fails locally instead of reaching Grok.
+    expect(() => build({ type: "function", name: "mcp__codex_app__automation_update" }))
+      .toThrow(/tool_choice requires function "mcp__codex_app__automation_update"/);
+
+    // An allowed_tools list still has a usable entry, so it simply loses the omitted one.
+    const narrowed = JSON.parse(build({
+      type: "allowed_tools",
+      mode: "auto",
+      tools: [
+        { type: "function", name: "mcp__codex_app__automation_update" },
+        { type: "function", name: "mcp__codex_app__plain" },
+      ],
+    }).body) as { tool_choice: { tools: Array<{ name: string }> } };
+    expect(narrowed.tool_choice.tools).toEqual([{ type: "function", name: "mcp__codex_app__plain" }]);
+
+    // Nothing left to point at is the forced case again.
+    expect(() => build({
+      type: "allowed_tools",
+      mode: "auto",
+      tools: [{ type: "function", name: "mcp__codex_app__automation_update" }],
+    })).toThrow(/tool_choice requires function/);
+
+    // A selector naming a surviving tool is untouched.
+    const kept = JSON.parse(build({ type: "function", name: "mcp__codex_app__plain" }).body) as {
+      tool_choice: unknown;
+    };
+    expect(kept.tool_choice).toEqual({ type: "function", name: "mcp__codex_app__plain" });
+  });
+
+  test("keeps native root unions on public xAI Responses", () => {
+    const parameters = {
+      oneOf: [
+        { type: "object", properties: { mode: { const: "view" } } },
+        { oneOf: [{ type: "object", properties: {} }, { type: "object", properties: {} }] },
+      ],
+    };
+    const request = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl: "https://api.x.ai/v1",
+      authMode: "key",
+      apiKey: "xai-test",
+    }).buildRequest({
+      modelId: "grok-4.6",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "grok-4.6",
+        input: [],
+        tools: [{ type: "function", name: "automation_update", parameters }],
+      },
+    }, { headers: new Headers() });
+    const body = JSON.parse(request.body) as {
+      tools: Array<{ parameters: Record<string, unknown> }>;
+    };
+
+    expect(body.tools[0]?.parameters).toEqual({ ...parameters, type: "object" });
   });
 
   test("model reasoning-summary opt-out strips unsupported delivery fields (#323)", () => {
