@@ -267,6 +267,12 @@ jobs:
           # between jobs, so leaving a usable token in .git/config is avoidable
           # residue. Matches the convention already used by the other workflows.
           persist-credentials: false
+          # tests/release-version-line.test.ts compares package.json against the
+          # newest release tag. actions/checkout fetches no tags by default, so
+          # without this the check reads an empty tag set and passes on anything -
+          # the exact regression it exists to catch would ride through CI green.
+          fetch-tags: true
+          fetch-depth: 0
 
       - name: Setup project Bun
         uses: ./.github/actions/setup-project-bun
@@ -454,6 +460,12 @@ jobs:
           # between jobs, so leaving a usable token in .git/config is avoidable
           # residue. Matches the convention already used by the other workflows.
           persist-credentials: false
+          # tests/release-version-line.test.ts compares package.json against the
+          # newest release tag. actions/checkout fetches no tags by default, so
+          # without this the check reads an empty tag set and passes on anything -
+          # the exact regression it exists to catch would ride through CI green.
+          fetch-tags: true
+          fetch-depth: 0
 
       - name: Setup project Bun
         uses: ./.github/actions/setup-project-bun

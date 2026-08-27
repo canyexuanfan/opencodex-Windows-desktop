@@ -32,14 +32,20 @@ const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 /** Release tags shaped vX.Y.Z[-pre]. Non-release tags are ignored, not an error. */
 const RELEASE_TAG = /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
+function git(args: string[]): { ok: boolean; out: string } {
+  const result = Bun.spawnSync(["git", ...args], { cwd: repoRoot });
+  return {
+    ok: result.exitCode === 0,
+    out: new TextDecoder().decode(result.stdout).trim(),
+  };
+}
+
 function localReleaseTags(): string[] {
-  const result = Bun.spawnSync(["git", "tag", "--list", "v*"], { cwd: repoRoot });
-  // A tarball install, a shallow CI checkout, or a missing git binary all land here.
-  // Absent tags cannot prove a regression, so the check reports nothing rather than
-  // inventing a failure.
-  if (result.exitCode !== 0) return [];
-  return new TextDecoder()
-    .decode(result.stdout)
+  const result = git(["tag", "--list", "v*"]);
+  // A tarball install or a missing git binary lands here. Absent tags cannot prove a
+  // regression, so the check reports nothing rather than inventing a failure.
+  if (!result.ok) return [];
+  return result.out
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => RELEASE_TAG.test(line));
@@ -59,31 +65,57 @@ function highestReleaseTag(tags: string[]): string | null {
   return sorted[sorted.length - 1] ?? null;
 }
 
+/**
+ * True when the given tag names the commit under test.
+ *
+ * This is the difference between "equal is legal" and "equal is a duplicate". On a
+ * release commit — main at v2.33.0, preview at v2.33.0-preview.20260825 — package.json
+ * SHOULD equal the highest tag, and a test that demanded strictly-ahead everywhere would
+ * turn every released commit red. On any other commit, equal means the tree claims a
+ * version that is already published.
+ */
+function tagPointsAtHead(tag: string): boolean {
+  const head = git(["rev-parse", "HEAD^{commit}"]);
+  const tagged = git([`rev-parse`, `${tag}^{commit}`]);
+  return head.ok && tagged.ok && head.out.length > 0 && head.out === tagged.out;
+}
+
 describe("release version line", () => {
   test("package.json carries a parseable SemVer version", () => {
     expect(inTreeVersion()).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
   });
 
-  test("the in-tree version is strictly ahead of every tagged release", () => {
+  test("the in-tree version is never behind a released one", () => {
     const tags = localReleaseTags();
-    if (tags.length === 0) {
-      // Shallow checkout: actions/checkout fetches no tags by default. Reporting nothing
-      // keeps this honest instead of asserting against an empty set that always passes.
-      expect(tags).toEqual([]);
-      return;
-    }
+    // A checkout with no tags cannot answer the question. CI fetches tags explicitly for
+     // the jobs that run this suite (see .github/workflows/ci.yml), so an empty set here
+    // means a tarball or a hand-made shallow clone, not a silently unprotected pipeline.
+    if (tags.length === 0) return;
 
     const version = inTreeVersion();
     const highest = highestReleaseTag(tags);
     expect(highest).not.toBeNull();
 
     const ordering = compareReleaseTags("v" + version, highest!);
+    if (ordering === 0) {
+      // Legal only on the release commit that tag names.
+      expect(
+        tagPointsAtHead(highest!),
+        "package.json version " + version + " equals release tag " + highest +
+          ", but this commit is not the one that tag names. The tree claims an " +
+          "already-published version: publishing is refused as a duplicate. Bump " +
+          "package.json.",
+      ).toBe(true);
+      return;
+    }
+
     expect(
       ordering,
-      "package.json version " + version + " is not ahead of the highest release tag " +
+      "package.json version " + version + " is BEHIND the highest release tag " +
         highest +
-        ". A release cut from this tree is either rejected as a channel regression or " +
-        "silently republishes an already-published version. Bump package.json.",
+        ". A release cut from this tree is rejected as a channel regression, and " +
+        "merging into main resolves package.json to main's side and silently " +
+        "republishes. Bump package.json.",
     ).toBeGreaterThan(0);
   });
 
@@ -93,5 +125,10 @@ describe("release version line", () => {
     expect(compareReleaseTags("v2.32.1-preview.20260825", "v2.33.0")).toBeLessThan(0);
     expect(compareReleaseTags("v2.33.0", "v2.33.0")).toBe(0);
     expect(compareReleaseTags("v2.34.0", "v2.33.0")).toBeGreaterThan(0);
+    // A prerelease of a FUTURE version is ahead, not behind: dev may legitimately carry
+    // 2.35.0-preview.1 while v2.34.0 is the newest tag.
+    expect(compareReleaseTags("v2.35.0-preview.1", "v2.34.0")).toBeGreaterThan(0);
+    // ...but a prerelease of the SAME core is behind its own stable release.
+    expect(compareReleaseTags("v2.34.0-preview.1", "v2.34.0")).toBeLessThan(0);
   });
 });
