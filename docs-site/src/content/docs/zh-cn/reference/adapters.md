@@ -1,6 +1,6 @@
 ---
 title: Adapters
-description: 七个 provider adapter 的目标、请求构建方式与各自特性。
+description: provider adapter 的目标、请求构建方式与各自特性。
 ---
 
 **adapter** 负责在 opencodex 的内部请求/响应模型与某个 provider 的 wire 格式之间转换。每个
@@ -157,8 +157,9 @@ Cursor 的 HTTP/1.1 兼容传输：通过 `agent.v1.AgentService/RunSSE` 接收 
 - 保留 `cursor/grok-4.5-fast` 作为可选模型，但向 Cursor 发送规范的 `grok-4.5` 模型，并将独立的
   `effort` 和 `fast=true` 值放入 `requested_model.parameters`。
 - Cursor 原生本地 filesystem/shell/network 执行默认被拒绝。显式 `mcpServers` 与
-  `desktopExecutor` 集成分别需要 opt-in；`unsafeAllowNativeLocalExec` 会启用更广泛的内置
-  executor，并绕过 Codex 审批和 sandbox 语义。
+  `desktopExecutor` 集成分别需要 opt-in；`nativeLocalExec: "on"` 会启用更广泛的内置
+  executor，并绕过 Codex 审批和 sandbox 语义；旧的 `unsafeAllowNativeLocalExec: true` 仅在
+  `nativeLocalExec` 未设置时等同。
 
 ## `azure-openai`（别名：`azure`）
 

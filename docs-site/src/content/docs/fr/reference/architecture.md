@@ -13,7 +13,7 @@ src/
 ├── server/             # Bun.serve, /v1/* proxy, /api/* management API, WS bridge
 ├── codex/              # Codex config injection, catalog sync, auth/account integration
 ├── providers/          # provider metadata, API-key pool, quota and labels
-├── adapters/           # seven wire adapters, shared guards/utilities, Cursor protobuf transport
+├── adapters/           # wire adapters, shared guards/utilities, Cursor protobuf transport
 ├── oauth/              # OAuth providers, API-key catalog, token store/refresh
 ├── usage/              # request usage extraction, JSONL logs, summaries, totals
 ├── lib/                # runtime, process, retry, privacy, token estimate helpers
@@ -42,7 +42,7 @@ Trois anciens points d’entrée volumineux préservent désormais la compatibil
 2. `server/responses/core.ts` décompresse et analyse le JSON, développe les entrées de mémoire locale `previous_response_id` lorsqu’elles sont disponibles, puis appelle `responses/parser.ts`.
 3. `router.ts` résout un identifiant simple ou `provider/model`. Le serveur détermine ensuite l’affinité du compte Codex, actualise l’authentification OAuth du fournisseur si nécessaire et applique à la route les identifiants sélectionnés.
 4. Avant l’appel principal, `vision/` décrit les images pour les modèles figurant dans `noVisionModels`. En l’absence de service auxiliaire sûr, les images sont supprimées plutôt qu’envoyées à un service en amont purement textuel.
-5. `server/adapter-resolve.ts` applique toute substitution de protocole propre au modèle et construit l’un des sept adaptateurs. L’adaptateur Responses relaie le corps natif, Cursor exécute son transport bidirectionnel `runTurn`, et les adaptateurs traduits construisent, envoient et analysent une requête en amont.
+5. `server/adapter-resolve.ts` applique toute substitution de protocole propre au modèle et construit l’un des adaptateurs enregistrés. L’adaptateur Responses relaie le corps natif, Cursor exécute son transport bidirectionnel `runTurn`, et les adaptateurs traduits construisent, envoient et analysent une requête en amont.
 6. Pour les modèles routés avec un outil hébergé `web_search`, `web-search/` expose une fonction synthétique, exécute la recherche réelle avec le backend configuré — le service auxiliaire OpenAI/ChatGPT ou le backend Anthropic —, renvoie les résultats au modèle routé et recommence dans la limite de boucle configurée. Cette boucle ne prend en charge que le chemin HTTP classique ; les adaptateurs qui implémentent `runTurn`, comme Cursor, la contournent et poursuivent leur propre transport.
 7. `bridge.ts` produit un flux SSE Responses ou une réponse JSON. `server/request-log.ts` et `usage/` recueillent de manière bornée l’état, la latence, les libellés de fournisseur/modèle et l’utilisation estimée des jetons, sans modifier la réponse.
 

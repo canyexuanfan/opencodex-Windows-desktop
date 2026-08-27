@@ -1,6 +1,6 @@
 ---
 title: Adapters
-description: The seven provider adapters — what each targets, how it builds requests, and its quirks.
+description: The provider adapters — what each targets, how it builds requests, and its quirks.
 ---
 
 An **adapter** translates between opencodex's internal request/response model and one provider wire

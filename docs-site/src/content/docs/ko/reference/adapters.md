@@ -171,8 +171,9 @@ discovery에 모두 적용됩니다.
 - `cursor/grok-4.5-fast`는 선택 가능한 모델로 유지하되, Cursor에는 정식 `grok-4.5` 모델을 보내고
   별도의 `effort`, `fast=true` 값은 `requested_model.parameters`에 담습니다.
 - Cursor 네이티브 로컬 파일시스템/shell/network 실행은 기본적으로 거부합니다. 명시적인
-  `mcpServers`와 `desktopExecutor` 통합은 각각 별도 opt-in입니다. `unsafeAllowNativeLocalExec`은
-  더 넓은 내장 executor를 켜며 Codex 승인/샌드박스 규칙을 우회합니다.
+  `mcpServers`와 `desktopExecutor` 통합은 각각 별도 opt-in입니다. `nativeLocalExec: "on"`은
+  더 넓은 내장 executor를 켜며 Codex 승인/샌드박스 규칙을 우회합니다. 예전 설정인
+  `unsafeAllowNativeLocalExec: true`는 `nativeLocalExec`을 지정하지 않았을 때만 같은 뜻입니다.
 
 ## `azure-openai` (별칭: `azure`)
 
