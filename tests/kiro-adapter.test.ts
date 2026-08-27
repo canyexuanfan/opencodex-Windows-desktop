@@ -1394,19 +1394,26 @@ describe("kiro code-mode exec survives the catalog budget", () => {
     expect(notice).not.toContain(gateway.name);
   });
 
-  test("a byte-budget catalog still reserves room for exec", async () => {
+  test("a byte-budget catalog reserves room for exec without breaching the budget", async () => {
     // The count budget is the easy case. Bytes are where a naive reservation breaks: the budget is
     // measured over the serialized ARRAY, so exec must be projected into every fit check rather
-    // than subtracted as a standalone size.
+    // than subtracted as a standalone size. Admitting exec on top of an already-full catalog would
+    // satisfy "exec survives" while blowing the ceiling, so both halves are asserted here.
     const heavy = Array.from({ length: 40 }, (_, index) => ({
       name: `heavy_${String(index).padStart(3, "0")}`,
       description: `Heavy ${index}`,
       parameters: { type: "object", properties: { blob: { type: "string", description: "x".repeat(8_000) } } },
     }));
-    const { names } = await emitted([...heavy, codeModeExec]);
-    const serialized = new TextEncoder().encode(JSON.stringify(names)).byteLength;
+    const { body } = await createKiroAdapter(provider).buildRequest(
+      parsedWith([{ role: "user", content: "hi" }], [...heavy, codeModeExec]),
+    );
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+    const specs = current.userInputMessageContext.tools.slice(0, -1);
+    const names = specs.map((tool: { toolSpecification: { name: string } }) => tool.toolSpecification.name);
+    const serializedBytes = new TextEncoder().encode(JSON.stringify(specs)).byteLength;
 
     expect(names).toContain("exec");
-    expect(serialized).toBeGreaterThan(0);
+    expect(names.length).toBeLessThan(heavy.length + 1);
+    expect(serializedBytes).toBeLessThanOrEqual(MAX_KIRO_TOOL_CATALOG_BYTES);
   });
 });
