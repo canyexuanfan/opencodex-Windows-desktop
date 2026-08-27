@@ -167,3 +167,71 @@ describe("#2703 the projection does not strip the 5h window", () => {
     expect(quota?.shortPercent).toBe(1);
   });
 });
+
+describe("#2705 access key usage columns", () => {
+  async function listOutput(payload: Record<string, unknown>): Promise<string> {
+    const { handleAccessCommand } = await import("../src/cli/access");
+    const lines: string[] = [];
+    const original = console.log;
+    console.log = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+    try {
+      await handleAccessCommand(["key", "list"], {
+        baseUrl: "http://127.0.0.1:10100",
+        fetchImpl: (async () => new Response(JSON.stringify(payload), { status: 200 })) as unknown as typeof fetch,
+      });
+    } finally {
+      console.log = original;
+    }
+    return lines.join("\n");
+  }
+
+  test("prints request counts and last-used instead of only id/name/prefix", async () => {
+    const out = await listOutput({
+      keys: [{
+        id: "k_9f2a", name: "ci-runner", prefix: "ocx_data_abc...",
+        usage: { requests7d: 1204, totalRequests: 18330, lastUsedAt: "2026-08-27T04:11:00Z" },
+      }],
+    });
+    expect(out).toContain("REQ 7D");
+    expect(out).toContain("1,204");
+    expect(out).toContain("18,330");
+    expect(out).toContain("2026-08-27T04:11:00Z");
+  });
+
+  test("an ambiguous key prints the marker and NEVER a fabricated 0", async () => {
+    // The server models usage as a discriminated union precisely so a consumer cannot show a
+    // number beside an ambiguity marker. Reporting 0 requests for a key that may be in heavy
+    // use is the dangerous answer for someone deciding what to delete.
+    const out = await listOutput({
+      keys: [{ id: "k_11bd", name: "laptop", prefix: "ocx_data_def...", usage: { ambiguous: true } }],
+    });
+    expect(out).toContain("ambiguous");
+    expect(out).not.toMatch(/\b0\b/);
+  });
+
+  test("a never-used key says never rather than showing an empty cell", async () => {
+    const out = await listOutput({
+      keys: [{ id: "k_new", name: "fresh", prefix: "ocx_data_ghi...", usage: { requests7d: 0, totalRequests: 0 } }],
+    });
+    expect(out).toContain("never");
+  });
+
+  test("dataset-level attribution and truncation print ONCE as a footer", async () => {
+    // They describe the usage log, not a key. Without attributionSince an absent lastUsedAt is
+    // unreadable: "never used" and "nothing attributable yet" look identical.
+    const out = await listOutput({
+      keys: [
+        { id: "k_a", name: "a", prefix: "p", usage: { requests7d: 1, totalRequests: 1 } },
+        { id: "k_b", name: "b", prefix: "p", usage: { requests7d: 2, totalRequests: 2 } },
+      ],
+      attributionSince: "2026-07-29T00:00:00Z",
+      historyTruncated: true,
+    });
+    expect(out.match(/attribution since/g)).toHaveLength(1);
+    expect(out).toContain("older history truncated");
+  });
+
+  test("no keys still reports the empty state", async () => {
+    expect(await listOutput({ keys: [] })).toContain("No API access keys configured.");
+  });
+});

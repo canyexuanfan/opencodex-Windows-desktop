@@ -138,6 +138,10 @@ export const CAPABILITIES: readonly Capability[] = [
     flags: [{ name: "--json", value: "boolean", summary: "Emit the account list as JSON." }],
     mutates: false,
     json: "payload",
+    details: [
+      "STATUS names `paused` alongside `selected`: a paused-but-selected account still receives requests.",
+      "Quota is only fetched under `--quota` (a deliberate cost decision), so 5h and weekly percentages appear in `account list --quota`, not bare `account list`.",
+    ],
   },
   {
     command: ["usage"],
@@ -151,6 +155,10 @@ export const CAPABILITIES: readonly Capability[] = [
     ],
     mutates: false,
     json: "payload",
+    details: [
+      "Per-account totals are withheld under `--provider` or `--model`: account rows cannot be honestly re-partitioned by provider, so the report says so rather than printing an empty table.",
+      "An `(ambiguous)` account row aggregates several accounts; do not read it as one identity.",
+    ],
   },
 ];
 
