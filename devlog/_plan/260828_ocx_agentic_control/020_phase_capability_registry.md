@@ -63,13 +63,31 @@ invisible to a string grep: lazy `import()`, handlers outside the `??` chain, pa
 constants, prefix decoding, regex params, `endsWith` matching. A parity test built on
 `rg` would pass vacuously while missing the entire `/api/codex-auth/*` family.
 
-To keep the declaration honest, add a second test that the registry does not drift
-from the handlers: for every registry entry, assert the owning handler module exports
-a marker or that the literal appears in the declared owner file, and for every
-`if (url.pathname === "…")` literal found by scan, assert it exists in the registry.
-The scan catches added literals; the declaration covers the non-literal routes the
-scan cannot see. Neither alone is sufficient; state that in the test's header comment
-so a future reader does not "simplify" it back to one mechanism.
+To keep the declaration honest the test needs **three** checks, not two. Two are
+obvious and insufficient:
+
+1. **Scan -> registry.** Every `if (url.pathname === "…")` literal in the management
+   files must exist in the registry. This has real reach — 188 such literals across
+   those files — and it catches an added literal route.
+2. **Registry -> source.** Every registry entry's path must appear in its declared
+   owner file.
+
+Check 2 **cannot hold for the 40+ non-literal routes** (lazy imports, path constants,
+regex params, `endsWith`, prefix decode) named in 001. For those entries neither
+direction verifies anything, so nothing detects an **under-declared** registry: a
+route registered through `codex-restart-contract.ts:17` and simply omitted from the
+registry is invisible to both, and `tests/cli-api-parity.test.ts` would then pass with
+a genuine gap. The gate would be blind exactly where 001 says it must not be.
+
+3. **Per-module route-count reconciliation.** For each handler module, assert
+   `registryRoutesFor(module).length === literalCountIn(module) + nonLiteralAllowlist[module].length`,
+   where `nonLiteralAllowlist` enumerates each non-literal route with the mechanism
+   that registers it. Adding a non-literal route without registering it then fails on
+   the count, and adding it to the allowlist without a registry entry fails too.
+
+State all three in the test's header comment, with why none is sufficient alone, so a
+future reader does not "simplify" it back to one mechanism. This is the unit's central
+claim — if this gate can pass vacuously, nothing else in the unit holds.
 
 ### Exemptions
 
@@ -103,8 +121,29 @@ contains exactly the visible capability set — generation makes the license obs
 ## 020.2 — retire the 20 dead `USAGE` exports
 
 For each module listed in 002, delete the module-level `USAGE` constant and have the
-usage path call `printSubcommandUsage(["account"])` etc. Where a usage string
-carries genuinely local detail, move that detail into the capability's `details[]`.
+usage path call `printSubcommandUsage("account")` etc. Where a usage string carries
+genuinely local detail, move that detail into the capability's `details[]`.
+
+**`ACCOUNT_USAGE` is not a dead export — it has four live consumers** at
+account.ts:127, :213, :256, :317, each `console.error(ACCOUNT_USAGE)`. Replacing them
+is a behavior change in two ways that must be handled deliberately:
+
+| | current | `printSubcommandUsage` |
+|---|---|---|
+| stream | `console.error` (stderr) | `console.log` (stdout) |
+| control flow | `return 1` | calls `process.exit(1)` on an unknown name |
+
+Moving account usage errors from stderr to stdout breaks any script that separates
+the streams, and swapping `return 1` for `process.exit` changes how the dispatcher
+sees the result. Either give `printSubcommandUsage` an explicit stream/exit mode and
+use the stderr+return variant here, or keep the four call sites returning 1 and only
+source their **text** from the capability table. The second is smaller and preferred.
+`tests/cli-account.test.ts:989` already drives `printSubcommandUsage("account")`, so
+it will catch a careless swap.
+
+Scope correction: 002 counts **37** usage blocks, of which 20 are the dead
+module-level exports. This phase deletes the 20 dead ones and re-sources the
+remainder's text; it does not delete the live ones.
 
 `ocx ready`'s triplicated string (registry.ts:354, root.ts:74, ready.ts) collapses to
 one capability entry.
@@ -145,9 +184,18 @@ proxy's own binary.
 Add `cliVersion` and `proxyVersion` to `CliStatusJson`. Mirror the warning in
 `runDoctor`.
 
-## 020.5 — the exit-code contract
+## 020.5 — moved out
 
-Now that help is generated, make the contract uniform and documented in one place:
+The uniform exit-code and `--json` contract work moved to its own work-phase,
+`025_phase_uniform_cli_contract.md` (wp3b). This phase already carries banner
+generation, ~20 constant deletions, a new command, a new server field, and three new
+test files, and it is the phase every later phase blocks on. Adding two breaking
+contract changes on top made it the largest phase in the stack by a wide margin.
+
+Split rationale is dependency-shaped, not effort-shaped: the contract work *consumes*
+the capability table this phase produces (it needs `json` declared per capability to
+test order-independence), so it is a genuine successor phase rather than a slice
+carved off to make this one smaller.
 
 - `doctor` and `sync-cache` return non-zero on failure (002 flagged both as always 0).
 - `--json` becomes order-independent everywhere via `takeFlag`: fixes `status`
@@ -179,4 +227,3 @@ diagnostic command that cannot gate anything, which is worse.
 3. `ocx capabilities --json` enumerates the surface with routes and flags.
 4. `ocx status` warns on version skew and reports both versions in JSON.
 5. Every capability declaring JSON accepts `--json` in any argv position.
-

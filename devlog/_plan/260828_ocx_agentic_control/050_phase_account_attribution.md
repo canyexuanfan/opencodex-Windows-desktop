@@ -59,22 +59,59 @@ Record it rather than widening the label and breaking the existing `p` format.
 
 MODIFY `src/server/responses/core.ts`.
 
-At the existing `genericFailoverAccountId` assignment (~2888), also set
-`logCtx.accountLogLabel = oauthAccountLogLabel(resolved.accountId)` when the
-provider is a non-Codex OAuth provider and the id is present.
+**Do not attach at the `genericFailoverAccountId` assignment.** That line
+(core.ts:2888) sits inside `if (isGenericFailoverProvider(route.providerName, route.provider))`
+at :2887, and that predicate (`src/oauth/generic-account-failover.ts:82`) requires
+`provider.authMode === "oauth"` and excludes `{openai, anthropic}`. The rotation
+paths are gated more tightly still: `isGenericOAuthFailoverEnabled` (:128) also
+requires failover enabled and, at :164, **at least two stored accounts**.
 
-Critically, repeat it after **each rotation site** (~4328, ~4629, ~5221). A request
-that rotated accounts must attribute to the account that actually served it, or the
-numbers are wrong in exactly the situation the operator cares about. Reuse a single
-small helper so the four call sites cannot drift:
+Attaching there would mean the ordinary case — one xai or cursor account, failover
+off — never stamps a label, while every test listed below still passes. That is the
+C-ACTIVATION-GROUNDING-01 trap, and it would make accept criterion 1 unreachable.
+
+Attach instead at the `resolved` snapshot itself (core.ts:2878-2879), which carries
+`resolved.accountId` unconditionally for every OAuth provider on this path,
+**outside** the failover gate:
 
 ```ts
-function stampOAuthAccountLabel(logCtx: RequestLogContext, provider: string, accountId: string | undefined): void {
+         const resolved = await getValidAccessTokenSnapshot(route.providerName);
+         replayOAuthCredentialSnapshot = { accountId: resolved.accountId, generation: resolved.generation };
++        // Attribution is independent of failover: a single-account xai/cursor user
++        // must still get per-account usage. Stamping inside the
++        // isGenericFailoverProvider gate below would silently skip them.
++        stampOAuthAccountLabel(logCtx, route.providerName, route.provider, resolved.accountId);
+```
+
+Then repeat it after **each rotation site** (core.ts:4317, :4618, and the
+`genericFailoverAccountId` re-resolutions at :4696 and :4781 — five sites, not the
+three an earlier draft named). A request that rotated accounts must attribute to the
+account that actually served it. Reuse one helper so the sites cannot drift:
+
+```ts
+// Lives in src/codex/account-label.ts (Lab-clean: it imports only node:crypto).
+export function stampOAuthAccountLabel(
+  logCtx: { accountLogLabel?: string },
+  providerName: string,
+  provider: OcxProviderConfig,
+  accountId: string | undefined,
+): void {
   if (!accountId) return;
-  if (!isNonCodexOAuthProvider(provider)) return;   // codex keeps its p-label producer
+  // openai keeps its own p-label producer; anthropic already folds the account
+  // into the provider label (core.ts:2876 formatAnthropicProviderForLog).
+  if (provider.authMode !== "oauth") return;
+  const base = baseProviderLabel(providerName);
+  if (base === "openai" || base === "anthropic") return;
   logCtx.accountLogLabel = oauthAccountLogLabel(accountId);
 }
 ```
+
+**Activation scenario (for C).** Provider `xai`, `authMode: "oauth"`, exactly one
+stored account, generic failover **disabled**. Observable effect: the persisted usage
+entry carries `accountLogLabel: "o<hex6>"` and `ocx usage --json` reports one
+non-`legacy-ambiguous` account row. If that case does not stamp, the phase has
+re-created the bug it set out to fix. A second scenario with two accounts and
+failover enabled proves the rotation re-stamp.
 
 Boundary: this must not reach into `src/lab/`. `core.ts` is one of the three files
 `tests/core-lab-boundary.test.ts` guards, so the helper lives in
@@ -82,20 +119,48 @@ Boundary: this must not reach into `src/lab/`. `core.ts` is one of the three fil
 
 ## 050.3 — let the label survive attribution
 
-MODIFY `src/usage/summary.ts` around `legacyCodexAccountLabel` (:681) and
-`buildAccounts` (:706): an **explicit** label on the row survives regardless of
-provider. Only the *fallback* path stays openai-gated.
+The gate is `accountLabelForAttribution` at `src/usage/summary.ts:687`, called from
+`buildAccounts` at :705 as `accountLabelForAttribution(input.provider, input.accountLogLabel)`.
+An earlier draft of this doc named `legacyCodexAccountLabel(entry)`, which does not
+exist — that function takes `provider: string` and is only the fallback.
+
+Current:
 
 ```ts
--  const label = legacyCodexAccountLabel(entry);
-+  // An explicitly stamped label is authoritative for any provider (#2699).
-+  // The legacy fallback stays openai-only: guessing 'main' for a non-Codex row
-+  // would silently merge unrelated accounts.
-+  const label = entry.accountLogLabel ?? legacyCodexAccountLabel(entry);
+function accountLabelForAttribution(provider: string, explicit: unknown): string | null {
+  if (isCodexUsageAccountLogLabel(explicit)) return explicit;
+  return legacyCodexAccountLabel(provider);
+}
 ```
 
-Leave `legacy-ambiguous` behavior for unlabeled openai rows untouched. wp4 already
-renders the `ambiguous` marker, so those rows stay honest.
+**Decide which layer owns the widening, because doing both is a no-op on top of a
+no-op.** Two options, and this doc chooses the second:
+
+1. Widen `isCodexUsageAccountLogLabel` to accept `o<hex6>`. Then :688 already passes
+   the new labels and this function needs no edit at all. But the predicate's name
+   then lies, and it is also the validator four writers use to *reject* bad labels —
+   widening it there weakens validation for a rename's convenience.
+2. **Chosen:** keep `isCodexUsageAccountLogLabel` as the Codex-specific predicate,
+   add a sibling `isOAuthUsageAccountLogLabel`, and widen only the attribution gate:
+
+```ts
+ function accountLabelForAttribution(provider: string, explicit: unknown): string | null {
+   if (isCodexUsageAccountLogLabel(explicit)) return explicit;
++  // An explicitly stamped non-Codex label is authoritative for any provider (#2699).
++  // The legacy fallback below stays openai-only: guessing for a non-Codex row would
++  // silently merge unrelated accounts into 'legacy-ambiguous'.
++  if (isOAuthUsageAccountLogLabel(explicit)) return explicit;
+   return legacyCodexAccountLabel(provider);
+ }
+```
+
+The writers in `src/usage/log.ts` and `src/server/request-log.ts` accept either
+family via `ACCOUNT_LOG_LABEL_RE` from 050.1, so persistence and attribution are
+widened in exactly one place each.
+
+Leave `legacy-ambiguous` behavior for unlabeled openai rows untouched (`buildAccounts`
+sets `ambiguous: label === LEGACY_AMBIGUOUS_ACCOUNT_LABEL` at :708). wp4 renders the
+marker, so those rows stay honest.
 
 ## 050.4 — out of scope, explicitly
 
@@ -132,4 +197,3 @@ the stack. If wp9's CI cannot run, this phase does not ship.
 3. `ocx usage` (wp4's table) shows those accounts.
 4. No email or raw account id is written to any log.
 5. The Lab core-boundary test still passes.
-

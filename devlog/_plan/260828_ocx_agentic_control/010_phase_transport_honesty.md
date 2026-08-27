@@ -47,29 +47,56 @@ Identical change for the `models` runner. Do not change `handleModels` /
 while `process.exitCode` is already the contract eight other runners use.
 
 **Guard against recurrence.** A second one-line fix invites a third. Add to
-`tests/cli-dispatch.test.ts` a check that no runner body in `dispatch.ts` matches
-`/await\s+handle\w+\([^)]*\);\s*\n\s*return 0;/` — a source scan in the same
-spirit as `core-lab-boundary`. It has to allow runners that genuinely cannot fail
-(document them by an explicit allowlist of command names, so adding one is a
-deliberate act).
+`tests/cli-dispatch.test.ts` a source scan in the same spirit as
+`core-lab-boundary`, rejecting a runner that awaits a handler and then returns a
+literal 0.
+
+**The pattern must tolerate nested parentheses.** The obvious
+`/await\s+handle\w+\([^)]*\);\s*\n\s*return 0;/` does **not** work: `[^)]*`
+cannot span `deps.args.slice(1)` because of the inner `)`. Run against the real
+pre-fix `dispatch.ts` it matches exactly one site — `handleLogin` at :195 — and
+misses both :419 and :428, the two this phase fixes. A guard that greens against a
+pattern which never covered the regression is worse than no guard.
+
+Use a `;`-terminated form instead, and **drive it red first**:
+
+```ts
+const SWALLOW_RE = /await\s+handle\w+\([^;]*\);\s*\n\s*return 0;/g;
+```
+
+The test asserts two things, and the first is what keeps it honest:
+
+1. Against a fixture holding the pre-fix bodies of the `provider` and `models`
+   runners, `SWALLOW_RE` **matches** — proof the pattern sees the defect.
+2. Against current `dispatch.ts` source, every match's command name is in an
+   explicit allowlist of runners that genuinely cannot fail. Adding a name is then a
+   deliberate, reviewable act rather than a silent widening.
+
+The permissive `[\s\S]*?` variant matches 6 sites and is too loose; `[^;]*` is the
+narrowest form that spans an argument list without crossing a statement boundary.
 
 ---
 
 ## 010.2 — `runtime-api.ts`: render `reason` and `hint`
 
-MODIFY `src/cli/runtime-api.ts` `responseMessage` (line ~50).
+MODIFY `src/cli/runtime-api.ts` `responseMessage` (line 50).
 
-Before (shape):
+**Parameter order is `(body, status)`, not `(status, body)`** — the call site at :86
+is `responseMessage(body, response.status)`. Keep it; an earlier draft of this doc
+inverted it, which typechecks only if the call site is flipped too and otherwise
+binds `status` to the body object.
+
+Before (verbatim):
 
 ```ts
-function responseMessage(status: number, body: unknown): string {
-  if (typeof body === "string") return body.slice(0, 400);
+function responseMessage(body: unknown, status: number): string {
   if (body && typeof body === "object") {
+    const record = body as Record<string, unknown>;
     for (const key of ["error", "message", "detail"]) {
-      const v = (body as Record<string, unknown>)[key];
-      if (typeof v === "string" && v) return v;
+      if (typeof record[key] === "string" && record[key]) return record[key];
     }
   }
+  if (typeof body === "string" && body.trim()) return body.trim().slice(0, 400);
   return \`Management request failed (${status})\`;
 }
 ```
@@ -84,8 +111,8 @@ function stringField(body: Record<string, unknown>, key: string): string | undef
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
 }
 
-function responseMessage(status: number, body: unknown): string {
-  if (typeof body === "string") return body.slice(0, 400);
+function responseMessage(body: unknown, status: number): string {
+  if (typeof body === "string" && body.trim()) return body.trim().slice(0, 400);
   if (!body || typeof body !== "object") {
     return \`Management request failed (${status})\`;
   }
@@ -206,4 +233,3 @@ it as part of the exit-code contract work.
    with the actionable message instead of producing a fenced install.
 4. `ocx doctor` names an existing collision.
 5. No new `return 0` swallowing can be added without editing the allowlist.
-

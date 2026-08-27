@@ -25,8 +25,8 @@ in 001's family table:
 
 - `ocx system settings [set …]` -> `GET|PUT /api/settings` (partially covered today)
 - `ocx system windows-replace-retries` -> `GET /api/system/windows-replace-retries`
-- `ocx account failover`, `auto-switch`, `reset-credits` -> the remaining
-  `/api/codex-auth/*` verbs
+- `ocx account failover` -> `PUT /api/codex-auth/failover`. Note `auto-switch` and
+  `reset-credits` already exist (account.ts:302, :313) — do not re-add them
 - `ocx models discovery ack` -> `POST /api/model-discovery/acknowledge`
 - `ocx request-history` -> `GET /api/request-history`, `/{id}`, `/{id}/route-decision`
   (`ocx observe` reaches only the route-decision variant)
@@ -86,4 +86,3 @@ without them:
 2. No destructive verb mutates without `--yes`.
 3. The dead route is gone and no test regressed.
 4. `ocx capabilities --json` lists every new verb.
-

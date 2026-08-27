@@ -75,7 +75,7 @@ enumerate from a declared registry, not from source text.
 | agent settings | `/api/v2` GET+PUT, `/api/injection-model`, `/api/effort-caps`, `/api/subagent-models`, `/api/subagent-model-fallback`, `/api/codex-auth/features/default-mode-request-user-input` | `ocx agent`, `ocx v2`; the feature flag has no verb |
 | access keys | `/api/keys` GET+POST+PATCH+DELETE | `ocx access key` list/create/remove; PATCH rename has no verb |
 | oauth accounts | `/api/oauth/providers`, `/api/key-providers`, `/api/oauth/login` +cancel +code, `/status`, `/logout`, `/api/oauth/accounts` GET+DELETE, `/active`, `/pool` GET+PUT, `/clear-cooldown`, `/import`, `/alias`, `/api/providers/keys` +active +alias | `ocx account`; `/pool` (strategy/sticky) has no verb |
-| codex auth | 22 routes: accounts GET/DELETE, `/alias`, `/pause`, `/priority`, `/pause-exhausted`, `/clear-cooldown`, `/active` GET+PUT, `/auto-switch`, `/pool-strategy`, `/failover`, `/quota`, `/reset-credits` +consume, `/login` +code +cancel, `/login-status` | `ocx account`; pause, pause-exhausted, pool-strategy, failover, auto-switch, reset-credits have no verb |
+| codex auth | 22 routes: accounts GET/DELETE, `/alias`, `/pause`, `/priority`, `/pause-exhausted`, `/clear-cooldown`, `/active` GET+PUT, `/auto-switch`, `/pool-strategy`, `/failover`, `/quota`, `/reset-credits` +consume, `/login` +code +cancel, `/login-status` | `ocx account`; pause, pause-exhausted, pool-strategy, failover have no verb. `auto-switch` (account.ts:302 -> `cmdAutoSwitch`) and `reset-credits` (account.ts:313) DO have verbs — verified; an earlier draft wrongly listed them as gaps |
 | native main profiles | 10 routes under `/api/native-main-profiles` | `ocx account main` |
 | system | `/api/system/memory`, `/windows-replace-retries`, `/restart`, `/codex-app-server`, `/codex-restart`, `/api/stop` | `ocx restart`, `ocx stop`, `ocx observe memory` |
 | lab | 20 read routes + `/public/*` 4 + automation 5 | `ocx lab` reads local SQLite, never the HTTP routes |
@@ -92,4 +92,3 @@ From management-api.ts:237 — a CLI client should encode these once:
 - `503` with `reason` + `hint` from `src/server/management-auth.ts:455`
 
 The last one is #2698: the fields exist and the CLI does not print them.
-

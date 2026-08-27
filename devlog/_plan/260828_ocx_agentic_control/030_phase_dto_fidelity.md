@@ -131,10 +131,37 @@ In `formatUsageReport`, after the PROVIDER table (line ~115) and before MODEL, a
   }
 ```
 
-Uses the existing `table`/`count`/`usd` helpers. Server already ships `accounts`
-unconditionally (summary.ts:126; the read-failure fallback ships `accounts: []` at
-logs-usage-routes.ts:334) and `observe.ts:153` passes the payload straight through,
-so this is one file.
+Uses the existing `table`/`count`/`usd` helpers. `observe.ts:153` passes the payload
+straight through, so this is one file.
+
+### The filtered case must not silently print nothing
+
+`accounts` is **not** unconditional. `projectUsageSummary` sets `accounts: []`
+whenever a provider or model filter is active (summary.ts:943, reasoned at
+:865-872) — deliberately, because account rows are not provider-partitioned in a way
+the projection could honestly re-derive, and unfiltered account totals beside
+filtered model totals would invite the wrong reading.
+
+So `ocx usage --provider xai --json` returns an empty `accounts` array. That is the
+most natural way an agent would ask "what did this provider cost me per account",
+and an empty table with no explanation is the same silently-wrong-output defect this
+unit exists to remove (compare #2704's silently-ignored `--model`).
+
+Distinguish the two empty cases explicitly:
+
+```ts
+  const filtered = Boolean(input.filter?.provider || input.filter?.model);
+  if (filtered) {
+    // Not "no accounts" — the server withholds account rows under a filter because
+    // they cannot be honestly re-partitioned (summary.ts:865-872).
+    out.push("ACCOUNT: not reported under a provider or model filter; run without filters for per-account totals");
+  } else if (accounts.length) {
+    out.push(table([...]));
+  }
+```
+
+Record the same sentence in the capability's `details[]` so
+`ocx capabilities --json` carries it, and in wp8's recipe for per-account spend.
 
 Rows for xai/cursor will be empty until wp6 (#2699) stamps their labels. That is
 expected and is why wp6 follows this phase rather than preceding it — the renderer
@@ -152,7 +179,7 @@ Add `account list --quota`'s new columns, `access key list`'s columns, and
 |---|---|
 | `tests/cli-account.test.ts` | `projectQuota` keeps `fiveHourPercent`/`fiveHourResetAt`; `statusText` prints `paused` and `paused (selected)`; `formatAccountTable` shows a 5h-only quota instead of `unknown` |
 | `tests/cli-headless-parity.test.ts` | `refreshLine` renders 5h and paused; `handleAccessCommand` prints usage columns, `ambiguous` for the union's ambiguous variant, and the footer |
-| `tests/cli-usage-report.test.ts` | `accounts` table renders, filters `requests === 0`, marks ambiguous rows, and is absent when the array is empty |
+| `tests/cli-usage-report.test.ts` | `accounts` table renders, filters `requests === 0`, marks ambiguous rows; an active filter prints the withheld-rows note instead of an empty table |
 
 ## Accept criteria
 
@@ -160,5 +187,6 @@ Add `account list --quota`'s new columns, `access key list`'s columns, and
 2. `ocx access key list` shows `requests7d`, total, `lastUsedAt`, and prints
    `ambiguous` rather than a fabricated `0`.
 3. `ocx usage` renders an ACCOUNT table with ambiguous rows marked.
-4. No server-side change in this phase's diff.
-
+4. `ocx usage --provider X` states that account rows are withheld under a filter
+   rather than printing an empty table.
+5. No server-side change in this phase's diff.

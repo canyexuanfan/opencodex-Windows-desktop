@@ -29,8 +29,9 @@ Three separate failure classes make the CLI unusable for unattended agent contro
 
 Underneath all three sits the real defect: **there is no source of truth binding
 the CLI surface to the API surface.** Help lives in a hand-written 69-line banner
-plus 20 module-level `USAGE` constants with zero consumers outside their own
-files, free to drift. Nothing fails when a route lands with no verb.
+plus 37 module-level usage blocks — 20 of them exported constants with zero
+consumers outside their own files — all free to drift. Nothing fails when a route
+lands with no verb.
 
 ## Constraints
 
@@ -54,8 +55,8 @@ files, free to drift. Nothing fails when a route lands with no verb.
 | Reachable management routes | 183 (108 mutating) | 001 |
 | Dead/shadowed routes | 1 (`GET /api/storage` in logs-usage-routes) | 001 |
 | Session-only routes (never CLI) | 3 | 001 |
-| CLI dispatch runner keys | 52 (43 visible) | 002 |
-| Disconnected help sources | 20 module `USAGE` + 1 banner + 7 inline | 002 |
+| CLI dispatch runner keys | 57; registry 58 entries, 52 visible | 002 |
+| Disconnected help sources | 37 usage blocks (20 dead module exports) + 1 banner | 002 |
 | GUI-only capability classes | 13 | 003 |
 
 ## Work-phase map (dependency-ordered, PHASE-SPLIT-01)
@@ -69,7 +70,8 @@ surface — not by effort or payoff.
 |---|---|---|---|
 | wp2 | `010` | Transport honesty: exit codes, error rendering, token-collision refusal (#2697 #2698 #2696) | — |
 | wp3 | `020` | Capability registry as help SoT + API/CLI parity test + version skew (#2701) | wp2 |
-| wp4 | `030` | DTO fidelity (#2700 #2703 #2705) | wp3 |
+| wp3b | `025` | Uniform CLI contract: exit codes and `--json` order-independence | wp3 |
+| wp4 | `030` | DTO fidelity (#2700 #2703 #2705) | wp3b |
 | wp5 | `040` | New verbs and filters (#2702 #2704) | wp3 |
 | wp6 | `050` | Per-account OAuth usage attribution (#2699) | wp4 |
 | wp7 | `060` | Residual GUI-parity closure (13 capability classes) | wp3 wp5 |
@@ -113,4 +115,3 @@ dev
 `BLOCKED` is a platform or credential refusal. `UNSAFE` is any fix that would
 weaken the admin-token or session boundary — stop and ask instead.
 `NEEDS_HUMAN` is a CLI-grammar choice the operator must make.
-

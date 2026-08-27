@@ -15,7 +15,10 @@ bin/ocx.mjs  (Node shim, execs the bundled Bun binary)
        -> src/cli/dispatch.ts:584  commandRunners[resolveDispatchCommand(cmd)]
 ```
 
-52 runner keys; the registry declares 49 entries, 43 visible. Aliases resolve
+57 runner keys (`DISPATCH_COMMANDS.size`); the registry declares 58 entries
+(`CLI_COMMANDS.length`), 52 of them visible. Counted by importing the modules, not
+by regex — an earlier regex count of 52/49/43 was wrong in all three figures and
+would have sized wp3's banner test against the wrong set. Aliases resolve
 through registry pairs (dispatch.ts:568): `setup->init`, `eject->restore`,
 `remove->uninstall`, `model->models`.
 
@@ -69,12 +72,15 @@ account-api.ts:126.
 
 Three disconnected tiers:
 
-1. **Registry** — `src/cli/registry.ts:10` `CLI_COMMANDS`, 49 entries with
+1. **Registry** — `src/cli/registry.ts:10` `CLI_COMMANDS`, 58 entries with
    `usage`/`summary`/`details`. Consumed only by `printSubcommandUsage`
    (help.ts:94) and alias resolution.
 2. **Hand-written banner** — `src/cli/help.ts:18-88`, one 69-line template
    literal, maintained by hand, **not generated from the registry**.
-3. **20 module-level `USAGE` constants**, each its own authority:
+3. **37 module-level `USAGE`/usage-string blocks** by `rg` count, of which the
+   20 below are the named module-level constants. The 20 listed here are the
+   *dead exports*; the remaining ~17 are inline or locally-consumed usage strings
+   that also need a home in the capability table. Each is its own authority:
 
 account-auth.ts:33 · access.ts:12 · export-command.ts:53 · account.ts:18 ·
 account-extended.ts:38 · account-main.ts:15 · provider.ts:424 + :130 ·
@@ -95,7 +101,7 @@ to assert every visible canonical command appears in the banner, and
 The banner is explicitly documented at test:104 as "curated… not required to match
 the registry exactly."
 
-**Nothing validates the 20 module `USAGE` blocks.** The exported constants
+**Nothing validates the module `USAGE` blocks.** The exported constants
 (`OBSERVE_USAGE`, `COMBO_USAGE`, `LAB_USAGE`, `AGENT_USAGE`, `SYSTEM_USAGE`,
 `CONFIG_USAGE`, `ACCESS_USAGE`, `EXPORT_USAGE`, …) have zero consumers outside
 their own files, including in tests. They are dead exports, free to drift. That is
@@ -120,4 +126,3 @@ unvalidated help string is the other.
 Both are capability-present/endpoint-absent. They are not parity gaps by
 capability, but they do mean a remote or containerized agent cannot reach them.
 Recorded as an explicit exemption class rather than folded into the parity count.
-

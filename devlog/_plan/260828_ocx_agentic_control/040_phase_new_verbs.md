@@ -17,23 +17,52 @@ the issue says POST, the code says **PUT**:
 
 MODIFY `src/cli/account-extended.ts`: add `cmdPause`, `cmdResume`,
 `cmdPauseExhausted`, `cmdStrategy`, `cmdSticky` following the existing `cmdPriority`
-shape — `configAndType` -> `resolveBaseUrl` -> `apiJson` -> print or `--json`.
+shape (account-extended.ts:637-690).
+
+**Use the real signatures.** They are easy to get wrong, and an earlier draft of this
+doc got four of them wrong at once:
+
+| Helper | Real signature | Wrong assumption to avoid |
+|---|---|---|
+| `apiJson` | `(deps, baseUrl, method, path, body?, options?)` — account-api.ts:88 | not `(baseUrl, path, {method, body})`; method is the **third positional** arg |
+| `apiError` | `(json: Record<string, unknown>, fallback: string)` — account-api.ts:123 | takes the json record and a fallback **string**, not the result object and a boolean |
+| `configAndType` | `(deps, name)`, **synchronous**, returns a classify result — account-extended.ts:230 | not `await configAndType(deps)` returning `{baseUrl}`; base URL comes from `resolveBaseUrl(deps)` separately |
+| `flag` / `flagValue` | `(args, name)` — account-extended.ts:52, :59 | this module has no `takeFlag`/`takeOption`, and does not import `printData` |
+| `usage` | `(message?) => number` — account-extended.ts:224 | usage errors return a code; they do not throw `CliUsageError` here |
+
+Also note `status === 0` is the transport sentinel and must be checked **before** the
+status comparison, or an unreachable proxy reports as a management error.
 
 ```ts
 export async function cmdPause(args: string[], deps: AccountDeps, paused: boolean): Promise<number> {
-  const id = takeOption(args, "--id");
-  if (!id) throw new CliUsageError("account pause requires --id <accountId>");
-  const wantsJson = takeFlag(args, "--json");
-  const { baseUrl } = await configAndType(deps);
-  const res = await apiJson(baseUrl, "/api/codex-auth/accounts/pause", {
-    method: "PUT",
-    body: { id, paused },
-  });
-  if (res.status !== 200) return apiError(res, wantsJson);
-  return printData({ ok: true, id, paused }, wantsJson, () =>
-    \`${paused ? "paused" : "resumed"} ${id}\`);
+  const wantsJson = flag(args, "--json");
+  const name = args.shift();
+  const requestedId = args.shift();
+  if (!name || !requestedId || args.length) return usage();
+  const classified = configAndType(deps, name);
+  if ("error" in classified) return usage(`Error: ${classified.error}`);
+  if (classified.type !== "codex") {
+    return usage("Error: pause applies to the openai Codex account pool");
+  }
+  const id = requestedId === "main" ? MAIN_ID : requestedId;
+
+  const baseUrl = await resolveBaseUrl(deps);
+  if (!baseUrl) return proxyUnreachable();
+
+  const response = await apiJson(deps, baseUrl, "PUT", "/api/codex-auth/accounts/pause", { id, paused });
+  if (response.status === 0) return proxyUnreachable();
+  if (response.status !== 200) {
+    return apiError(response.json, `failed to ${paused ? "pause" : "resume"} ${requestedId}`);
+  }
+  if (wantsJson) console.log(JSON.stringify({ ok: true, provider: name, id, paused }, null, 2));
+  else console.log(`${name}: ${requestedId} ${paused ? "paused" : "resumed"}`);
+  return 0;
 }
 ```
+
+The other four verbs follow the same skeleton. `cmdStrategy` and `cmdSticky` share
+`PUT /api/codex-auth/pool-strategy`, so implement one helper taking the field to set
+rather than two near-duplicates.
 
 Do **not** re-validate `stickyLimit` client-side. The server owns the 1-100 contract
 (`parseAccountPoolStickyLimit`); a duplicated bound is a second thing to keep in
@@ -104,4 +133,3 @@ unit exists to remove.
 2. `ocx logs --conversation` filters server-side and the output shows the id.
 3. `ocx logs --model` actually filters, including failover attempts.
 4. All new verbs appear in `ocx capabilities --json`.
-

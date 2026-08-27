@@ -90,7 +90,8 @@ Not implemented, rather than broken. Both halves exist:
   `ok v<version>` (status.ts:159). So on a healthy proxy `ocx status` never sees the
   version.
 - `LiveProxy` carries pid/port/hostname/source and no version
-  (proxy-liveness.ts:64) — even though `isOpencodexHealthz` already validated that a
+  (`src/server/proxy-liveness.ts:64`) — even though `isOpencodexHealthz` (:90)
+  already validated at :94 that a
   version string was present (line 94).
 - `doctor.ts` has no drift check; the only "older" warning is about the Codex binary.
 
@@ -183,10 +184,23 @@ Only the human branch is lossy.
 ## #2700 — usage report omits `accounts[]`
 
 `UsageReportInput` (usage-report.ts:23-41) has no `accounts` field and
-`formatUsageReport` renders only summary, providers, models (:115, :124). The server
-unconditionally includes `accounts` (`UsageSummary.accounts`, summary.ts:126; even
-the read-failure fallback ships `accounts: []` at logs-usage-routes.ts:334), and
-`observe.ts:153` passes the payload straight through.
+`formatUsageReport` renders only summary, providers, models (PROVIDER table at
+usage-report.ts:119, MODEL at :129). The server includes `accounts`
+(`UsageSummary.accounts`, summary.ts:126; the read-failure fallback ships
+`accounts: []` at logs-usage-routes.ts:334), and `observe.ts:153` passes the payload
+straight through.
+
+**Important qualification — `accounts` is NOT unconditional.**
+`projectUsageSummary` sets `accounts: []` whenever a provider or model filter is
+active (summary.ts:943, reasoned at :865-872): account rows are not
+provider-partitioned in a way the projection could honestly re-derive, and
+unfiltered account totals beside filtered model totals would invite the wrong
+reading. That is a deliberate correctness choice, not a bug.
+
+It matters for this unit because `ocx usage --provider xai --json` is exactly how an
+agent would check per-account spend for one provider, and it returns an empty
+`accounts` array with no explanation. wp4 must render that state explicitly rather
+than as an empty table.
 
 Fix: add the field and one `table([...])` block after PROVIDER, filtered to
 `requests > 0`. Render `legacy-ambiguous` rows with a marker — `ambiguous` is on the
@@ -245,4 +259,3 @@ rather than forgotten.
 | 2 | #2696 | The fail-closed collision, verified through wave-1 output. Security review required. |
 | 3 | #2703 + #2702, #2704, #2705 | Independent surface gaps. 2703/2702 share files and land together. |
 | 4 | #2699 -> #2700 | #2700's table is only meaningful for xai/cursor once #2699 stamps labels. |
-
