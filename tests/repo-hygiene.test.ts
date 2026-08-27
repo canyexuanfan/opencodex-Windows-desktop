@@ -237,16 +237,19 @@ describe("devlog is tracked, with no submodule left behind", () => {
     const pkg = JSON.parse(await Bun.file(new URL("../package.json", import.meta.url)).text()) as {
       files?: string[];
     };
-    const shipped = new Set(pkg.files ?? []);
+    const shipped = pkg.files ?? [];
+    expect(shipped.length).toBeGreaterThan(0);
 
+    // No lower bound on the match count: switching every image to an absolute URL is a legitimate
+    // end state, and a `toBeGreaterThan(0)` guard here would fail the suite for doing it.
     const relative = [...readme.matchAll(/src="(?!https?:)([^"]+)"/g)].map((match) => match[1]!);
-    // Guard against the regex silently matching nothing after a README rewrite.
-    expect(relative.length).toBeGreaterThan(0);
 
     const missing = relative.filter((asset) => {
-      if (shipped.has(asset)) return false;
-      // A directory entry in `files` ships everything under it.
-      return ![...shipped].some((entry) => !entry.includes(".") && asset.startsWith(`${entry}/`));
+      if (shipped.includes(asset)) return false;
+      // A directory entry ships everything beneath it. Decided by whether the tarball path is a
+      // prefix, not by whether the name contains a dot: `LICENSE` has no dot and is a file, and
+      // a future `assets` entry would have no dot and be a directory.
+      return !shipped.some((entry) => asset.startsWith(`${entry}/`));
     });
     expect(missing).toEqual([]);
   });
