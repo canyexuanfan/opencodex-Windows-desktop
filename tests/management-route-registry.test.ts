@@ -133,11 +133,6 @@ describe("management route registry reconciliation", () => {
       "  return null;",
       "}",
     ].join("\n");
-    try {
-      Bun.writeSync?.(0, "");
-    } catch {
-      // no-op: Bun.writeSync is not used, this is only to keep the try shape obvious
-    }
     require("node:fs").writeFileSync(tmp, source);
     try {
       const { unresolved } = distinctRoutes(scanRoutes(tmp));
