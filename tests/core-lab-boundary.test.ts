@@ -137,6 +137,16 @@ export function namesLabDirectly(source: string): boolean {
  */
 const SERVE_ANCHOR = "server = Bun.serve<WsData>({ ...serveOptions, port: listenPort, hostname: bindHost });";
 const ACTIVATION_ANCHOR = "if (labActivationRequired(config, labConfigDir)) {";
+/**
+ * The window ends at the RETURN, not at the activation check.
+ *
+ * Stopping at the activation anchor left two blind spots: an `await` inside the
+ * `if (labActivationRequired(...))` body, and one between activation and `return server`.
+ * AGENTS.md and `080_activation_is_synchronous.md` both state the guarantee as covering
+ * everything from `Bun.serve` to the return, so a guard that stopped earlier was narrower
+ * than the invariant it claimed to hold. Found by an independent review of this guard.
+ */
+const RETURN_ANCHOR = "  return server;";
 
 /**
  * Blank comments and string bodies, preserving offsets and line breaks so reported line
@@ -357,12 +367,18 @@ describe("activation window stays synchronous", () => {
 
   test("no body-level await sits between Bun.serve and Lab activation", () => {
     const start = source.indexOf(SERVE_ANCHOR);
-    const end = source.indexOf(ACTIVATION_ANCHOR);
+    const end = source.indexOf(RETURN_ANCHOR, start);
+    const activation = source.indexOf(ACTIVATION_ANCHOR);
 
-    // Fail loudly if either anchor moves. A window that silently collapses to nothing is
-    // the way this guard would rot into a test that passes by measuring an empty string.
+    // Fail loudly if any anchor moves. A window that silently collapses to nothing is the
+    // way this guard would rot into a test that passes by measuring an empty string.
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
+
+    // The activation check must sit INSIDE the window. If it drifted out, the scan would
+    // still be green while no longer covering the ordering it exists to protect.
+    expect(activation).toBeGreaterThan(start);
+    expect(activation).toBeLessThan(end);
 
     const region = source.slice(start, end);
     const offsetLine = source.slice(0, start).split("\n").length;
@@ -407,7 +423,7 @@ describe("activation window stays synchronous", () => {
     // above would stop being exercised by real code and this suite would quietly narrow to
     // synthetic strings only.
     const start = source.indexOf(SERVE_ANCHOR);
-    const end = source.indexOf(ACTIVATION_ANCHOR);
+    const end = source.indexOf(RETURN_ANCHOR, start);
     const region = source.slice(start, end);
 
     expect(region.includes("await runListenerShutdown(")).toBe(true);
