@@ -203,9 +203,10 @@ import { SYSTEM_RESTART_CAPABILITY_VERSION } from "../lib/system-restart-contrac
 import { LOCAL_PROVIDER_RELOAD_CAPABILITY_VERSION } from "../lib/local-provider-reload-contract";
 import { createReadinessGate, type ReadinessGate } from "./readiness";
 import {
-  createPackageTreeIntegrityGuard,
+  createRuntimePackageTreeIntegrityGuard,
   type PackageTreeIntegrityGuard,
 } from "../lib/package-tree-integrity";
+import { detectInstall } from "../update/index";
 
 export const MAX_WS_FRAME_BYTES = 50 * 1024 * 1024;
 const WEBSOCKET_IDLE_TIMEOUT_SECONDS = 0;
@@ -739,7 +740,8 @@ export function startServer(port?: number, deps: StartServerDeps = {}): Server<W
   // passes it in, and transitions it after the post-startup sync settles. When
   // no gate is supplied (tests, ad-hoc starts) a fresh pending gate is created.
   const readinessGate = deps.readinessGate ?? createReadinessGate();
-  const packageTreeIntegrity = deps.packageTreeIntegrity ?? createPackageTreeIntegrityGuard();
+  const packageTreeIntegrity = deps.packageTreeIntegrity
+    ?? createRuntimePackageTreeIntegrityGuard(detectInstall());
   // Actual bound port, filled in after Bun.serve binds so /readyz reports the
   // real ephemeral port for startServer(0). /healthz keeps its existing port
   // field (the requested listenPort) byte-for-byte.

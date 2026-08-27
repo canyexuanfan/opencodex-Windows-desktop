@@ -16,6 +16,7 @@ export interface PackageTreeIntegrityGuard {
 }
 
 type ObservePackageTree = () => PackageTreeObservation | null;
+type PackageTreeRuntimeInstall = "bun" | "npm" | "source";
 
 const packageManifestUrl = new URL("../../package.json", import.meta.url);
 
@@ -82,4 +83,19 @@ export function createPackageTreeIntegrityGuard(
       return { ok: true };
     },
   };
+}
+
+/**
+ * Installed packages fail closed when their manifest is replaced under a live process.
+ * A source checkout is different: editing package.json is ordinary development work, and
+ * Bun keeps serving the module snapshot already loaded by this process until the operator
+ * chooses to restart. Fencing every request there makes running dev directly impossible.
+ */
+export function createRuntimePackageTreeIntegrityGuard(
+  installer: PackageTreeRuntimeInstall,
+  observe: ObservePackageTree = observePackageManifest,
+  now: () => number = Date.now,
+): PackageTreeIntegrityGuard {
+  if (installer === "source") return { status: () => ({ ok: true }) };
+  return createPackageTreeIntegrityGuard(observe, now);
 }
