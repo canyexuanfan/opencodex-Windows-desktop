@@ -68,6 +68,11 @@ describe("Command Code provider", () => {
       defaultModel: "deepseek/deepseek-v4-flash",
       apiKeyValidation: "unknown",
       reasoningEfforts: [],
+      modelReasoningEfforts: {
+        "deepseek/deepseek-v4-flash-vision-exp": ["high", "max"],
+        "gpt-5.6-luna": ["low", "medium", "high", "xhigh", "max"],
+        "google/gemini-3.7-flash": ["low", "medium", "high"],
+      },
       modelDiscovery: {
         path: "models",
         maxResponseBytes: 256 * 1024,
@@ -183,8 +188,14 @@ describe("Command Code provider", () => {
 
     const config = withStubbedProviderFetch(commandcodeConfig());
     const models = (await gatherRoutedModels(config)).filter(row => row.provider === "commandcode");
-    // Full public catalog snapshot: 51 rows, including the free-tier entries.
-    expect(models).toHaveLength(51);
+    // Full authenticated catalog snapshot: 59 rows, including the free-tier entries.
+    //
+    // #2647's fixture carried 60 because it predates 328931265, which removed Ox Alpha
+    // entirely — both ids, the Zen slug for the same stealth model, the context
+    // constant, the effort profile, and the OpenRouter entry. That stealth window has
+    // closed, so `stealth/ox-alpha` is dropped from the snapshot rather than being
+    // silently resurrected by a regenerated fixture.
+    expect(models).toHaveLength(59);
     expect(models.map(row => row.id)).toContain("deepseek/deepseek-v4-flash");
     expect(models.map(row => row.id)).toContain("moonshotai/Kimi-K2.7-Code");
     expect(models.map(row => row.id)).toContain("poolside/laguna-s-2.1-free");
@@ -201,6 +212,20 @@ describe("Command Code provider", () => {
 
     const sol = models.find(row => row.id === "gpt-5.6-sol")!;
     expect(sol.contextWindow).toBe(1_050_000);
+
+    expect(models.find(row => row.id === "deepseek/deepseek-v4-flash-vision-exp"))
+      .toMatchObject({
+        id: "deepseek/deepseek-v4-flash-vision-exp",
+        reasoningEfforts: ["high", "max"],
+      });
+    expect(models.find(row => row.id === "gpt-5.6-luna")).toMatchObject({
+      id: "gpt-5.6-luna",
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    });
+    expect(models.find(row => row.id === "google/gemini-3.7-flash")).toMatchObject({
+      id: "google/gemini-3.7-flash",
+      reasoningEfforts: ["low", "medium", "high"],
+    });
 
     expect(routedSlug("commandcode", deepseek.id)).toBe("commandcode/deepseek-deepseek-v4-flash");
     expect(routeModel(config, "commandcode/deepseek/deepseek-v4-flash").modelId)

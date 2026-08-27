@@ -2,7 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { createCommandCodeAdapter } from "../src/adapters/command-code";
 import { loginCommandCode, parseCommandCodeCallback, shouldImportLocalCommandCodeAuth } from "../src/oauth/command-code";
 import { buildModelsRequest, OAUTH_PROVIDERS } from "../src/oauth";
-import { commandCodeReasoningEfforts, resetCommandCodeReasoningEffortsForTest } from "../src/providers/command-code-efforts";
+import {
+  commandCodeReasoningEfforts,
+  refreshCommandCodeReasoningEfforts,
+  resetCommandCodeReasoningEffortsForTest,
+} from "../src/providers/command-code-efforts";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import type { OcxParsedRequest, OcxProviderConfig } from "../src/types";
 import { createTestTranslatorBudget } from "./helpers/translator-budget";
@@ -462,6 +466,59 @@ describe("Command Code provider", () => {
     expect(commandCodeReasoningEfforts("deepseek/deepseek-v4-flash")).toEqual(["high"]);
     const generated = requests.filter(request => request.url.endsWith("/alpha/generate"));
     expect(JSON.parse(generated[1]!.body!).params).not.toHaveProperty("reasoning_effort");
+  });
+
+  // Pins the profileUrl of each id added for #2647 — nothing more.
+  //
+  // Be clear about what this does NOT prove: the stubbed response below returns
+  // prose that commandcode.ai never actually emits, so a green run here is not
+  // evidence that a real profile page can be parsed. It cannot: the live pages
+  // carry no "Reasoning efforts ... are supported;" text at all (measured 0 for
+  // every row in the table on 2026-08-27), so the refresh path returns undefined
+  // in production. See the provenance note in command-code-efforts.ts.
+  //
+  // What it does catch is a typo'd or drifted profileUrl, which is worth pinning
+  // on its own: the URL is the only handle a future parser fix would have.
+  test("resolves the #2647 effort profiles to their canonical public URLs", async () => {
+    const urls: string[] = [];
+    const fetch = (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      return new Response("Reasoning efforts high are supported; no other reasoning settings.");
+    }) as typeof globalThis.fetch;
+
+    await refreshCommandCodeReasoningEfforts("gpt-5.6-luna", fetch);
+    await refreshCommandCodeReasoningEfforts("google/gemini-3.7-flash", fetch);
+    await refreshCommandCodeReasoningEfforts("deepseek/deepseek-v4-flash-vision-exp", fetch);
+
+    expect(urls).toEqual([
+      "https://commandcode.ai/models/gpt-5-6-luna",
+      "https://commandcode.ai/models/gemini-3-7-flash",
+      "https://commandcode.ai/models/deepseek-v4-flash-vision-exp",
+    ]);
+  });
+
+  // Pins the CURRENT, BROKEN state of the profile-refresh path so nobody re-derives
+  // the false justification that a wrong ladder self-corrects.
+  //
+  // commandcode.ai serves these profiles as a React flight payload. The ladder key
+  // is present but its array is empty in the delivered bytes
+  // (`reasoningEfforts\",[]` — measured on 2026-08-27 for gpt-5.6-luna, glm-5-3 and
+  // deepseek-v4-pro alike), and there is no "Reasoning efforts ... are supported;"
+  // prose anywhere on the page. So parsedProfileEfforts finds nothing and the row
+  // is never replaced.
+  //
+  // When someone teaches the parser to read a real payload, this test SHOULD fail.
+  // That failure is the signal to delete it and update the provenance note in
+  // command-code-efforts.ts, which currently tells the reader this net does not work.
+  test("a real profile page shape yields no efforts, so the row is not self-correcting", async () => {
+    const flightPayload = 'self.__next_f.push([1,"...\\"reasoningEfforts\\",[],\\"inputCost\\",0,\\"minPlanName\\",\\"Go\\"..."])';
+    const fetch = (async () => new Response(flightPayload)) as typeof globalThis.fetch;
+
+    const refreshed = await refreshCommandCodeReasoningEfforts("gpt-5.6-luna", fetch);
+
+    expect(refreshed).toBeUndefined();
+    // And the table value survives untouched, which is the safe half of the failure.
+    expect(commandCodeReasoningEfforts("gpt-5.6-luna")).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
 
   test("omits effort when the caller did not choose one", async () => {
