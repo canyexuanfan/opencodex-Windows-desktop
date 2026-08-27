@@ -1,6 +1,6 @@
 ---
 title: 轉接器
-description: 七個 provider adapter 的目標、請求建置方式與各自特性。
+description: provider adapter 的目標、請求建置方式與各自特性。
 ---
 
 **adapter** 負責在 opencodex 的內部請求/回應模型與某個 provider 的 wire 格式之間轉換。每個
@@ -36,6 +36,11 @@ interface ProviderAdapter {
   省略**該引數。
 - 流式輸出 `delta.content`（文字）、`delta.reasoning_content`（thinking）和
   `delta.tool_calls[]`，並收集 `usage`。
+- ClinePass 使用經即時驗證的 gateway 格式 `reasoning: { enabled: true, effort }`（關閉 reasoning
+  時為 `{ enabled: false }`）；其公開 API 文件目前未說明這個請求形狀。adapter 會保留請求的 `low`、
+  `medium`、`high`、`xhigh`、`max` 層級，接受來自 `delta.reasoning_content` 或 `delta.reasoning`
+  的 reasoning delta，以 `stream_options.include_usage` 請求串流 usage，並從非串流回應 envelope
+  讀取 usage。
 
 ## `openai-responses`
 

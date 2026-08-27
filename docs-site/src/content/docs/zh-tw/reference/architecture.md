@@ -57,7 +57,7 @@ src/
    必要時重新整理 provider OAuth，並把選中的 credential 應用到 route。
 4. 主請求發出前，`vision/` 會為 `noVisionModels` 中的模型描述圖像。如果沒有安全的 sidecar
    路徑，則移除圖像，而不是把它傳送給純文字上游。
-5. `server/adapter-resolve.ts` 應用模型級 wire override，並構造七個 adapter 之一。Responses
+5. `server/adapter-resolve.ts` 應用模型級 wire override，並構造已註冊 adapter 之一。Responses
    passthrough 直接轉發原始 body；Cursor 執行雙向 `runTurn` transport；其餘轉換型 adapter
    則建置、取得並解析上游請求。
 6. 路由模型請求託管的 `web_search` 工具時，`web-search/` 會暴露一個合成函式，經 ChatGPT

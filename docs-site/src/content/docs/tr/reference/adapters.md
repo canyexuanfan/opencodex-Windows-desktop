@@ -1,6 +1,6 @@
 ---
 title: Adaptörler
-description: Yedi sağlayıcı adaptörü — her birinin neyi hedeflediği, istekleri nasıl oluşturduğu ve kendine özgü yanları.
+description: Sağlayıcı adaptörleri — her birinin neyi hedeflediği, istekleri nasıl oluşturduğu ve kendine özgü yanları.
 ---
 
 Bir **adaptör**, opencodex'in dahili istek/yanıt modeli ile bir sağlayıcının hat

@@ -1,6 +1,6 @@
 ---
 title: Adaptateurs
-description: Les sept adaptateurs de fournisseurs — leurs cibles, la construction des requêtes et leurs particularités.
+description: Les adaptateurs de fournisseurs — leurs cibles, la construction des requêtes et leurs particularités.
 ---
 
 Un **adaptateur** traduit les échanges entre le modèle interne de requête/réponse d’opencodex et le protocole d’un fournisseur. Chaque adaptateur implémente l’interface `ProviderAdapter` (`src/adapters/base.ts`) :
