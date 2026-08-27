@@ -152,6 +152,20 @@ describe("GitHub Actions hardening", () => {
     expect(linuxShards).toEqual([1, 2, 3, 4]);
     expect(workflow).toContain(`--shard=\${{ matrix.shard }}/${linuxShards.length}`);
 
+    // Every job that runs tests/ must fetch tags, because one of those tests reads
+    // them. tests/release-version-line.test.ts compares package.json against the
+    // newest release tag, and actions/checkout brings no tags by default: git is
+    // present, `git tag --list` exits 0, and stdout is empty. The check then has an
+    // empty set, cannot fail, and a version regression rides through green. That is
+    // how the first cut of that test shipped, so pin the flag rather than trusting a
+    // comment. Asserted per job so a future edit cannot drop it from one leg while
+    // the other still carries it.
+    for (const jobName of ["test", "platform-macos"]) {
+      const steps = (ci.jobs?.[jobName] as { steps?: Array<{ uses?: string; with?: Record<string, unknown> }> })?.steps ?? [];
+      const checkout = steps.find(step => typeof step.uses === "string" && step.uses.includes("actions/checkout"));
+      expect(`${jobName}:${String(checkout?.with?.["fetch-tags"])}`).toBe(`${jobName}:true`);
+    }
+
     // Windows uses the same shard matrix after the single-leg isolate budget was
     // replaced. Keep the two matrices equal so a future edit cannot reintroduce
     // a partial Windows suite while Linux stays fully tiled.
