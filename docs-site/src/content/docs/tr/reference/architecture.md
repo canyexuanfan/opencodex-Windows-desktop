@@ -16,7 +16,7 @@ src/
 ├── server/             # Bun.serve, /v1/* proxy, /api/* yönetim API'si, WS köprüsü
 ├── codex/              # Codex yapılandırma enjeksiyonu, katalog senkronizasyonu, kimlik doğrulama/hesap entegrasyonu
 ├── providers/          # sağlayıcı meta verileri, API anahtarı havuzu, kota ve etiketler
-├── adapters/           # yedi hat adaptörü, paylaşılan koruyucular/yardımcılar, Cursor protobuf aktarımı
+├── adapters/           # hat adaptörleri, paylaşılan koruyucular/yardımcılar, Cursor protobuf aktarımı
 ├── oauth/              # OAuth sağlayıcıları, API anahtarı kataloğu, belirteç deposu/yenileme
 ├── usage/              # istek kullanımı çıkarma, JSONL günlükleri, özetler, toplamlar
 ├── lib/                # çalışma zamanı, süreç, yeniden deneme, gizlilik, belirteç tahmin yardımcıları
@@ -68,7 +68,7 @@ devreder:
    görselleri açıklar; güvenli bir sidecar yolu yoksa görseller salt metin bir
    yukarı akışa gönderilmek yerine kaldırılır.
 5. `server/adapter-resolve.ts` modele özgü herhangi bir hat geçersiz kılmasını
-   uygular ve yedi adaptörden birini oluşturur. Responses doğrudan geçişi yerel
+   uygular ve kayıtlı adaptörlerden birini oluşturur. Responses doğrudan geçişi yerel
    gövdeyi iletir, Cursor çift yönlü `runTurn` aktarımını çalıştırır ve çevrilen
    adaptörler bir yukarı akış isteği oluşturur/getirir/ayrıştırır.
 6. Barındırılan bir `web_search` aracına sahip yönlendirilen modeller için

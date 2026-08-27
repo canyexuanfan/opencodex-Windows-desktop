@@ -1,7 +1,7 @@
 import { decodeEventStream } from "../lib/eventstream-decoder";
 import { estimateTokens } from "../lib/token-estimate";
 import { debugProviderDiagnostic } from "../lib/debug";
-import { resolveKiroApiRegion, resolveKiroProfileArn } from "../oauth/kiro";
+import { resolveKiroApiRegion, resolveKiroRequestProfile } from "../oauth/kiro";
 import { KIRO_MODEL_CONTEXT_WINDOWS, normalizeKiroModelId } from "../providers/kiro-models";
 import { modelRecordValue } from "../reasoning-effort";
 import { parseKiroEvent } from "./kiro-events";
@@ -33,6 +33,7 @@ import type {
   OcxTextContent,
   OcxToolCall,
   OcxToolResultMessage,
+  OcxTool,
   OcxUsage,
 } from "../types";
 import type { ProviderAdapter } from "./base";
@@ -42,7 +43,7 @@ import { sniffImageDimensions } from "./anthropic-image-guard";
 import { fetchKiroWithRetry, noteKiroTransientThrottle } from "./kiro-retry";
 import { convertKiroToolContext } from "./kiro-tools";
 import { identifyRoutedModel } from "./identity";
-import { buildNonOpenAIToolCatalogNudgeFromNames } from "./tool-catalog-nudge";
+import { buildNonOpenAIToolCatalogNudgeFromNames, isBareShellBridgeTool, isCodexCodeModeExecTool } from "./tool-catalog-nudge";
 import {
   KIRO_COMPLETION_INSTRUCTIONS,
   KIRO_COMPLETION_RETRY_MESSAGE,
@@ -321,9 +322,23 @@ function validateKiroCapabilities(parsed: OcxParsedRequest): void {
   if (parsed.options.serviceTier !== undefined) {
     throw new Error("Kiro does not support service tiers");
   }
-  const raw = parsed._rawBody as Record<string, unknown> | undefined;
-  if (parsed._structuredOutput || raw?.text !== undefined) {
-    throw new Error("Kiro does not support Responses text controls or structured output");
+  // Structured output is a real contract Kiro cannot honour: the wire has no
+  // schema-constrained response mode, so a caller expecting parseable JSON would receive
+  // prose and fail downstream. Refuse it.
+  //
+  // The rest of the Responses `text` object is not that. `text.verbosity` is a length
+  // preference and `text.format: {type:"text"}` is ordinary prose — the default output
+  // mode, which no capability flag governs and every correct client may send. Testing
+  // `_rawBody.text !== undefined` refused those turns for the mere PRESENCE of the key,
+  // the same mistake db040e70f removed one condition earlier where a permissive
+  // `parallel_tool_calls` hint was read as a requirement.
+  //
+  // Nothing needs stripping the way openai-responses strips a no-op verbosity:
+  // buildKiroPayload composes conversationState field by field from `parsed` and never
+  // spreads `_rawBody`, so a tolerated control is dropped by construction. The test
+  // asserts that absence so it stays true.
+  if (parsed._structuredOutput) {
+    throw new Error("Kiro does not support Responses structured output");
   }
 }
 
@@ -460,9 +475,32 @@ export function buildKiroPayload(
   // name for a tool that was never advertised and pollute the collision domain.
   const advertisedAlias = new Map<string, string>();
   for (const [alias, wireName] of registry.nameMap) advertisedAlias.set(wireName, alias);
+  // Code mode is decided on the EMITTED catalog, not the requested list.
+  //
+  // `freeform` only exists on the requested tool objects -- `kiroToolWireNames` has already
+  // reduced the emitted catalog to strings -- so the predicates must read the objects. But the
+  // SHAPE that matters is the one the model receives: the count/byte budget can drop a requested
+  // `exec_command` while `exec` survives, and scanning the requested list would then find a shell
+  // bridge the model cannot call and suppress code mode for a catalog that is code-mode-shaped.
+  // Intersecting the two keeps `tool_choice: "none"` and budget omission correct for free: both
+  // empty the emitted set, so nothing can be named.
+  const emittedToolNames = new Set(kiroToolWireNames(kiroTools));
+  const emittedAlias = (tool: OcxTool): string | undefined => {
+    const wireName = namespacedToolName(tool.namespace, tool.name);
+    // Read the recorded mapping; `registry.alias()` would REGISTER a name here.
+    const alias = advertisedAlias.get(wireName) ?? wireName;
+    return emittedToolNames.has(alias) ? alias : undefined;
+  };
+  const requestedTools = parsed.context.tools ?? [];
+  const emittedCodeModeExec = requestedTools.find(tool => isCodexCodeModeExecTool(tool) && emittedAlias(tool));
+  const emittedShellBridge = requestedTools.some(tool => isBareShellBridgeTool(tool) && emittedAlias(tool));
+  const codeModeExecName = emittedCodeModeExec && !emittedShellBridge
+    ? emittedAlias(emittedCodeModeExec)
+    : undefined;
   const toolCatalogNudge = buildNonOpenAIToolCatalogNudgeFromNames(
     kiroToolWireNames(kiroTools),
     name => advertisedAlias.get(name) ?? name,
+    codeModeExecName,
   );
   const boundedNudge = toolCatalogNudge ? boundedInjectedInstruction(toolCatalogNudge, injectedChars) : undefined;
   if (boundedNudge) systemParts.push(boundedNudge);
@@ -1723,12 +1761,19 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
       throw new Error("kiro token missing — run ocx login kiro");
     }
     const region = resolveKiroApiRegion(parsed._kiroAuthContext);
-    const resolvedProfileArn = resolveKiroProfileArn(parsed._kiroAuthContext);
+    // Request-scoped: an AWS Builder ID account has no profile of its own and resolves to Kiro's
+    // fixed service profile here, without that value ever becoming the account's stored identity.
+    const requestProfile = resolveKiroRequestProfile(parsed._kiroAuthContext);
+    const resolvedProfileArn = requestProfile.profileArn;
     const isApiKey = provider.apiKey.trim().startsWith("ksk_");
     const profileArn = isApiKey ? undefined : resolvedProfileArn;
-    // Builder ID and Kiro API keys have no profile ARN and are accepted only on Kiro's CLI
-    // request path. Enterprise profiles retain the existing IDE-shaped request.
-    const wireClient: KiroWireClient = isApiKey || !profileArn ? "cli" : "ide";
+    // Builder ID and Kiro API keys are accepted only on Kiro's CLI request path; enterprise
+    // profiles retain the IDE-shaped request. Builder ID now carries a profile ARN, so a truthy
+    // `profileArn` no longer implies "enterprise". The wire path reads the resolver's own verdict
+    // rather than re-deriving it, so the accountless path — where the auth type comes from the
+    // local import, not the request context — cannot send the fallback inside an IDE-shaped call.
+    const isBuilderId = requestProfile.builderIdFallback;
+    const wireClient: KiroWireClient = isApiKey || isBuilderId || !profileArn ? "cli" : "ide";
     const fp = fingerprint().slice(0, 64);
     const headers: Record<string, string> = wireClient === "cli" ? {
       authorization: `Bearer ${provider.apiKey}`,

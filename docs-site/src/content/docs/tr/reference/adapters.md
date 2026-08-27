@@ -1,6 +1,6 @@
 ---
 title: Adaptörler
-description: Yedi sağlayıcı adaptörü — her birinin neyi hedeflediği, istekleri nasıl oluşturduğu ve kendine özgü yanları.
+description: Sağlayıcı adaptörleri — her birinin neyi hedeflediği, istekleri nasıl oluşturduğu ve kendine özgü yanları.
 ---
 
 Bir **adaptör**, opencodex'in dahili istek/yanıt modeli ile bir sağlayıcının hat
@@ -49,11 +49,10 @@ ve bulut) ve daha fazlası.
   `provider.noReasoningModels` içindeki kimlikler için bunu **tamamen atlar**.
 - `delta.content` (metin), `delta.reasoning_content` (düşünme) ve
   `delta.tool_calls[]` akışını sağlar; `usage` toplar.
-- ClinePass, canlı olarak doğrulanmış `reasoning: { enabled: true, effort: "low"
-  }` (veya akıl yürütme devre dışı bırakıldığında `{ enabled: false }`) ağ
+- ClinePass, canlı olarak doğrulanmış `reasoning: { enabled: true, effort }` (veya akıl yürütme devre dışı bırakıldığında `{ enabled: false }`) ağ
   geçidi formatını kullanır; genel API belgeleri şu anda bu istek şeklini
-  belirtmemektedir. Adaptör diğer çaba isteklerini doğrulanmış `low` katmanına
-  sabitler, `delta.reasoning_content` veya `delta.reasoning`'den gelen akıl
+  belirtmemektedir. Adaptör istenen `low`, `medium`, `high`, `xhigh` ve `max` katmanlarını
+  korur, `delta.reasoning_content` veya `delta.reasoning`'den gelen akıl
   yürütme farklarını kabul eder, `stream_options.include_usage` ile akışlı
   kullanım ister ve akışsız yanıt zarflarından kullanımı okur.
 

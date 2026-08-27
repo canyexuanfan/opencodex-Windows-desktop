@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createCursorRequest } from "../src/adapters/cursor/request-builder";
-import { cursorEffortSuffix, cursorModelEffortLadder } from "../src/adapters/cursor/effort-map";
+import { CANONICAL_EFFORT_SUFFIXES, cursorEffortSuffix, cursorModelEffortLadder, cursorWireModelIdWithEffort, CURSOR_THINKING_MODEL_IDS } from "../src/adapters/cursor/effort-map";
+import { CURSOR_STATIC_MODELS, isCursorModelAvailableForAccount } from "../src/adapters/cursor/discovery";
 import type { OcxParsedRequest } from "../src/types";
 
 // Static fixture recorded from Cursor GetUsableModels on 2026-08-06. This pins the
@@ -199,3 +200,78 @@ describe("Cursor per-model reasoning-effort suffix", () => {
     expect(cursorModelEffortLadder("composer-2.5")).toBeUndefined();
   });
 });
+
+describe("#2569 Cursor catalog tracks the live GetUsableModels roster", () => {
+  test("the two Gemini families the live roster exposes are catalogued", () => {
+    const ids = new Set(CURSOR_STATIC_MODELS.map(model => model.id));
+    expect(ids.has("gemini-3.6-flash")).toBe(true);
+    expect(ids.has("gemini-3.7-flash")).toBe(true);
+  });
+
+  test("gemini-3.6-flash exposes its minimal rung in the picker ladder", () => {
+    // minimal is not in the canonical five-rung order, so the ladder filter dropped it and the
+    // tier was unreachable from Codex even though the wire accepts it.
+    expect(cursorModelEffortLadder("gemini-3.6-flash")).toEqual(["minimal", "low", "medium", "high"]);
+    expect(cursorEffortSuffix("gemini-3.6-flash", "minimal")).toBe("minimal");
+    expect(CANONICAL_EFFORT_SUFFIXES.has("minimal")).toBe(true);
+  });
+
+  test("gemini-3.7-flash carries the low/medium/high ladder the wire lists", () => {
+    expect(cursorModelEffortLadder("gemini-3.7-flash")).toEqual(["low", "medium", "high"]);
+  });
+
+  test("both families survive live-discovery filtering from effort-suffixed wire ids", () => {
+    // The live roster lists ONLY suffixed ids for these models; a base id that does not match
+    // one of them is dropped from the routed catalog.
+    expect(isCursorModelAvailableForAccount("gemini-3.6-flash", ["gemini-3.6-flash-minimal"])).toBe(true);
+    expect(isCursorModelAvailableForAccount("gemini-3.7-flash", ["gemini-3.7-flash-high"])).toBe(true);
+  });
+});
+
+describe("#2569 Cursor explicit-thinking variants", () => {
+  /**
+   * Suffix ORDER differs per family and the wrong one is rejected ERROR_BAD_MODEL_NAME.
+   * Cases recorded from the live GetUsableModels roster on 2026-08-25.
+   */
+  const WIRE_CASES: ReadonlyArray<readonly [string, string, string]> = [
+    ["claude-opus-5-thinking", "high", "claude-opus-5-thinking-high"],
+    ["claude-opus-5-thinking-fast", "max", "claude-opus-5-thinking-max-fast"],
+    ["claude-opus-4-8-thinking", "low", "claude-opus-4-8-thinking-low"],
+    ["claude-opus-4-8-thinking-fast", "xhigh", "claude-opus-4-8-thinking-xhigh-fast"],
+    ["claude-sonnet-5-thinking", "medium", "claude-sonnet-5-thinking-medium"],
+    ["claude-fable-5-thinking", "xhigh", "claude-fable-5-thinking-xhigh"],
+    // The marker moves to the END for these families.
+    ["claude-4.6-opus-thinking", "max", "claude-4.6-opus-max-thinking"],
+    ["claude-4.5-opus-thinking", "high", "claude-4.5-opus-high-thinking"],
+    ["claude-4.6-sonnet-thinking", "medium", "claude-4.6-sonnet-medium-thinking"],
+  ];
+
+  for (const [id, effort, expected] of WIRE_CASES) {
+    test(`${id} at ${effort} composes ${expected}`, () => {
+      expect(cursorWireModelIdWithEffort(id, effort)).toBe(expected);
+    });
+  }
+
+  test("families with no effort rung send the bare thinking id", () => {
+    expect(cursorWireModelIdWithEffort("claude-4.5-sonnet-thinking", "high")).toBe("claude-4.5-sonnet-thinking");
+    expect(cursorWireModelIdWithEffort("claude-4-sonnet-thinking", "low")).toBe("claude-4-sonnet-thinking");
+    expect(cursorModelEffortLadder("claude-4.5-sonnet-thinking")).toBeUndefined();
+  });
+
+  test("every thinking variant is catalogued and survives live-discovery filtering", () => {
+    const ids = new Set(CURSOR_STATIC_MODELS.map(model => model.id));
+    for (const id of CURSOR_THINKING_MODEL_IDS) expect(ids.has(id)).toBe(true);
+
+    // A base id is kept only when it matches a live wire id; before this change none of the
+    // -thinking forms matched, so every variant was invisible in the routed catalog.
+    expect(isCursorModelAvailableForAccount("claude-opus-5-thinking", ["claude-opus-5-thinking-high"])).toBe(true);
+    expect(isCursorModelAvailableForAccount("claude-4.6-opus-thinking", ["claude-4.6-opus-max-thinking"])).toBe(true);
+    expect(isCursorModelAvailableForAccount("claude-4.5-sonnet-thinking", ["claude-4.5-sonnet-thinking"])).toBe(true);
+  });
+
+  test("a thinking variant never collapses onto its non-thinking source", () => {
+    expect(cursorWireModelIdWithEffort("claude-opus-5", "high")).toBe("claude-opus-5-high");
+    expect(cursorWireModelIdWithEffort("claude-opus-5-fast", "high")).toBe("claude-opus-5-high-fast");
+  });
+});
+

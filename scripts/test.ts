@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { acquireTestRunLock, TEST_RUN_ID_ENV } from "./test-run-lock";
 
 export interface IsolatedTestEnvironment {
   root: string;
@@ -59,105 +61,264 @@ export function createIsolatedTestEnvironment(
   };
 }
 
-/**
- * Other `bun test` runners already on this machine.
- *
- * Two full suites sharing one CPU do not fail — they crawl. A run that normally
- * finishes in about 210s took 26 minutes against a runner an earlier session had
- * left behind, and neither process said anything, so the slowdown read as a hang
- * in this suite. Bun's own timeouts cannot see the contention, so name it here.
- *
- * `pgrep` is absent on Windows and may exit non-zero for "no matches"; both cases
- * mean "nothing to warn about" rather than an error worth failing a test run over.
- */
-function findCompetingTestRunners(selfPid: number): number[] {
-  try {
-    const found = Bun.spawnSync(["pgrep", "-f", "bun.*test --isolate"], {
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    if (!found.success) return [];
-    return new TextDecoder().decode(found.stdout)
-      .split("\n")
-      .map(line => Number.parseInt(line.trim(), 10))
-      .filter(pid => Number.isInteger(pid) && pid > 0 && pid !== selfPid);
-  } catch {
-    return [];
+function hasCliFlag(requested: string[], name: string): boolean {
+  const delimiterIndex = requested.indexOf("--");
+  const wrapperArgs = delimiterIndex === -1 ? requested : requested.slice(0, delimiterIndex);
+  return wrapperArgs.some(arg => arg === name || arg.startsWith(`${name}=`));
+}
+
+const DEFAULT_TEST_PARALLELISM = 4;
+
+// Bun 1.4.0 builds `bun test` options from its test, runtime, transpiler, and base tables.
+// Only required values consume the next argument. Optional values such as `--parallel=2`
+// must stay attached so a bare option cannot hide the positional filter that follows it.
+const BUN_TEST_OPTIONS_REQUIRING_VALUES = new Set([
+  // Test options.
+  "--timeout",
+  "--rerun-each",
+  "--retry",
+  "--seed",
+  "--coverage-reporter",
+  "--coverage-dir",
+  "-t",
+  "--test-name-pattern",
+  "--grep",
+  "--reporter",
+  "--reporter-outfile",
+  "--max-concurrency",
+  "--path-ignore-patterns",
+  "--parallel-delay",
+  "--shard",
+  "--timings",
+  // Runtime options accepted by `bun test`.
+  "--watch-kill-signal",
+  "-r",
+  "--preload",
+  "--require",
+  "--import",
+  "--cpu-prof-name",
+  "--cpu-prof-dir",
+  "--cpu-prof-interval",
+  "--heap-prof-name",
+  "--heap-prof-dir",
+  "--heap-prof-interval",
+  "--install",
+  "-e",
+  "--eval",
+  "-p",
+  "--print",
+  "--port",
+  "--origin",
+  "--conditions",
+  "--fetch-preconnect",
+  "--max-http-header-size",
+  "--dns-result-order",
+  "--redirect-warnings",
+  "--disable-warning",
+  "--title",
+  "--unhandled-rejections",
+  "--console-depth",
+  "--user-agent",
+  "--cron-title",
+  "--cron-period",
+  "--trace-event-categories",
+  "--trace-event-file-pattern",
+  "--stack-trace-limit",
+  // Transpiler and base options accepted by `bun test`.
+  "--main-fields",
+  "--extension-order",
+  "--tsconfig-override",
+  "-d",
+  "--define",
+  "--drop",
+  "--feature",
+  "-l",
+  "--loader",
+  "--jsx-factory",
+  "--jsx-fragment",
+  "--jsx-import-source",
+  "--jsx-runtime",
+  "--env-file",
+  "--cwd",
+  "-c",
+  "--config",
+]);
+
+/** True for a filter-less `bun run test`. `--timeout` / `--dots` / `--parallel=N` still count. */
+function isFullSuiteRun(requested: string[]): boolean {
+  const delimiterIndex = requested.indexOf("--");
+  const wrapperArgs = delimiterIndex === -1 ? requested : requested.slice(0, delimiterIndex);
+  const passedThrough = delimiterIndex === -1 ? [] : requested.slice(delimiterIndex + 1);
+  if (passedThrough.length > 0) return false;
+
+  for (let index = 0; index < wrapperArgs.length; index++) {
+    const arg = wrapperArgs[index];
+    if (arg === "-" || !arg.startsWith("-")) return false;
+    if (!arg.includes("=") && BUN_TEST_OPTIONS_REQUIRING_VALUES.has(arg)) index++;
   }
+  return true;
 }
 
 /**
- * Wait until this machine has no other full-suite runner, then proceed.
+ * Default `bun test` argv for this repo.
  *
- * Warning about contention was not enough: the warning scrolls past, the run still
- * starts, and four concurrent suites drove load average to 10 and turned a ~210s
- * suite into a 13-minute one that read as a hang. Agents in parallel worktrees each
- * think they are the only runner, so the serialization has to live here rather than
- * in anyone's discipline.
- *
- * Queue rather than refuse: a failed `bun run test` invites `bun test` directly,
- * which bypasses this file entirely. Waiting is the behavior that survives being
- * worked around. `OCX_TEST_NO_QUEUE=1` opts out for anyone who really wants overlap.
+ * `--isolate` keeps a fresh global per file. Bounded parallelism is what makes the suite
+ * finishable: with isolate alone Bun re-evaluates
+ * the module graph once per file on a single core, so past ~900 files the run stops looking slow
+ * and starts looking hung — measured here at 1 h 29 m with zero output, ~57 % CPU and 8.5 MB RSS,
+ * against a few minutes for the identical suite with four workers. Leaving Bun to select all ten
+ * workers made deadline-sensitive tests fail under load, so the repository default is deterministic.
+ * A caller-supplied `--parallel` or `--parallel=N` is left alone.
  */
-async function waitForExclusiveRun(selfPid: number): Promise<void> {
-  if (process.env.OCX_TEST_NO_QUEUE === "1") return;
-  const pollMs = 5_000;
-  // Long enough for a full suite plus slack; past this, assume the holder is wedged
-  // rather than working and let this run start anyway.
-  const maxWaitMs = 45 * 60 * 1000;
+export function resolveBunTestArgs(requested: string[]): string[] {
+  const args = ["--isolate"];
+  if (!hasCliFlag(requested, "--parallel")) {
+    args.push(`--parallel=${DEFAULT_TEST_PARALLELISM}`);
+  }
+  args.push(...requested);
+  if (isFullSuiteRun(requested)) args.push("./tests/");
+  return args;
+}
+
+export const SERIAL_FULL_SUITE_FILES = [
+  "codex-shim.test.ts",
+  "cursor-native-exec-shell.test.ts",
+  "issue-452-empty-503.test.ts",
+  "openai-provider-option-e2e.test.ts",
+  "release-helper.test.ts",
+  "update-stop-first.test.ts",
+] as const;
+
+const SERIAL_LANE_TIMEOUT_MS: Partial<Record<(typeof SERIAL_FULL_SUITE_FILES)[number], number>> = {
+  // This file intentionally exercises 33 complete release-script subprocess trees.
+  // It is ~90s on an idle machine and measured at ~170s under unrelated host load.
+  "release-helper.test.ts": 5 * 60 * 1000,
+};
+
+export interface BunTestLane {
+  label: string;
+  args: string[];
+  timeoutMs: number;
+}
+
+function withoutParallelOverride(requested: string[]): string[] {
+  return requested.filter(arg => arg !== "--parallel" && !arg.startsWith("--parallel="));
+}
+
+function canUseSerialLanes(requested: string[]): boolean {
+  if (!isFullSuiteRun(requested)) return false;
+  return !["--changed", "--shard", "--reporter-outfile", "--update-timings"].some(flag => hasCliFlag(requested, flag));
+}
+
+/** Build the default full-suite plan: one bounded main lane plus isolated risky files. */
+export function resolveBunTestPlan(requested: string[]): BunTestLane[] {
+  if (!canUseSerialLanes(requested)) {
+    return [{ label: "suite", args: resolveBunTestArgs(requested), timeoutMs: 15 * 60 * 1000 }];
+  }
+
+  const mainArgs = resolveBunTestArgs(requested);
+  const rootIndex = mainArgs.lastIndexOf("./tests/");
+  const ignores = SERIAL_FULL_SUITE_FILES.flatMap(file => ["--path-ignore-patterns", `**/${file}`]);
+  mainArgs.splice(rootIndex === -1 ? mainArgs.length : rootIndex, 0, ...ignores);
+  const serialRequested = withoutParallelOverride(requested);
+  return [
+    { label: "parallel suite", args: mainArgs, timeoutMs: 15 * 60 * 1000 },
+    ...SERIAL_FULL_SUITE_FILES.map(file => ({
+      label: file,
+      args: resolveBunTestArgs(["--parallel=1", ...serialRequested, `./tests/${file}`]),
+      timeoutMs: SERIAL_LANE_TIMEOUT_MS[file] ?? 3 * 60 * 1000,
+    })),
+  ];
+}
+
+function waitWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(null), timeoutMs);
+    promise.then(
+      value => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      error => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function runTestLane(lane: BunTestLane, runId: string): Promise<number> {
+  const isolated = createIsolatedTestEnvironment({ ...process.env, [TEST_RUN_ID_ENV]: runId });
   const startedAt = Date.now();
-  let announced = false;
-  for (;;) {
-    const competing = findCompetingTestRunners(selfPid);
-    if (competing.length === 0) {
-      if (announced) {
-        console.warn(`[test] the other runner(s) finished after ${Math.round((Date.now() - startedAt) / 1000)}s; starting.`);
+  let interrupted: NodeJS.Signals | null = null;
+  const child = Bun.spawn([process.execPath, "test", ...lane.args], {
+    env: isolated.env,
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const forward = (signal: NodeJS.Signals) => {
+    interrupted = signal;
+    try { child.kill(signal); } catch { /* child already exited */ }
+  };
+  const onInterrupt = () => forward("SIGINT");
+  const onTerminate = () => forward("SIGTERM");
+  process.once("SIGINT", onInterrupt);
+  process.once("SIGTERM", onTerminate);
+
+  const exited = child.exited;
+  try {
+    const exitCode = await waitWithTimeout(exited, lane.timeoutMs);
+    if (exitCode === null) {
+      console.error(`[test] ${lane.label} exceeded ${Math.round(lane.timeoutMs / 1000)}s; terminating pid ${child.pid}.`);
+      try { child.kill("SIGTERM"); } catch { /* child already exited */ }
+      const graceful = await waitWithTimeout(exited, 5_000);
+      if (graceful === null) {
+        try { child.kill("SIGKILL"); } catch { /* child already exited */ }
+        await waitWithTimeout(exited, 2_000);
       }
-      return;
+      return 124;
     }
-    if (Date.now() - startedAt > maxWaitMs) {
-      console.warn(
-        `[test] still waiting on pid ${competing.join(", ")} after ${Math.round(maxWaitMs / 60000)} minutes. `
-        + "Assuming they are stuck and starting anyway; expect a slow run.",
-      );
-      return;
-    }
-    if (!announced) {
-      announced = true;
-      console.warn(
-        `[test] ${competing.length} other bun test runner(s) already running (pid ${competing.join(", ")}). `
-        + "Waiting for them to finish so the suites do not fight over the CPU. "
-        + "Set OCX_TEST_NO_QUEUE=1 to run concurrently anyway.",
-      );
-    }
-    await Bun.sleep(pollMs);
+    if (interrupted === "SIGINT") return 130;
+    if (interrupted === "SIGTERM") return 143;
+    const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+    console.warn(`[test] ${lane.label} finished in ${seconds}s (exit ${exitCode}).`);
+    return exitCode;
+  } finally {
+    process.off("SIGINT", onInterrupt);
+    process.off("SIGTERM", onTerminate);
+    isolated.cleanup();
   }
 }
 
 if (import.meta.main) {
-  const isolated = createIsolatedTestEnvironment();
+  const requestedTests = process.argv.slice(2);
+  const runId = randomUUID();
+  const lock = await acquireTestRunLock({
+    runId,
+    onWait: owner => console.warn(
+      `[test] another Bun test run${owner ? ` (pid ${owner.pid})` : ""} holds the machine lock; waiting. `
+      + "Set OCX_TEST_NO_QUEUE=1 only for intentional overlap.",
+    ),
+    onAcquiredAfterWait: elapsedMs => console.warn(`[test] acquired the machine lock after ${Math.round(elapsedMs / 1000)}s.`),
+  });
+  const startedAt = Date.now();
   try {
-    const requestedTests = process.argv.slice(2);
-    await waitForExclusiveRun(process.pid);
-    const startedAt = Date.now();
-    const child = Bun.spawnSync(
-      [process.execPath, "test", "--isolate", ...(requestedTests.length > 0 ? requestedTests : ["./tests/"])],
-      {
-        env: isolated.env,
-        stdin: "inherit",
-        stdout: "inherit",
-        stderr: "inherit",
-      },
-    );
+    let exitCode = 0;
+    for (const lane of resolveBunTestPlan(requestedTests)) {
+      const laneExitCode = await runTestLane(lane, runId);
+      if (laneExitCode !== 0 && exitCode === 0) exitCode = laneExitCode;
+      if ([124, 130, 143].includes(laneExitCode)) break;
+    }
     const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
-    if (requestedTests.length === 0 && elapsedSeconds > 600) {
+    if (isFullSuiteRun(requestedTests) && elapsedSeconds > 600) {
       console.warn(
-        `[test] the suite took ${elapsedSeconds}s; it normally runs in about 210s on an idle machine. `
+        `[test] the suite took ${elapsedSeconds}s; with --parallel=${DEFAULT_TEST_PARALLELISM} it should finish in a few minutes on an idle machine. `
         + "Check for another test runner, a busy CPU, or a test that started polling something real.",
       );
     }
-    process.exitCode = child.exitCode ?? 1;
+    process.exitCode = exitCode;
   } finally {
-    isolated.cleanup();
+    lock.release();
   }
 }

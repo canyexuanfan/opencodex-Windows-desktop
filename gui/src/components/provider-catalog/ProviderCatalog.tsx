@@ -182,7 +182,7 @@ export default function ProviderCatalog({
                 {row.kind === "key" ? null : row.kind === "codex" ? (
                   <>
                     {loggedIn && (
-                      <a className="btn btn-ghost" href={row.href ?? "#codex-auth"}>{t("modal.accountManage")}</a>
+                      <a className="btn btn-ghost" href={row.href ?? "#codex-set"}>{t("modal.accountManage")}</a>
                     )}
                     {onLogin && (
                       <button type="button"

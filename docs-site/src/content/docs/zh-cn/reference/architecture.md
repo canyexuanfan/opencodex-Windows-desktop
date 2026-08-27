@@ -15,7 +15,7 @@ src/
 ├── server/             # Bun.serve, /v1/* proxy, /api/* management API, WS bridge
 ├── codex/              # Codex config injection, catalog sync, auth/account integration
 ├── providers/          # provider metadata, API-key pool, quota and labels
-├── adapters/           # seven wire adapters, shared guards/utilities, Cursor protobuf transport
+├── adapters/           # wire adapters, shared guards/utilities, Cursor protobuf transport
 ├── oauth/              # OAuth providers, API-key catalog, token store/refresh
 ├── usage/              # request usage extraction, JSONL logs, summaries, totals
 ├── lib/                # runtime, process, retry, privacy, token estimate helpers
@@ -57,7 +57,7 @@ src/
    必要时刷新 provider OAuth，并把选中的 credential 应用到 route。
 4. 主请求发出前，`vision/` 会为 `noVisionModels` 中的模型描述图像。如果没有安全的 sidecar
    路径，则移除图像，而不是把它发送给纯文本上游。
-5. `server/adapter-resolve.ts` 应用模型级 wire override，并构造七个 adapter 之一。Responses
+5. `server/adapter-resolve.ts` 应用模型级 wire override，并构造已注册 adapter 之一。Responses
    passthrough 直接转发原始 body；Cursor 运行双向 `runTurn` transport；其余转换型 adapter
    则构建、获取并解析上游请求。
 6. 路由模型请求托管的 `web_search` 工具时，`web-search/` 会暴露一个合成函数，经 ChatGPT

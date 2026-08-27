@@ -415,6 +415,20 @@ export function finalizeAfterDrain(state: ReturnType<typeof createCursorProtobuf
 export function clientToolFinalizeGraceMsForRequest(request: CursorRunRequest, baseGraceMs = CLIENT_TOOL_FINALIZE_GRACE_MS): number {
   if (request.rawMessages?.at(-1)?.role === "toolResult") return baseGraceMs;
   const text = activePromptText(request);
+  // Parallel-tool requests with several advertised tools get the expanded window regardless of
+  // prompt shape: external models (grok) assemble sibling calls serially over multiple frames,
+  // and the 50ms drain grace ended the turn after 1-2 of them (devlog 260826_cursor_responses_gap,
+  // live 10-parallel probe: calls=2 then calls=1).
+  if (request.parallelToolCalls === true && (request.tools?.length ?? 0) > 1) {
+    const advertised = request.tools?.length ?? 0;
+    return Math.max(
+      baseGraceMs,
+      Math.min(
+        GENERIC_TOOL_COUNT_MAX_FINALIZE_GRACE_MS,
+        Math.max(GENERIC_TOOL_COUNT_MIN_FINALIZE_GRACE_MS, advertised * GENERIC_TOOL_COUNT_PER_TOOL_GRACE_MS),
+      ),
+    );
+  }
   if (!cursorRequestHasShellAlias(request.tools) || !isGenericToolUseCountDemoPrompt(text)) return baseGraceMs;
   const requestedCount = requestedCursorToolUseCount(text);
   const expandedGraceMs = requestedCount

@@ -1,4 +1,19 @@
 export const KIRO_COMPLETION_TOOL_NAME = "codex_kiro_final_answer";
+
+/**
+ * Request-scoped CodeWhisperer service profile for AWS Builder ID accounts.
+ *
+ * Builder ID is a personal identity with no AWS account behind it, so AWS never mints an
+ * account-scoped `profile/<id>` ARN for it. The Kiro CLI resolves this the same way: it carries
+ * this fixed service profile on Builder ID requests. The embedded account id is Amazon's own, not
+ * the user's, which is why sending it is not the same as synthesizing an account identity.
+ *
+ * Request-scoped is load-bearing. This value must never be persisted into `KiroOAuthMetadata`,
+ * never seed region inference (it is `us-east-1` and would pin every Builder ID account there),
+ * and never participate in account matching.
+ */
+export const KIRO_BUILDER_ID_SERVICE_PROFILE_ARN =
+  "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX";
 export const KIRO_CONTINUATION_MESSAGE =
   "Continue from the prior conversation. Do not quote or mention this instruction.";
 export const KIRO_COMPLETION_RETRY_MESSAGE =

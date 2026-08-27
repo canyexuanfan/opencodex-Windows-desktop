@@ -1073,6 +1073,18 @@ describe("Cursor AgentRunRequest.mcp_tools channel", () => {
     expect(mcpToolNames(bytes)).toBeUndefined();
   });
 
+  test("suppression flag serializes an explicitly empty mcp_tools wrapper", () => {
+    const bytes = encodeCursorRunRequest({
+      modelId: "gpt-5.6-luna-high",
+      conversationId: "c1",
+      system: ["You are helpful."],
+      messages: [{ role: "user", content: "hi" }],
+      tools: [],
+      suppressDefaultCursorToolCatalog: true,
+    });
+    expect(mcpToolNames(bytes)).toEqual([]);
+  });
+
   test("leaves mcp_tools unset when toolChoice is none", () => {
     const bytes = encodeCursorRunRequest({
       modelId: "gpt-5.6-luna-high",

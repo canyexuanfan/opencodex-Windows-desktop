@@ -53,6 +53,25 @@ describe("inventory", () => {
     expect(base?.class).toBe("base");
     expect(isToggleId("base-instructions")).toBe(false);
   });
+
+  test("git-attribution is runtime-conditional with no key and no fixed order", () => {
+    // The layer ext/git-attribution contributes. Its shape is the whole assertion:
+    // `runtime-conditional` because lib.rs:33-80 resolves enablement from the auth
+    // server rather than a config key (features/src/lib.rs:277 records the old flag as
+    // removed), and `order: null` because it registers through
+    // extensions.context_contributors(), whose position is registration-order dependent.
+    //
+    // Refusal at the route is NOT re-asserted here: codex-prompt-route.test.ts case 5
+    // already drives the real endpoint table-driven over every non-config-toggle
+    // descriptor, so a second guard would duplicate coverage rather than add it.
+    const layer = LAYER_INVENTORY.find(d => d.id === "git-attribution");
+    expect(layer).toBeDefined();
+    expect(layer?.class).toBe("runtime-conditional");
+    expect(layer?.key).toBeNull();
+    expect(layer?.order).toBeNull();
+    expect(layer?.default).toBeNull();
+    expect(isToggleId("git-attribution")).toBe(false);
+  });
 });
 
 describe("normalization", () => {

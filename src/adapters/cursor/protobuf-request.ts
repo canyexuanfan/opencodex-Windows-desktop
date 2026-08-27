@@ -4,6 +4,7 @@ import { ValueSchema } from "@bufbuild/protobuf/wkt";
 import type { OcxAssistantContentPart, OcxMessage, OcxToolResultMessage } from "../../types";
 import { namespacedToolName } from "../../types";
 import type { CursorRunRequest } from "./types";
+import { decodeCursorCallId } from "./call-id";
 import { cursorNeedsExternalToolContinuation, isCursorExternalWireModel } from "./discovery";
 import { normalizeCursorToolResultText } from "./tool-result-normalize";
 import { debugProviderDiagnostic } from "../../lib/debug";
@@ -217,6 +218,42 @@ function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobR
   const echoToolResultInRoot = cursorNeedsExternalToolContinuation(request.modelId);
   const lastRawIsToolResult = messages.at(-1)?.role === "toolResult";
   const activeUserIndex = lastRawIsToolResult ? -1 : lastActionIndex(messages);
+  // Repetition breaker (devlog 260826 gap-9): external full-replay flattens history to text,
+  // so N identical assistant/tool-result rounds replay as N identical lines and PRIME the model
+  // to emit the same line again (self-reinforcing loop: S2a 180x, identical-probe repetition).
+  // Collapse consecutive duplicates into one entry + a count marker, and count collapses so a
+  // strategy-change note can be appended when the pattern is severe.
+  let lastReplayText: string | undefined;
+  let lastReplayEntry: RootBlobCandidate | undefined;
+  let collapsedRepeats = 0;
+  let maxRunLength = 1;
+  let currentRun = 1;
+  const pushDeduped = (
+    payload: { role: string; content: [{ type: "text"; text: string }] },
+    role: RootBlobCandidate["role"],
+    opts: { messageIndex: number; text?: string },
+    normalized: string,
+  ): void => {
+    if (externalModel && lastReplayText !== undefined && normalized === lastReplayText && lastReplayEntry) {
+      collapsedRepeats++;
+      currentRun++;
+      if (currentRun > maxRunLength) maxRunLength = currentRun;
+      const marked = `${normalized}\n[note: this exact output was produced ${currentRun} times in a row]`;
+      const replacement = rootBlobCandidate(
+        { role: payload.role, content: [{ type: "text", text: marked }] },
+        role,
+        opts,
+      );
+      entries[entries.indexOf(lastReplayEntry)] = replacement;
+      lastReplayEntry = replacement;
+      return;
+    }
+    currentRun = 1;
+    const entry = rootBlobCandidate(payload, role, opts);
+    entries.push(entry);
+    lastReplayText = normalized;
+    lastReplayEntry = entry;
+  };
 
   for (let i = 0; i < messages.length; i++) {
     if (i === activeUserIndex) break;
@@ -228,6 +265,9 @@ function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobR
       // A bare string survives blob hydration but external workers reject the completed replay
       // before tokenization (`usedTokens: 0`, then invalid_argument).
       if (text.length > 0) {
+        lastReplayText = undefined;
+        lastReplayEntry = undefined;
+        currentRun = 1;
         entries.push(rootBlobCandidate({
           role: "user",
           content: [{ type: "text", text }],
@@ -238,11 +278,12 @@ function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobR
       // Native Composer state can preserve it through ThinkingMessage/history structures.
       const text = assistantRootText(message, !externalModel).trim();
       if (text.length > 0) {
-        entries.push(rootBlobCandidate(
+        pushDeduped(
           { role: "assistant", content: [{ type: "text", text }] },
           "assistant",
           { messageIndex: i },
-        ));
+          text,
+        );
       }
       // Assistant tool CALLS are intentionally NOT replayed as visible "[Tool Call]" text here.
     } else if (message.role === "toolResult") {
@@ -254,12 +295,15 @@ function rootPromptMessages(request: CursorRunRequest, requestScope: CursorBlobR
       // node_repl result is an error even when the runtime said isError=false).
       const prefix = normalizedToolResult(message, contentToText(message.content)).isError ? "[Tool Error]" : "[Tool Result]";
       const text = `${prefix}\n${toolResultToText(message)}`;
-      entries.push(rootBlobCandidate(
-        toolResultRootPayload(text),
-        "toolResult",
-        { messageIndex: i, text },
-      ));
+      pushDeduped(toolResultRootPayload(text), "toolResult", { messageIndex: i, text }, text);
     }
+  }
+  // Severe repetition: tell the model ONCE, imperatively, to change strategy.
+  if (externalModel && maxRunLength >= 3) {
+    entries.push(rootBlobCandidate({
+      role: "user",
+      content: [{ type: "text", text: `[context note] The transcript above contains the same output repeated ${maxRunLength} times in a row. Repeating it again is a failure. Take a DIFFERENT action now, or state plainly what is blocking progress.` }],
+    }, "user", {}));
   }
 
   let selected = entries;
@@ -436,6 +480,7 @@ function decodeResultParts(message: OcxToolResultMessage): DecodedResultPart[] |
   if (typeof content === "string") return undefined;
   return content.map((part): DecodedResultPart => {
     if (part.type === "text") return { kind: "text", text: part.text };
+    if (part.type === "video") return { kind: "text", text: "[video]" };
     const decoded = decodeInlineImage(part.imageUrl);
     return decoded ? { kind: "image", ...decoded } : { kind: "undecodable" };
   });
@@ -530,7 +575,7 @@ function toolResultToText(message: OcxToolResultMessage): string {
   const normalized = normalizedToolResult(message, contentToText(message.content));
   return [
     "[tool_result]",
-    `call_id: ${message.toolCallId}`,
+    `call_id: ${decodeCursorCallId(message.toolCallId)}`,
     `name: ${namespacedToolName(message.toolNamespace, message.toolName)}`,
     `is_error: ${normalized.isError}`,
     "output:",
@@ -591,7 +636,7 @@ function toolCallStep(
             args: create(McpArgsSchema, {
               name: toolName,
               toolName,
-              toolCallId: part.id,
+              toolCallId: decodeCursorCallId(part.id),
               providerIdentifier: OCX_RESPONSES_TOOL_PROVIDER,
               args,
             }),
@@ -837,8 +882,10 @@ function buildPreparedCursorRunRequest(
     ? "userMessageAction"
     : "resumeAction";
   const actionText = externalToolContinuation
-    ? CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT
-    : text;
+    ? (request.echoRetryContinuationText ?? CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT)
+    : request.echoRetryContinuationText
+      ? `${text}\n\n[correction] ${request.echoRetryContinuationText}`
+      : text;
   const action = create(ConversationActionSchema, {
     action: actionCase === "userMessageAction"
       ? {
@@ -965,12 +1012,15 @@ function buildPreparedCursorRunRequest(
         displayName: request.modelId,
         displayNameShort: request.modelId,
         aliases: [],
+        ...(request.maxMode === true ? { maxMode: true } : {}),
       }),
     } : {}),
-    ...(requestedModelParameters.length > 0 ? {
+    ...(requestedModelParameters.length > 0 || request.maxMode === true ? {
       requestedModel: create(RequestedModelSchema, {
         modelId: request.modelId,
-        maxMode: false,
+        // Max Mode must be raised on BOTH RequestedModel and ModelDetails; missing either
+        // can invalid_argument upstream (devlog 260826 070).
+        maxMode: request.maxMode === true,
         parameters: requestedModelParameters.map(parameter =>
           create(RequestedModel_ModelParameterbytesSchema, parameter)),
       }),
@@ -988,7 +1038,11 @@ function buildPreparedCursorRunRequest(
     // the event-state `clientToolNames` use (live-transport.ts). Advertising the raw `request.tools`
     // here would let mcp_tools expose a tool that the event state does not recognize for a generic
     // tool-count prompt, so a call to it would be rejected as an unknown Responses tool.
-    ...(mcpToolDefs.length > 0 ? { mcpTools: create(McpToolsSchema, { mcpTools: mcpToolDefs }) } : {}),
+    // An explicitly empty McpTools wrapper (bare API callers) suppresses Cursor's default
+    // native catalog; an absent field lets identified Codex sessions keep it (devlog 260826 040).
+    ...(mcpToolDefs.length > 0 || request.suppressDefaultCursorToolCatalog === true
+      ? { mcpTools: create(McpToolsSchema, { mcpTools: mcpToolDefs }) }
+      : {}),
   });
 
   const message = create(AgentClientMessageSchema, {

@@ -260,6 +260,23 @@ export function isCodexAppServerCommandLine(commandLine: string, executable?: st
   }
   if (tokens.length === 0) return false;
   if (isCodeModeHostProcess(tokens)) return true;
+  // An npm-installed Codex runs as a PAIR: `node /usr/local/bin/codex app-server` and the
+  // vendored native binary that wrapper spawns. Only the child used to match, so
+  // `--restart-codex` signalled the child while its supervisor kept holding the socket -
+  // which is what "PID(s) still running after SIGTERM" was reporting on Linux.
+  //
+  // The codex-shaped token must be IMMEDIATELY next. Skipping interpreter flags to reach
+  // it looks tempting and is wrong: interpreter options take values, so a generic skip
+  // reads the value of `node --require codex app-server worker.js` as the entrypoint.
+  // Supporting flags needs a real Node/Bun/Deno entrypoint parser, not a loop over
+  // hyphens; the observed wrappers put the path first, so this stays narrow on purpose.
+  //
+  // Dropping only the interpreter and re-running the ordinary scan is what preserves the
+  // subcommand discipline below: `node <codex> exec 'hi'` stays unmatched exactly like
+  // `codex exec 'hi'` does.
+  if (isInterpreterToken(tokens[0]!) && tokens.length > 1 && isCodexExecutableToken(tokens[1]!)) {
+    tokens = tokens.slice(1);
+  }
   if (!isCodexExecutableToken(tokens[0]!)) return false;
 
   let i = 1;
@@ -740,6 +757,28 @@ const CATALOG_STATE_TTL_MS = 5_000;
  */
 const CATALOG_STATE_UNKNOWN_TTL_MS = 250;
 
+/**
+ * How long a real observation may still be SERVED after it expires, while a refresh
+ * runs behind it (#2499).
+ *
+ * The probe is advisory and, on Windows, slow: `Invoke-CimMethod GetOwner` costs
+ * ~0.4s per candidate process, so a cold probe routinely outlives the 5s TTL and
+ * every turn that misses the cache pays for it on the request path. Serving the
+ * previous reading immediately keeps that cost off the turn without pretending it is
+ * fresh -- the refresh it triggers is what makes the next reading current.
+ *
+ * Measured from expiry rather than from when the reading was taken, so a `fresh`
+ * entry stays servable for its own TTL plus this bound. Anchoring it to expiry keeps
+ * the stale window independent of the TTL -- a cap on total age would quietly turn
+ * this path off if the TTL were ever raised past it.
+ *
+ * Bounded rather than unlimited: if the refresh keeps failing, an observation this
+ * old stops being evidence about the machine and it is better to wait for a real one.
+ * `unknown` is never served this way -- it is a failure to observe, not an
+ * observation, and it already has its own short window for exactly that reason.
+ */
+export const CATALOG_STATE_MAX_STALE_MS = 60_000;
+
 export function catalogStateTtlMs(state: CodexAppServerCatalogState): number {
   return state === "unknown" ? CATALOG_STATE_UNKNOWN_TTL_MS : CATALOG_STATE_TTL_MS;
 }
@@ -835,6 +874,14 @@ export function collectCodexAppServerCatalogState(
  * - 선택한 방식: retain the synchronous API and use async PowerShell plus an identity-scoped in-flight refresh, short cache, and invalidation generation only for Windows requests.
  * - 다른 대안 대신 이 방식을 선택한 이유: it fixes unrelated `/healthz` starvation without widening the process-matching or restart contract.
  * - 장점, 단점 및 영향: concurrent turns share one CIM walk, invalidated pre-write results cannot repopulate the cache, and the event loop stays responsive; a cold v2 turn can still await the bounded advisory probe.
+ *
+ * [Decision Log · #2499]
+ * - 목적과 의도: a cold probe outlives its own 5s TTL on Windows (~435ms per candidate process for `Invoke-CimMethod GetOwner`), so the cache expires before it can serve and the miss lands on a turn.
+ * - 기존 구현 및 제약 조건: the reading is advisory, and only `fresh` authorizes positive guidance (`src/server/responses/collaboration.ts`); `unknown` is a failure to observe rather than an observation.
+ * - 검토한 주요 대안: drop the per-process GetOwner fan-out (issue suggestion 1), or widen the TTL past the probe duration (suggestion 3).
+ * - 선택한 방식: serve an expired reading immediately when its generation still matches, bounded by `CATALOG_STATE_MAX_STALE_MS`, never for `unknown`, and refresh behind it; a failed refresh no longer evicts the reading it was refreshing.
+ * - 다른 대안 대신 이 방식을 선택한 이유: the fan-out change alters what "could not verify the owner" means for the current-user scoping contract and needs its own ground-truth comparison; a wider TTL still pays the probe on every human-paced turn.
+ * - 장점, 단점 및 영향: after the first probe the request path never waits; a server that stopped between readings can be described as `fresh` for up to the stale bound; a catalog write still invalidates immediately through the generation, and the cold path is unchanged.
  */
 export async function collectCodexAppServerCatalogStateForRequest(
   io: CodexAppServerProcessIo = {},
@@ -853,16 +900,30 @@ export async function collectCodexAppServerCatalogStateForRequest(
     catalogMtimeMs: io.catalogMtimeMs,
     now: io.now,
   };
-  if (requestCatalogStateCache
+  const cached = requestCatalogStateCache
     && requestCatalogStateCache.generation === generation
     && sameRequestCatalogStateIdentity(requestCatalogStateCache.identity, identity)
-    && now - requestCatalogStateCache.atMs < catalogStateTtlMs(requestCatalogStateCache.status.state)) {
-    return requestCatalogStateCache.status;
+    ? requestCatalogStateCache
+    : null;
+  if (cached && now - cached.atMs < catalogStateTtlMs(cached.status.state)) {
+    return cached.status;
   }
+  // An expired real reading is still worth handing back while the refresh runs. It
+  // cannot have been invalidated by an ocx catalog write: every such write calls
+  // `resetCodexAppServerCatalogStateCache`, which advances the generation and drops
+  // this entry, so a generation match means no write has landed since it was taken.
+  // What it can miss is an app-server that started or stopped meanwhile -- and a
+  // server started after the reading is newer than the catalog, which is the `fresh`
+  // this entry already says.
+  const servableStale = cached
+    && cached.status.state !== "unknown"
+    && now - cached.atMs < catalogStateTtlMs(cached.status.state) + CATALOG_STATE_MAX_STALE_MS
+    ? cached.status
+    : null;
   if (requestCatalogStateFlight
     && requestCatalogStateFlight.generation === generation
     && sameRequestCatalogStateIdentity(requestCatalogStateFlight.identity, identity)) {
-    return requestCatalogStateFlight.promise;
+    return servableStale ?? requestCatalogStateFlight.promise;
   }
 
   const refresh = async (): Promise<CodexAppServerCatalogStatus> => {
@@ -920,7 +981,18 @@ export async function collectCodexAppServerCatalogStateForRequest(
     if (requestCatalogStateGeneration !== generation) {
       return { state: "unknown" as const, processes: [], catalogMtimeMs: null };
     }
-    if (requestCatalogStateFlight === flight) {
+    // A refresh that failed must not evict a real reading. Before this function
+    // served stale entries, caching `unknown` cost at most the 250ms that state
+    // is allowed to live. Now that an expired observation is what callers are
+    // handed, overwriting one with `unknown` would take the answer AWAY from
+    // them on a transient failure -- `unknown` is not servable, so the next
+    // caller waits for a probe instead of getting the reading it would have had.
+    // Keep the observation and let its own age retire it.
+    const wouldEvictAnObservation = status.state === "unknown"
+      && requestCatalogStateCache?.generation === generation
+      && requestCatalogStateCache.status.state !== "unknown"
+      && sameRequestCatalogStateIdentity(requestCatalogStateCache.identity, identity);
+    if (requestCatalogStateFlight === flight && !wouldEvictAnObservation) {
       requestCatalogStateCache = {
         generation,
         identity,
@@ -934,7 +1006,9 @@ export async function collectCodexAppServerCatalogStateForRequest(
   });
   flight = { generation, identity, promise };
   requestCatalogStateFlight = flight;
-  return flight.promise;
+  // `promise` already absorbs its own failures, so leaving it unawaited here cannot
+  // surface as an unhandled rejection; the next caller picks up whatever it stored.
+  return servableStale ?? flight.promise;
 }
 
 /**

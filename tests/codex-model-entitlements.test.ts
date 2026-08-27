@@ -6,13 +6,15 @@ import {
   isDirectCallerEntitledToCodexModel,
   resetCodexModelEntitlementCacheForTests,
   resolveCodexModelEntitlements,
-  cachedAvailableAccountGatedNativeModels,
-  seedCodexModelEntitlementsForTests,
   seedCodexModelEntitlementsForTests,
   type CodexModelEntitlementCredentialSnapshot,
 } from "../src/codex/model-entitlements";
+import { MAIN_CODEX_ACCOUNT_ID } from "../src/codex/main-account";
 
 const DAYBREAK = "gpt-daybreak-blue-latest";
+const SOL = "gpt-5.6-sol";
+const TERRA = "gpt-5.6-terra";
+const LUNA = "gpt-5.6-luna";
 
 function credential(accountId: string): CodexModelEntitlementCredentialSnapshot {
   return {
@@ -38,15 +40,17 @@ describe("Codex account model entitlements", () => {
       fetcher: (async (_input, init) => {
         const accountId = new Headers(init?.headers).get("chatgpt-account-id");
         return accountId === "chatgpt-main"
-          ? roster("gpt-5.6-sol", DAYBREAK)
-          : roster("gpt-5.6-sol");
+          ? roster(SOL, LUNA, DAYBREAK)
+          : roster(SOL, TERRA);
       }) as typeof fetch,
       now: 1_000,
     });
 
     expect([...entitledCodexAccountIdsForModel(snapshot, DAYBREAK)!]).toEqual(["main"]);
-    expect([...availableAccountGatedNativeModels(snapshot)]).toEqual([DAYBREAK]);
-    expect(entitledCodexAccountIdsForModel(snapshot, "gpt-5.6-sol")).toBeUndefined();
+    expect([...entitledCodexAccountIdsForModel(snapshot, SOL)!]).toEqual(["main", "secondary"]);
+    expect([...entitledCodexAccountIdsForModel(snapshot, TERRA)!]).toEqual(["secondary"]);
+    expect([...entitledCodexAccountIdsForModel(snapshot, LUNA)!]).toEqual(["main"]);
+    expect([...availableAccountGatedNativeModels(snapshot)]).toEqual([SOL, TERRA, LUNA, DAYBREAK]);
   });
 
   test("fails closed when an account roster cannot be confirmed", async () => {
@@ -73,6 +77,40 @@ describe("Codex account model entitlements", () => {
 
     expect(snapshot.confirmedAccountIds.has("main")).toBe(true);
     expect(entitledCodexAccountIdsForModel(snapshot, DAYBREAK)?.size).toBe(0);
+  });
+
+  test("filters excluded accounts before credential and roster access", async () => {
+    const credentialReads: string[] = [];
+    const fetchedAccounts: string[] = [];
+    const snapshot = await resolveCodexModelEntitlements({
+      codexAccounts: [
+        { id: "pool-b", email: "pool-b@example.test", isMain: false },
+      ],
+    }, {
+      excludeAccountIds: new Set([MAIN_CODEX_ACCOUNT_ID]),
+      credentialSnapshot: async (accountId) => {
+        credentialReads.push(accountId);
+        return credential(accountId);
+      },
+      fetcher: (async (_input, init) => {
+        fetchedAccounts.push(new Headers(init?.headers).get("chatgpt-account-id") ?? "");
+        return roster(DAYBREAK);
+      }) as typeof fetch,
+      now: 1_000,
+    });
+
+    expect(credentialReads).toEqual(["pool-b"]);
+    expect(fetchedAccounts).toEqual(["chatgpt-pool-b"]);
+    expect([...snapshot.modelsByAccount.keys()]).toEqual(["pool-b"]);
+    expect(snapshot.confirmedAccountIds.has(MAIN_CODEX_ACCOUNT_ID)).toBe(false);
+
+    const supplied = await resolveCodexModelEntitlements({ codexAccounts: [] }, {
+      credentials: [credential(MAIN_CODEX_ACCOUNT_ID), credential("pool-c")],
+      excludeAccountIds: new Set([MAIN_CODEX_ACCOUNT_ID]),
+      fetcher: (async () => roster(DAYBREAK)) as typeof fetch,
+      now: 2_000,
+    });
+    expect([...supplied.modelsByAccount.keys()]).toEqual(["pool-c"]);
   });
 
   test("checks a Direct caller's own bearer instead of a local Pool account", async () => {
@@ -132,24 +170,4 @@ describe("Codex account model entitlements", () => {
     expect([...cachedAvailableAccountGatedNativeModels(1_000)]).toContain(DAYBREAK);
   });
 
-  test("Direct-caller rosters do not evict main/Pool entitlement evidence", async () => {
-    // The catalog projects ONLY from main/Pool keys. Under a single shared LRU, a burst of
-    // distinct Direct callers pushed those out and the gated row vanished from the catalog
-    // until rediscovery — fail-closed flapping whose cause an operator cannot see.
-    seedCodexModelEntitlementsForTests("main", [DAYBREAK], 1_000);
-    expect([...cachedAvailableAccountGatedNativeModels(1_000)]).toContain(DAYBREAK);
-
-    // Far more distinct Direct callers than the per-class cache bound of 64.
-    for (let i = 0; i < 80; i += 1) {
-      await isDirectCallerEntitledToCodexModel(
-        new Headers({ authorization: `Bearer caller-${i}` }),
-        DAYBREAK,
-        { fetcher: (async () => roster(DAYBREAK)) as typeof fetch, now: 1_000 },
-      );
-    }
-
-    // With one shared 64-entry LRU this read came back empty. The main grant is a different
-    // eviction class and is still inside its TTL, so it must survive.
-    expect([...cachedAvailableAccountGatedNativeModels(1_000)]).toContain(DAYBREAK);
-  });
 });

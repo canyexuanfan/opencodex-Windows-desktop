@@ -28,6 +28,7 @@ export type AttemptRecoveryKind =
   | "key-429"
   | "rate-limit-429"
   | "anthropic-oauth-429"
+  | "oauth-account-429"
   | "image-413"
   | "opaque-blob-rejection"
   | "empty-completion";
@@ -68,6 +69,7 @@ export interface PersistedUsageAttempt {
 }
 
 export interface PersistedUsageEntry {
+  requestedAlias?: string;
   requestId: string;
   timestamp: number;
   provider: string;
@@ -218,6 +220,7 @@ const ATTEMPT_RECOVERY_KINDS = new Set<AttemptRecoveryKind>([
   "key-429",
   "rate-limit-429",
   "anthropic-oauth-429",
+  "oauth-account-429",
   "image-413",
   "opaque-blob-rejection",
   "empty-completion",

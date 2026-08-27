@@ -1,6 +1,16 @@
 /** Minimal OAuth types, ported from jawcode packages/ai/src/utils/oauth/types.ts. */
 export type OAuthCredentialSource = "oauth" | "local-cli" | "credential-file" | "environment" | "manual";
 
+/**
+ * How the account authenticated. Mirrors `KiroAuthType` in `./kiro-credentials`, restated here so
+ * the credential-store types do not depend on the SQLite import module.
+ *
+ * `aws_sso_oidc` covers AWS Builder ID, which never issues an account-scoped CodeWhisperer
+ * profile ARN; the adapter needs that distinction to tell a Builder ID account apart from a
+ * `kiro_desktop` account whose profile import merely failed.
+ */
+export type KiroCredentialAuthType = "kiro_desktop" | "aws_sso_oidc";
+
 /** Account-scoped Kiro data required for refresh and request routing. */
 export interface KiroOAuthMetadata {
   profileArn?: string;
@@ -8,6 +18,11 @@ export interface KiroOAuthMetadata {
   apiRegion?: string;
   clientId?: string;
   clientSecret?: string;
+  /**
+   * Non-secret routing signal. Derived from the presence of a device-registration client pair, so
+   * it stays accurate even though `clientId`/`clientSecret` never leave the credential store.
+   */
+  authType?: KiroCredentialAuthType;
 }
 
 export type OAuthCredentials = {

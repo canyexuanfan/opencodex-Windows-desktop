@@ -404,6 +404,19 @@ export function storeCursorBlob(data: Uint8Array, requestScope?: CursorBlobReque
 }
 
 /**
+ * Serve-time integrity for content-addressed blobs (devlog 260826_cursor_responses_gap 080):
+ * a raw 32-byte blob id IS the SHA-256 of its bytes, so served data whose digest mismatches
+ * the id means in-store corruption — the splice signature behind garbled replayed tool
+ * results. Ids longer than 32 bytes (digested-key namespace) and server-minted ids are not
+ * content-addressed and always pass.
+ */
+export function cursorBlobServeIntegrityOk(blobId: Uint8Array, served: Uint8Array): boolean {
+  if (blobId.byteLength !== 32) return true;
+  const digest = createHash("sha256").update(served).digest();
+  return digest.equals(Buffer.from(blobId));
+}
+
+/**
  * Long-lived pin for blobs referenced by an active Cursor conversation checkpoint.
  * Unlike a request scope, this lease is not sealed and is not released by getBlob hydration.
  */
@@ -622,6 +635,13 @@ export function handleCursorNativeKv(
   if (kvMsg.message.case === "getBlobArgs") {
     const blobKey = key(kvMsg.message.value.blobId);
     const blobData = getBlob(blobKey);
+    // Splice-class corruption guard (devlog 260826 080): diagnostic only, never blocks serving.
+    if (blobData && !cursorBlobServeIntegrityOk(kvMsg.message.value.blobId, blobData)) {
+      debugProviderDiagnostic("cursor", "blob-integrity-mismatch", {
+        blobKey: blobKey.slice(0, 18),
+        servedBytes: blobData.byteLength,
+      });
+    }
     if (blobData && requestScope && blobRequestScopes.get(requestScope)?.kind === "request") {
       releaseHydratedBlob(blobKey, requestScope);
     }

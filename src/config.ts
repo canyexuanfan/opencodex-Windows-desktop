@@ -60,6 +60,7 @@ import { assertNotRealHomeUnderTest } from "./lib/test-home-guard";
 import { providerDestinationConfigError } from "./lib/destination-policy";
 import { redactSecretString } from "./lib/redact";
 import { openRouterRoutingConfigError } from "./providers/openrouter-routing";
+import { MODEL_ALIAS_PATTERN } from "./providers/default-aliases";
 import {
   MODEL_ADAPTER_OVERRIDE_ALLOWED,
   OPENAI_PROVIDER_TIER_VERSION,
@@ -141,6 +142,15 @@ export {
   writeRuntimePort,
   type RuntimePortState,
 } from "./config/process-state";
+import {
+  clearPendingConfigTopLevelDeletions,
+  configHasRebaseProvenance,
+  configRebaseDeletionKeys,
+  CONFIG_REBASE_PROVENANCE_KEY,
+  deleteConfigTopLevelKey,
+  projectConfigRebaseProvenance,
+} from "./config/rebase-provenance";
+export { deleteConfigTopLevelKey } from "./config/rebase-provenance";
 
 export class OpenAiTierBackupCleanupError extends Error {
   constructor() { super("OpenAI tier backup temporary cleanup failed"); this.name = "OpenAiTierBackupCleanupError"; }
@@ -479,6 +489,9 @@ const fastWireSchema = z.object({
 const providerConfigSchema = z.object({
   adapter: z.string().min(1),
   baseUrl: z.string().min(1),
+  alias: z.string().optional(),
+  modelAliases: z.record(z.string(), z.string()).optional(),
+  defaultAliases: z.boolean().optional(),
   requestPacing: requestPacingSchema.optional().catch(undefined),
   mcpMaxTools: z.number().int().positive().optional(),
   mcpMaxSchemaBytes: z.number().int().positive().optional(),
@@ -865,6 +878,10 @@ const configSchema = z.object({
   ]).optional().catch(undefined),
   providers: z.record(z.string(), providerConfigSchema),
   defaultProvider: z.string().min(1).default("openai"),
+  defaultModelAliases: z.boolean().optional(),
+  // Future versions remain opaque through passthrough-compatible whole-config saves.
+  // Only version 1 grants deletion authority in the rebase path.
+  configRebaseProvenance: z.unknown().optional(),
   // A retry can be billable, so absence and malformed hand edits both stay off.
   emptyCompletionRetry: z.boolean().optional().catch(false),
   // A malformed hand edit must not silently stop opening the browser: fall back
@@ -904,6 +921,9 @@ const configSchema = z.object({
   // A malformed hand edit must degrade to false without discarding providers, accounts,
   // or the exact selector map. Live writes remain strict.
   codexAccountPickerEnabled: z.boolean().optional().catch(false),
+  // Same degrade-not-reject rule: a malformed hand edit hides Spark rather than discarding the
+  // whole config. Hidden is also the default, so `catch(false)` and the default agree.
+  showCodexSparkQuota: z.boolean().optional().catch(false),
   // Model ids excluded from the Grok Build managed block (dashboard switches).
   grokExcludedModels: z.array(z.string()).optional(),
   // Invalid values degrade to undefined ("auto") instead of failing the whole
@@ -1125,6 +1145,17 @@ const configSchema = z.object({
         code: "custom",
         path: ["providers", redactSecretString(name), "modelSupportsReasoningSummaries"],
         message: reasoningSummariesError,
+      });
+    }
+    const verbositySupportError = booleanRecordConfigError(
+      (provider as { modelSupportsVerbosity?: unknown }).modelSupportsVerbosity,
+      "modelSupportsVerbosity",
+    );
+    if (verbositySupportError) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["providers", redactSecretString(name), "modelSupportsVerbosity"],
+        message: verbositySupportError,
       });
     }
     const serviceTierModelsError = booleanRecordConfigError(
@@ -1783,6 +1814,7 @@ export function loadConfig(): OcxConfig {
   try {
     const raw = readFileSync(configPath, "utf-8").replace(/^\uFEFF/, "");
     const parsed = JSON.parse(raw);
+    sanitizeAliasesForLoad(parsed);
     sanitizeRetryOn429ForLoad(parsed);
     sanitizeModelCostsForLoad(parsed);
     const result = configSchema.safeParse(parsed);
@@ -1851,6 +1883,43 @@ export function loadConfig(): OcxConfig {
   } catch (error) {
     warnAndBackupInvalidConfig(configPath, error);
     return getDefaultConfig();
+  }
+}
+
+/** Hand-edited alias mistakes disable only the bad alias; providers and routing survive. */
+function sanitizeAliasesForLoad(raw: unknown): void {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+  const root = raw as Record<string, unknown>;
+  if (!root.providers || typeof root.providers !== "object" || Array.isArray(root.providers)) return;
+  const providers = root.providers as Record<string, Record<string, unknown>>;
+  const providerNames = new Set(Object.keys(providers).map(name => name.toLowerCase()));
+  const claimedProviders = new Set<string>();
+  const comboAliases = new Set(Object.values((root.combos as Record<string, { alias?: unknown }> | undefined) ?? {})
+    .map(combo => typeof combo?.alias === "string" ? combo.alias.toLowerCase() : "").filter(Boolean));
+  const accountNamespaces = new Set(Object.keys((root.codexAccountNamespaces as Record<string, unknown> | undefined) ?? {}).map(name => name.toLowerCase()));
+  for (const provider of Object.values(providers)) {
+    const alias = provider.alias;
+    if (typeof alias !== "string" || !isValidProviderName(alias)
+      || providerNames.has(alias.toLowerCase()) || claimedProviders.has(alias.toLowerCase())
+      || comboAliases.has(alias.toLowerCase()) || accountNamespaces.has(alias.toLowerCase())) {
+      if (alias !== undefined) console.warn("Ignoring invalid or colliding provider alias in config.json");
+      delete provider.alias;
+    } else claimedProviders.add(alias.toLowerCase());
+    if (!provider.modelAliases || typeof provider.modelAliases !== "object" || Array.isArray(provider.modelAliases)) {
+      if (provider.modelAliases !== undefined) delete provider.modelAliases;
+      continue;
+    }
+    const aliases = provider.modelAliases as Record<string, unknown>;
+    const nativeIds = new Set((Array.isArray(provider.models) ? provider.models : []).filter((id): id is string => typeof id === "string").map(id => id.toLowerCase()));
+    const claimed = new Set<string>();
+    for (const [id, value] of Object.entries(aliases)) {
+      const lower = typeof value === "string" ? value.toLowerCase() : "";
+      if (typeof value !== "string" || !MODEL_ALIAS_PATTERN.test(value) || claimed.has(lower)
+        || nativeIds.has(lower) || comboAliases.has(lower) || /^(?:gpt-|o1-|o3-|o4-|codex-)/i.test(value)) {
+        console.warn(`Ignoring invalid or colliding model alias for ${id} in config.json`);
+        delete aliases[id];
+      } else claimed.add(lower);
+    }
   }
 }
 
@@ -2445,7 +2514,12 @@ function persistConfigUnlocked(config: OcxConfig): boolean {
   // External editors can add provider rows the live config deliberately does
   // not route with yet; merge them at the serialization boundary so an
   // unrelated in-process save cannot erase the provider or its overlay.
+  // Provider preservation reads symbol-keyed live-owner state, which structuredClone
+  // intentionally drops. Resolve that ownership before projecting JSON provenance.
+  const provenanceProjection = projectConfigRebaseProvenance(config);
   const persisted = withPreservedDiskOnlyProviders(config);
+  if (provenanceProjection.configRebaseProvenance === undefined) delete persisted.configRebaseProvenance;
+  else persisted.configRebaseProvenance = provenanceProjection.configRebaseProvenance;
   const bytes = JSON.stringify(persisted, null, 2) + "\n";
   let unchanged = false;
   try {
@@ -2473,9 +2547,15 @@ export function saveConfig(config: OcxConfig): void {
   // Keep the real-home assertion ahead of even lock-directory preparation.
   assertNotRealHomeUnderTest(getConfigDir());
   withConfigMutationLockSync(() => {
-    const projected = projectCustomModelCatalogMigration(readRawConfigJson(), config);
-    if (persistConfigUnlocked(projected)) bumpGenerationForCooperatingConfigWrite();
-    adoptCustomModelCatalogMigration(config, projected);
+    const withProvenance = projectCustomModelCatalogMigration(
+      readRawConfigJson(),
+      projectConfigRebaseProvenance(config),
+    );
+    if (persistConfigUnlocked(withProvenance)) bumpGenerationForCooperatingConfigWrite();
+    adoptCustomModelCatalogMigration(config, withProvenance);
+    if (withProvenance.configRebaseProvenance === undefined) delete config.configRebaseProvenance;
+    else config.configRebaseProvenance = structuredClone(withProvenance.configRebaseProvenance);
+    clearPendingConfigTopLevelDeletions(config);
   });
 }
 
@@ -2594,7 +2674,6 @@ const claudeCodeBaseline = new WeakMap<OcxConfig, unknown>();
  * reconciliation paths below.
  */
 const liveConfigBaseline = new WeakMap<OcxConfig, OcxConfig>();
-
 /**
  * The live config retains the address of the socket Bun actually opened, while
  * this map retains the operator's desired address for the next process start.
@@ -2898,6 +2977,8 @@ export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
     if (baseline && onDisk !== undefined) {
       const persistedDiagnostics = configDiagnosticsFromRaw(JSON.stringify(onDisk));
       if (persistedDiagnostics.source === "file") {
+        const deletedKeys = configRebaseDeletionKeys(config);
+        const provenanceExists = configHasRebaseProvenance(config);
         // Only keys this live config is actually known to have diverged on may be
         // rebased. The baseline is captured once when the server arms it, so any key
         // that appeared on disk afterwards — through saveConfig(), a hand edit, or
@@ -2911,8 +2992,11 @@ export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
         const rebaseableKeys = new Set([
           ...Object.keys(baseline as unknown as Record<string, unknown>),
           ...Object.keys(config as unknown as Record<string, unknown>),
+          ...(provenanceExists
+            ? Object.keys(persistedDiagnostics.config as unknown as Record<string, unknown>)
+            : []),
         ]);
-        const skipped = new Set(["hostname", "port", "claudeCode"]);
+        const skipped = new Set(["hostname", "port", "claudeCode", CONFIG_REBASE_PROVENANCE_KEY]);
         for (const key of Object.keys(persistedDiagnostics.config as unknown as Record<string, unknown>)) {
           if (!rebaseableKeys.has(key)) skipped.add(key);
         }
@@ -2922,6 +3006,7 @@ export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
           persistedDiagnostics.config as unknown as Record<string, unknown>,
           skipped,
         );
+        for (const key of deletedKeys) delete (config as unknown as Record<string, unknown>)[key];
       }
     }
     if (claudeCodeBaseline.has(config)) {
@@ -2935,10 +3020,13 @@ export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
         }
       }
     }
+    const provenanceProjection = projectConfigRebaseProvenance(config);
     const projectedConfig = projectCustomModelCatalogMigration(
       onDisk,
       config,
     );
+    if (provenanceProjection.configRebaseProvenance === undefined) delete projectedConfig.configRebaseProvenance;
+    else projectedConfig.configRebaseProvenance = provenanceProjection.configRebaseProvenance;
     const persistedBinding = bindingBaseline && onDisk
       ? readPersistedServerBinding(onDisk, bindingBaseline)
       : bindingBaseline;
@@ -2956,8 +3044,11 @@ export function saveConfigPreservingClaudeCode(config: OcxConfig): void {
       claudeCodeBaseline.set(config, structuredClone(config.claudeCode));
     }
     if (liveConfigBaseline.has(config)) {
-      liveConfigBaseline.set(config, structuredClone(config));
+      if (projectedConfig.configRebaseProvenance === undefined) delete config.configRebaseProvenance;
+      else config.configRebaseProvenance = structuredClone(projectedConfig.configRebaseProvenance);
+      liveConfigBaseline.set(config, structuredClone(projectedConfig));
     }
+    clearPendingConfigTopLevelDeletions(config);
   });
 }
 
@@ -3033,10 +3124,17 @@ export function applyProxyEnv(config: OcxConfig): void {
   const existing = process.env.NO_PROXY ?? process.env.no_proxy ?? "";
   const entries = existing.split(",").map(s => s.trim()).filter(Boolean);
   const seen = new Set(entries.map(e => e.toLowerCase()));
-  for (const host of ["localhost", "127.0.0.1", "::1", "[::1]"]) {
-    if (!seen.has(host)) {
+  // Configured entries first, then loopback: loopback is unconditional, so appending it last
+  // keeps it present even when the operator lists a loopback host themselves.
+  const raw = config.noProxy;
+  const configured = (Array.isArray(raw) ? raw : (resolveEnvValue(raw) ?? "").split(","))
+    .map(entry => entry.trim())
+    .filter(Boolean);
+  for (const host of [...configured, "localhost", "127.0.0.1", "::1", "[::1]"]) {
+    const key = host.toLowerCase();
+    if (!seen.has(key)) {
       entries.push(host);
-      seen.add(host);
+      seen.add(key);
     }
   }
   process.env.NO_PROXY = entries.join(",");

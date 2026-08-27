@@ -5,7 +5,10 @@ const LOCALES = ["en", "de", "fr", "ja", "ko", "ru", "tr", "zh", "zh-TW"] as con
 async function readDict(locale: string): Promise<Map<string, string>> {
   const src = await Bun.file(new URL(`../src/i18n/${locale}.ts`, import.meta.url)).text();
   const out = new Map<string, string>();
-  for (const m of src.matchAll(/^\s*"([^"]+)":\s*"((?:[^"\\]|\\.)*)"/gm)) {
+  // NOT anchored to the line start: these catalogs pack several entries onto one line, and a
+  // `^\s*`-anchored pattern silently reads only the first of them. That made this parity check
+  // report a phantom missing key while the catalogs were in fact identical.
+  for (const m of src.matchAll(/"([^"]+)":\s*"((?:[^"\\]|\\.)*)"/g)) {
     out.set(m[1]!, m[2]!);
   }
   return out;
@@ -37,6 +40,15 @@ const ZH_TW_KEEP_ENGLISH: ReadonlySet<string> = new Set([
   "api.responsesEndpoint",
   // Provider proper nouns (Taiwan keeps the English brand; "火山方舟" is Mainland usage)
   "provider.name.volcengine",
+  // A literal filename, not prose: AGENTS.md is the file Codex reads from the
+  // working directory, and Taiwan renders it the same way every other locale does.
+  "codexSet.layer.agents-md",
+  // "{position} / {total}" is punctuation and two placeholders, identical in
+  // every locale that ships it - there are no words to render in Chinese.
+  "codexSet.custom.navPosition",
+  // "{position} / {total}" - a numeric position, identical in every language for the
+  // same reason navPosition above is.
+  "codexSet.base.position",
   "provider.name.volcengineAgentPlan",
   "provider.name.volcengineCodingPlan",
   // Backend/brand names

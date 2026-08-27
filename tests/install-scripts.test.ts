@@ -32,6 +32,20 @@ function removeModeFixture(path: string): void {
   try { rmSync(path, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
 }
 
+function systemCommandPath(command: string): string {
+  const result = spawnSync("/bin/sh", ["-c", `command -v ${command}`], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    throw new Error(`required test command is unavailable: ${command}`);
+  }
+  return result.stdout.trim();
+}
+
+function writeExecutable(path: string, source: string): void {
+  writeFileSync(path, source, { encoding: "utf8", mode: 0o755 });
+}
+
 async function readText(path: string): Promise<string> {
   return await Bun.file(new URL(path, root)).text();
 }
@@ -50,6 +64,7 @@ describe("install scripts", () => {
     expect(pkg.main).toBe("./bin/package-main.mjs");
     expect(pkg.exports?.["."]?.bun).toBe("./src/index.ts");
     expect(pkg.exports?.["."]?.default).toBe("./bin/package-main.mjs");
+    expect(pkg.dependencies?.bun).toBe("1.4.0");
     expect(pkg.dependencies?.zod).toBe("4.4.3");
     expect(pkg.devDependencies?.typescript).toBe("7.0.2");
     expect(pkg.devDependencies?.["@types/bun"]).toBe("1.4.0");
@@ -112,6 +127,58 @@ describe("install scripts", () => {
     expect(script).not.toContain("bun install -g @bitkyc08/opencodex");
     expect(script).not.toContain("bun.sh/install.ps1");
   });
+
+  test.skipIf(process.platform === "win32")(
+    "restart helper launches without setsid in PATH",
+    async () => {
+      const fixtureRoot = mkdtempSync(join(tmpdir(), "ocx-restart-no-setsid-"));
+      const home = join(fixtureRoot, "home");
+      const binDir = join(fixtureRoot, "bin");
+      const callsPath = join(fixtureRoot, "bun-calls.log");
+      const restartLog = join(fixtureRoot, "restart.log");
+
+      try {
+        mkdirSync(join(home, ".opencodex"), { recursive: true });
+        mkdirSync(binDir, { recursive: true });
+        for (const command of ["cat", "dirname", "nohup", "rm", "seq", "tail"]) {
+          symlinkSync(systemCommandPath(command), join(binDir, command));
+        }
+        writeExecutable(join(binDir, "sleep"), "#!/bin/sh\n/bin/sleep 0.02\n");
+        writeExecutable(join(binDir, "node"), "#!/bin/sh\nprintf '10100'\n");
+        writeExecutable(join(binDir, "curl"), "#!/bin/sh\nexit 0\n");
+        writeExecutable(join(binDir, "bun"), `#!/bin/sh
+printf '%s\\n' "$*" >> "$OCX_TEST_CALLS"
+if [ "$3" = "start" ]; then
+  /bin/mkdir -p "$HOME/.opencodex"
+  printf '{"port":10100}\\n' > "$HOME/.opencodex/runtime-port.json"
+  printf '%s\\n' "$$" > "$HOME/.opencodex/ocx.pid"
+fi
+exit 0
+`);
+
+        const result = spawnSync("/bin/bash", [join(repoRoot, "scripts/ocx-restart.sh")], {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: {
+            HOME: home,
+            PATH: binDir,
+            OCX_RESTART_LOG: restartLog,
+            OCX_TEST_CALLS: callsPath,
+          },
+          timeout: 10_000,
+        });
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain("[ocx-restart] healthy on port 10100");
+        expect((await Bun.file(callsPath).text()).trim().split("\n")).toEqual([
+          "run src/cli/index.ts stop",
+          "run src/cli/index.ts start",
+        ]);
+      } finally {
+        removeModeFixture(fixtureRoot);
+      }
+    },
+  );
 
   test("Node launcher handles npm self-update before starting Bun", async () => {
     const launcher = await readText("bin/ocx.mjs");

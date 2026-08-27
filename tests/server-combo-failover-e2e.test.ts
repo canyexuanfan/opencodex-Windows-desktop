@@ -809,7 +809,7 @@ describe("server combo failover 030 activation matrix", () => {
         const response = await fetch(new URL("/v1/models", server.url));
         expect(response.status).toBe(200);
         const payload = await response.json() as {
-          data: Array<{ id: string; owned_by: string }>;
+          data: Array<{ id: string; owned_by: string; is_combo?: boolean }>;
         };
         return payload.data;
       };
@@ -820,7 +820,7 @@ describe("server combo failover 030 activation matrix", () => {
       });
 
       expect((await publicRows()).filter(model => model.id === selector)).toEqual([
-        { id: selector, object: "model", created: 0, owned_by: "combo" },
+        { id: selector, object: "model", created: 0, owned_by: "openai", is_combo: true },
       ]);
 
       const renamed = await updateAlias("fast-chat");
@@ -830,7 +830,7 @@ describe("server combo failover 030 activation matrix", () => {
         { id: selector, object: "model", created: 0, owned_by: "deepseek" },
       ]);
       expect(renamedRows.filter(model => model.id === "fast-chat")).toEqual([
-        { id: "fast-chat", object: "model", created: 0, owned_by: "combo" },
+        { id: "fast-chat", object: "model", created: 0, owned_by: "openai", is_combo: true },
       ]);
 
       const restored = await updateAlias(selector);
@@ -841,7 +841,7 @@ describe("server combo failover 030 activation matrix", () => {
       expect(deletedRows.filter(model => model.id === selector)).toEqual([
         { id: selector, object: "model", created: 0, owned_by: "deepseek" },
       ]);
-      expect(deletedRows.some(model => model.owned_by === "combo")).toBe(false);
+      expect(deletedRows.some(model => model.is_combo === true)).toBe(false);
     } finally {
       await server.stop(true);
     }
@@ -861,10 +861,10 @@ describe("server combo failover 030 activation matrix", () => {
       const response = await fetch(new URL("/v1/models", server.url));
       expect(response.status).toBe(200);
       const payload = await response.json() as {
-        data: Array<{ id: string; owned_by: string }>;
+        data: Array<{ id: string; owned_by: string; is_combo?: boolean }>;
       };
       expect(payload.data.filter(model => model.id.startsWith("a/vendor")).sort((a, b) => a.id.localeCompare(b.id))).toEqual([
-        { id: "a/vendor-model", object: "model", created: 0, owned_by: "combo" },
+        { id: "a/vendor-model", object: "model", created: 0, owned_by: "openai", is_combo: true },
         { id: "a/vendor/model", object: "model", created: 0, owned_by: "a" },
       ]);
     } finally {
@@ -1123,7 +1123,7 @@ describe("server combo failover 030 activation matrix", () => {
       },
     }, [
       { provider: "openai", model: "gpt-5.3-codex-spark" },
-      { provider: "openai", model: "gpt-5.6-terra" },
+      { provider: "openai", model: "gpt-5.5" },
     ]);
     config.codexAccounts = [{
       id: rawAccountId,
@@ -1150,13 +1150,13 @@ describe("server combo failover 030 activation matrix", () => {
           headers: { "x-codex-primary-reset-at": String(resetAt) },
         });
       }
-      return Response.json(responsesSuccess("Terra fallback", "gpt-5.6-terra"));
+      return Response.json(responsesSuccess("Shared-native fallback", "gpt-5.5"));
     };
 
     const response = await post(config);
     expect(response.status).toBe(200);
     expect(upstreamCalls).toBe(2);
-    expect(await response.json()).toMatchObject({ model: "gpt-5.6-terra" });
+    expect(await response.json()).toMatchObject({ model: "gpt-5.5" });
   });
 
   test("keeps a failed estimate on A without overwriting B reported usage", async () => {
@@ -2880,6 +2880,36 @@ describe("cursor conversation continuity across store:false chains", () => {
       { role: "user", content: "start" },
       { role: "assistant", content: "working" },
       { type: "function_call_output", call_id: "call_x", output: "tool result" },
+    ])).status).toBe(200);
+
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toBe(seen[0]);
+  });
+
+  test("Desktop session and thread headers retain Cursor ownership without a parent-thread header", async () => {
+    const seen: string[] = [];
+    customCursorTransportFactory = fakeCursorTransportFactory(seen);
+    const config = cursorConfig();
+    const postDesktopTurn = (input: unknown) => handleResponses(new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "session-id": "desktop-session-owner",
+        "thread-id": "desktop-thread-owner",
+      },
+      body: JSON.stringify({
+        model: "cursortest/grok-4.5",
+        input,
+        stream: false,
+        store: false,
+      }),
+    }), config, { model: "", provider: "" }, {});
+
+    expect((await postDesktopTurn("start")).status).toBe(200);
+    expect((await postDesktopTurn([
+      { role: "user", content: "start" },
+      { role: "assistant", content: "working" },
+      { role: "user", content: "continue" },
     ])).status).toBe(200);
 
     expect(seen).toHaveLength(2);

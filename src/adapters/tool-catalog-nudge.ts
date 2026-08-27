@@ -28,7 +28,7 @@ const NEIGHBOR_AGENT_TOOL_NAMES = ["Read", "Grep", "Glob", "Bash", "LS"] as cons
 const CODEX_UNIFIED_EXEC_TOOL_NAME = "exec";
 const CODEX_SHELL_BRIDGE_TOOL_NAMES = ["exec_command", "shell_command"] as const;
 
-function isCodexCodeModeExecTool(tool: Pick<OcxTool, "namespace" | "name" | "freeform">): boolean {
+export function isCodexCodeModeExecTool(tool: Pick<OcxTool, "namespace" | "name" | "freeform">): boolean {
   return !tool.namespace && tool.name === CODEX_UNIFIED_EXEC_TOOL_NAME && tool.freeform === true;
 }
 
@@ -45,7 +45,7 @@ function isCodexCodeModeExecTool(tool: Pick<OcxTool, "namespace" | "name" | "fre
  * `!tool.namespace` requirement; dropping it here made the name assert a check the body did not
  * perform.
  */
-function isBareShellBridgeTool(tool: Pick<OcxTool, "namespace" | "name">): boolean {
+export function isBareShellBridgeTool(tool: Pick<OcxTool, "namespace" | "name">): boolean {
   return !tool.namespace && (CODEX_SHELL_BRIDGE_TOOL_NAMES as readonly string[]).includes(tool.name);
 }
 

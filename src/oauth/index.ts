@@ -58,11 +58,20 @@ export interface OAuthAccessSnapshot {
   /** Cloud Code Assist project selected during Antigravity login. */
   projectId?: string;
   /** Safe request-routing subset; refresh-only Kiro client secrets never leave the credential store. */
-  kiro?: Pick<KiroOAuthMetadata, "profileArn" | "apiRegion" | "ssoRegion">;
+  kiro?: Pick<KiroOAuthMetadata, "profileArn" | "apiRegion" | "ssoRegion" | "authType">;
+  /**
+   * Allowlisted GitHub Copilot API origin belonging to THIS account.
+   *
+   * Copilot pins its bearer to an account-scoped regional host, and the initial route already
+   * pairs the two (`core.ts` resolves transport with `getOAuthCredentialApiBaseUrl`). Account
+   * failover must carry the pairing across the rotation; without it, account B's token is sent to
+   * account A's origin (#2568d).
+   */
+  apiBaseUrl?: string;
 }
 
 export interface ObservedOAuthAccessSnapshot extends OAuthAccessSnapshot {
-  /** Allowlisted provider API origin consumed by GitHub Copilot model discovery. */
+  /** Retained for callers that predate `apiBaseUrl` moving onto the base snapshot. */
   apiBaseUrl?: string;
 }
 
@@ -350,24 +359,43 @@ export function publicOAuthAuthenticationErrorMessage(error: unknown): string {
 }
 
 function accessSnapshot(provider: string, accountId: string, cred: OAuthCredentials): OAuthAccessSnapshot {
+  // Derived, not read back: a stored `authType` is trusted when present, but a credential imported
+  // before the field existed still routes correctly because the client pair implies SSO OIDC.
+  const kiroAuthType = cred.kiro?.authType
+    ?? (cred.kiro?.clientId && cred.kiro?.clientSecret ? "aws_sso_oidc" as const : undefined);
   const storedKiroRouting = {
     ...(cred.kiro?.profileArn ? { profileArn: cred.kiro.profileArn } : {}),
     ...(cred.kiro?.apiRegion ? { apiRegion: cred.kiro.apiRegion } : {}),
     ...(cred.kiro?.ssoRegion ? { ssoRegion: cred.kiro.ssoRegion } : {}),
   };
+  // `authType` is a property OF the account, not routing the environment can substitute for, so it
+  // is merged after the environment fallback decision rather than counting as stored routing.
+  // Folding it into `storedKiroRouting` would make a client-pair-only credential look non-empty
+  // and silently disable `environmentKiroRoutingMetadata()` for it.
+  const kiroAuthTypeRouting = kiroAuthType ? { authType: kiroAuthType } : {};
+  // Validated here, not at the call site: an unvalidated origin from a legacy or crafted
+  // credential must never travel with a bearer, and dropping it makes the transport fall back to
+  // the canonical host rather than to whatever the previous account was using.
+  const copilotApiBaseUrl = provider === "github-copilot"
+    ? validateCopilotApiBaseUrl(cred.apiBaseUrl)
+    : undefined;
   return {
     provider,
     accountId,
     generation: credentialGeneration(cred),
     accessToken: cred.access,
     ...(cred.projectId ? { projectId: cred.projectId } : {}),
+    ...(copilotApiBaseUrl ? { apiBaseUrl: copilotApiBaseUrl } : {}),
     // Stored account metadata remains authoritative. Metadata-less legacy/environment credentials
     // may use explicit environment routing, but never borrow the currently signed-in local CLI account.
     ...(provider === "kiro"
       ? {
-          kiro: Object.keys(storedKiroRouting).length > 0
-            ? storedKiroRouting
-            : environmentKiroRoutingMetadata() ?? {},
+          kiro: {
+            ...(Object.keys(storedKiroRouting).length > 0
+              ? storedKiroRouting
+              : environmentKiroRoutingMetadata() ?? {}),
+            ...kiroAuthTypeRouting,
+          },
         }
       : {}),
   };
@@ -488,6 +516,22 @@ export async function getValidAccessToken(provider: string): Promise<string> {
  */
 export async function getValidAccessTokenForAccount(provider: string, accountId: string): Promise<string> {
   return (await resolveAccessSnapshotForAccount(provider, accountId)).accessToken;
+}
+
+/**
+ * Account-scoped resolver returning the FULL snapshot, not just the bearer.
+ *
+ * A rotator that swaps only the token silently mixes credential generations: Antigravity pairs
+ * an account-matched `projectId` with its token (see the pairing comment in
+ * server/responses/core.ts), Kiro carries routing metadata, and Copilot's observed snapshot
+ * carries an account-specific API origin. Reading those back from "whichever account is active"
+ * after a rotation is exactly the mixing this returns in one piece to prevent (#2568).
+ */
+export async function getValidAccessSnapshotForAccount(
+  provider: string,
+  accountId: string,
+): Promise<OAuthAccessSnapshot> {
+  return resolveAccessSnapshotForAccount(provider, accountId);
 }
 
 /** Terminal refresh failures (revoked/rotated-away grants) — retrying cannot succeed. */
@@ -1078,6 +1122,14 @@ export function upsertOAuthProvider(config: OcxConfig, provider: string): void {
   // Logs/Usage estimates.
   if (existing?.modelCosts !== undefined) {
     next.modelCosts = existing.modelCosts;
+  }
+  // The per-provider account-failover opt-out is operator intent about SPENDING, and the login
+  // path is exactly where losing it does damage: adding a second account both rebuilds this row
+  // from the preset and creates the 2-account quorum that turns presence-driven rotation on
+  // (#2568d). Dropping the opt-out here would enable the thing the operator switched off, at the
+  // moment they were doing something unrelated.
+  if (existing?.oauthAccountFailover !== undefined) {
+    next.oauthAccountFailover = existing.oauthAccountFailover;
   }
   if (existing && getProviderRegistryEntry(provider)?.allowKeyAuthOverride === true) {
     // Shared sanitizeApiKeyValue trim / no-CRLF checks from api-key pool writes.
