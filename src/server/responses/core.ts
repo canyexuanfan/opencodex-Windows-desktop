@@ -115,6 +115,7 @@ import {
   resolveAnthropicAccountForSession,
   rotateAnthropicAccountOn429,
 } from "../../oauth/anthropic-routing";
+import { stampOAuthAccountLabel } from "../../providers/label";
 import {
   failoverAccountSnapshot,
   GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST,
@@ -2841,6 +2842,10 @@ async function handleResponsesInner(
     if (snapshot.projectId) rotatedProvider = { ...rotatedProvider, project: snapshot.projectId };
     route.provider = rotatedProvider;
     if (route.providerName === "kiro") parsed._kiroAuthContext = { ...(snapshot.kiro ?? {}) };
+    // Re-stamp: a request that rotated accounts must be attributed to the account that actually
+    // served it. All three rotation sites funnel through here, so this is the only re-stamp
+    // needed -- and putting it anywhere else would let one of the three drift.
+    stampOAuthAccountLabel(logCtx, route.providerName, route.provider, snapshot.accountId);
     return true;
   };
   const anthropicSessionKey = route.providerName === "anthropic" && route.provider.authMode === "oauth"
@@ -2882,6 +2887,10 @@ async function handleResponsesInner(
         };
         if (isOAuth401ReplayProvider) sentOAuthSnapshot = resolved;
         route.provider = { ...route.provider, apiKey: resolved.accessToken };
+        // Attribution is independent of failover (#2699): stamped from the resolved snapshot
+        // itself, not from inside the `isGenericFailoverProvider` branch below, so a future
+        // narrowing of that predicate cannot silently switch attribution off.
+        stampOAuthAccountLabel(logCtx, route.providerName, route.provider, resolved.accountId);
         // Remember which account actually served this request so a 429 cools THAT one, not
         // whichever account is active by the time the response comes back (#2568).
         if (isGenericFailoverProvider(route.providerName, route.provider)) {

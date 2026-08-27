@@ -684,6 +684,16 @@ function legacyCodexAccountLabel(provider: string): string | null {
   return suffix ?? LEGACY_AMBIGUOUS_ACCOUNT_LABEL;
 }
 
+/**
+ * An explicitly stamped label of EITHER family is authoritative for any provider (#2699).
+ *
+ * No `o`-label branch is needed here: `isCodexUsageAccountLogLabel` now accepts both families,
+ * and adding a second predicate call would be a no-op guarded by a comment claiming otherwise.
+ *
+ * The legacy fallback stays openai-only on purpose. It infers an account from the PROVIDER
+ * string, and inferring for a non-Codex row would merge unrelated accounts under one label --
+ * so an unlabeled xai row is dropped from the account table rather than guessed at.
+ */
 function accountLabelForAttribution(provider: string, explicit: unknown): string | null {
   if (isCodexUsageAccountLogLabel(explicit)) return explicit;
   return legacyCodexAccountLabel(provider);

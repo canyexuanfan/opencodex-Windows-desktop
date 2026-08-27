@@ -8,12 +8,33 @@ import { sanitizeLogMetadataString } from "../lib/redact";
 import { usageDisplayTotalTokens } from "./totals";
 import type { AttemptTierOutcome, OcxUsage } from "../types";
 import { normalizeRouteDecisionTrace, type RouteDecisionTraceV1 } from "../routing/trace";
-import { CODEX_ACCOUNT_LOG_LABEL_RE } from "../codex/account-label";
+import { ACCOUNT_LOG_LABEL_RE, CODEX_ACCOUNT_LOG_LABEL_RE } from "../codex/account-label";
 
 export type UsageStatus = "reported" | "unreported" | "unsupported" | "estimated";
-export type CodexUsageAccountLogLabel = "main" | `p${string}`;
+/**
+ * A persisted account label: a Codex pool account (`main`/`p<hex6>`) or a non-Codex OAuth
+ * provider account (`o<hex6>`, #2699).
+ *
+ * The old name `CodexUsageAccountLogLabel` is kept as an alias because it is exported and used
+ * across modules; the two predicates below are what callers should choose between.
+ */
+export type UsageAccountLogLabel = "main" | `p${string}` | `o${string}`;
+export type CodexUsageAccountLogLabel = UsageAccountLogLabel;
 
-export function isCodexUsageAccountLogLabel(value: unknown): value is CodexUsageAccountLogLabel {
+/**
+ * Accepts EITHER label family. This is the predicate the persistence writers use, so widening
+ * it here is what stops six separate call sites from silently dropping an `o`-label -- including
+ * two in the live request path (`request-log.ts:972` and `:1187`).
+ *
+ * The name is unchanged deliberately: renaming it would touch every call site for no behavior,
+ * and the widened contract is what every one of those sites wanted.
+ */
+export function isCodexUsageAccountLogLabel(value: unknown): value is UsageAccountLogLabel {
+  return value === "main" || (typeof value === "string" && ACCOUNT_LOG_LABEL_RE.test(value));
+}
+
+/** Strictly a Codex pool label. Use when the Codex-only distinction actually matters. */
+export function isCodexPoolAccountLogLabel(value: unknown): value is "main" | `p${string}` {
   return value === "main" || (typeof value === "string" && CODEX_ACCOUNT_LOG_LABEL_RE.test(value));
 }
 
