@@ -39,6 +39,27 @@ Compatibility manifests are passive data. The Responses request path, router, an
 not import them. A future `ocx compatibility explain` or GUI reader may load the catalog on demand,
 but adding a manifest must not activate Compatibility Lab or alter dispatch behavior.
 
+## Canonical forward continuation extensions
+
+The canonical ChatGPT Codex forward boundary removes client-only
+`prompt_cache_breakpoint` properties from `input` recursively. The traversal is bounded by depth
+and node count; exceeding either bound leaves the marker-bearing input unchanged instead of
+publishing a partially transformed continuation. When the request explicitly sets `store: false`,
+top-level `item_reference` input rows are omitted because the destination cannot resolve state that
+it did not persist. Function and tool-result `call_id` pairs and `reasoning.effort` remain intact.
+
+This is destination-scoped compatibility behavior. Key-auth public Responses providers and custom
+forward gateways keep both extensions unchanged because their contracts may accept or interpret
+them independently.
+
+[Decision Log]
+- 목적과 의도: Preserve Posit Assistant tool continuation semantics while preventing canonical ChatGPT Codex forwarding from sending client-only cache markers or unresolvable stored-item references.
+- 기존 구현 및 제약 조건: The existing `store: false` sanitizer removed item ids but left `item_reference` shells, and no bounded pass recognized markers nested inside content; tool `call_id` pairing and reasoning effort are continuation-critical.
+- 검토한 주요 대안: Strip the extensions for every Responses destination; delete only reference ids; expand references from local state; or normalize only the canonical forward destination with bounded recursive marker removal.
+- 선택한 방식: Apply the bounded marker pass only to canonical forward `input`, and omit `item_reference` rows only when `store` is exactly `false`.
+- 다른 대안 대신 이 방식을 선택한 이유: Public and custom gateways may implement these extensions, while id-only deletion creates an invalid reference shell and local expansion would invent unavailable persistence authority.
+- 장점, 단점 및 영향: Posit continuations retain tool pairing and reasoning controls without widening public-provider behavior; hostile nesting fails closed to the original input, so an over-limit request may still be rejected upstream rather than partially rewritten.
+
 [Decision Log]
 - 목적과 의도: Make provider compatibility explicit and machine-readable before larger routing or Responses refactors.
 - 기존 구현 및 제약 조건: Adapter-wide conformance tests already protect tool translation, and Compatibility Lab owns broader protocol evidence, but neither publishes an exact provider/destination/auth/model claim table. Lab must remain outside the ordinary request import graph.
