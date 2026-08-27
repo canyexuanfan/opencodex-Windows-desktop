@@ -497,6 +497,30 @@ describe("Command Code provider", () => {
     ]);
   });
 
+  // Pins the CURRENT, BROKEN state of the profile-refresh path so nobody re-derives
+  // the false justification that a wrong ladder self-corrects.
+  //
+  // commandcode.ai serves these profiles as a React flight payload. The ladder key
+  // is present but its array is empty in the delivered bytes
+  // (`reasoningEfforts\",[]` — measured on 2026-08-27 for gpt-5.6-luna, glm-5-3 and
+  // deepseek-v4-pro alike), and there is no "Reasoning efforts ... are supported;"
+  // prose anywhere on the page. So parsedProfileEfforts finds nothing and the row
+  // is never replaced.
+  //
+  // When someone teaches the parser to read a real payload, this test SHOULD fail.
+  // That failure is the signal to delete it and update the provenance note in
+  // command-code-efforts.ts, which currently tells the reader this net does not work.
+  test("a real profile page shape yields no efforts, so the row is not self-correcting", async () => {
+    const flightPayload = 'self.__next_f.push([1,"...\\"reasoningEfforts\\",[],\\"inputCost\\",0,\\"minPlanName\\",\\"Go\\"..."])';
+    const fetch = (async () => new Response(flightPayload)) as typeof globalThis.fetch;
+
+    const refreshed = await refreshCommandCodeReasoningEfforts("gpt-5.6-luna", fetch);
+
+    expect(refreshed).toBeUndefined();
+    // And the table value survives untouched, which is the safe half of the failure.
+    expect(commandCodeReasoningEfforts("gpt-5.6-luna")).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  });
+
   test("omits effort when the caller did not choose one", async () => {
     const built = await builtRequest({ ...parsed("claude-haiku-4-5"), options: { maxOutputTokens: 100 } });
     expect(JSON.parse(built.body).params).not.toHaveProperty("reasoning_effort");
