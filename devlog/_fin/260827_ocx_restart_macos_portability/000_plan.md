@@ -64,4 +64,6 @@ Revert the scoped commit and run `ocx service repair` from the restored `dev` so
 - RED: `bun test tests/install-scripts.test.ts` failed the new no-`setsid` case with exit 1 on the unconditional launch.
 - GREEN: the same focused file passed 10 tests after the capability fallback; `bash -n scripts/ocx-restart.sh` and `git diff --check` also exited 0.
 - Operator override: the manually started `bun run prepush` was interrupted on request. Typecheck and the GUI no-change gate completed before interruption, but the incomplete full suite is not claimed as passing.
-- Pending terminal evidence: exact scoped commit/push and live launchd recovery.
+- Delivery: direct `dev` push was rejected by the active PR-only ruleset, so PR #2735 merged the exact scoped commit with merge commit `056d2996bcc0121b54bcbc0f2abf4df25633e794`. Local `dev`, `origin/dev`, and `git ls-remote` matched that SHA afterward.
+- Live recovery: `ocx service repair` exited 0; launchd reported `state = running`, PID 83423 owned `127.0.0.1:10100`, `/healthz` returned HTTP 200 with `status: ok`, and `/v1/models` returned HTTP 200.
+- Terminal outcome: DONE. The unrelated `package.json` edit remains uncommitted and preserved.
