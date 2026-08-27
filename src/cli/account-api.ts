@@ -85,7 +85,7 @@ export interface ApiResult {
   json: Record<string, unknown>;
   /**
    * Message from the thrown transport error when `status` is 0. Previously the
-   * error was swallowed by a bare `catch {}`, so an unreachable proxy, a DNS
+   * error was swallowed by a catch block with an empty body, so an unreachable proxy, a DNS
    * failure and a TLS error were indistinguishable (#2698).
    */
   transportError?: string;
