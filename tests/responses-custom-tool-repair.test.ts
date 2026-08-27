@@ -4,6 +4,7 @@ import {
   restoreRoutedCustomCallsInJson,
   rewriteRoutedCustomToolsForUpstream,
 } from "../src/responses/custom-tool-compat";
+import { compileCodeModeHelperInput } from "../src/responses/code-mode-helper-compat";
 import { createRoutedCustomToolRestoreBlockRewrite } from "../src/server/responses-custom-tool-repair";
 import { handleResponses } from "../src/server/responses";
 import type { OcxConfig } from "../src/types";
@@ -24,6 +25,131 @@ const CANONICAL_PATCH = "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n
 const WRAPPED_DECORATED_PATCH = JSON.stringify({ input: DECORATED_PATCH });
 
 describe("routed Responses custom-tool compatibility", () => {
+  test("restores legacy structured shell aliases as executable unified-exec input", () => {
+    const declared = new Set(["exec"]);
+    const upstream = JSON.stringify({
+      id: "resp_shell",
+      output: [{
+        type: "function_call",
+        id: "fc_shell",
+        call_id: "call_shell",
+        name: "shell_command",
+        arguments: JSON.stringify({ command: "printf '%s' \\\"$HOME\\\"", workdir: "/tmp" }),
+        status: "completed",
+      }],
+    });
+
+    const restored = JSON.parse(restoreRoutedCustomCallsInJson(
+      upstream,
+      new Set(["exec"]),
+      new Set(),
+      declared,
+    )) as { output: Array<Record<string, unknown>> };
+    expect(restored.output[0]).toMatchObject({
+      type: "custom_tool_call",
+      name: "exec",
+      input: compileCodeModeHelperInput(
+        JSON.stringify({ command: "printf '%s' \\\"$HOME\\\"", workdir: "/tmp" }),
+        "shell_command",
+      ),
+    });
+    expect(restored.output[0]).not.toHaveProperty("arguments");
+  });
+
+  test("restores a native apply_patch stream through unified exec", () => {
+    const declared = new Set(["exec"]);
+    const rewrite = createRoutedCustomToolRestoreBlockRewrite(
+      new Set(["exec"]),
+      undefined,
+      new Set(),
+      declared,
+    );
+    const added = rewrite(frame("response.output_item.added", {
+      output_index: 0,
+      item: {
+        type: "custom_tool_call",
+        id: "ctc_patch_alias",
+        call_id: "call_patch_alias",
+        name: "apply_patch",
+        input: "",
+        status: "in_progress",
+      },
+    }));
+    expect(dataPayload(added[0]!).item).toMatchObject({
+      type: "custom_tool_call",
+      name: "exec",
+      input: "",
+    });
+
+    expect(rewrite(frame("response.custom_tool_call_input.delta", {
+      output_index: 0,
+      item_id: "ctc_patch_alias",
+      delta: CANONICAL_PATCH,
+    }))).toEqual([]);
+    const inputDone = rewrite(frame("response.custom_tool_call_input.done", {
+      output_index: 0,
+      item_id: "ctc_patch_alias",
+      input: CANONICAL_PATCH,
+    }));
+    expect(dataPayload(inputDone[0]!).input).toBe(
+      compileCodeModeHelperInput(CANONICAL_PATCH, "apply_patch"),
+    );
+
+    const itemDone = rewrite(frame("response.output_item.done", {
+      output_index: 0,
+      item: {
+        type: "custom_tool_call",
+        id: "ctc_patch_alias",
+        call_id: "call_patch_alias",
+        name: "apply_patch",
+        input: CANONICAL_PATCH,
+        status: "completed",
+      },
+    }));
+    expect(dataPayload(itemDone[0]!).item).toMatchObject({
+      type: "custom_tool_call",
+      name: "exec",
+      input: compileCodeModeHelperInput(CANONICAL_PATCH, "apply_patch"),
+    });
+    rewrite.dispose?.();
+  });
+
+  test("restores streamed exec_command arguments through unified exec", () => {
+    const rewrite = createRoutedCustomToolRestoreBlockRewrite(
+      new Set(["exec"]),
+      undefined,
+      new Set(),
+      new Set(["exec"]),
+    );
+    const added = rewrite(frame("response.output_item.added", {
+      output_index: 0,
+      item: {
+        type: "function_call",
+        id: "fc_shell_alias",
+        call_id: "call_shell_alias",
+        name: "exec_command",
+        arguments: "",
+        status: "in_progress",
+      },
+    }));
+    expect(dataPayload(added[0]!).item).toMatchObject({ type: "custom_tool_call", name: "exec" });
+    expect(rewrite(frame("response.function_call_arguments.delta", {
+      output_index: 0,
+      item_id: "fc_shell_alias",
+      delta: '{"cmd":"pwd"}',
+    }))).toEqual([]);
+    const done = rewrite(frame("response.function_call_arguments.done", {
+      output_index: 0,
+      item_id: "fc_shell_alias",
+      arguments: '{"cmd":"pwd"}',
+    }));
+    expect(dataPayload(done[0]!)).toMatchObject({
+      type: "response.custom_tool_call_input.done",
+      input: compileCodeModeHelperInput('{"cmd":"pwd"}', "exec_command"),
+    });
+    rewrite.dispose?.();
+  });
+
   test("rewrites exec definitions and paired history without touching apply_patch", () => {
     const raw = {
       model: "deepseek-v4-flash",
