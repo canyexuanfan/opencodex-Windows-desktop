@@ -289,28 +289,41 @@ const commandRunners: Record<string, CommandRunner> = {
       afterCatalogWriteHandleAppServers({ restart: restartCodex, log: console });
       if (restartDesktopApp) await handleDesktopAppRestart(console);
     } else if (desiredDisabled) {
-      console.log("Codex integration is OFF; cache sync skipped (no catalog or cache write).");
+      // Worth saying, because it explains why nothing was written in the common case --
+      // but it is not a skip verdict: the refresh was attempted anyway (see the exit-code
+      // reasoning below), so the exit code still reflects whether it actually succeeded.
+      console.log("Codex integration is OFF; no catalog or cache write resulted.");
     }
     // `completed` with a falsy value means the cache was NOT rewritten. Previously every
     // outcome exited 0, so a script could not tell a refreshed cache from a skipped one.
     //
-    // Two outcomes are skips rather than failures, and conflating them with failure is a
-    // defect rather than strictness. A deliberate skip -- Codex integration off -- is not a
-    // failure. Neither is losing the catalog write lock to another process: serialization
-    // working as designed is the expected outcome under concurrency, and a proxy startup
-    // holding the permit would otherwise make a perfectly healthy `ocx sync-cache` exit 1
-    // and fail the pipeline that called it. `tests/codex-retained-root-serialization.test.ts`
+    // Losing the catalog write lock to another process is a skip, not a failure:
+    // serialization working as designed is the expected outcome under concurrency, and a
+    // proxy startup holding the permit would otherwise make a perfectly healthy
+    // `ocx sync-cache` exit 1 and fail the pipeline that called it -- intermittently, so it
+    // would read as a flake rather than a bug. `codex-retained-root-serialization.test.ts`
     // pins exactly that: contended lock, no cache write, exit 0.
+    //
+    // `desiredDisabled` is NOT a skip here, which is the subtle part. This call passes
+    // `allowWhenDesiredDisabled: true`, so the OFF gate in refreshCodexModelCatalog never
+    // fires and the refresh genuinely runs -- an explicit `ocx sync-cache` means the user
+    // asked for it regardless of the toggle. So a falsy result while integration is off is a
+    // real failure (unreadable catalog, I/O error), and treating it as a deliberate skip
+    // would report exit 0 and `skipped: true` for a refresh that actually failed. Only
+    // `database` and `unsafe-path` never reach a skip classification.
     const wrote = invalidated.kind === "completed" && Boolean(invalidated.value);
     const contended = invalidated.kind === "unavailable" && invalidated.reason === "busy";
-    const ok = wrote || desiredDisabled || contended;
+    const ok = wrote || contended;
     if (cacheJson) {
       console.log(JSON.stringify({
         schemaVersion: 1,
         ok,
         wrote,
-        skipped: !wrote && (desiredDisabled || contended),
+        skipped: contended,
         outcome: invalidated.kind,
+        // `outcome` alone cannot separate a contended lock from a hard serialization
+        // failure -- both are `unavailable`. Carry the reason so a caller can.
+        reason: invalidated.kind === "unavailable" ? invalidated.reason : undefined,
         codexHome: owningCodexHome,
       }, null, 2));
     } else if (contended) {
