@@ -213,7 +213,7 @@ describe("routedProviderConfig web_search capability backfill", () => {
     }]);
   });
 
-  test("an equivalent unclassified OAuth row retains fatal fields at the CLI adapter", () => {
+  test("an unclassified OAuth row is still stripped at the CLI adapter by the host normalizer", () => {
     const routed = routedProviderConfig("xai", {
       adapter: "openai-chat",
       baseUrl: "https://api.x.ai/v1",
@@ -227,10 +227,13 @@ describe("routedProviderConfig web_search capability backfill", () => {
     expect(transport.baseUrl).toBe("https://cli-chat-proxy.grok.com/v1");
     expect(transport.supportsOpenAiWebSearchToolFields).toBeUndefined();
     const body = buildWebSearchBody({ ...transport, adapter: "openai-responses" });
+    // The capability backfill is no longer the only thing standing between a hand-edited row and
+    // a 400: `normalizeXaiResponsesWebSearch` is scoped to the xAI HOST rather than to the
+    // capability, so both fatal fields go regardless of how the row is classified. That was
+    // already true for api.x.ai; it now holds for the CLI proxy, which serves the same dialect.
+    // Everything xAI accepts still survives untouched.
     expect(body.tools).toEqual([{
       type: "web_search",
-      external_web_access: true,
-      search_context_size: "medium",
       user_location: { type: "approximate" },
       search_content_types: ["text"],
       filters: { allowed_domains: ["x.ai"] },

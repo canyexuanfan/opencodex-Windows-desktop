@@ -212,13 +212,29 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     usage: "ocx observe <logs|usage|storage|memory|debug|claude-inbound|injection> ...",
     summary: "Inspect proxy requests, usage, storage, memory, and debug data.",
   },
+  {
+    name: "inspect",
+    usage: "ocx inspect <config|catalog|routing-analytics|pacing|key-providers|codex-prompt|client-config|star|windows-tray> ...",
+    summary: "Read effective config, catalog, analytics, pacing, and the generated client-config snippet.",
+    details: [
+      "`inspect star` reads the repository star status only. Starring uses your GitHub identity and is available from the dashboard alone.",
+    ],
+  },
   { name: "logs", usage: "ocx logs [filters] [--follow] [--json|--jsonl]", summary: "Alias of ocx observe logs." },
   {
     name: "usage",
     usage: "ocx usage [--range <today|1d|7d|30d|all>] [--surface <all|codex|claude|grok>] [--provider <name>] [--model <id>] [--json]",
     summary: "Alias of ocx observe usage.",
   },
-  { name: "storage", usage: "ocx storage [--json]", summary: "Alias of ocx observe storage." },
+  {
+    name: "storage",
+    usage: "ocx storage <report|cleanup|trash|policy> ...",
+    summary: "Storage report, archived-session cleanup, trash restore, and the cleanup policy.",
+    details: [
+      "A bare `ocx storage` prints the report, as it did when this was an alias of `observe storage`.",
+      "`cleanup` previews by default and only deletes under --yes; `trash restore` and `policy run` also require --yes.",
+    ],
+  },
   { name: "memory", usage: "ocx memory [--json]", summary: "Alias of ocx observe memory." },
   {
     name: "access",
@@ -242,7 +258,14 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     usage: "ocx grok <status|exclude|include|set|clear|apply> ...",
     summary: "Manage and apply the Grok Build model fence.",
   },
-  { name: "integration", usage: "ocx integration <claude|grok|client> ...", summary: "Manage supported client integrations." },
+  {
+    name: "integration",
+    usage: "ocx integration <claude|grok|client|native> ...",
+    summary: "Manage supported client integrations, and the native client toggles.",
+    details: [
+      "`native` shows or flips the native Claude/Claude Desktop/Codex/Grok toggles; the other subcommands manage the reversible file integrations.",
+    ],
+  },
   {
     name: "system",
     usage: "ocx system <status|settings|startup|diagnostics|sync|update> ...",
@@ -348,6 +371,15 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     usage: "ocx health [--json]",
     summary: "Check proxy health. Exits 0 if healthy, 1 otherwise.",
     details: ["Use --json for structured output: {ok, pid, port}."],
+  },
+  {
+    name: "capabilities",
+    usage: "ocx capabilities [--json] [--mutating-only] [--route <path>]",
+    summary: "List the declared CLI capabilities and the management routes they drive.",
+    details: [
+      "The machine-readable surface index: start here when driving ocx programmatically instead of parsing help text.",
+      "--route <path> answers the inverse question: which commands drive this management route.",
+    ],
   },
   {
     name: "ready",

@@ -63,6 +63,13 @@ export interface RequestLogContext {
    *  product: widening that enum would merge Responses and Chat Completions,
    *  since both leave it undefined. */
   inboundProtocol?: "responses" | "chat" | "messages";
+  /**
+   * Set when an adapter answered the turn locally and no upstream request was made
+   * (`ProviderAdapter.localTerminal`). A fixed identifier naming the code path, never
+   * conversation-derived: it exists so a request log showing zero sends is explainable
+   * rather than looking like a lost request.
+   */
+  localTerminalReason?: string;
   /** Stable non-PII Codex Pool account identity for durable usage attribution. */
   accountLogLabel?: string;
   requestedModel?: string;
@@ -133,6 +140,12 @@ export interface RequestLogEntry {
   /** TTFT: ms from request start to the first non-empty model output delta; unset for non-streaming/tool-only. */
   firstOutputMs?: number;
   surface?: "claude" | "claude-desktop" | "grok";
+  /**
+   * Set when the proxy answered this turn locally and sent nothing upstream. Without it a zero-send
+   * row is indistinguishable from a request that vanished. A fixed adapter-supplied identifier,
+   * never conversation-derived.
+   */
+  localTerminalReason?: string;
   /** The matched configured key's id. Set ONLY for admissionKind "configured" —
    *  never a sentinel, so a hand-edited entry whose id happens to be "loopback"
    *  cannot absorb unrelated traffic. */
@@ -942,6 +955,7 @@ export function addFinalRequestLog(
     logCtx.usage,
     logCtx.usageLogInputTokens,
     contextWindowForModel(logCtx.providerAdapter ?? logCtx.provider, logCtx.model),
+    logCtx.localTerminalReason !== undefined,
   );
   const attempts = logCtx.attempts?.map(attempt => ({
     ...attempt,
@@ -969,6 +983,9 @@ export function addFinalRequestLog(
     ...(logCtx.apiKeyId ? { apiKeyId: logCtx.apiKeyId } : {}),
     ...(logCtx.admissionKind ? { admissionKind: logCtx.admissionKind } : {}),
     ...(logCtx.inboundProtocol ? { inboundProtocol: logCtx.inboundProtocol } : {}),
+    ...(logCtx.localTerminalReason
+      ? { localTerminalReason: sanitizeLogMetadataString(logCtx.localTerminalReason) }
+      : {}),
     ...(isCodexUsageAccountLogLabel(logCtx.accountLogLabel)
       ? { accountLogLabel: logCtx.accountLogLabel }
       : {}),
@@ -1032,6 +1049,15 @@ export function filterRequestLogs(logs: RequestLogEntry[], params: URLSearchPara
   const conversationId = params.get("conversationId")?.trim() || params.get("conversation")?.trim();
   if (conversationId) {
     filtered = filtered.filter(entry => matchesLogConversationId(entry.conversationId, conversationId));
+  }
+  // #2704: there was no `model` clause at all, so `?model=x` was ACCEPTED and silently
+  // ignored -- worse than an error, because it yields wrong conclusions from output that
+  // looks correct. Attempts are matched for the same reason `provider` matches them: a
+  // request that failed over should be findable by the model that actually served it.
+  const model = params.get("model")?.trim();
+  if (model) {
+    filtered = filtered.filter(entry => entry.model === model
+      || entry.attempts?.some(attempt => attempt.model === model));
   }
   const status = params.get("status")?.trim().toLowerCase();
   if (status) {
@@ -1102,6 +1128,7 @@ function finalizedUsage(
   usage: OcxUsage | undefined,
   inputTokenEstimate: number | undefined,
   contextWindow: number | undefined,
+  locallyAnswered = false,
 ): FinalizedUsageResult {
   // The ESTIMATE itself is capped at the model's context window (codex-router PR #140). The
   // combined value below keeps its max(inputTokens, estimate) behavior — a provider-reported
@@ -1111,7 +1138,7 @@ function finalizedUsage(
     && inputTokenEstimate >= 0
     ? capEstimateAtContextWindow(inputTokenEstimate, contextWindow)
     : undefined;
-  const finalUsage = usageForFinalLog(adapter, usage);
+  const finalUsage = usageForFinalLog(adapter, usage, locallyAnswered);
   const usageFallback = !finalUsage && estimate !== undefined
     ? { inputTokens: estimate, outputTokens: 0, estimated: true }
     : undefined;
@@ -1211,6 +1238,7 @@ export function finishRequestAttempt(
     usage ?? attempt.usage,
     attempt.inputTokenEstimate,
     contextWindowForModel(attempt.adapter, attempt.model),
+    attempt.locallyAnswered === true,
   );
   attempt.status = status;
   attempt.durationMs = Math.max(0, durationMs);

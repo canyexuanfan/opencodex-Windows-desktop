@@ -134,6 +134,50 @@ describe("xAI Responses web-search compatibility", () => {
     });
   });
 
+  test("normalizes the Grok CLI proxy identically to the public API", () => {
+    // Re-probed 2026-08-27 against cli-chat-proxy.grok.com: `web_search_preview` -> 422
+    // "unknown variant", `external_web_access` -> 400 on every value including true,
+    // `search_context_size` -> 400, while `user_location` and `search_content_types` -> 200.
+    // The two hosts are one dialect, so one gate covers both.
+    const cliProvider = { baseUrl: "https://cli-chat-proxy.grok.com/v1" };
+
+    // A legacy `web_search_preview` reached the proxy verbatim and 422'd the whole turn.
+    expect(normalizeXaiResponsesWebSearch({
+      model: "grok-4.6",
+      tools: [{ type: "web_search_preview", external_web_access: true }],
+    }, cliProvider)).toEqual({
+      model: "grok-4.6",
+      tools: [{ type: "web_search" }],
+    });
+
+    // A cached/index-only declaration must NOT survive as live search. The downstream capability
+    // strip only deletes the flag, so leaving the CLI proxy unnormalized turned "no network" into
+    // an ordinary live web_search — the exact widening this normalizer exists to refuse.
+    expect(normalizeXaiResponsesWebSearch({
+      model: "grok-4.6",
+      tools: [{ type: "web_search", external_web_access: false }],
+    }, cliProvider)).toEqual({ model: "grok-4.6" });
+
+    // Fields xAI accepts are still preserved on this host.
+    expect(normalizeXaiResponsesWebSearch({
+      model: "grok-4.6",
+      tools: [{
+        type: "web_search",
+        external_web_access: true,
+        search_context_size: "medium",
+        user_location: { type: "approximate", country: "US" },
+        search_content_types: ["text"],
+      }],
+    }, cliProvider)).toEqual({
+      model: "grok-4.6",
+      tools: [{
+        type: "web_search",
+        user_location: { type: "approximate", country: "US" },
+        search_content_types: ["text"],
+      }],
+    });
+  });
+
   test("does not rewrite OpenAI, lookalike, or nonstandard-port providers", () => {
     const original = {
       model: "gpt-5.6-sol",

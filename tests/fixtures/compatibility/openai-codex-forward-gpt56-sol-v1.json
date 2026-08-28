@@ -45,6 +45,7 @@
         "reasoning": { "effort": "low" },
         "prompt_cache_key": "project-cache-v1",
         "prompt_cache_retention": "24h",
+        "prompt_cache_options": { "ttl": 3600 },
         "tools": [
           {
             "type": "custom",
@@ -91,7 +92,8 @@
         { "id": "unstored-item-reference-removed", "operator": "absent", "path": "/body/input/1" },
         { "id": "previous-response-id-removed", "operator": "absent", "path": "/body/previous_response_id" },
         { "id": "prompt-cache-key-preserved", "operator": "equals", "path": "/body/prompt_cache_key", "expected": "project-cache-v1" },
-        { "id": "prompt-cache-retention-removed", "operator": "absent", "path": "/body/prompt_cache_retention" }
+        { "id": "prompt-cache-retention-removed", "operator": "absent", "path": "/body/prompt_cache_retention" },
+        { "id": "prompt-cache-options-removed", "operator": "absent", "path": "/body/prompt_cache_options" }
       ]
     },
     {

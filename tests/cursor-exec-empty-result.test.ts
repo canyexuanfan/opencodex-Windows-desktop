@@ -29,6 +29,16 @@ describe("codex exec bridge empty-result normalization (devlog 260826 gap-7)", (
     }
   });
 
+  // A failed wrapper is empty but not a success: reporting it as an empty success would erase the
+  // only failure signal. Reachable with isError: false through Responses history.
+  test("a failed exec wrapper keeps failure guidance, not empty-success text", () => {
+    const out = normalizeCursorToolResultText("Script failed\nWall time 0.1 seconds\nOutput:\n", { toolName: "exec", isError: false });
+    expect(out.changed).toBe(true);
+    expect(out.text).toContain("exec failed");
+    expect(out.text).not.toContain("NOT lost context");
+    expect(out.text).not.toContain("Do not re-run");
+  });
+
   test("non-empty exec output passes through byte-identical", () => {
     const out = normalizeCursorToolResultText("Output:\nhello", { toolName: "exec" });
     expect(out.changed).toBe(false);

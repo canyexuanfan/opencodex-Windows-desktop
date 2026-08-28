@@ -424,6 +424,12 @@ jobs:
       - name: Privacy scan
         run: bun run privacy:scan
 
+      # The ocx skill ships a capability -> route map generated from src/cli/capabilities.ts.
+      # `bun run test` already covers this via tests/skill-ocx.test.ts; this step exists so the
+      # failure names the fix instead of surfacing as a byte-comparison diff in a test log.
+      - name: Check the generated ocx skill surface is current
+        run: bun run skill:surface:check
+
       - name: Check release helper syntax
         run: bun build scripts/release.ts --target=bun --outdir=.tmp/ci-release-script-check
 

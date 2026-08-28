@@ -47,15 +47,37 @@ export async function runtimeBaseUrl(deps: RuntimeApiDeps = {}): Promise<string>
   return `http://${probeHostname(live.hostname)}:${live.port}`;
 }
 
+function stringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/**
+ * Compose the operator-facing message from a management error body.
+ *
+ * The server states WHY a request was refused under `reason` and WHAT TO DO under
+ * `hint` (see management-auth.ts, which sets both on a 503 when the management plane
+ * is unavailable). Both were dropped here, so a fenced management plane was
+ * indistinguishable from a generic failure and an operator had no way to tell a port
+ * collision from an ACL refusal from a stopped proxy (#2698).
+ */
 function responseMessage(body: unknown, status: number): string {
-  if (body && typeof body === "object") {
-    const record = body as Record<string, unknown>;
-    for (const key of ["error", "message", "detail"]) {
-      if (typeof record[key] === "string" && record[key]) return record[key];
-    }
-  }
   if (typeof body === "string" && body.trim()) return body.trim().slice(0, 400);
-  return `Management request failed (${status})`;
+  if (!body || typeof body !== "object") return `Management request failed (${status})`;
+  const record = body as Record<string, unknown>;
+  let primary: string | undefined;
+  for (const key of ["error", "message", "detail"]) {
+    primary = stringField(record, key);
+    if (primary) break;
+  }
+  const parts = [primary ?? `Management request failed (${status})`];
+  const reason = stringField(record, "reason");
+  // A body of {ok:false, reason:"…"} with no `error` key used to degrade to the
+  // generic line, discarding the only actionable field.
+  if (reason && reason !== primary) parts.push(`reason: ${reason}`);
+  const hint = stringField(record, "hint");
+  if (hint && hint !== primary) parts.push(`hint: ${hint}`);
+  return parts.join("\n").slice(0, 1200);
 }
 
 export async function runtimeRequest<T = unknown>(
@@ -89,6 +111,28 @@ export async function runtimeRequest<T = unknown>(
 
 export function takeFlag(args: string[], flag: string): boolean {
   const index = args.indexOf(flag);
+  if (index === -1) return false;
+  args.splice(index, 1);
+  return true;
+}
+
+/** Unicode dashes that copy-paste and IME input substitute for ASCII `-`. */
+const DASH_CLASS = /[\u2010-\u2015\u2212]/g;
+
+/**
+ * True for `--json`, `--json=true`, `-json`, and Unicode-dash spellings.
+ * Matching only the exact token `--json` is the same defect logout had: each
+ * spelling that slips through is a silent success (or, for doctor, prose on
+ * stdout after the caller asked for JSON).
+ */
+export function isJsonOption(arg: string): boolean {
+  const body = arg.replace(DASH_CLASS, "-").replace(/^-+/, "");
+  return body === "json" || body.startsWith("json=");
+}
+
+/** Remove one JSON-request spelling from `args`. Returns whether one was present. */
+export function takeJsonFlag(args: string[]): boolean {
+  const index = args.findIndex(isJsonOption);
   if (index === -1) return false;
   args.splice(index, 1);
   return true;

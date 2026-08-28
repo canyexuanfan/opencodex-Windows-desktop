@@ -41,6 +41,10 @@ import {
   rememberResponseState,
 } from "../../responses/state";
 import {
+  bindTurnTerminationScope,
+  rememberDeliveredFinalAnswer,
+} from "../../responses/turn-termination";
+import {
   isValidProviderContinuationOwner,
   mergeProviderContinuationPayload,
   providerContinuationOwnerFromReplayIdentity,
@@ -115,6 +119,7 @@ import {
   resolveAnthropicAccountForSession,
   rotateAnthropicAccountOn429,
 } from "../../oauth/anthropic-routing";
+import { stampOAuthAccountLabel } from "../../providers/label";
 import {
   failoverAccountSnapshot,
   GENERIC_OAUTH_MAX_FAILOVERS_PER_REQUEST,
@@ -2380,6 +2385,10 @@ async function handleResponsesInner(
     threadIdHeader: req.headers.get("thread-id"),
     cursorConversationId: parsed._cursorConversationId,
   });
+  bindTurnTerminationScope(parsed, resolvedConversationId);
+  const rememberKiroDeliveredFinalAnswer = (adapterName: string, response: unknown): void => {
+    if (adapterName === "kiro") rememberDeliveredFinalAnswer(parsed, response);
+  };
   // _clientThreadId remains the routing/continuation identity supplied by Codex. Replay state uses
   // a dedicated raw conversation namespace so mixed headers that carry the same identity still
   // match, and a shared/synthetic session_id cannot coalesce distinct thread/Cursor conversations.
@@ -2841,6 +2850,10 @@ async function handleResponsesInner(
     if (snapshot.projectId) rotatedProvider = { ...rotatedProvider, project: snapshot.projectId };
     route.provider = rotatedProvider;
     if (route.providerName === "kiro") parsed._kiroAuthContext = { ...(snapshot.kiro ?? {}) };
+    // Re-stamp: a request that rotated accounts must be attributed to the account that actually
+    // served it. All three rotation sites funnel through here, so this is the only re-stamp
+    // needed -- and putting it anywhere else would let one of the three drift.
+    stampOAuthAccountLabel(logCtx, route.providerName, route.provider, snapshot.accountId);
     return true;
   };
   const anthropicSessionKey = route.providerName === "anthropic" && route.provider.authMode === "oauth"
@@ -2882,6 +2895,10 @@ async function handleResponsesInner(
         };
         if (isOAuth401ReplayProvider) sentOAuthSnapshot = resolved;
         route.provider = { ...route.provider, apiKey: resolved.accessToken };
+        // Attribution is independent of failover (#2699): stamped from the resolved snapshot
+        // itself, not from inside the `isGenericFailoverProvider` branch below, so a future
+        // narrowing of that predicate cannot silently switch attribution off.
+        stampOAuthAccountLabel(logCtx, route.providerName, route.provider, resolved.accountId);
         // Remember which account actually served this request so a 429 cools THAT one, not
         // whichever account is active by the time the response comes back (#2568).
         if (isGenericFailoverProvider(route.providerName, route.provider)) {
@@ -4440,6 +4457,7 @@ async function handleResponsesInner(
       ...(options.forceEmptyResponseId ? { forceEmptyResponseId: true } : {}),
       onCompletedResponse: (response, providerState) => {
         commitReasoningReplayServingRoute();
+        rememberKiroDeliveredFinalAnswer(adapter.name, response);
         rememberResponseState(
           parsed._rawBody,
           response,
@@ -4755,6 +4773,7 @@ async function handleResponsesInner(
           },
           onCompletedResponse: (response: Record<string, unknown>, providerState?: OcxProviderContinuationState) => {
             commitReasoningReplayServingRoute();
+            rememberKiroDeliveredFinalAnswer(adapter.name, response);
             if (!routedCompaction) {
               rememberResponseState(
                 parsed._rawBody,
@@ -4824,6 +4843,7 @@ async function handleResponsesInner(
       },
     });
     if (!routedCompaction) {
+      rememberKiroDeliveredFinalAnswer(adapter.name, json);
       rememberResponseState(
         parsed._rawBody,
         json,
@@ -4858,6 +4878,64 @@ async function handleResponsesInner(
   // reuse is safe, and releaseBodyObservation is idempotent per build.
   let initialRequest: AdapterRequest | undefined;
   let inputTokenEstimate: number | undefined;
+  // An adapter may know the turn needs no inference at all — Kiro's replayed history ending in a
+  // delivered final answer. Answer it locally: no build (so no token estimate), no send (so
+  // sendCount stays 0), and crucially no empty-completion guard, which treats an outputless
+  // terminal as a failed turn and re-invokes the identical request. Routing this through the
+  // ordinary event path would therefore reinstate the loop it exists to end.
+  const localTerminal = activeAdapter.localTerminal?.(parsed);
+  if (localTerminal) {
+    logCtx.localTerminalReason = localTerminal.reason;
+    // Mark the physical attempt too, not just the parent row. `finishRequestAttempt` finalizes the
+    // attempt through the same estimated-provider path, so without this the row reads exact while
+    // its own attempt still claims an estimate — the detailed accounting a maintainer actually
+    // reads for a zero-send turn.
+    if (logCtx.activeAttempt) logCtx.activeAttempt.locallyAnswered = true;
+    cleanupUpstreamAbort();
+    upstream.abort();
+    const terminalEvents: AdapterEvent[] = [{
+      type: "done",
+      endTurn: true,
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+    }];
+    if (parsed.stream) {
+      const localSse = bridgeToResponsesSSE(
+        (async function* () { yield* terminalEvents; })(),
+        parsed._responseModelId ?? parsed.modelId,
+        toolBridgeMaps.toolNsMap,
+        toolBridgeMaps.freeformToolNames,
+        toolBridgeMaps.toolSearchToolNames,
+        undefined,
+        2_000,
+        {
+          translatorBudget,
+          ...(options.forceEmptyResponseId ? { responseId: "" } : {}),
+          ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
+        },
+      );
+      // Same lifetime tracking as every other streaming return in this function: the turn
+      // admission lease is released when the body finishes or the client disconnects. Returning
+      // the raw stream would hold a lease for a turn that already has all of its output.
+      const localTurnAc = new AbortController();
+      return new Response(
+        trackStreamLifetime(localSse, localTurnAc, undefined, options.turnAdmissionLease),
+        {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+          },
+        },
+      );
+    }
+    return new Response(
+      JSON.stringify(buildResponseJSON(terminalEvents, parsed._responseModelId ?? parsed.modelId, {
+        translatorBudget,
+      })),
+      { headers: { "Content-Type": "application/json" } },
+    );
+  }
   try {
     initialRequest = await activeAdapter.buildRequest(parsed, { headers: selectedForwardHeaders, translatorBudget });
     refreshRoutedNamespaceToolAliases(initialRequest);
@@ -5706,6 +5784,7 @@ async function handleResponsesInner(
         },
         onCompletedResponse: (response: Record<string, unknown>, providerState?: OcxProviderContinuationState) => {
           commitReasoningReplayServingRoute();
+          rememberKiroDeliveredFinalAnswer(activeAdapter.name, response);
           // Compaction turns must NOT enter the continuation cache: _rawBody still holds the full
           // PRE-compaction history, and a later previous_response_id expansion would rehydrate the
           // giant stale chain Codex just replaced.
@@ -5783,6 +5862,7 @@ async function handleResponsesInner(
     });
     // See the streaming branch: compaction turns skip the continuation cache.
     if (!routedCompaction) {
+      rememberKiroDeliveredFinalAnswer(activeAdapter.name, json);
       rememberResponseState(
         parsed._rawBody,
         json,

@@ -38,9 +38,33 @@ interface UsageReportInput {
   providers?: CostRow[];
   days?: { date: string; requests: number; totalTokens: number; estimatedCostUsd?: number }[];
   filter?: { provider: string | null; model: string | null; matched: boolean; comboOverlap: boolean };
+  /**
+   * Per-account totals the API already returns and the CLI discarded (#2700).
+   *
+   * Withheld by the server -- sent as `[]` -- whenever a provider or model filter is active,
+   * because account rows are not provider-partitioned in a way the projection could honestly
+   * re-derive (summary.ts, reasoned around :865-872). An empty array therefore means two very
+   * different things, and the renderer must say which.
+   */
+  accounts?: {
+    accountLogLabel: string;
+    ambiguous?: boolean;
+    requests: number;
+    totalTokens: number;
+    estimatedCostUsd?: number;
+  }[];
 }
 
 const MAX_MODEL_ROWS = 10;
+
+function terminalText(value: string): string {
+  return value.replace(/[\x00-\x1f\x7f-\x9f]/g, character => {
+    const code = character.charCodeAt(0);
+    return code <= 0x7f
+      ? `\\x${code.toString(16).padStart(2, "0")}`
+      : `\\u${code.toString(16).padStart(4, "0")}`;
+  });
+}
 
 function count(value: number | undefined): string {
   return (value ?? 0).toLocaleString("en-US");
@@ -58,6 +82,8 @@ function usd(value: number | undefined): string {
 
 function table(header: string[], rows: string[][]): string[] {
   if (rows.length === 0) return [];
+  header = header.map(terminalText);
+  rows = rows.map(row => row.map(terminalText));
   const widths = header.map((h, i) => Math.max(h.length, ...rows.map(r => (r[i] ?? "").length)));
   const line = (cols: string[]): string => cols.map((c, i) => (c ?? "").padEnd(widths[i]!)).join("  ").trimEnd();
   return [line(header), ...rows.map(line)];
@@ -68,7 +94,7 @@ function describeScope(data: UsageReportInput): string {
   if (data.surface && data.surface !== "all") parts.push(`surface=${data.surface}`);
   if (data.filter?.provider) parts.push(`provider=${data.filter.provider}`);
   if (data.filter?.model) parts.push(`model=${data.filter.model}`);
-  return parts.join(", ");
+  return terminalText(parts.join(", "));
 }
 
 export function formatUsageReport(data: UsageReportInput): string[] {
@@ -78,7 +104,7 @@ export function formatUsageReport(data: UsageReportInput): string[] {
   if (data.filter && !data.filter.matched) {
     const what = [data.filter.provider && `provider "${data.filter.provider}"`, data.filter.model && `model "${data.filter.model}"`]
       .filter(Boolean).join(" and ");
-    lines.push(`No usage recorded for ${what} in this range.`);
+    lines.push(`No usage recorded for ${terminalText(what)} in this range.`);
     lines.push("Check the spelling against `ocx usage --json`, or widen --range.");
     return lines;
   }
@@ -107,6 +133,30 @@ export function formatUsageReport(data: UsageReportInput): string[] {
     lines.push(...table(
       ["PROVIDER", "REQUESTS", "TOKENS", "EST. COST"],
       providers.map(row => [row.provider, count(row.requests), count(row.totalTokens), usd(row.estimatedCostUsd)]),
+    ));
+  }
+
+  // Per-account spend (#2700). The two empty cases are distinguished deliberately: printing an
+  // empty table under a filter would repeat the silently-wrong-output defect this unit removes,
+  // because "what did this provider cost me per account" is the most natural way to ask and the
+  // server cannot answer it honestly.
+  const accountFilterActive = Boolean(data.filter?.provider || data.filter?.model);
+  const accounts = (data.accounts ?? []).filter(row => row.requests > 0);
+  if (accountFilterActive) {
+    lines.push("");
+    lines.push("ACCOUNT: not reported under a provider or model filter; run without filters for per-account totals.");
+  } else if (accounts.length > 0) {
+    lines.push("");
+    lines.push(...table(
+      ["ACCOUNT", "REQUESTS", "TOKENS", "EST. COST"],
+      accounts.map(row => [
+        // An ambiguous row aggregates several accounts, so reading it as one account draws the
+        // wrong conclusion. Mark it rather than presenting it as a single identity.
+        row.ambiguous ? `${terminalText(row.accountLogLabel)} (ambiguous)` : terminalText(row.accountLogLabel),
+        count(row.requests),
+        count(row.totalTokens),
+        usd(row.estimatedCostUsd),
+      ]),
     ));
   }
 

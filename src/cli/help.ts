@@ -5,7 +5,14 @@ import { findCommand } from "./registry";
 
 const repoRoot = dirname(fileURLToPath(new URL("../../package.json", import.meta.url)));
 
-function packageVersion(): string {
+/**
+ * Version of the `ocx` bundle this process is running from.
+ *
+ * Exported so `status`/`doctor` can compare it against the version the live proxy reports,
+ * which is how a stale `ocx` earlier on PATH becomes visible (#2701). Returns `"unknown"`
+ * rather than throwing; callers must treat that as "cannot compare", not as a mismatch.
+ */
+export function packageVersion(): string {
   const raw = readFileSync(join(repoRoot, "package.json"), "utf8");
   const parsed = JSON.parse(raw) as { version?: unknown };
   return typeof parsed.version === "string" ? parsed.version : "unknown";
@@ -48,6 +55,7 @@ Usage:
   ocx restart                  Stop and restart the proxy
   ocx v2 <sub>                multi_agent_v2 surface (status|on|off|mode|keep-native-v1|threads|mode-hint)
   ocx health [--json]          Check proxy health (exit 0=healthy, 1=not)
+  ocx capabilities [--json]    List declared capabilities and the API routes they drive
   ocx ready [--json] [--wait [--timeout <s>]]  Check post-sync readiness (exit 0 only when ready)
   ocx provider <sub>          Providers, connectivity, quota, and selected models
   ocx account <sub>           Accounts, login/reauth, key pools, and quota controls
@@ -56,11 +64,12 @@ Usage:
   ocx combo <sub>             Combo failover/round-robin routing
   ocx agent <sub>             Subagents, injection, effort caps, and sidecars
   ocx observe <sub>           Logs, usage, storage, memory, and debug data
+  ocx inspect <sub>           Effective config, catalog, analytics, pacing, client-config
   ocx route <sub>             Routing features (combo, policy)
   ocx logs [filters]          Alias of ocx observe logs
   ocx usage [--range <today|1d|7d|30d|all>] [--provider <name>] [--model <id>]
                               Token and estimated-cost report (alias of ocx observe usage)
-  ocx storage [--json]        Alias of ocx observe storage
+  ocx storage <sub>           Storage report, cleanup, trash, and the cleanup policy
   ocx memory [--json]         Alias of ocx observe memory
   ocx api-key <sub>           Alias of ocx access key
   ocx access <sub>            External API keys and endpoint information

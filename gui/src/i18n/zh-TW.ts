@@ -795,6 +795,7 @@ export const zhTW: Record<TKey, string> = {
   "storage.policy.skippedEmpty": "沒有匹配目標的歸檔候選項。",
   "storage.policy.doneQuarantine": "策略已隔離 {count} 個檔案（{size}）。",
   "storage.policy.donePermanent": "策略已永久刪除 {count} 個檔案（{size}）。",
+  "storage.policy.metadataSaveWarning": "策略執行已完成，但無法儲存其排程中繼資料。",
   "modal.addNamed": "新增：{label}",
   "modal.add": "新增供應商",
   "modal.search": "搜尋供應商…",

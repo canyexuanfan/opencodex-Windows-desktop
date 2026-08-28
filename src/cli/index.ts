@@ -26,6 +26,7 @@ import {
   writeRuntimePort,
 } from "../config/process-state";
 import { collectStatus, unusedProxyWarningLines } from "./status";
+import { takeFlag } from "./runtime-api";
 
 import {
   discoverStableProxyForRestart,
@@ -45,7 +46,7 @@ import { runReady, type ReadyArgs } from "./ready";
 import { runCli } from "./root";
 import { ProxyOwnershipRefusedError, stopProxy } from "../lib/process-control";
 import { loadServiceTokenFromFile } from "../lib/service-secrets";
-import { diagnoseService, isServiceOwnershipError, serviceCommand, serviceEnvironmentOwnedHere, serviceStartableFromTray, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "../service";
+import { assertNotAdminToken, diagnoseService, isServiceOwnershipError, serviceCommand, serviceEnvironmentOwnedHere, serviceStartableFromTray, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "../service";
 import { formatStartupRoutingDetail, startupHealthSummary } from "../codex/autostart-health";
 import { drainAndShutdown, isRecyclingForExit, startServer } from "../server";
 import { injectSystemEnv, reconcileShellHook, revertSystemEnv, uninstallShellHook } from "../server/system-env";
@@ -223,6 +224,11 @@ async function handleStart(options: { block?: boolean } = {}) {
   // auth path reads OPENCODEX_API_AUTH_TOKEN from the environment.
   const serviceToken = loadServiceTokenFromFile(process.env);
   if (serviceToken) process.env.OPENCODEX_API_AUTH_TOKEN = serviceToken;
+  // The service wrapper (and WinSW via OCX_API_TOKEN_FILE) can still export a colliding
+  // token that install now refuses to write. Refuse it here too, before bind, so an
+  // already-broken file cannot fence /api/* closed at boot (#2696).
+  const present = process.env.OPENCODEX_API_AUTH_TOKEN?.trim();
+  if (present) assertNotAdminToken(present);
   const requestedPort = parsePortOption();
   const owner = await findProxyOwnerBeforeJournalRecovery();
   if (owner.live) {
@@ -830,8 +836,12 @@ async function handleUninstall() {
 
 async function handleStatus() {
   const statusArgs = args.slice(1);
-  const wantsJson = statusArgs.length === 1 && statusArgs[0] === "--json";
-  if (statusArgs.length > 1 || (statusArgs.length === 1 && !wantsJson)) {
+  // Order-independent: the previous form only honoured `--json` as the LONE argument, so
+  // `ocx status --json --anything` silently printed human output to a caller that asked
+  // for JSON. Take the flag out of argv, then reject whatever is left over -- which keeps
+  // the strict unknown-argument behaviour rather than trading one defect for another.
+  const wantsJson = takeFlag(statusArgs, "--json");
+  if (statusArgs.length > 0) {
     console.error("Usage: ocx status [--json]");
     process.exit(1);
   }
@@ -848,6 +858,12 @@ async function handleStatus() {
     console.log(`❌ Proxy: ${status.proxyLabel}`);
   }
   console.log(`   Health: ${status.healthLabel}`);
+  // Printed here, not only in --json: a stale ocx on PATH is exactly the situation where
+  // the operator is reading human output and wondering why the CLI disagrees with the
+  // dashboard. Adding the JSON field alone would satisfy a test and help nobody (#2701).
+  if (status.json.versionSkew.warning) {
+    console.log(`   ⚠️  ${status.json.versionSkew.warning}`);
+  }
   for (const line of unusedProxyWarningLines({
     proxyUp: Boolean(status.json.proxy.pid || status.json.proxy.health.ok),
     routingKind: status.json.startup.routingKind,

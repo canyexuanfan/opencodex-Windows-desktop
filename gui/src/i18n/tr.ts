@@ -998,6 +998,7 @@ export const tr: Record<TKey, string> = {
   "storage.policy.skippedEmpty": "Hedefle eşleşen aday yok.",
   "storage.policy.doneQuarantine": "Politika {count} dosyayı karantinaya aldı ({size}).",
   "storage.policy.donePermanent": "Politika {count} dosyayı kalıcı olarak sildi ({size}).",
+  "storage.policy.metadataSaveWarning": "Politika çalışması tamamlandı ancak zamanlama meta verileri kaydedilemedi.",
 
   // add-provider modal
   "modal.addNamed": "Ekle: {label}",

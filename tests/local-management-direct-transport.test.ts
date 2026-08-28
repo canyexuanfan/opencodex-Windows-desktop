@@ -354,7 +354,12 @@ describe("local management direct transport", () => {
       const line = stdout.trim().split(/\r?\n/).at(-1);
       expect(line ? JSON.parse(line) : null).toEqual({
         control: { via: "proxy" },
-        identity: { pid: PID },
+        // `version` rides back with the identity probe now that the CLI reports version
+        // skew against the running proxy (#2701). The healthz fixture above already serves
+        // `version: "test"`, so asserting it here pins that the field is threaded through
+        // the direct transport rather than dropped -- an exact-match assertion is the point
+        // of this test, so it is widened deliberately, not loosened to a subset match.
+        identity: { pid: PID, version: "test" },
         readiness: { ready: true, status: "ready", pid: PID, port: targetPort },
         readKind: "response",
         memory: { pid: PID },

@@ -550,10 +550,14 @@ describe("ocx account CLI (issue #180 matrix)", () => {
     expect(result.stderr).toContain("anthropic");
   });
 
-  test("9: an OAuth API 404 exits one and surfaces the server error", async () => {
+  test("9: an OAuth API 404 exits four and surfaces the server error", async () => {
     const result = await run(["use", "anthropic", "nope"]);
 
-    expect(result.code).toBe(1);
+    // 4 (not 1) since #2698 aligned the account client with the exit-code vocabulary
+    // runtime-api.ts already used: 2 usage, 4 not-found, 5 conflict, 1 otherwise. Before
+    // that, every account failure exited 1, so a script could not tell a missing account
+    // from a concurrent mutation or a dead proxy. Scripts testing `!== 0` are unaffected.
+    expect(result.code).toBe(4);
     expect(result.stderr).toContain("anthropic account nope was not found");
   });
 
