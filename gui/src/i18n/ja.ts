@@ -950,6 +950,7 @@ export const ja: Record<TKey, string> = {
   "storage.policy.skippedEmpty": "目標に合うアーカイブ候補がありません。",
   "storage.policy.doneQuarantine": "方針が {count} 件を隔離しました（{size}）。",
   "storage.policy.donePermanent": "方針が {count} 件を完全削除しました（{size}）。",
+  "storage.policy.metadataSaveWarning": "方針の実行は完了しましたが、スケジュールのメタデータを保存できませんでした。",
 
   // add-provider modal
   "modal.addNamed": "追加: {label}",
