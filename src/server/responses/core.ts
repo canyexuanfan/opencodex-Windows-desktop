@@ -1402,6 +1402,7 @@ export interface HandleResponsesOptions {
     sourceBody: unknown;
     previousResponseInputExpanded: boolean;
     providerContinuation: OcxProviderContinuationState | undefined;
+    recoveredPlaintext: boolean;
   };
   /** Internal combo handoff: allow a later same-provider model after a reset-derived 429/402. */
   deferCodexResetDerivedCooldown?: boolean;
@@ -1971,6 +1972,7 @@ export async function handleComboResponses(
     providerContinuation: !scopeMismatch && body !== rawBody && requestedPreviousId
       ? previousResponseProviderState(requestedPreviousId)
       : undefined,
+    recoveredPlaintext: false,
   };
   const adoptFailedChildLog = (childLog: RequestLogContext): void => {
     // Attempts remain the complete physical history; the logical row mirrors the most recent
@@ -2000,11 +2002,40 @@ export async function handleComboResponses(
       return false;
     }
   };
+  let comboPayloadReadable = false;
   const payloadEligible = (target: (typeof combo.targets)[number]): boolean =>
-    !unreadableEncryptedAgentTask || canDecryptUnreadableAgentTask(target);
+    comboPayloadReadable || !unreadableEncryptedAgentTask || canDecryptUnreadableAgentTask(target);
 
   if (unreadableEncryptedAgentTask && !combo.targets.some(canDecryptUnreadableAgentTask)) {
-    return unreadableEncryptedAgentTaskResponse();
+    const recovery = agentTaskRecoveryConfig(config);
+    let recovered = false;
+    if (
+      (options.inboundWire ?? "responses") === "responses"
+      && isThreadSpawnRequest(req.headers)
+      && recovery
+      && !options.comboAttempt
+    ) {
+      try {
+        recovered = await recoverEncryptedAgentTask(
+          req,
+          (body as { input?: unknown } | undefined)?.input,
+          recovery,
+          config,
+          { parentThreadId: inboundClientThreadId, abortSignal: options.abortSignal },
+        );
+      } catch {
+        recovered = false;
+      }
+    }
+    // Recovery has the same in-place input mutation contract as the direct routed path.
+    if (
+      !recovered
+      || hasUnreadableEncryptedAgentTask((body as { input?: unknown } | undefined)?.input)
+    ) {
+      return unreadableEncryptedAgentTaskResponse();
+    }
+    comboPayloadReadable = true;
+    comboReplaySnapshot.recoveredPlaintext = true;
   }
 
   const initialNow = Date.now();
@@ -2412,6 +2443,9 @@ async function handleResponsesInner(
   let toolBridgeMaps: ReturnType<typeof buildToolBridgeMaps>;
   try {
     parsed = parseRequest(body);
+    if (options.comboReplaySnapshot?.recoveredPlaintext) {
+      markBodyNonPersistable(parsed._rawBody);
+    }
     toolBridgeMaps = buildToolBridgeMaps(parsed, translatorBudget);
     if (previousResponseInputExpanded) parsed._previousResponseInputExpanded = true;
     const providerContinuationCandidate = options.comboReplaySnapshot
