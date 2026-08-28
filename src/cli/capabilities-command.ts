@@ -21,7 +21,8 @@ function takeValueFlag(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
   if (idx === -1) return undefined;
   const value = args[idx + 1];
-  args.splice(idx, value === undefined ? 1 : 2);
+  args.splice(idx, value === undefined || value.startsWith("-") ? 1 : 2);
+  if (value === undefined || value.startsWith("-")) return "";
   return value;
 }
 
