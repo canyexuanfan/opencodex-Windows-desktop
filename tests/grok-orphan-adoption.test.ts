@@ -908,6 +908,14 @@ describe("Grok orphan adoption (#511)", () => {
       "[subagents.models]",
       `explore = "${alias}"`,
       "",
+      "[subagents.roles.reviewer]",
+      `model = "${alias}"`,
+      'description = "Review code"',
+      "",
+      "[subagents.personas.concise]",
+      `model = "${alias}"`,
+      'instructions = "Be concise"',
+      "",
       "[auto_mode]",
       `classifier_model = "${alias}"`,
       "",
@@ -928,7 +936,7 @@ describe("Grok orphan adoption (#511)", () => {
       .toMatchObject({ ok: true, changed: true });
     const activeContent = readFileSync(configPath, "utf8");
     expect(modelTables(activeContent)).toEqual([alias]);
-    expect(countStringValue(Bun.TOML.parse(activeContent), alias)).toBe(11);
+    expect(countStringValue(Bun.TOML.parse(activeContent), alias)).toBe(13);
 
     expect(injectGrokConfig(10100, MODELS, {
       grokHome,
@@ -938,6 +946,8 @@ describe("Grok orphan adoption (#511)", () => {
     const content = readFileSync(configPath, "utf8");
     expect(modelTables(content)).toEqual([]);
     expect(countStringValue(Bun.TOML.parse(content), alias)).toBe(0);
+    expect(content).toContain('[subagents.roles.reviewer]\ndescription = "Review code"');
+    expect(content).toContain('[subagents.personas.concise]\ninstructions = "Be concise"');
   });
 
   // F7: the sweep must converge, or `changed` is meaningless to callers.

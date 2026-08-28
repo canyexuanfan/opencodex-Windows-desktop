@@ -559,6 +559,8 @@ const MODEL_REFERENCE_PATHS: readonly ModelReferencePath[] = [
   { path: ["models", "prompt_suggestion"] },
   { path: ["ui", "fork_secondary_model"] },
   { path: ["subagents", "models", "*"] },
+  { path: ["subagents", "roles", "*", "model"] },
+  { path: ["subagents", "personas", "*", "model"] },
   { path: ["auto_mode", "classifier_model"] },
   {
     path: ["goal", "planner_model", "model"],
