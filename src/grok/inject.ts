@@ -71,36 +71,228 @@ export function findManagedRegion(content: string): ManagedRegion | null {
  * `[model.<alias>]` header must be canonicalized before comparison.
  */
 const KEY_SEGMENT = String.raw`(?:[A-Za-z0-9_-]+|"(?:[^"\\]|\\.)*"|'[^']*')`;
-/**
- * User-owned model table headers. Also matches array-of-table (`[[model.x]]`) and sub-table
- * (`[model.x.sub]`) spellings. `[[model.x]]` genuinely collides with a generated `[model.x]`,
- * and one collision makes grok reject the ENTIRE config layer ("duplicate key"), taking every
- * unrelated user setting with it; `[model.x.sub]` does not strictly collide, but reserving it
- * costs only a suffixed alias and keeps us clear of the user's namespace.
- *
- * Every character class here is newline-free ON PURPOSE. With `[^\]]*` the optional sub-table
- * tail runs past the end of its own line, so an unclosed `[model.…` inside a multiline string
- * swallows the following lines — including a real `[model.<alias>]` header, which then goes
- * unreserved and produces the very duplicate-key config this scan exists to prevent.
- */
-const MODEL_TABLE_HEADER = new RegExp(
-  String.raw`^[ \t]*\[\[?[ \t]*(${KEY_SEGMENT})[ \t]*\.[ \t]*(${KEY_SEGMENT})[ \t]*(?:\.[^\]\r\n]*)?\]\]?[ \t]*(?:#.*)?$`,
-  "gm",
+const DOTTED_KEY = String.raw`${KEY_SEGMENT}(?:[ \t]*\.[ \t]*${KEY_SEGMENT})*`;
+/** One complete TOML table-header line; paired brackets reject array-value lookalikes. */
+const TABLE_HEADER_LINE = new RegExp(
+  String.raw`^[ \t]*(?:\[\[[ \t]*(${DOTTED_KEY})[ \t]*\]\]|\[[ \t]*(${DOTTED_KEY})[ \t]*\])[ \t]*(?:#[^\r\n]*)?$`,
 );
 
+interface TomlTableHeader {
+  index: number;
+  length: number;
+  segments: string[];
+  array: boolean;
+}
+
+interface TomlStructure {
+  view: string;
+  headers: TomlTableHeader[];
+  containerRootLineStarts: Set<number>;
+}
+
+/** End of a TOML multi-line basic/literal string, or EOF when it is unclosed. */
+function tomlMultilineStringEnd(content: string, start: number, quote: '"' | "'"): number {
+  let cursor = start + 3;
+  while (cursor < content.length) {
+    if (quote === '"' && content[cursor] === "\\") {
+      cursor += 2;
+      continue;
+    }
+    if (content[cursor] === quote
+      && content[cursor + 1] === quote
+      && content[cursor + 2] === quote) {
+      let end = cursor + 3;
+      // TOML permits one or two quote characters immediately before the closing delimiter.
+      if (content[end] === quote) {
+        end += 1;
+        if (content[end] === quote) end += 1;
+      }
+      return end;
+    }
+    cursor += 1;
+  }
+  return content.length;
+}
+
+/** Find one TOML string value's exact source span; semantic decoding uses Bun's parser. */
+function tomlStringSpanAt(content: string, start: number): { end: number } | null {
+  const quote = content[start];
+  if (quote !== '"' && quote !== "'") return null;
+  if (content[start + 1] === quote && content[start + 2] === quote) {
+    const end = tomlMultilineStringEnd(content, start, quote);
+    const token = content.slice(start, end);
+    if (token.length < 6 || !token.endsWith(quote.repeat(3))) return null;
+    return { end };
+  }
+
+  for (let cursor = start + 1; cursor < content.length; cursor += 1) {
+    const char = content[cursor]!;
+    if (char === "\r" || char === "\n") return null;
+    if (quote === '"' && char === "\\") {
+      cursor += 1;
+      continue;
+    }
+    if (char === quote) {
+      return { end: cursor + 1 };
+    }
+  }
+  return null;
+}
+
+/** Find the matching end of one inline table / array while skipping strings and comments. */
+function tomlContainerEnd(content: string, start: number): number | null {
+  const opener = content[start];
+  if (opener !== "{" && opener !== "[") return null;
+  const stack: string[] = [opener];
+  for (let index = start + 1; index < content.length;) {
+    const char = content[index]!;
+    if (char === "#") {
+      const newline = content.indexOf("\n", index);
+      index = newline === -1 ? content.length : newline + 1;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      const span = tomlStringSpanAt(content, index);
+      if (span === null) return null;
+      index = span.end;
+      continue;
+    }
+    if (char === "{" || char === "[") stack.push(char);
+    else if (char === "}" || char === "]") {
+      const expected = char === "}" ? "{" : "[";
+      if (stack.pop() !== expected) return null;
+      if (stack.length === 0) return index + 1;
+    }
+    index += 1;
+  }
+  return null;
+}
+
 /**
- * ANY table header, capturing its full dotted key. Used to compute table SPANS: a table
- * body runs from its own header to the next header of any kind, so the orphan sweep can
- * remove a whole table instead of a guessed line range (a partial removal would re-parent
- * the leftover keys onto the preceding table).
+ * A same-length lexical projection for structural scans. Triple-quoted string bytes become
+ * spaces while line endings and every byte outside those values keep their original offsets.
  */
-const ANY_TABLE_HEADER = /^[ \t]*\[\[?[ \t]*([^\]\r\n]*?)[ \t]*\]\]?[ \t]*(?:#.*)?$/gm;
+function tomlStructuralView(content: string): string {
+  let state: "code" | "comment" | "basic" | "literal" = "code";
+  let cursor = 0;
+  let output = "";
+  for (let index = 0; index < content.length;) {
+    const char = content[index]!;
+    if (state === "comment") {
+      if (char === "\n") state = "code";
+      index += 1;
+      continue;
+    }
+    if (state === "basic") {
+      if (char === "\\") index += 2;
+      else {
+        if (char === '"') state = "code";
+        index += 1;
+      }
+      continue;
+    }
+    if (state === "literal") {
+      if (char === "'") state = "code";
+      index += 1;
+      continue;
+    }
+    if (char === "#") {
+      state = "comment";
+      index += 1;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      if (content[index + 1] === char && content[index + 2] === char) {
+        const end = tomlMultilineStringEnd(content, index, char);
+        output += content.slice(cursor, index);
+        output += content.slice(index, end).replace(/[^\r\n]/g, " ");
+        cursor = end;
+        index = end;
+        continue;
+      }
+      state = char === '"' ? "basic" : "literal";
+    }
+    index += 1;
+  }
+  return output.length === 0 ? content : output + content.slice(cursor);
+}
+
+/** Update array / inline-table nesting for one non-header line in the structural view. */
+function tomlContainerDepthAfterLine(line: string, initialDepth: number): number {
+  let depth = initialDepth;
+  let state: "code" | "basic" | "literal" = "code";
+  for (let index = 0; index < line.length;) {
+    const char = line[index]!;
+    if (state === "basic") {
+      if (char === "\\") index += 2;
+      else {
+        if (char === '"') state = "code";
+        index += 1;
+      }
+      continue;
+    }
+    if (state === "literal") {
+      if (char === "'") state = "code";
+      index += 1;
+      continue;
+    }
+    if (char === "#") break;
+    if (char === '"' || char === "'") {
+      state = char === '"' ? "basic" : "literal";
+      index += 1;
+      continue;
+    }
+    if (char === "[" || char === "{") depth += 1;
+    else if (char === "]" || char === "}") depth = Math.max(0, depth - 1);
+    index += 1;
+  }
+  return depth;
+}
+
+/**
+ * Find real table headers and assignment-eligible lines while excluding arrays, inline tables,
+ * comments, and multi-line strings. Offsets remain exact because `view` is length-preserving.
+ */
+function analyzeTomlStructure(content: string): TomlStructure {
+  const view = tomlStructuralView(content);
+  const headers: TomlTableHeader[] = [];
+  const containerRootLineStarts = new Set<number>();
+  let depth = 0;
+  for (let lineStart = 0; lineStart <= view.length;) {
+    const newline = view.indexOf("\n", lineStart);
+    const lineEnd = newline === -1 ? view.length : newline;
+    const rawLine = view.slice(lineStart, lineEnd);
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    const header = depth === 0 ? TABLE_HEADER_LINE.exec(line) : null;
+    if (header) {
+      const dottedKey = header[1] ?? header[2]!;
+      headers.push({
+        index: lineStart,
+        length: header[0].length,
+        segments: canonicalDottedKey(dottedKey),
+        array: header[1] !== undefined,
+      });
+    } else {
+      if (depth === 0) containerRootLineStarts.add(lineStart);
+      depth = tomlContainerDepthAfterLine(line, depth);
+    }
+    if (newline === -1) break;
+    lineStart = newline + 1;
+  }
+  return { view, headers, containerRootLineStarts };
+}
 
 /** Resolve a header key segment (bare / basic / literal) to the key it actually addresses. */
 function canonicalKeySegment(raw: string): string {
   if (raw.startsWith('"')) return decodeTomlBasicString(raw.slice(1, -1));
   if (raw.startsWith("'")) return raw.slice(1, -1); // literal strings have no escapes
   return raw;
+}
+
+/** Split a TOML dotted key without treating dots inside quoted segments as separators. */
+function canonicalDottedKey(raw: string): string[] {
+  return [...raw.matchAll(new RegExp(KEY_SEGMENT, "g"))]
+    .map(match => canonicalKeySegment(match[0]!));
 }
 
 /**
@@ -114,39 +306,44 @@ function userModelAliases(content: string, region: ManagedRegion | null): Set<st
     ? content.slice(0, region.start) + content.slice(region.end)
     : content;
   const aliases = new Set<string>();
-  for (const match of outsideManagedRegion.matchAll(MODEL_TABLE_HEADER)) {
-    if (canonicalKeySegment(match[1]!) !== "model") continue;
-    aliases.add(canonicalKeySegment(match[2]!));
+  for (const header of analyzeTomlStructure(outsideManagedRegion).headers) {
+    if (header.segments[0] !== "model" || header.segments.length < 2) continue;
+    aliases.add(header.segments[1]!);
   }
   return aliases;
 }
 
-/**
- * The api_key literal every generated entry carries. It is the STRONG ownership signal:
- * a value we mint, that a human has no reason to type by hand.
- */
+/** The api_key literal every generated entry carries. It is necessary, but not ownership alone. */
 const OPENCODEX_API_KEY = "opencodex-loopback";
+const OPENCODEX_GROK_MARKER = "x-opencodex-grok";
 
 /** A plain `[model.<alias>]` table outside the fence that opencodex itself wrote. */
 interface OrphanTable {
   alias: string;
   /** The model id this entry routes to — used to find its replacement alias. */
-  modelId: string | undefined;
+  modelId: string;
+  /** Explicit markers authorize teardown; legacy fingerprints authorize replacement only. */
+  ownership: "explicit" | "legacy";
   /** Offsets into the NORMALIZED content: header start .. next header start (or EOF). */
   start: number;
   end: number;
+  /** Re-serialized child tables may be separated from the parent by unrelated tables. */
+  additionalRanges: Array<{ start: number; end: number }>;
 }
 
 /** `key = "value"` / `key = value` pairs at the top level of one table body. */
 function tableBodyKeys(body: string): Map<string, string> {
   const keys = new Map<string, string>();
-  for (const line of body.split("\n")) {
-    const match = /^[ \t]*([A-Za-z0-9_-]+)[ \t]*=[ \t]*(.*?)[ \t]*$/.exec(line);
-    if (!match) continue;
+  const structure = analyzeTomlStructure(body);
+  const assignment = /^[ \t]*([A-Za-z0-9_-]+)[ \t]*=[ \t]*(.*?)[ \t]*$/gm;
+  for (const match of structure.view.matchAll(assignment)) {
+    if (!structure.containerRootLineStarts.has(match.index!)) continue;
     const raw = match[2]!;
-    const value = raw.startsWith('"') && raw.endsWith('"') && raw.length >= 2
+    const value = raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')
       ? decodeTomlBasicString(raw.slice(1, -1))
-      : raw;
+      : raw.length >= 2 && raw.startsWith("'") && raw.endsWith("'")
+        ? raw.slice(1, -1) // TOML literal strings do not process escapes.
+        : raw;
     if (!keys.has(match[1]!)) keys.set(match[1]!, value);
   }
   return keys;
@@ -162,6 +359,44 @@ function isLoopbackBaseUrl(value: string | undefined): boolean {
   }
 }
 
+/** Exact marker emitted inside every modern generated model table. */
+function hasInlineOwnershipMarker(value: string | undefined): boolean {
+  return value !== undefined
+    && /^\{[ \t]*["']x-opencodex-grok["'][ \t]*=[ \t]*["']1["'][ \t]*\}$/.test(value);
+}
+
+/** Historical deterministic alias, including collision suffixes allocated by the writer. */
+function isGeneratedAliasForModel(alias: string, modelId: string): boolean {
+  const base = `ocx-${modelId.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+  if (alias === base) return true;
+  if (!alias.startsWith(`${base}-`)) return false;
+  const suffix = alias.slice(base.length + 1);
+  return /^[1-9][0-9]*$/.test(suffix) && Number(suffix) >= 2;
+}
+
+/** Pre-marker auto-generated row shape. Manual rows never carried the generated name. */
+function isLegacyGeneratedTable(alias: string, keys: ReadonlyMap<string, string>): boolean {
+  const modelId = keys.get("model");
+  return modelId !== undefined
+    && modelId.length > 0
+    && keys.get("api_backend") === "chat_completions"
+    && keys.get("name") === `OCX ${modelId}`
+    && isGeneratedAliasForModel(alias, modelId);
+}
+
+/** Classify a direct provider/model id without stealing a slash-shaped configured combo alias. */
+function isDisabledProviderModelId(
+  modelId: string,
+  disabledProviderNamespaces: ReadonlySet<string> | undefined,
+  comboPublicModelIds: ReadonlySet<string> | undefined,
+): boolean {
+  if (!disabledProviderNamespaces || comboPublicModelIds?.has(modelId)) return false;
+  const slash = modelId.indexOf("/");
+  return slash > 0
+    && slash < modelId.length - 1
+    && disabledProviderNamespaces.has(modelId.slice(0, slash));
+}
+
 /**
  * Model tables OUTSIDE the fence that opencodex itself wrote (#511).
  *
@@ -172,12 +407,16 @@ function isLoopbackBaseUrl(value: string | undefined): boolean {
  * resolves the original, finds no `context_window`, and falls back to its own 200k.
  *
  * Ownership is CONJUNCTIVE and deliberately strict, because a false positive deletes a
- * hand-written user model:
+ * hand-written user model. The public manual recipe intentionally uses the same loopback key,
+ * endpoint, and Responses backend, so those fields are not ownership proof. We additionally
+ * require either the durable generated marker or the exact pre-marker legacy fingerprint:
  *   - a plain `[model.x]` header (never `[[model.x]]` / `[model.x.sub]` — those spellings
  *     mark human authorship and stay reserved);
  *   - `api_key` equal to our own literal;
  *   - a loopback `base_url`, so an entry that merely copied our key while pointing at a
  *     remote host is left alone.
+ *   - `x-opencodex-grok = "1"` in generated inline/child extra_headers, OR the historical
+ *     chat_completions + `name = "OCX <model>"` + deterministic generated alias shape.
  * A loopback base_url ALONE is not enough: aiming your own model at the local proxy is a
  * legitimate thing to do.
  */
@@ -194,15 +433,7 @@ function findOpencodexOrphans(content: string, region: ManagedRegion | null): Or
   const clampEnd = (start: number, end: number): number =>
     fenceStart >= 0 && start < fenceStart ? Math.min(end, fenceStart) : end;
   // Collect every table header first: a table body runs to the NEXT header, whatever it is.
-  const headers: Array<{ index: number; length: number; segments: string[]; array: boolean }> = [];
-  for (const match of content.matchAll(ANY_TABLE_HEADER)) {
-    headers.push({
-      index: match.index!,
-      length: match[0].length,
-      segments: match[1]!.split(".").map(part => canonicalKeySegment(part.trim())),
-      array: match[0].trimStart().startsWith("[["),
-    });
-  }
+  const headers = analyzeTomlStructure(content).headers;
   for (const [position, header] of headers.entries()) {
     if (header.array || header.segments.length !== 2 || header.segments[0] !== "model") continue;
     // Inside the fence the regular splice already owns it.
@@ -211,50 +442,389 @@ function findOpencodexOrphans(content: string, region: ManagedRegion | null): Or
     const keys = tableBodyKeys(content.slice(header.index + header.length, bodyEnd));
     if (keys.get("api_key") !== OPENCODEX_API_KEY) continue;
     if (!isLoopbackBaseUrl(keys.get("base_url"))) continue;
-    // Swallow the entry's OWN sub-tables (`[model.<alias>.extra_headers]`). Grok writes
-    // them when it re-serializes the file, and leaving one behind keeps the alias
-    // reserved by `userModelAliases` — so the sweep would remove the parent and STILL
-    // allocate a suffixed duplicate, which is the exact #511 loop we came to close.
-    let end = bodyEnd;
-    for (let next = position + 1; next < headers.length; next += 1) {
+    const modelId = keys.get("model");
+    if (!modelId) continue;
+    let hasOwnershipMarker = hasInlineOwnershipMarker(keys.get("extra_headers"));
+    // Swallow the entry's OWN sub-tables (`[model.<alias>.extra_headers]`). Grok may
+    // re-serialize them non-contiguously, so collect exact descendant spans globally rather
+    // than stopping at the first unrelated table.
+    const additionalRanges: Array<{ start: number; end: number }> = [];
+    for (let next = 0; next < headers.length; next += 1) {
+      if (next === position) continue;
       const child = headers[next]!;
-      // Only a PRE-fence parent may be cut short by the fence. Without the parent test a
-      // below-fence orphan would break on its first child (every index is past the fence),
-      // leaving the sub-table behind to keep the alias reserved — the -2 loop again.
-      if (fenceStart >= 0 && header.index < fenceStart && child.index >= fenceStart) break;
-      if (child.segments.length <= 2) break;
-      if (child.segments[0] !== "model" || child.segments[1] !== header.segments[1]) break;
-      end = clampEnd(header.index, headers[next + 1]?.index ?? content.length);
+      if (region && child.index >= region.start && child.index < region.end) continue;
+      if (child.segments.length <= 2
+        || child.segments[0] !== "model"
+        || child.segments[1] !== header.segments[1]) continue;
+      const childEnd = clampEnd(child.index, headers[next + 1]?.index ?? content.length);
+      additionalRanges.push({ start: child.index, end: childEnd });
+      if (!child.array && child.segments.length === 3 && child.segments[2] === "extra_headers") {
+        const childKeys = tableBodyKeys(content.slice(child.index + child.length, childEnd));
+        if (childKeys.get(OPENCODEX_GROK_MARKER) === "1") hasOwnershipMarker = true;
+      }
     }
-    orphans.push({ alias: header.segments[1]!, modelId: keys.get("model"), start: header.index, end });
+    const legacyGenerated = isLegacyGeneratedTable(header.segments[1]!, keys);
+    if (!hasOwnershipMarker && !legacyGenerated) continue;
+    orphans.push({
+      alias: header.segments[1]!,
+      modelId,
+      ownership: hasOwnershipMarker ? "explicit" : "legacy",
+      start: header.index,
+      end: bodyEnd,
+      additionalRanges,
+    });
   }
   return orphans;
 }
 
-/** Remove whole tables, back to front so earlier offsets stay valid. */
-function removeOrphanTables(content: string, orphans: OrphanTable[]): string {
+function orphanRanges(orphans: readonly OrphanTable[]): Array<{ start: number; end: number }> {
+  const unique = new Map<string, { start: number; end: number }>();
+  for (const orphan of orphans) {
+    for (const range of [{ start: orphan.start, end: orphan.end }, ...orphan.additionalRanges]) {
+      unique.set(`${range.start}:${range.end}`, range);
+    }
+  }
+  return [...unique.values()];
+}
+
+/** Remove exact whole-table ranges, back to front so earlier offsets stay valid. */
+function removeTableRanges(content: string, ranges: readonly { start: number; end: number }[]): string {
   let next = content;
-  for (const orphan of [...orphans].sort((a, b) => b.start - a.start)) {
-    next = next.slice(0, orphan.start) + next.slice(orphan.end);
+  const unique = new Map(ranges.map(range => [`${range.start}:${range.end}`, range]));
+  for (const range of [...unique.values()].sort((a, b) => b.start - a.start)) {
+    next = next.slice(0, range.start) + next.slice(range.end);
   }
   return next;
 }
 
-/**
- * Repoint `default` / `fork_secondary_model` at the alias that survived.
- *
- * Removing an adopted orphan that `[models] default` names would leave Grok pointing at
- * a model that no longer exists — and on a real machine `default` DOES name one, so this
- * is the common path rather than an edge case.
- */
-function rewriteAliasReferences(content: string, renames: Map<string, string>): string {
-  if (renames.size === 0) return content;
-  return content.replace(
-    /^([ \t]*(?:default|fork_secondary_model)[ \t]*=[ \t]*")([^"]*)(")/gm,
-    (whole, prefix: string, value: string, suffix: string) => {
-      const replacement = renames.get(value);
-      return replacement ? `${prefix}${replacement}${suffix}` : whole;
-    },
+function removeOrphanTables(content: string, orphans: OrphanTable[]): string {
+  return removeTableRanges(content, orphanRanges(orphans));
+}
+
+/** Model aliases and routed ids owned by one complete managed region. */
+function managedModelAliases(content: string, region: ManagedRegion | null): Map<string, string> {
+  const models = new Map<string, string>();
+  if (!region) return models;
+  const structure = analyzeTomlStructure(content);
+  for (const [position, header] of structure.headers.entries()) {
+    if (header.array || header.segments.length !== 2 || header.segments[0] !== "model") continue;
+    if (header.index < region.start || header.index >= region.end) continue;
+    const bodyEnd = Math.min(structure.headers[position + 1]?.index ?? content.length, region.end);
+    const modelId = tableBodyKeys(content.slice(header.index + header.length, bodyEnd)).get("model");
+    if (modelId !== undefined) models.set(header.segments[1]!, modelId);
+  }
+  return models;
+}
+
+/** Read one exact path from an already parsed TOML document. */
+type TomlPathSegment = string | number;
+
+function tomlPathString(document: unknown, path: readonly TomlPathSegment[]): string | null {
+  let value = document;
+  for (const segment of path) {
+    if (typeof segment === "number") {
+      if (!Array.isArray(value)) return null;
+      value = value[segment];
+    } else {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+      value = (value as Record<string, unknown>)[segment];
+    }
+  }
+  return typeof value === "string" ? value : null;
+}
+
+/** Parse a probe document and read one exact semantic path. */
+function parsedTomlPathString(content: string, path: readonly TomlPathSegment[]): string | null {
+  try {
+    return tomlPathString(Bun.TOML.parse(content), path);
+  } catch {
+    return null;
+  }
+}
+
+type ModelReferencePatternSegment = string | "*";
+
+interface ModelReferencePath {
+  path: readonly ModelReferencePatternSegment[];
+  /** A structured reference assignment that can be removed whole without losing sibling config. */
+  removableContainerPath?: readonly string[];
+}
+
+/** Grok config values whose strings resolve through the `[model.<alias>]` catalog. */
+const MODEL_REFERENCE_PATHS: readonly ModelReferencePath[] = [
+  { path: ["models", "default"] },
+  { path: ["models", "web_search"] },
+  { path: ["models", "session_summary"] },
+  { path: ["models", "image_description"] },
+  { path: ["models", "prompt_suggestion"] },
+  { path: ["ui", "fork_secondary_model"] },
+  { path: ["subagents", "models", "*"] },
+  { path: ["subagents", "roles", "*", "model"] },
+  { path: ["subagents", "personas", "*", "model"] },
+  { path: ["auto_mode", "classifier_model"] },
+  {
+    path: ["goal", "planner_model", "model"],
+    removableContainerPath: ["goal", "planner_model"],
+  },
+  {
+    path: ["goal", "strategist_model", "model"],
+    removableContainerPath: ["goal", "strategist_model"],
+  },
+  {
+    path: ["goal", "skeptic_models", "*", "model"],
+    removableContainerPath: ["goal", "skeptic_models"],
+  },
+];
+
+interface AliasReference {
+  path: TomlPathSegment[];
+  alias: string;
+  removableContainerPath?: readonly string[];
+}
+
+function collectAliasReferences(document: unknown): AliasReference[] {
+  const references: AliasReference[] = [];
+  const visit = (
+    value: unknown,
+    pattern: readonly ModelReferencePatternSegment[],
+    patternIndex: number,
+    path: TomlPathSegment[],
+    removableContainerPath: readonly string[] | undefined,
+  ): void => {
+    if (patternIndex === pattern.length) {
+      if (typeof value === "string") {
+        references.push({
+          path,
+          alias: value,
+          ...(removableContainerPath ? { removableContainerPath } : {}),
+        });
+      }
+      return;
+    }
+    const segment = pattern[patternIndex]!;
+    if (segment === "*") {
+      if (Array.isArray(value)) {
+        for (const [index, item] of value.entries()) {
+          visit(item, pattern, patternIndex + 1, [...path, index], removableContainerPath);
+        }
+      } else if (typeof value === "object" && value !== null) {
+        for (const [key, item] of Object.entries(value)) {
+          visit(item, pattern, patternIndex + 1, [...path, key], removableContainerPath);
+        }
+      }
+      return;
+    }
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return;
+    visit(
+      (value as Record<string, unknown>)[segment],
+      pattern,
+      patternIndex + 1,
+      [...path, segment],
+      removableContainerPath,
+    );
+  };
+
+  for (const reference of MODEL_REFERENCE_PATHS) {
+    visit(document, reference.path, 0, [], reference.removableContainerPath);
+  }
+  return references;
+}
+
+function sourcePath(path: readonly TomlPathSegment[]): string[] {
+  return path.filter((segment): segment is string => typeof segment === "string");
+}
+
+function pathsEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((segment, index) => segment === right[index]);
+}
+
+function pathStartsWith(path: readonly string[], prefix: readonly string[]): boolean {
+  return path.length >= prefix.length
+    && prefix.every((segment, index) => segment === path[index]);
+}
+
+function tomlContainerStringSpans(
+  content: string,
+  start: number,
+  end: number,
+): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
+  for (let index = start + 1; index < end - 1;) {
+    const char = content[index]!;
+    if (char === "#") {
+      const newline = content.indexOf("\n", index);
+      index = newline === -1 || newline >= end ? end : newline + 1;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      const span = tomlStringSpanAt(content, index);
+      if (span === null || span.end > end) return [];
+      spans.push({ start: index, end: span.end });
+      index = span.end;
+      continue;
+    }
+    index += 1;
+  }
+  return spans;
+}
+
+interface AliasReferenceCandidate {
+  valueStart: number;
+  valueEnd: number;
+  assignmentPath: string[];
+  directLine: { start: number; end: number } | null;
+  containerLine: { start: number; end: number } | null;
+}
+
+/** Rename or remove every declared semantic model reference without touching user prose. */
+function transformAliasReferences(
+  content: string,
+  replacements: ReadonlyMap<string, string | null>,
+  allowRootDotted = true,
+): string {
+  if (replacements.size === 0) return content;
+  let document: unknown;
+  try {
+    document = Bun.TOML.parse(content);
+  } catch {
+    throw new Error(
+      "Grok config rewrite refused: Bun could not parse the TOML document safely.",
+    );
+  }
+  const references = collectAliasReferences(document);
+  const targets = references.filter(reference => replacements.has(reference.alias));
+  if (targets.length === 0) return content;
+  const structure = analyzeTomlStructure(content);
+  const edits: Array<{ start: number; end: number; replacement: string }> = [];
+  const candidates: AliasReferenceCandidate[] = [];
+  const assignment = new RegExp(String.raw`^([ \t]*(${DOTTED_KEY})[ \t]*=)`, "gm");
+  let headerPosition = -1;
+  for (const match of structure.view.matchAll(assignment)) {
+    const assignmentStart = match.index!;
+    if (!structure.containerRootLineStarts.has(assignmentStart)) continue;
+    while ((structure.headers[headerPosition + 1]?.index ?? Number.POSITIVE_INFINITY)
+      < assignmentStart) headerPosition += 1;
+    const currentHeader = headerPosition >= 0 ? structure.headers[headerPosition]! : null;
+    if (!allowRootDotted && currentHeader === null) continue;
+    const segments = canonicalDottedKey(match[2]!);
+    const assignmentPath = [...(currentHeader?.segments ?? []), ...segments];
+    let valueStart = assignmentStart + match[1]!.length;
+    while (content[valueStart] === " " || content[valueStart] === "\t") valueStart += 1;
+    const directTargets = targets.filter(target => pathsEqual(sourcePath(target.path), assignmentPath));
+    if (directTargets.length > 0) {
+      const value = tomlStringSpanAt(content, valueStart);
+      if (value !== null) {
+        const suffix = /^[ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/.exec(content.slice(value.end));
+        if (suffix !== null) {
+          candidates.push({
+            valueStart,
+            valueEnd: value.end,
+            assignmentPath,
+            directLine: { start: assignmentStart, end: value.end + suffix[0].length },
+            containerLine: null,
+          });
+          continue;
+        }
+      }
+    }
+
+    const containerTargets = targets.filter(target =>
+      pathStartsWith(sourcePath(target.path), assignmentPath));
+    if (containerTargets.length === 0 || (content[valueStart] !== "{" && content[valueStart] !== "[")) continue;
+    const containerEnd = tomlContainerEnd(content, valueStart);
+    if (containerEnd === null) continue;
+    const suffix = /^[ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/.exec(content.slice(containerEnd));
+    if (suffix === null) continue;
+    const containerLine = { start: assignmentStart, end: containerEnd + suffix[0].length };
+    for (const value of tomlContainerStringSpans(content, valueStart, containerEnd)) {
+      candidates.push({
+        valueStart: value.start,
+        valueEnd: value.end,
+        assignmentPath,
+        directLine: null,
+        containerLine,
+      });
+    }
+  }
+
+  for (const [targetIndex, target] of targets.entries()) {
+    const replacement = replacements.get(target.alias)!;
+    const targetSourcePath = sourcePath(target.path);
+    const probeCandidates = candidates.filter(candidate =>
+      pathsEqual(candidate.assignmentPath, targetSourcePath)
+      || pathStartsWith(targetSourcePath, candidate.assignmentPath));
+    if (probeCandidates.length === 0 && !allowRootDotted) continue;
+    if (probeCandidates.length === 0 || probeCandidates.length > 128) {
+      throw new Error(
+        "Grok config rewrite refused: the model-reference source could not be bounded safely.",
+      );
+    }
+    let located = false;
+    for (const candidate of probeCandidates) {
+      let sentinel = `__opencodex_reference_probe_${targetIndex}_${candidate.valueStart}__`;
+      while (sentinel === target.alias) sentinel += "_";
+      const probe = content.slice(0, candidate.valueStart)
+        + tomlString(sentinel)
+        + content.slice(candidate.valueEnd);
+      if (parsedTomlPathString(probe, target.path) !== sentinel) continue;
+      if (replacement === null) {
+        let removal = candidate.directLine;
+        if (removal === null && candidate.containerLine !== null
+          && target.removableContainerPath
+          && pathsEqual(candidate.assignmentPath, target.removableContainerPath)) {
+          const containerReferences = references.filter(reference =>
+            pathStartsWith(sourcePath(reference.path), candidate.assignmentPath));
+          if (containerReferences.length > 0
+            && containerReferences.every(reference => replacements.get(reference.alias) === null)) {
+            removal = candidate.containerLine;
+          }
+        }
+        if (removal === null) {
+          throw new Error(
+            "Grok teardown refused: a model reference uses an inline TOML shape that cannot "
+            + "be removed without rewriting user-owned bytes.",
+          );
+        }
+        edits.push({ start: removal.start, end: removal.end, replacement: "" });
+      } else {
+        edits.push({
+          start: candidate.valueStart,
+          end: candidate.valueEnd,
+          replacement: tomlString(replacement),
+        });
+      }
+      located = true;
+      break;
+    }
+    if (!located) {
+      throw new Error(
+        "Grok config rewrite refused: the semantic model reference could not be located safely.",
+      );
+    }
+  }
+  let next = content;
+  const uniqueEdits = new Map(edits.map(edit => [`${edit.start}:${edit.end}:${edit.replacement}`, edit]));
+  for (const edit of [...uniqueEdits.values()].sort((a, b) => b.start - a.start)) {
+    next = next.slice(0, edit.start) + edit.replacement + next.slice(edit.end);
+  }
+  return next;
+}
+
+/** Repoint references at whichever alias survived orphan adoption, or remove them. */
+function rewriteAliasReferences(content: string, replacements: Map<string, string | null>): string {
+  return transformAliasReferences(content, replacements);
+}
+
+/** Remove only references that name model aliases teardown actually swept. */
+function removeAliasReferences(
+  content: string,
+  removedAliases: ReadonlySet<string>,
+  allowRootDotted = true,
+): string {
+  return transformAliasReferences(
+    content,
+    new Map([...removedAliases].map(alias => [alias, null] as const)),
+    allowRootDotted,
   );
 }
 
@@ -344,7 +914,17 @@ export function buildGrokManagedBlock(
 export function injectGrokConfig(
   port: number,
   models: GrokInjectModel[],
-  opts: { grokHome?: string; hostname?: string; excluded?: ReadonlySet<string> } = {},
+  opts: {
+    grokHome?: string;
+    hostname?: string;
+    excluded?: ReadonlySet<string>;
+    /** Unfiltered known ids used only to distinguish hidden current models from retired ones. */
+    catalogModelIds?: ReadonlySet<string>;
+    /** Canonical provider keys disabled in config and therefore absent from catalog fetching. */
+    disabledProviderNamespaces?: ReadonlySet<string>;
+    /** Configured combo public ids that may syntactically resemble provider/model ids. */
+    comboPublicModelIds?: ReadonlySet<string>;
+  } = {},
 ): GrokInjectResult {
   const grokHome = resolveGrokHome(opts.grokHome);
   if (!isDirectory(grokHome)) {
@@ -391,11 +971,30 @@ export function injectGrokConfig(
     // Ambiguous fence: refuse before the sweep, or "outside the region" could mean the
     // entire file.
     if (originalRegion?.orphaned) return orphanedMarkerResult("injection");
+    const previousManagedModels = managedModelAliases(originalContent, originalRegion);
 
     // Adopt our own pre-fence entries (#511) BEFORE reserving user aliases, so the stale
     // duplicate is replaced instead of routed around forever. Runs inside the normalized
     // window so the user's dominant EOL is still restored below.
-    const orphans = findOpencodexOrphans(originalContent, originalRegion);
+    // Durably marked rows use the full UNFILTERED catalog: explicitly excluded and otherwise
+    // hidden current models must still lose stale generated tables. Ambiguous pre-marker legacy
+    // rows are migrated only when this write emits their replacement. Direct callers that do not
+    // have a separate catalog keep the historical `models` behavior.
+    const catalogModelIds = opts.catalogModelIds ?? new Set(models.map(model => model.id));
+    const emittedModelIds = new Set(models
+      .filter(model => !opts.excluded?.has(model.id))
+      .map(model => model.id));
+    const orphans = findOpencodexOrphans(originalContent, originalRegion)
+      .filter(orphan => orphan.ownership === "legacy"
+        // A legacy fingerprint is not durable deletion authority. Migrate it only when this
+        // same write will replace the row with a marked managed table.
+        ? emittedModelIds.has(orphan.modelId)
+        : catalogModelIds.has(orphan.modelId)
+          || isDisabledProviderModelId(
+            orphan.modelId,
+            opts.disabledProviderNamespaces,
+            opts.comboPublicModelIds,
+          ));
     const content = removeOrphanTables(originalContent, orphans);
     // Removing bytes above the fence MOVES it: recompute rather than adjust arithmetic,
     // so the splice below cannot cut the file in the wrong place.
@@ -415,25 +1014,24 @@ export function injectGrokConfig(
       nextContent = `${content}\n${block}\n`;
     }
 
-    // Repoint `default` / `fork_secondary_model` at whichever alias survived. A removed
-    // model with no replacement keeps its reference untouched — a stale name in a working
-    // file beats a dangling one.
-    if (orphans.length > 0) {
-      const survivors = new Map<string, string>();
-      for (const match of nextContent.matchAll(MODEL_TABLE_HEADER)) {
-        if (canonicalKeySegment(match[1]!) !== "model") continue;
-        const alias = canonicalKeySegment(match[2]!);
-        const body = nextContent.slice(match.index! + match[0].length);
-        const modelId = tableBodyKeys(body.slice(0, body.search(/^[ \t]*\[/m) + 1 || body.length)).get("model");
-        if (modelId !== undefined && !survivors.has(modelId)) survivors.set(modelId, alias);
-      }
-      const renames = new Map<string, string>();
-      for (const orphan of orphans) {
-        const replacement = orphan.modelId === undefined ? undefined : survivors.get(orphan.modelId);
-        if (replacement && replacement !== orphan.alias) renames.set(orphan.alias, replacement);
-      }
-      nextContent = rewriteAliasReferences(nextContent, renames);
+    // Repoint every model selector at whichever managed alias survived. Compare both swept
+    // out-of-fence tables and the PREVIOUS managed block: ordinary exclusion removes only the
+    // latter, so tying cleanup to `orphans` made the #2830 path dead code.
+    const nextManagedModels = managedModelAliases(nextContent, findManagedRegion(nextContent));
+    const survivors = new Map<string, string>();
+    for (const [alias, modelId] of nextManagedModels) {
+      if (!survivors.has(modelId)) survivors.set(modelId, alias);
     }
+    const replacements = new Map<string, string | null>();
+    for (const removed of [
+      ...orphans.map(orphan => ({ alias: orphan.alias, modelId: orphan.modelId })),
+      ...[...previousManagedModels].map(([alias, modelId]) => ({ alias, modelId })),
+    ]) {
+      if (nextManagedModels.get(removed.alias) === removed.modelId) continue;
+      const replacement = survivors.get(removed.modelId) ?? null;
+      if (replacement !== removed.alias) replacements.set(removed.alias, replacement);
+    }
+    nextContent = rewriteAliasReferences(nextContent, replacements);
 
     const output = applyEol(nextContent, eol);
     if (output === rawContent) {
@@ -477,29 +1075,80 @@ export function stripGrokConfig(opts: { grokHome?: string } = {}): GrokInjectRes
     const rawContent = readFileSync(configPath, "utf8");
     const eol = dominantEol(rawContent);
     const content = applyEol(rawContent, "\n");
-    const region = findManagedRegion(content);
-    if (!region) {
-      return { ok: true, changed: false, message: "No opencodex managed block found in Grok config." };
-    }
-    if (region.orphaned) return orphanedMarkerResult("cleanup");
+    const originalRegion = findManagedRegion(content);
+    if (originalRegion?.orphaned) return orphanedMarkerResult("cleanup");
 
-    let removalEnd = region.end;
-    if (content.startsWith("\n", removalEnd)) removalEnd += 1;
-    let prefix = content.slice(0, region.start);
-    const restOfFile = content.slice(removalEnd);
-    // Undo the single separator newline injection added. Two cases, mirroring inject:
-    //   "X\n"  -> "X\n" + "\n" + block  => prefix ends "\n\n", drop one.
-    //   "X"    -> "X"   + "\n" + block  => prefix ends "\n" at EOF, drop it.
-    // A block the user has appended content after is left alone: we never shrink their bytes.
-    if (prefix.endsWith("\n\n")) prefix = prefix.slice(0, -1);
-    else if (restOfFile.length === 0 && prefix.endsWith("\n")) prefix = prefix.slice(0, -1);
-    const stripped = prefix + restOfFile;
+    // Remove the fence against its ORIGINAL offsets first. A pre-fence orphan's span is clamped
+    // at the fence start and can include the separator newline injection added. Sweeping that
+    // orphan first and then applying this separator undo would remove one additional USER newline.
+    let stripped: string;
+    let orphanCount = 0;
+    if (originalRegion) {
+      const fullOrphans = findOpencodexOrphans(content, originalRegion)
+        .filter(orphan => orphan.ownership === "explicit");
+      let removalEnd = originalRegion.end;
+      if (content.startsWith("\n", removalEnd)) removalEnd += 1;
+      let prefix = content.slice(0, originalRegion.start);
+      const restOfFile = content.slice(removalEnd);
+      // Undo the single separator newline injection added. Two cases, mirroring inject:
+      //   "X\n"  -> "X\n" + "\n" + block  => prefix ends "\n\n", drop one.
+      //   "X"    -> "X"   + "\n" + block  => prefix ends "\n" at EOF, drop it.
+      // A block the user has appended content after is left alone: we never shrink their bytes.
+      if (prefix.endsWith("\n\n")) prefix = prefix.slice(0, -1);
+      else if (restOfFile.length === 0 && prefix.endsWith("\n")) prefix = prefix.slice(0, -1);
+      // Keep the old fence boundary while sweeping. Concatenating first would let the last
+      // pre-fence orphan absorb comment-only or bare-key user content appended after the fence.
+      const prefixOrphans = findOpencodexOrphans(prefix, null)
+        .filter(orphan => orphan.ownership === "explicit");
+      const tailOrphans = findOpencodexOrphans(restOfFile, null)
+        .filter(orphan => orphan.ownership === "explicit");
+      const removedAliases = new Set(
+        [...fullOrphans, ...prefixOrphans, ...tailOrphans].map(orphan => orphan.alias),
+      );
+      orphanCount = removedAliases.size;
+      const fullRanges = orphanRanges(fullOrphans);
+      const prefixRanges = [
+        ...orphanRanges(prefixOrphans),
+        ...fullRanges.filter(range => range.end <= originalRegion.start),
+      ];
+      const tailRanges = [
+        ...orphanRanges(tailOrphans),
+        ...fullRanges
+          .filter(range => range.start >= removalEnd)
+          .map(range => ({ start: range.start - removalEnd, end: range.end - removalEnd })),
+      ];
+      // Preserve the original fence as a structural boundary while cleaning references too.
+      // Joining first can re-parent a headerless tail under the last table in `prefix`.
+      stripped = removeAliasReferences(
+        removeTableRanges(prefix, prefixRanges),
+        removedAliases,
+      ) + removeAliasReferences(
+        removeTableRanges(restOfFile, tailRanges),
+        removedAliases,
+        false,
+      );
+    } else {
+      // Retired or otherwise non-emitted OpenCodex tables may intentionally remain outside the
+      // fence while the integration is enabled. Teardown owns those strictly identified tables
+      // even after Grok has re-serialized the file and dropped our marker comments.
+      const orphans = findOpencodexOrphans(content, null)
+        .filter(orphan => orphan.ownership === "explicit");
+      if (orphans.length === 0) {
+        return { ok: true, changed: false, message: "No opencodex managed block found in Grok config." };
+      }
+      orphanCount = orphans.length;
+      stripped = removeOrphanTables(content, orphans);
+      stripped = removeAliasReferences(stripped, new Set(orphans.map(orphan => orphan.alias)));
+    }
+    if (orphanCount > 0) copyBackupOnce(configPath, join(grokHome, "config.toml.bak-opencodex"));
     atomicWriteFile(configPath, applyEol(stripped, eol));
 
     return {
       ok: true,
       changed: true,
-      message: "Removed the opencodex managed block from Grok config.",
+      message: originalRegion
+        ? "Removed the opencodex managed block from Grok config."
+        : "Removed stale opencodex-managed model entries from Grok config.",
     };
   } catch (error) {
     return errorResult("strip", error);
