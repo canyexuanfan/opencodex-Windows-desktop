@@ -25,7 +25,7 @@ const originalFetch = globalThis.fetch;
  * assertion passed while every routed row advertised the control.
  */
 describe("catalog — default_verbosity is dropped when verbosity is unsupported", () => {
-  test("RED: an opted-out routed row carries no verbosity default", async () => {
+  test("GREEN: an opted-out routed row carries no verbosity default", async () => {
     const models = await gatherRoutedModels({
       providers: {
         xai: {
@@ -43,7 +43,7 @@ describe("catalog — default_verbosity is dropped when verbosity is unsupported
     expect(xai?.default_verbosity).toBeUndefined();
   });
 
-  test("RED: a Kiro opted-out row carries no verbosity default either", async () => {
+  test("GREEN: a Kiro opted-out row carries no verbosity default either", async () => {
     const models = await gatherRoutedModels({
       providers: {
         kiro: {
