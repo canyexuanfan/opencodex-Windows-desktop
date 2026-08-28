@@ -4,6 +4,13 @@ type QueueReader = (result: IteratorResult<AdapterEvent>) => void;
 
 export const PREFLIGHT_HEARTBEAT_RETAIN_LIMIT = 16;
 
+/**
+ * Coalescing threshold for adjacent text/thinking deltas buffered with no
+ * waiting reader (UTF-16 code units). This is a merge-size ceiling, not a
+ * byte-memory cap: a single oversized incoming event stays one item.
+ */
+export const COALESCE_MAX_CHUNK_LENGTH = 64 * 1024;
+
 export interface AdapterEventQueue {
   push(event: AdapterEvent): void;
   close(): void;
@@ -64,6 +71,33 @@ export function createAdapterEventQueue(opts?: {
   const maxBacklog = opts?.maxBacklog ?? 1_024;
   let closed = false;
 
+  // Merge an incoming delta into the buffered tail when no reader is waiting.
+  // The backlog cap counts events, not tokens, so a detached or briefly
+  // stalled consumer (e.g. a Codex app mid-reconnect whose disconnect Bun has
+  // not yet delivered) used to hit the cap within seconds of token-granular
+  // streaming and abort a healthy turn. Adjacent same-phase text deltas,
+  // adjacent thinking deltas, and consecutive heartbeats carry no ordering
+  // information between themselves, so merging them preserves every consumer
+  // contract while making the cap approximate buffered items again.
+  // Pushed objects may be retained by adapters, so the tail is REPLACED with
+  // a fresh object — never mutated (alias safety).
+  const coalesceIntoTail = (event: AdapterEvent): boolean => {
+    const tail = queued[queued.length - 1];
+    if (!tail) return false;
+    if (event.type === "heartbeat") return tail.type === "heartbeat";
+    if (event.type === "text_delta" && tail.type === "text_delta" && tail.phase === event.phase) {
+      if (tail.text.length + event.text.length > COALESCE_MAX_CHUNK_LENGTH) return false;
+      queued[queued.length - 1] = { type: "text_delta", text: tail.text + event.text, phase: tail.phase };
+      return true;
+    }
+    if (event.type === "thinking_delta" && tail.type === "thinking_delta") {
+      if (tail.thinking.length + event.thinking.length > COALESCE_MAX_CHUNK_LENGTH) return false;
+      queued[queued.length - 1] = { type: "thinking_delta", thinking: tail.thinking + event.thinking };
+      return true;
+    }
+    return false;
+  };
+
   const push = (event: AdapterEvent): void => {
     if (closed) return;
     const reader = readers.shift();
@@ -71,9 +105,10 @@ export function createAdapterEventQueue(opts?: {
       reader({ done: false, value: event });
       return;
     }
+    if (coalesceIntoTail(event)) return;
     if (queued.length >= maxBacklog) {
       opts?.onBacklogExceeded?.();
-      queued.push({ type: "error", message: "consumer backlog exceeded — turn aborted" });
+      queued.push({ type: "error", message: "consumer stalled: adapter event backlog exceeded — turn aborted" });
       close();
       return;
     }

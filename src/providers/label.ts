@@ -48,5 +48,5 @@ export function stampOAuthAccountLabel(
   if (provider.authMode !== "oauth") return;
   const base = baseProviderLabel(providerName);
   if (base === "openai" || base === "anthropic") return;
-  logCtx.accountLogLabel = oauthAccountLogLabel(accountId);
+  logCtx.accountLogLabel = oauthAccountLogLabel(accountId, base);
 }
