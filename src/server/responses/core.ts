@@ -4858,6 +4858,54 @@ async function handleResponsesInner(
   // reuse is safe, and releaseBodyObservation is idempotent per build.
   let initialRequest: AdapterRequest | undefined;
   let inputTokenEstimate: number | undefined;
+  // An adapter may know the turn needs no inference at all — Kiro's replayed history ending in a
+  // delivered final answer. Answer it locally: no build (so no token estimate), no send (so
+  // sendCount stays 0), and crucially no empty-completion guard, which treats an outputless
+  // terminal as a failed turn and re-invokes the identical request. Routing this through the
+  // ordinary event path would therefore reinstate the loop it exists to end.
+  const localTerminal = activeAdapter.localTerminal?.(parsed);
+  if (localTerminal) {
+    logCtx.localTerminalReason = localTerminal.reason;
+    cleanupUpstreamAbort();
+    upstream.abort();
+    const terminalEvents: AdapterEvent[] = [{
+      type: "done",
+      endTurn: true,
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+    }];
+    if (parsed.stream) {
+      return new Response(
+        bridgeToResponsesSSE(
+          (async function* () { yield* terminalEvents; })(),
+          parsed._responseModelId ?? parsed.modelId,
+          toolBridgeMaps.toolNsMap,
+          toolBridgeMaps.freeformToolNames,
+          toolBridgeMaps.toolSearchToolNames,
+          undefined,
+          2_000,
+          {
+            translatorBudget,
+            ...(options.forceEmptyResponseId ? { responseId: "" } : {}),
+            ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
+          },
+        ),
+        {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+          },
+        },
+      );
+    }
+    return new Response(
+      JSON.stringify(buildResponseJSON(terminalEvents, parsed._responseModelId ?? parsed.modelId, {
+        translatorBudget,
+      })),
+      { headers: { "Content-Type": "application/json" } },
+    );
+  }
   try {
     initialRequest = await activeAdapter.buildRequest(parsed, { headers: selectedForwardHeaders, translatorBudget });
     refreshRoutedNamespaceToolAliases(initialRequest);

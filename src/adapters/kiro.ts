@@ -2002,6 +2002,24 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
 
   return {
     name: "kiro",
+    // A replayed history that already ENDS with a delivered final answer has nothing to ask Kiro.
+    // Before this hook the adapter still appended a trailing user turn — a neutral acknowledgement,
+    // but structurally still a prompt — and performed a real inference, so the model answered the
+    // closed task again and the finished turn behaved like a still-open goal.
+    //
+    // Suppressing the completion contract (above) removed the instruction to complete; it could not
+    // remove the inference. This is the boundary: no request is built, nothing is sent, and no token
+    // estimate is recorded.
+    //
+    // The forced-fallback build is deliberately NOT consulted here: this hook runs on the inbound
+    // turn only, and the adapter-owned bounded retry passes "text_fallback" through `build`
+    // directly, never through this path.
+    localTerminal(parsed: OcxParsedRequest) {
+      return hasTrailingDeliveredFinalAnswer(kiroPayloadMessages(parsed))
+        ? { reason: "kiro_final_answer_already_delivered" }
+        : undefined;
+    },
+
     async buildRequest(parsed: OcxParsedRequest, incoming) {
       const built = await build(parsed);
       modelId = parsed.modelId;

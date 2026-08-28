@@ -250,4 +250,101 @@ describe("Kiro completion through public server endpoints", () => {
       upstream.server.stop(true);
     }
   });
+
+  // A turn whose replayed history already ENDS with a delivered final answer has nothing to ask
+  // Kiro. Before the local terminal, the adapter appended a trailing user turn — neutral wording,
+  // but structurally still a prompt — and performed a real inference, so the model answered the
+  // closed task again and a finished turn behaved like a still-open goal.
+  //
+  // `emptyCompletionRetry` is exercised BOTH ways on purpose. A local terminal produces no content,
+  // which is exactly the shape that guard re-invokes: if the short-circuit were routed through the
+  // ordinary event path, the enabled case would send the request the fix exists to prevent, and a
+  // guard-off-only test would pass while the user's own config still looped.
+  for (const emptyCompletionRetry of [false, true]) {
+    for (const stream of [true, false]) {
+      test(`a delivered final answer sends nothing upstream (emptyCompletionRetry=${emptyCompletionRetry}, stream=${stream})`, async () => {
+        const upstream = scriptedKiroUpstream([]);
+        saveConfig({ ...kiroConfig(upstream.server.url.toString()), emptyCompletionRetry } as OcxConfig);
+        const proxy = startServer(0);
+        try {
+          const response = await originalFetch(new URL("/v1/responses", proxy.url), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              model: "kiro-test/gpt-5.6-sol",
+              stream,
+              input: [
+                { type: "message", role: "user", content: [{ type: "input_text", text: "what is code mode" }] },
+                {
+                  type: "message",
+                  role: "assistant",
+                  phase: "final_answer",
+                  content: [{ type: "output_text", text: "Code mode runs JavaScript that calls tools." }],
+                },
+              ],
+              tools: [{ type: "function", name: "bash", description: "Run a command", parameters: { type: "object" } }],
+            }),
+          });
+
+          expect(response.status).toBe(200);
+          const body = await response.text();
+          // The load-bearing assertion: zero upstream requests. The scripted upstream has no
+          // attempts queued, so any send would also answer 500 and fail the status check above.
+          expect(upstream.requests).toHaveLength(0);
+
+          if (stream) {
+            const events = responseEvents(body);
+            expect(events.filter(event => event.name === "response.completed")).toHaveLength(1);
+            expect(events.some(event => event.name === "response.output_text.delta")).toBe(false);
+            // The empty-completion guard's failure event must not appear: a local terminal is a
+            // deliberate no-inference turn, not an upstream empty completion.
+            expect(body).not.toContain("empty_completion_retry_failed");
+          } else {
+            const json = JSON.parse(body) as { status?: string; output?: unknown[] };
+            expect(json.status).toBe("completed");
+            expect(json.output ?? []).toHaveLength(0);
+          }
+        } finally {
+          await proxy.stop(true);
+          upstream.server.stop(true);
+        }
+      });
+    }
+  }
+
+  // Control for the above: the predicate keys off the trailing turn, so a genuine follow-up
+  // question after a delivered answer is an ordinary turn and MUST still reach Kiro. Without this,
+  // a short-circuit that swallowed every turn would pass the tests above.
+  test("a real user follow-up after a delivered final answer still reaches Kiro", async () => {
+    const upstream = scriptedKiroUpstream([completionFrames("Yes — one JavaScript cell, many tool calls.")]);
+    saveConfig(kiroConfig(upstream.server.url.toString()));
+    const proxy = startServer(0);
+    try {
+      const response = await originalFetch(new URL("/v1/responses", proxy.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "kiro-test/gpt-5.6-sol",
+          stream: false,
+          input: [
+            { type: "message", role: "user", content: [{ type: "input_text", text: "what is code mode" }] },
+            {
+              type: "message",
+              role: "assistant",
+              phase: "final_answer",
+              content: [{ type: "output_text", text: "Code mode runs JavaScript that calls tools." }],
+            },
+            { type: "message", role: "user", content: [{ type: "input_text", text: "so it batches calls?" }] },
+          ],
+          tools: [{ type: "function", name: "bash", description: "Run a command", parameters: { type: "object" } }],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(upstream.requests).toHaveLength(1);
+    } finally {
+      await proxy.stop(true);
+      upstream.server.stop(true);
+    }
+  });
 });

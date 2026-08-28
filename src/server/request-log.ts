@@ -63,6 +63,13 @@ export interface RequestLogContext {
    *  product: widening that enum would merge Responses and Chat Completions,
    *  since both leave it undefined. */
   inboundProtocol?: "responses" | "chat" | "messages";
+  /**
+   * Set when an adapter answered the turn locally and no upstream request was made
+   * (`ProviderAdapter.localTerminal`). A fixed identifier naming the code path, never
+   * conversation-derived: it exists so a request log showing zero sends is explainable
+   * rather than looking like a lost request.
+   */
+  localTerminalReason?: string;
   /** Stable non-PII Codex Pool account identity for durable usage attribution. */
   accountLogLabel?: string;
   requestedModel?: string;

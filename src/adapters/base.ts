@@ -37,6 +37,21 @@ export interface ProviderAdapter {
    */
   buildRequest(parsed: OcxParsedRequest, incoming: IncomingMeta): AdapterRequest | Promise<AdapterRequest>;
 
+  /**
+   * Decide, BEFORE any request is built or sent, that this turn has nothing to ask upstream.
+   *
+   * Returning a reason short-circuits the turn to a locally constructed completed response: no
+   * `buildRequest`, no send, no token estimate, and no empty-completion retry. That last part is
+   * why this cannot be expressed as an outputless `done` from `parseStream`: the empty-completion
+   * guard treats a terminal with no content as a failed turn and re-invokes the identical request,
+   * so an adapter that "successfully returned nothing" would be retried into the very loop it was
+   * trying to end.
+   *
+   * Only for turns whose input already contains the answer — see the Kiro adapter, where replayed
+   * history ending in a delivered final answer has nothing left to complete.
+   */
+  localTerminal?(parsed: OcxParsedRequest): AdapterLocalTerminal | undefined;
+
   fetchResponse?(request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response>;
 
   /**
@@ -118,4 +133,15 @@ export interface AdapterFetchContext {
   stream?: boolean;
   /** Custom fetch executor to use for physical upstream network requests (defaults to globalThis.fetch). */
   executor?: typeof globalThis.fetch;
+}
+
+/**
+ * An adapter's decision that a turn needs no upstream inference at all.
+ *
+ * `reason` is diagnostic only. It is never sent to the client and never logged as request
+ * content: it names the code path for a maintainer reading a request log, so it must stay a
+ * fixed identifier rather than anything derived from the conversation.
+ */
+export interface AdapterLocalTerminal {
+  reason: string;
 }
