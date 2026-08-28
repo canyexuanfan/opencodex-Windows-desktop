@@ -1712,6 +1712,7 @@ export const ko: Record<TKey, string> = {
   "storage.policy.skippedEmpty": "목표에 맞는 보관 후보가 없습니다.",
   "storage.policy.doneQuarantine": "정책이 파일 {count}개를 격리했습니다({size}).",
   "storage.policy.donePermanent": "정책이 파일 {count}개를 영구 삭제했습니다({size}).",
+  "storage.policy.metadataSaveWarning": "정책 실행은 완료됐지만 일정 메타데이터를 저장하지 못했습니다.",
   "modal.back": "뒤로",
   "modal.badge.oauth": "OAuth",
   "modal.customProvider": "사용자 지정 프로바이더",
