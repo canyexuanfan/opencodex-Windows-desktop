@@ -22,8 +22,8 @@ export const CODEX_ACCOUNT_LOG_LABEL_RE = /^p[a-f0-9]{6}$/;
 export const OAUTH_ACCOUNT_LOG_LABEL_RE = /^o[a-f0-9]{6}$/;
 export const ACCOUNT_LOG_LABEL_RE = /^(?:main|[po][a-f0-9]{6})$/;
 
-export function oauthAccountLogLabel(accountId: string): string {
-  return `o${createHash("sha256").update(accountId).digest("hex").slice(0, 6)}`;
+export function oauthAccountLogLabel(accountId: string, provider = ""): string {
+  return `o${createHash("sha256").update(`${provider}\0${accountId}`).digest("hex").slice(0, 6)}`;
 }
 
 export function createCodexAccountLogLabel(existingLabels: Iterable<string | undefined | null> = []): string {

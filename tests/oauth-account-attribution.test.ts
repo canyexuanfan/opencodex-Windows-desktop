@@ -107,6 +107,7 @@ describe("the label families", () => {
     // Same account in, same label out -- attribution has to be stable across requests.
     expect(oauthAccountLogLabel("user@example.com")).toBe(label);
     expect(oauthAccountLogLabel("other@example.com")).not.toBe(label);
+    expect(oauthAccountLogLabel("same-id", "xai")).not.toBe(oauthAccountLogLabel("same-id", "cursor"));
   });
 });
 
@@ -116,7 +117,7 @@ describe("stampOAuthAccountLabel", () => {
   test("stamps a non-Codex OAuth provider", () => {
     const ctx: { accountLogLabel?: string } = {};
     stampOAuthAccountLabel(ctx, "xai", oauth, "acct-1");
-    expect(ctx.accountLogLabel).toBe(oauthAccountLogLabel("acct-1"));
+    expect(ctx.accountLogLabel).toBe(oauthAccountLogLabel("acct-1", "xai"));
   });
 
   test("skips the two providers that already have attribution", () => {
@@ -242,8 +243,8 @@ describe("Responses per-account attribution for non-Codex OAuth", () => {
       expect(servedId).toBeDefined();
       expect(failedId).toBeDefined();
       expect(servedId).not.toBe(failedId);
-      expect(logCtx.accountLogLabel).toBe(oauthAccountLogLabel(servedId!));
-      expect(logCtx.accountLogLabel).not.toBe(oauthAccountLogLabel(failedId!));
+      expect(logCtx.accountLogLabel).toBe(oauthAccountLogLabel(servedId!, "xai"));
+      expect(logCtx.accountLogLabel).not.toBe(oauthAccountLogLabel(failedId!, "xai"));
       clearGenericFailoverHealth();
     });
   });
