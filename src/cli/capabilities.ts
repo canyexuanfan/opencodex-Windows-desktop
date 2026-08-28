@@ -90,12 +90,9 @@ export const HEAD_CAPABILITIES: readonly HeadCapability[] = [
 ];
 
 /**
- * Capabilities that drive a management route.
- *
- * Deliberately incomplete at this phase: it covers the read/write surface the CLI
- * already reaches, and later phases add entries as they add verbs. The parity test
- * measures routes against capabilities plus declared exemptions, so a missing entry
- * shows up as an unexplained route rather than being quietly tolerated.
+ * Capabilities declared so far. Incomplete by design: later phases add verbs.
+ * `ocx capabilities` is the index of what is listed here, not of every CLI command.
+ * A capability must not name a route the command does not actually fetch.
  */
 export const CAPABILITIES: readonly Capability[] = [
   {
@@ -112,7 +109,7 @@ export const CAPABILITIES: readonly Capability[] = [
   },
   {
     command: ["capabilities"],
-    summary: "Enumerate every CLI capability with the management routes it drives.",
+    summary: "List the declared CLI capabilities and the management routes they drive.",
     routes: [],
     flags: [
       { name: "--json", value: "boolean", summary: "Emit the full capability table as JSON." },
@@ -121,15 +118,17 @@ export const CAPABILITIES: readonly Capability[] = [
     ],
     mutates: false,
     json: "envelope",
-    details: ["Start here when driving ocx programmatically: it is the surface index."],
+    details: ["Start here when driving ocx programmatically: it is the declared surface index, not a complete verb list."],
   },
   {
     command: ["provider", "list"],
     summary: "Configured providers with connectivity and selected models.",
-    routes: [{ method: "GET", path: "/api/providers" }],
+    // Local config + PROVIDER_REGISTRY. Does not call GET /api/providers.
+    routes: [],
     flags: [{ name: "--json", value: "boolean", summary: "Emit the provider list as JSON." }],
     mutates: false,
-    json: "payload",
+    json: "envelope",
+    details: ["Reads local config; drives no management API route."],
   },
   {
     command: ["account", "list"],
@@ -140,7 +139,7 @@ export const CAPABILITIES: readonly Capability[] = [
     json: "payload",
     details: [
       "STATUS names `paused` alongside `selected`: a paused-but-selected account still receives requests.",
-      "Quota is only fetched under `--quota` (a deliberate cost decision), so 5h and weekly percentages appear in `account list --quota`, not bare `account list`.",
+      "`--quota` shows cached Codex windows (including 5h); `--refresh` bypasses the server TTL.",
     ],
   },
   {

@@ -160,7 +160,7 @@ function accountStringField(json: Record<string, unknown>, key: string): string 
  * failure exited 1, so a script could not distinguish a missing account from a
  * concurrent mutation.
  */
-export function apiError(json: Record<string, unknown>, fallback: string, status?: number): number {
+export function apiError(json: Record<string, unknown>, fallback: string, status: number): number {
   const primary = accountStringField(json, "error") ?? fallback;
   const lines = [`Error: ${primary}`];
   const reason = accountStringField(json, "reason");
@@ -183,6 +183,8 @@ export interface FamilyRows {
   /** Set when the family endpoint returned an error. */
   errorJson?: Record<string, unknown>;
   networkDown?: boolean;
+  /** Transport cause when `networkDown` is set. Callers must forward this to `proxyUnreachable`. */
+  transportError?: string;
 }
 
 export interface CodexQuotaDto {
@@ -257,6 +259,7 @@ export async function fetchCodexRows(
   deps: AccountDeps,
   baseUrl: string,
   forceRefresh = false,
+  includeQuota = forceRefresh,
 ): Promise<FamilyRows> {
   const accountsPath = `/api/codex-auth/accounts${forceRefresh ? "?refresh=1" : ""}`;
   const [accountsRes, activeRes] = await Promise.all([
@@ -270,7 +273,13 @@ export async function fetchCodexRows(
     return { rows: [], activeId: null, status: activeRes.status, errorJson: activeRes.json };
   }
   if (accountsRes.status === 0 || activeRes.status === 0) {
-    return { rows: [], activeId: null, status: 0, networkDown: true };
+    return {
+      rows: [],
+      activeId: null,
+      status: 0,
+      networkDown: true,
+      transportError: accountsRes.transportError ?? activeRes.transportError,
+    };
   }
   const activeId = typeof activeRes.json.activeCodexAccountId === "string"
     ? activeRes.json.activeCodexAccountId
@@ -290,7 +299,7 @@ export async function fetchCodexRows(
     needsReauth: a.needsReauth,
     priority: typeof a.priority === "number" ? a.priority : 0,
     paused: a.paused === true,
-    ...(forceRefresh ? { quota: projectQuota(a.quota) } : {}),
+    ...(includeQuota ? { quota: projectQuota(a.quota) } : {}),
   }));
   return { rows, activeId, autoSwitchThreshold, status: 200 };
 }
@@ -317,7 +326,9 @@ async function fetchOAuthRows(
     ? `?provider=${encodeURIComponent(name)}&quota=1${quota.refresh ? "&refresh=1" : ""}`
     : `?provider=${encodeURIComponent(name)}`;
   const res = await apiJson(deps, baseUrl, "GET", `/api/oauth/accounts${query}`);
-  if (res.status === 0) return { rows: [], activeId: null, status: 0, networkDown: true };
+  if (res.status === 0) {
+    return { rows: [], activeId: null, status: 0, networkDown: true, transportError: res.transportError };
+  }
   if (res.status !== 200) return { rows: [], activeId: null, status: res.status, errorJson: res.json };
   const activeId = typeof res.json.activeAccountId === "string" ? res.json.activeAccountId : null;
   const accounts = Array.isArray(res.json.accounts) ? res.json.accounts as OAuthAccountDto[] : [];
@@ -344,7 +355,9 @@ interface ApiKeyDto {
 
 async function fetchKeyRows(deps: AccountDeps, baseUrl: string, name: string): Promise<FamilyRows> {
   const res = await apiJson(deps, baseUrl, "GET", `/api/providers/keys?name=${encodeURIComponent(name)}`);
-  if (res.status === 0) return { rows: [], activeId: null, status: 0, networkDown: true };
+  if (res.status === 0) {
+    return { rows: [], activeId: null, status: 0, networkDown: true, transportError: res.transportError };
+  }
   if (res.status !== 200) return { rows: [], activeId: null, status: res.status, errorJson: res.json };
   const activeId = typeof res.json.activeId === "string" ? res.json.activeId : null;
   const keys = Array.isArray(res.json.keys) ? res.json.keys as ApiKeyDto[] : [];
@@ -366,7 +379,7 @@ export function fetchRows(
   type: AccountType,
   quota?: { refresh?: boolean },
 ): Promise<FamilyRows> {
-  if (type === "codex") return fetchCodexRows(deps, baseUrl);
+  if (type === "codex") return fetchCodexRows(deps, baseUrl, Boolean(quota?.refresh), quota !== undefined);
   if (type === "oauth") return fetchOAuthRows(deps, baseUrl, name, quota);
   return fetchKeyRows(deps, baseUrl, name);
 }
@@ -375,8 +388,11 @@ export async function fetchProviderQuotaReport(
   deps: AccountDeps,
   baseUrl: string,
   name: string,
-): Promise<{ status: number; report: ProviderQuotaReportDto | null; errorJson?: Record<string, unknown> }> {
+): Promise<{ status: number; report: ProviderQuotaReportDto | null; errorJson?: Record<string, unknown>; transportError?: string }> {
   const res = await apiJson(deps, baseUrl, "GET", "/api/provider-quotas?refresh=1");
+  if (res.status === 0) {
+    return { status: 0, report: null, errorJson: res.json, transportError: res.transportError };
+  }
   if (res.status !== 200) return { status: res.status, report: null, errorJson: res.json };
   const reports = Array.isArray(res.json.reports) ? res.json.reports as ProviderQuotaReportDto[] : [];
   return { status: 200, report: reports.find(report => report?.provider === name) ?? null };

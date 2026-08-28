@@ -148,9 +148,9 @@ describe("#2698 the status mapping and transport cause are actually reachable", 
         if (!line.includes("transportError")) bare.push(line.trim());
       }
     }
-    // One site reads a quota-report shape that carries no transportError field; it is
-    // allowed to call proxyUnreachable() bare rather than inventing a cause.
-    expect(bare.length).toBeLessThanOrEqual(1);
+    // One site used to be allowed to call proxyUnreachable() bare on a quota-report
+    // shape; that path now forwards transportError too.
+    expect(bare).toEqual([]);
   });
 });
 
@@ -158,23 +158,32 @@ describe("#2696 doctor names the credential collision", () => {
   const ADMIN = `ocx_admin_${"a".repeat(43)}`;
 
   test("reports OK when no data-plane token is set", () => {
-    const check = dataPlaneCredentialCollisionCheck({} as NodeJS.ProcessEnv);
+    const check = dataPlaneCredentialCollisionCheck({} as NodeJS.ProcessEnv, null);
     expect(check.level).toBe("OK");
   });
 
   test("reports OK when the two credentials are distinct", () => {
-    const check = dataPlaneCredentialCollisionCheck({ OPENCODEX_API_AUTH_TOKEN: "ocx_data_live" } as NodeJS.ProcessEnv);
+    const check = dataPlaneCredentialCollisionCheck({ OPENCODEX_API_AUTH_TOKEN: "ocx_data_live" } as NodeJS.ProcessEnv, null);
     expect(check.level).toBe("OK");
   });
 
   test("fails and names the remedy when the admin token is the data-plane secret", () => {
-    const check = dataPlaneCredentialCollisionCheck({ OPENCODEX_API_AUTH_TOKEN: ADMIN } as NodeJS.ProcessEnv);
+    const check = dataPlaneCredentialCollisionCheck({ OPENCODEX_API_AUTH_TOKEN: ADMIN } as NodeJS.ProcessEnv, null);
     // FAIL, not WARN: while this holds every /api/* returns 503, so the management
     // surface is unusable rather than degraded.
     expect(check.level).toBe("FAIL");
     expect(check.message).toContain("management (admin) token");
     expect(check.message).toContain("Action:");
     // Never echo the credential itself, even in a diagnostic.
+    expect(check.message).not.toContain(ADMIN);
+  });
+
+  test("fails when the installed service token file collides and the doctor shell has no env", () => {
+    // Production doctor almost never has OPENCODEX_API_AUTH_TOKEN; the service wrapper
+    // re-exports the file. Passing null-env + the file token is the already-broken install.
+    const check = dataPlaneCredentialCollisionCheck({} as NodeJS.ProcessEnv, ADMIN);
+    expect(check.level).toBe("FAIL");
+    expect(check.message).toContain("service token file");
     expect(check.message).not.toContain(ADMIN);
   });
 });
@@ -237,8 +246,6 @@ describe("#2698 the account client keeps the transport cause and maps status cod
     expect(apiError({ error: "no such account" }, "fallback", 404)).toBe(4);
     expect(apiError({ error: "busy" }, "fallback", 409)).toBe(5);
     expect(apiError({ error: "boom" }, "fallback", 500)).toBe(1);
-    // Callers that pass no status keep the previous behavior.
-    expect(apiError({ error: "boom" }, "fallback")).toBe(1);
   });
 
   test("proxyUnreachable surfaces the transport cause when given one", () => {
@@ -260,6 +267,12 @@ describe("#2696 a management token is refused as the data-plane secret", () => {
     expect(() => assertNotAdminToken("local-secret")).not.toThrow();
   });
 
+  test("assertNotAdminToken rejects a non-prefixed admin token equal to the configured value", () => {
+    expect(() => assertNotAdminToken("shared-secret", {
+      OPENCODEX_ADMIN_AUTH_TOKEN: "shared-secret",
+    } as NodeJS.ProcessEnv)).toThrow(/management \(admin\) token/);
+  });
+
   test("assertServiceAuthEnvironment refuses the collision even on loopback", () => {
     // The loopback short-circuit used to return before any token check, which is how
     // an install could produce a service whose management plane was fenced closed.
@@ -271,5 +284,15 @@ describe("#2696 a management token is refused as the data-plane secret", () => {
       if (previous === undefined) delete process.env.OPENCODEX_API_AUTH_TOKEN;
       else process.env.OPENCODEX_API_AUTH_TOKEN = previous;
     }
+  });
+
+  test("handleStart asserts the token it is about to export", () => {
+    const source = readFileSync(join(import.meta.dir, "..", "src", "cli", "index.ts"), "utf8");
+    expect(source).toContain("assertNotAdminToken(present)");
+  });
+
+  test("familyFailure forwards the transport cause", () => {
+    const source = readFileSync(join(import.meta.dir, "..", "src", "cli", "account-extended.ts"), "utf8");
+    expect(source).toMatch(/networkDown\) return proxyUnreachable\(result\.transportError\)/);
   });
 });

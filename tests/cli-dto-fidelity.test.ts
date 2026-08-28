@@ -146,6 +146,30 @@ describe("#2703 the projection does not strip the 5h window", () => {
     return result.rows as { quota?: unknown }[];
   }
 
+  test("account list --quota attaches cached quota without ?refresh=1", async () => {
+    const { fetchRows } = await import("../src/cli/account-api");
+    const hrefs: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const href = String(url);
+      hrefs.push(href);
+      if (href.includes("/api/codex-auth/active")) {
+        return new Response(JSON.stringify({ activeCodexAccountId: "acct_1" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        accounts: [{ id: "acct_1", email: "a@example.com", plan: "pro", quota: { fiveHourPercent: 42 } }],
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const result = await fetchRows(
+      { baseUrl: "http://127.0.0.1:10100", fetchImpl },
+      "http://127.0.0.1:10100",
+      "openai",
+      "codex",
+      { refresh: false },
+    );
+    expect(hrefs.some(h => h.includes("refresh=1"))).toBe(false);
+    expect((result.rows[0]?.quota as { fiveHourPercent?: number } | undefined)?.fiveHourPercent).toBe(42);
+  });
+
   test("fiveHourPercent and fiveHourResetAt survive the projection", async () => {
     const rows = await rowsFromServer({ fiveHourPercent: 42, fiveHourResetAt: 1_800_000_000 });
     const quota = rows[0]?.quota as Record<string, number> | undefined;

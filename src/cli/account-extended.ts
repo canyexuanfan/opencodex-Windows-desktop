@@ -237,8 +237,8 @@ function configAndType(deps: AccountDeps, name: string) {
 }
 
 function familyFailure(result: FamilyRows, fallback: string): number | null {
-  if (result.networkDown) return proxyUnreachable();
-  if (result.errorJson) return apiError(result.errorJson, fallback, result.status);
+  if (result.networkDown) return proxyUnreachable(result.transportError);
+  if (result.errorJson) return apiError(result.errorJson, fallback, result.status ?? 1);
   return null;
 }
 
@@ -327,7 +327,7 @@ export async function cmdRefresh(args: string[], deps: AccountDeps): Promise<num
   if (!baseUrl) return proxyUnreachable();
   if (classified.type !== "codex") {
     const result = await fetchProviderQuotaReport(deps, baseUrl, name);
-    if (result.status === 0) return proxyUnreachable();
+    if (result.status === 0) return proxyUnreachable(result.transportError);
     if (result.status !== 200) return apiError(result.errorJson ?? {}, `failed to refresh ${name}`, result.status);
     if (wantsJson) console.log(JSON.stringify({ provider: name, report: result.report }, null, 2));
     else console.log(result.report ? providerQuotaLine(name, result.report) : `no quota report available for ${name}`);
@@ -538,7 +538,7 @@ export async function cmdImport(args: string[], deps: AccountDeps): Promise<numb
     clearTimeout(timer);
   }
   if (response.status === 0) {
-    if (!timedOut) return proxyUnreachable();
+    if (!timedOut) return proxyUnreachable(response.transportError);
     console.error(`Error: import_timeout after ${importTimeoutMs}ms`);
     return 1;
   }

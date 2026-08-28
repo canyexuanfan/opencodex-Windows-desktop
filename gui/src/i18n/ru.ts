@@ -991,6 +991,7 @@ export const ru: Record<TKey, string> = {
   "storage.policy.skippedEmpty": "Нет архивных кандидатов под цель.",
   "storage.policy.doneQuarantine": "Политика отправила в карантин {count} файл(ов) ({size}).",
   "storage.policy.donePermanent": "Политика навсегда удалила {count} файл(ов) ({size}).",
+  "storage.policy.metadataSaveWarning": "Выполнение политики завершено, но не удалось сохранить метаданные расписания.",
 
   // add-provider modal
   "modal.addNamed": "Добавить: {label}",
