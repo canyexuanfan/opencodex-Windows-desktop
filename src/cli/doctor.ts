@@ -16,7 +16,8 @@ import { findLiveProxy, type LiveProxy } from "../server/proxy-liveness";
 import { BUN_RUNTIME_SOURCES } from "../lib/bun-runtime";
 import type { BunRuntimeSource } from "../lib/bun-runtime";
 import { maskAccountId } from "../lib/privacy";
-import { configuredAdminToken } from "../lib/admin-secrets";
+import { tokenCollidesWithAdmin } from "../lib/admin-secrets";
+import { readInstalledServiceToken } from "../lib/service-secrets";
 import { PROXY_ENV_KEYS, proxyEnvPresent } from "../lib/proxy-env";
 import { LOCAL_MANAGEMENT_READ_PATHS } from "../lib/local-management-capability";
 import { readCodexTokens } from "../codex/auth-collision";
@@ -163,16 +164,19 @@ function describeDoctorHealth(entry: OAuthHealthEntry): string {
  * Observe-only, like the rest of doctor: it compares shapes and never prints, logs, or
  * returns a credential value.
  */
-export function dataPlaneCredentialCollisionCheck(env: NodeJS.ProcessEnv = process.env): OAuthDoctorCheck {
-  const dataPlane = env.OPENCODEX_API_AUTH_TOKEN?.trim();
+export function dataPlaneCredentialCollisionCheck(
+  env: NodeJS.ProcessEnv = process.env,
+  installedServiceToken: string | null = readInstalledServiceToken(),
+): OAuthDoctorCheck {
+  const dataPlane = env.OPENCODEX_API_AUTH_TOKEN?.trim() || installedServiceToken?.trim() || "";
   if (!dataPlane) {
     return { level: "OK", message: "No data-plane token is set, so it cannot collide with the management token." };
   }
-  // Pass the env seam through: reading process.env here while the caller injected a
-  // different env made half the comparison depend on real machine state.
-  const admin = configuredAdminToken(getConfigDir(), env);
-  const collides = dataPlane.startsWith("ocx_admin_") || (admin !== null && dataPlane === admin);
-  if (!collides) {
+  // Same comparison as assertNotAdminToken: minted prefix or configuredAdminToken
+  // (env or admin-api-token file). The file token is the one the service wrapper
+  // actually exports; inspecting only the doctor process env reported OK on every
+  // already-broken install (#2696).
+  if (!tokenCollidesWithAdmin(dataPlane, env)) {
     return { level: "OK", message: "Data-plane and management credentials are distinct." };
   }
   return {
@@ -180,10 +184,11 @@ export function dataPlaneCredentialCollisionCheck(env: NodeJS.ProcessEnv = proce
     // management command can work at all.
     level: "FAIL",
     message:
-      "OPENCODEX_API_AUTH_TOKEN holds the management (admin) token, so the proxy fences the "
-      + "whole management API closed and every ocx management command fails with 503. "
-      + "Action: unset OPENCODEX_API_AUTH_TOKEN (or set it to a distinct data-plane key), "
-      + "then re-run `ocx service install` and restart the proxy",
+      "The data-plane secret (OPENCODEX_API_AUTH_TOKEN or the service token file) holds the "
+      + "management (admin) token, so the proxy fences the whole management API closed and "
+      + "every ocx management command fails with 503. "
+      + "Action: unset OPENCODEX_API_AUTH_TOKEN, replace the service token file with a distinct "
+      + "data-plane key, then re-run `ocx service install` and restart the proxy",
   };
 }
 
