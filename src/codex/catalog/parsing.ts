@@ -406,7 +406,12 @@ export function ensureStrictCatalogFields(
   if (typeof entry.supports_reasoning_summaries !== "boolean") entry.supports_reasoning_summaries = false;
   if (typeof entry.default_reasoning_summary !== "string") entry.default_reasoning_summary = "none";
   if (typeof entry.support_verbosity !== "boolean") entry.support_verbosity = true;
-  if (typeof entry.default_verbosity !== "string") entry.default_verbosity = "low";
+  // A row that has declared it does NOT support verbosity must not also ship a default for the
+  // control it just disowned: Codex seeds its picker from `default_verbosity`, so leaving the
+  // strict-fields fallback in place re-creates the dead toggle the explicit opt-out removed.
+  // Scoped to an explicit `false`, so rows that never declare a capability keep the default.
+  if (entry.support_verbosity === false) delete entry.default_verbosity;
+  else if (typeof entry.default_verbosity !== "string") entry.default_verbosity = "low";
   if (typeof entry.apply_patch_tool_type !== "string") entry.apply_patch_tool_type = "freeform";
   if (!entry.truncation_policy || typeof entry.truncation_policy !== "object" || Array.isArray(entry.truncation_policy)) {
     entry.truncation_policy = { mode: "tokens", limit: 10000 };
