@@ -5,6 +5,27 @@ import { MAIN_CODEX_ACCOUNT_ID } from "./main-account";
 
 export const CODEX_ACCOUNT_LOG_LABEL_RE = /^p[a-f0-9]{6}$/;
 
+/**
+ * Account log labels come in two families (#2699):
+ *
+ * - `p<hex6>` (plus the literal `main`) — a Codex pool account.
+ * - `o<hex6>` — a non-Codex OAuth provider account (xai, cursor, and siblings).
+ *
+ * Both are sha256-derived digests, never an email and never a raw provider account id. That is
+ * a privacy requirement, not a formatting preference: these labels are written to the usage log
+ * and served over the management API.
+ *
+ * hex6 is 16.7M values, so two accounts CAN collide and merge into one reported row. That is a
+ * reporting inaccuracy at operator scale, not a correctness or privacy failure, and it is the
+ * accepted cost of keeping the existing `p` format byte-compatible.
+ */
+export const OAUTH_ACCOUNT_LOG_LABEL_RE = /^o[a-f0-9]{6}$/;
+export const ACCOUNT_LOG_LABEL_RE = /^(?:main|[po][a-f0-9]{6})$/;
+
+export function oauthAccountLogLabel(accountId: string, provider = ""): string {
+  return `o${createHash("sha256").update(`${provider}\0${accountId}`).digest("hex").slice(0, 6)}`;
+}
+
 export function createCodexAccountLogLabel(existingLabels: Iterable<string | undefined | null> = []): string {
   const used = new Set([...existingLabels].filter((value): value is string => !!value));
   for (let i = 0; i < 16; i++) {
