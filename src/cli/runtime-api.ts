@@ -116,6 +116,28 @@ export function takeFlag(args: string[], flag: string): boolean {
   return true;
 }
 
+/** Unicode dashes that copy-paste and IME input substitute for ASCII `-`. */
+const DASH_CLASS = /[\u2010-\u2015\u2212]/g;
+
+/**
+ * True for `--json`, `--json=true`, `-json`, and Unicode-dash spellings.
+ * Matching only the exact token `--json` is the same defect logout had: each
+ * spelling that slips through is a silent success (or, for doctor, prose on
+ * stdout after the caller asked for JSON).
+ */
+export function isJsonOption(arg: string): boolean {
+  const body = arg.replace(DASH_CLASS, "-").replace(/^-+/, "");
+  return body === "json" || body.startsWith("json=");
+}
+
+/** Remove one JSON-request spelling from `args`. Returns whether one was present. */
+export function takeJsonFlag(args: string[]): boolean {
+  const index = args.findIndex(isJsonOption);
+  if (index === -1) return false;
+  args.splice(index, 1);
+  return true;
+}
+
 export function takeOption(args: string[], flag: string): string | undefined {
   const index = args.indexOf(flag);
   if (index === -1) return undefined;

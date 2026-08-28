@@ -14,7 +14,7 @@ import { writeDesktop3pConfig, type Desktop3pConfigMode, parseDesktop3pModeArgs 
 import { filterCatalogVisibleModels, desktopVisibleNativeSlugs, nativeContextLimits } from "../codex/catalog";
 import { buildClaudeDesktopState, fetchAllModels } from "../server/management-api";
 import { findLiveProxy } from "../server/proxy-liveness";
-import { runtimeRequest } from "./runtime-api";
+import { CliUsageError, runtimeRequest, takeJsonFlag } from "./runtime-api";
 import { OPENAI_CODEX_PROVIDER_ID } from "../providers/openai-tiers";
 
 function isFamily(value: string | undefined): value is DesktopFamily {
@@ -119,10 +119,10 @@ export async function handleClaudeDesktopCommand(argv: string[], deps: ApplyProf
     const nonMode = argv.filter(arg => !["apply", "--static", "--hybrid", "--discovery-only"].includes(arg));
     if (nonMode.length > 0) {
       console.error(`알 수 없는 인자: ${nonMode.join(" ")}`);
-      return 1;
+      return 2;
     }
     const parsedMode = parseDesktop3pModeArgs(legacyFlags);
-    if ("error" in parsedMode) { console.error(parsedMode.error); return 1; }
+    if ("error" in parsedMode) { console.error(parsedMode.error); return 2; }
     try {
       const config = loadConfig();
       const state = await buildClaudeDesktopState(config);
@@ -151,8 +151,9 @@ export async function handleClaudeDesktopCommand(argv: string[], deps: ApplyProf
     // including staleness, drift and health, which only the running proxy knows. `show`
     // reports what this machine would write; `status` reports what is actually in effect.
     if (command === "status") {
-      const wantsJson = argv[1] === "--json";
-      if (argv.length > 2 || (argv[1] && !wantsJson)) throw new Error("Usage: ocx claude desktop status [--json]");
+      const rest = argv.slice(1);
+      const wantsJson = takeJsonFlag(rest);
+      if (rest.length > 0) throw new CliUsageError("Usage: ocx claude desktop status [--json]");
       const live = await runtimeRequest<Record<string, unknown>>("/api/claude-desktop/status", {});
       if (wantsJson) console.log(JSON.stringify(live, null, 2));
       else {
@@ -164,8 +165,10 @@ export async function handleClaudeDesktopCommand(argv: string[], deps: ApplyProf
     }
     const state = await buildClaudeDesktopState(config);
     if (command === "show") {
-      if (argv.length > 2 || (argv[1] && argv[1] !== "--json")) throw new Error("Usage: ocx claude desktop show [--json]");
-      if (argv[1] === "--json") console.log(JSON.stringify(state));
+      const rest = argv.slice(1);
+      const wantsJson = takeJsonFlag(rest);
+      if (rest.length > 0) throw new CliUsageError("Usage: ocx claude desktop show [--json]");
+      if (wantsJson) console.log(JSON.stringify(state));
       else {
         for (const family of DESKTOP_FAMILIES) {
           console.log(`${family.toUpperCase()}${state.profile.defaults[family] ? ` (default: ${state.profile.defaults[family]})` : ""}`);
@@ -178,7 +181,7 @@ export async function handleClaudeDesktopCommand(argv: string[], deps: ApplyProf
     }
     if (command === "move") {
       const [, route, familyRaw, ...flags] = argv;
-      if (!route || !isFamily(familyRaw) || flags.some(flag => flag !== "--default")) throw new Error("Usage: ocx claude desktop move <route> <family> [--default]");
+      if (!route || !isFamily(familyRaw) || flags.some(flag => flag !== "--default")) throw new CliUsageError("Usage: ocx claude desktop move <route> <family> [--default]");
       if (!state.models.some(model => model.route === route && model.available)) throw new Error(`현재 사용할 수 없는 모델입니다: ${route}`);
       const profile = moveDesktopRoute(state.profile, route, familyRaw, flags.includes("--default"));
       config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile: profile };
@@ -188,7 +191,7 @@ export async function handleClaudeDesktopCommand(argv: string[], deps: ApplyProf
     }
     if (command === "default") {
       const [, familyRaw, routeRaw] = argv;
-      if (!isFamily(familyRaw) || !routeRaw || argv.length !== 3) throw new Error("Usage: ocx claude desktop default <family> <route|none>");
+      if (!isFamily(familyRaw) || !routeRaw || argv.length !== 3) throw new CliUsageError("Usage: ocx claude desktop default <family> <route|none>");
       const route = routeRaw === "none" ? null : routeRaw;
       if (route && !state.models.some(model => model.route === route && model.available)) throw new Error(`현재 사용할 수 없는 모델입니다: ${route}`);
       const profile = setDesktopFamilyDefault(state.profile, familyRaw, route);
@@ -199,7 +202,7 @@ export async function handleClaudeDesktopCommand(argv: string[], deps: ApplyProf
     }
     if (command === "export") {
       const target = argv[1];
-      if (!target || argv.length !== 2) throw new Error("Usage: ocx claude desktop export <path|->");
+      if (!target || argv.length !== 2) throw new CliUsageError("Usage: ocx claude desktop export <path|->");
       const json = JSON.stringify(state.profile, null, 2) + "\n";
       if (target === "-") process.stdout.write(json);
       else writeFileSync(resolve(target), json, { encoding: "utf8", mode: 0o600 });
@@ -208,7 +211,7 @@ export async function handleClaudeDesktopCommand(argv: string[], deps: ApplyProf
     if (command === "import") {
       const source = argv[1];
       const flags = argv.slice(2);
-      if (!source || flags.some(flag => flag !== "--apply")) throw new Error("Usage: ocx claude desktop import <path> [--apply]");
+      if (!source || flags.some(flag => flag !== "--apply")) throw new CliUsageError("Usage: ocx claude desktop import <path> [--apply]");
       const profile = parseDesktopProfile(JSON.parse(readFileSync(resolve(source), "utf8")));
       const reconciled = (await buildClaudeDesktopState(config, profile)).profile;
       config.claudeCode = { ...(config.claudeCode ?? {}), desktopProfile: reconciled };
@@ -222,9 +225,9 @@ export async function handleClaudeDesktopCommand(argv: string[], deps: ApplyProf
       return 0;
     }
     printDesktopHelp();
-    return 1;
+    return 2;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
-    return 1;
+    return error instanceof CliUsageError ? 2 : 1;
   }
 }

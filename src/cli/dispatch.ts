@@ -22,7 +22,7 @@ import { restoreNativeCodexAsync } from "../codex/inject";
 import { stripGrokConfig } from "../grok/inject";
 import { afterCatalogWriteHandleAppServers } from "../codex/app-server-processes";
 import { normalizeUpdateChannel, runGuiUpdateWorker } from "../update/job";
-import { takeFlag } from "./runtime-api";
+import { isJsonOption, takeFlag } from "./runtime-api";
 
 export interface CliDispatchDeps {
   args: string[];
@@ -188,7 +188,7 @@ const commandRunners: Record<string, CommandRunner> = {
     // the Codex Log Guard's human output after it returns, so emitting a JSON document here
     // would interleave prose with JSON on one stdout -- unparseable, which is worse than the
     // ignored flag. The structured-report refactor is tracked as its own work-phase.
-    if (doctorArgs.includes("--json")) {
+    if (doctorArgs.some(isJsonOption)) {
       console.error("ocx doctor does not support --json yet. Run `ocx doctor` for the human report, or use `ocx status --json` and `ocx ready --json` for machine-readable health.");
       return 2;
     }

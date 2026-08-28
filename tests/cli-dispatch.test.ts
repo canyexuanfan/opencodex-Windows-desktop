@@ -390,3 +390,28 @@ describe("logout rejects anything that is not a possible provider id", () => {
     expect(getAccountSet("github-copilot")).toBeNull();
   });
 });
+
+describe("doctor refuses --json rather than printing prose as success", () => {
+  const runDoctor = async (flag: string): Promise<number> => {
+    const argv = ["doctor", flag];
+    const log = console.log;
+    const error = console.error;
+    console.log = () => {};
+    console.error = () => {};
+    try {
+      return await dispatchCommand(
+        { kind: "command", command: "doctor", args: argv },
+        { ...fakeDeps, args: argv } as unknown as CliDispatchDeps,
+      );
+    } finally {
+      console.log = log;
+      console.error = error;
+    }
+  };
+
+  test("exact --json, --json=true, and Unicode dashes all exit 2", async () => {
+    for (const flag of ["--json", "--json=true", "\u2014json"]) {
+      expect(await runDoctor(flag), `${JSON.stringify(flag)} must be refused`).toBe(2);
+    }
+  });
+});
