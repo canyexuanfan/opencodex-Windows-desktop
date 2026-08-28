@@ -1077,6 +1077,20 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     configFn: () => ({ port: doctorConfig.port, hostname: doctorConfig.hostname }),
   });
 
+  // Mirrors `ocx status` through the same comparison rather than a second implementation:
+  // two diagnostics disagreeing about whether an install is stale is worse than one (#2701).
+  // No extra probe -- findLiveProxy already carried the version back.
+  {
+    const { packageVersion } = await import("./help");
+    const { computeVersionSkew } = await import("./version-skew");
+    const skew = computeVersionSkew(packageVersion(), live?.version);
+    if (skew.skewed && skew.warning) {
+      console.log(`!! ${skew.warning}`);
+    } else if (skew.proxyVersion !== null) {
+      console.log(`ok ocx ${skew.cliVersion} matches the running proxy`);
+    }
+  }
+
   const currentProxyEnv = collectProxyEnv();
   const configuredProxy = collectConfiguredProxy();
   const runningProxyEnv = collectRunningProxyEnv({

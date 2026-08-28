@@ -399,6 +399,10 @@ const commandRunners: Record<string, CommandRunner> = {
     await deps.handleProxyRestart(deps.handleRestartStartWhenStopped);
     return Number(process.exitCode ?? 0);
   },
+  capabilities: async deps => {
+    const { runCapabilities } = await import("./capabilities-command");
+    return await runCapabilities(deps.args.slice(1));
+  },
   health: async deps => {
     const healthArgs = deps.args.slice(1);
     const wantsHealthJson = healthArgs.includes("--json");

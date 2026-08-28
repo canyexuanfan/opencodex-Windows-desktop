@@ -5,7 +5,14 @@ import { findCommand } from "./registry";
 
 const repoRoot = dirname(fileURLToPath(new URL("../../package.json", import.meta.url)));
 
-function packageVersion(): string {
+/**
+ * Version of the `ocx` bundle this process is running from.
+ *
+ * Exported so `status`/`doctor` can compare it against the version the live proxy reports,
+ * which is how a stale `ocx` earlier on PATH becomes visible (#2701). Returns `"unknown"`
+ * rather than throwing; callers must treat that as "cannot compare", not as a mismatch.
+ */
+export function packageVersion(): string {
   const raw = readFileSync(join(repoRoot, "package.json"), "utf8");
   const parsed = JSON.parse(raw) as { version?: unknown };
   return typeof parsed.version === "string" ? parsed.version : "unknown";
@@ -48,6 +55,7 @@ Usage:
   ocx restart                  Stop and restart the proxy
   ocx v2 <sub>                multi_agent_v2 surface (status|on|off|mode|keep-native-v1|threads|mode-hint)
   ocx health [--json]          Check proxy health (exit 0=healthy, 1=not)
+  ocx capabilities [--json]    List declared capabilities and the API routes they drive
   ocx ready [--json] [--wait [--timeout <s>]]  Check post-sync readiness (exit 0 only when ready)
   ocx provider <sub>          Providers, connectivity, quota, and selected models
   ocx account <sub>           Accounts, login/reauth, key pools, and quota controls
