@@ -90,12 +90,9 @@ export const HEAD_CAPABILITIES: readonly HeadCapability[] = [
 ];
 
 /**
- * Capabilities that drive a management route.
- *
- * Deliberately incomplete at this phase: it covers the read/write surface the CLI
- * already reaches, and later phases add entries as they add verbs. The parity test
- * measures routes against capabilities plus declared exemptions, so a missing entry
- * shows up as an unexplained route rather than being quietly tolerated.
+ * Capabilities declared so far. Incomplete by design: later phases add verbs.
+ * `ocx capabilities` is the index of what is listed here, not of every CLI command.
+ * A capability must not name a route the command does not actually fetch.
  */
 export const CAPABILITIES: readonly Capability[] = [
   {
@@ -121,7 +118,7 @@ export const CAPABILITIES: readonly Capability[] = [
     ],
     mutates: false,
     json: "envelope",
-    details: ["Start here when driving ocx programmatically: it is the surface index."],
+    details: ["Start here when driving ocx programmatically: it is the declared surface index, not a complete verb list."],
   },
   {
     command: ["provider", "list"],

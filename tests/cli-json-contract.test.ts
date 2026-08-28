@@ -32,7 +32,10 @@ describe("--json is order-independent", () => {
   test("restore does not match --json positionally", () => {
     const src = read("src/cli/dispatch.ts");
     expect(src).not.toContain('const restoreJson = deps.args[1] === "--json"');
-    expect(src).toContain('deps.args.slice(1).includes("--json")');
+    expect(src).not.toContain('deps.args.slice(1).includes("--json")');
+    expect(src).toContain('takeFlag(restoreArgs, "--json")');
+    expect(src).toContain("restoreArgs[0] === \"back\"");
+    expect(src).toContain("skippedRestoreEnvelope(success, message)");
   });
 
   test("no runner reads --json at a fixed argv index", () => {
