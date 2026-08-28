@@ -284,6 +284,38 @@ Windows tray helper state.
 
 JSON mode: `payload`.
 
+### `ocx system codex-app-server`
+
+Codex app-server reachability and process state, as the dashboard sees it.
+
+| Method | Route |
+|---|---|
+| GET | `/api/system/codex-app-server` |
+
+| Flag | Value | Meaning |
+|---|---|---|
+| `--json` | boolean | Emit the app-server state as JSON. |
+
+JSON mode: `payload`.
+
+- The GUI reads this state directly; without a verb an agent could not tell whether the Codex app-server was reachable at all.
+
+### `ocx claude desktop status`
+
+Applied-vs-desired Claude Desktop state, including staleness, drift, and health.
+
+| Method | Route |
+|---|---|
+| GET | `/api/claude-desktop/status` |
+
+| Flag | Value | Meaning |
+|---|---|---|
+| `--json` | boolean | Emit the live status as JSON. |
+
+JSON mode: `payload`.
+
+- Distinct from `claude desktop show`, which reports what this machine WOULD write; this reports what is actually in effect, which only the running proxy knows.
+
 ## State-changing capabilities
 
 Each of these writes. Check the flags column before running one unattended.
@@ -440,6 +472,24 @@ JSON mode: `payload`.
 - `policy set` never enables implicitly: omitting `--enabled` keeps the stored value.
 - `policy run` forces a run regardless of schedule, so it needs `--yes`.
 
+### `ocx system codex-restart`
+
+Restart the Codex app-server.
+
+| Method | Route |
+|---|---|
+| POST | `/api/system/codex-restart` |
+
+| Flag | Value | Meaning |
+|---|---|---|
+| `--yes` | boolean | Required: restarts the operator's running Codex app-server. |
+| `--json` | boolean | Emit the restart result as JSON. |
+
+JSON mode: `payload`.
+
+- `sync --restart-codex` is not a substitute: it restarts only as a side effect after a catalog or cache write, so it cannot restart a healthy install on request.
+- --yes is mandatory because this interrupts a running editor session, which must never happen because an agent guessed a subcommand.
+
 ### `ocx integration native`
 
 Show or toggle the native Claude, Claude Desktop, Codex, and Grok integrations.
@@ -480,6 +530,6 @@ JSON mode: `payload`.
 
 ## Counts
 
-- declared capabilities: 26
-- of those, state-changing: 10
+- declared capabilities: 29
+- of those, state-changing: 11
 - head-resolved invocations: 2

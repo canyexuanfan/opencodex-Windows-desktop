@@ -17,6 +17,8 @@ const USAGE = `Usage:
   ocx system startup <health|install-service|install-shim> [--json]
   ocx system diagnostics [--json]
   ocx system sync [--json]
+  ocx system codex-app-server [--json]
+  ocx system codex-restart --yes [--json]
   ocx system update check [--channel <latest|preview>] [--json]
   ocx system update run [--channel <latest|preview>] [--restart <on|off>] --yes [--json]
   ocx system update status <job-id> [--json]`;
@@ -104,6 +106,20 @@ export async function handleSystemCommand(argv: string[], deps: RuntimeApiDeps =
     } else if (sub === "sync") {
       const args = [...rest]; const wantsJson = takeFlag(args, "--json"); rejectArgs(args, USAGE);
       printData(await runtimeRequest("/api/sync", { method: "POST" }, deps), wantsJson);
+    } else if (sub === "codex-app-server") {
+      // The GUI reads this state directly (gui/src/codex-app-server-state.ts). Without a verb
+      // an agent could not see whether the Codex app-server was reachable at all.
+      const args = [...rest]; const wantsJson = takeFlag(args, "--json"); rejectArgs(args, USAGE);
+      printData(await runtimeRequest("/api/system/codex-app-server", {}, deps), wantsJson);
+    } else if (sub === "codex-restart") {
+      // --yes required: this restarts the user's running Codex app-server, so it is exactly the
+      // class of action that must not happen because an agent guessed a subcommand.
+      const args = [...rest];
+      const wantsJson = takeFlag(args, "--json");
+      const yes = takeFlag(args, "--yes");
+      if (!yes) throw new CliUsageError("system codex-restart requires --yes", USAGE);
+      rejectArgs(args, USAGE);
+      printData(await runtimeRequest("/api/system/codex-restart", { method: "POST" }, deps), wantsJson, ["Codex app-server restart requested."]);
     } else if (sub === "update") await update(rest, deps);
     else throw new CliUsageError(`unknown system command ${sub}`, USAGE);
   });
