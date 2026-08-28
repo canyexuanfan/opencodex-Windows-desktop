@@ -12,6 +12,7 @@
 import {
   EMPTY_EXEC_OUTPUT_MESSAGE,
   EMPTY_EXEC_OUTPUT_REGEX,
+  FAILED_EXEC_OUTPUT_MESSAGE,
   FAILED_EXEC_OUTPUT_REGEX,
   isCodexExecBridgeTool,
 } from "../exec-tool-result-normalize";
@@ -95,7 +96,10 @@ export function normalizeCursorToolResultText(
   }
   if (isCodexExecBridgeTool(options.toolName, options.toolNamespace) && isEmptyOrFailedExecWrapper(text.trim())) {
     return {
-      text: EMPTY_EXEC_OUTPUT_MESSAGE,
+      // A `Script failed` wrapper is empty but NOT a success: reporting it as an empty success
+      // would erase the only failure signal. Text classification stays separate from Cursor's
+      // isError policy, which the Computer Use branch above owns.
+      text: FAILED_EXEC_OUTPUT_REGEX.test(text.trim()) ? FAILED_EXEC_OUTPUT_MESSAGE : EMPTY_EXEC_OUTPUT_MESSAGE,
       isError: false,
       changed: true,
     };
