@@ -982,6 +982,7 @@ export const fr: Record<TKey, string> = {
   "storage.policy.skippedEmpty": "Aucune archive candidate ne correspond à l’objectif.",
   "storage.policy.doneQuarantine": "La politique a mis {count} fichier(s) en quarantaine ({size}).",
   "storage.policy.donePermanent": "La politique a supprimé définitivement {count} fichier(s) ({size}).",
+  "storage.policy.metadataSaveWarning": "L’exécution de la politique est terminée, mais ses métadonnées de planification n’ont pas pu être enregistrées.",
   "modal.addNamed": "Ajouter : {label}",
   "modal.add": "Ajouter un fournisseur",
   "modal.search": "Rechercher des fournisseurs…",

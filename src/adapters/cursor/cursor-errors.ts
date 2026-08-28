@@ -241,6 +241,21 @@ export function classifyCursorError(message: string, sizeContext?: CursorSizeCon
     lower.includes("access denied")
   ) return "Cursor authentication failed";
 
+  // gRPC FAILED_PRECONDITION is deterministic and non-retryable (unlike UNAVAILABLE):
+  // the backend rejected the call because the account/plan state does not allow it —
+  // seen live when a plan-gated model (e.g. claude-fable-5) runs on a plan without it.
+  // Leaving it as "Cursor upstream error" (502) made clients retry it as overload.
+  //
+  // This MUST precede the overload keywords. The explicit gRPC status code is a
+  // structured signal from the backend; the keywords are inference over free text. A
+  // plan-gated rejection routinely reads "failed_precondition: model unavailable for
+  // this plan", which matched "unavailable" first and came back as a retryable
+  // overload — the exact misclassification this branch was added to stop. Checking the
+  // code first lets the deterministic signal win over the words around it.
+  if (lower.includes("failed_precondition") || lower.includes("failed precondition")) {
+    return "Cursor invalid request";
+  }
+
   if (
     lower.includes("unavailable") ||
     lower.includes("overloaded") ||
