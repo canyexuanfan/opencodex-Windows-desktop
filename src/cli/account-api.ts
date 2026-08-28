@@ -24,6 +24,14 @@ export interface AccountRow {
   /** Codex pool selection order, higher used earlier. Absent where ordering does not apply. */
   priority?: number;
   quota?: CodexQuotaDto | null;
+  /**
+   * Whether the pool is holding this account out of rotation.
+   *
+   * The server has always sent it (auth-api.ts:286 for pool accounts, :1315 for main) and the
+   * CLI dropped it, so a paused account was indistinguishable from an available one in every
+   * human listing (#2703).
+   */
+  paused?: boolean;
 }
 
 export type ClassifyResult = { type: AccountType } | { error: string };
@@ -229,12 +237,19 @@ interface CodexAccountDto {
   needsReauth?: boolean;
   priority?: number;
   quota?: CodexQuotaDto | null;
+  paused?: boolean;
 }
 
 function projectQuota(quota: CodexQuotaDto | null | undefined): CodexQuotaDto | null {
   if (!quota) return null;
   const projected: CodexQuotaDto = {};
-  for (const key of ["weeklyPercent", "monthlyPercent", "weeklyResetAt", "monthlyResetAt", "shortPercent", "shortResetAt", "shortWindowSeconds"] as const) {
+  // `fiveHourPercent`/`fiveHourResetAt` were declared on the DTO and read by two renderers
+  // -- `quotaText`'s `quota.fiveHourPercent ?? quota.shortPercent` (account.ts:89) and
+  // `quotaParts` (account-extended.ts:275) -- but omitted from this whitelist, so the first
+  // operand was unreachable and a 5h-only account rendered as unknown (#2703). A projection
+  // that silently drops a field its own type declares is worse than one that never had it:
+  // the type checks, the renderer looks correct, and only the output is wrong.
+  for (const key of ["fiveHourPercent", "fiveHourResetAt", "weeklyPercent", "monthlyPercent", "weeklyResetAt", "monthlyResetAt", "shortPercent", "shortResetAt", "shortWindowSeconds"] as const) {
     if (typeof quota[key] === "number" && Number.isFinite(quota[key])) projected[key] = quota[key];
   }
   return projected;
@@ -244,6 +259,7 @@ export async function fetchCodexRows(
   deps: AccountDeps,
   baseUrl: string,
   forceRefresh = false,
+  includeQuota = forceRefresh,
 ): Promise<FamilyRows> {
   const accountsPath = `/api/codex-auth/accounts${forceRefresh ? "?refresh=1" : ""}`;
   const [accountsRes, activeRes] = await Promise.all([
@@ -282,7 +298,8 @@ export async function fetchCodexRows(
     active: a.id === activeId,
     needsReauth: a.needsReauth,
     priority: typeof a.priority === "number" ? a.priority : 0,
-    ...(forceRefresh ? { quota: projectQuota(a.quota) } : {}),
+    paused: a.paused === true,
+    ...(includeQuota ? { quota: projectQuota(a.quota) } : {}),
   }));
   return { rows, activeId, autoSwitchThreshold, status: 200 };
 }
@@ -362,7 +379,7 @@ export function fetchRows(
   type: AccountType,
   quota?: { refresh?: boolean },
 ): Promise<FamilyRows> {
-  if (type === "codex") return fetchCodexRows(deps, baseUrl);
+  if (type === "codex") return fetchCodexRows(deps, baseUrl, Boolean(quota?.refresh), quota !== undefined);
   if (type === "oauth") return fetchOAuthRows(deps, baseUrl, name, quota);
   return fetchKeyRows(deps, baseUrl, name);
 }

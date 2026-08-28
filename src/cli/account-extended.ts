@@ -249,17 +249,14 @@ function resetIso(value: number | undefined): string | null {
 
 function refreshLine(row: FamilyRows["rows"][number]): string {
   const parts = [row.id === MAIN_ID ? "main" : row.id, row.email, row.plan];
-  const quota = row.quota;
-  if (!quota || (quota.weeklyPercent === undefined && quota.monthlyPercent === undefined)) {
-    parts.push("quota: unknown");
-  } else {
-    if (quota.weeklyPercent !== undefined) parts.push(`weekly ${quota.weeklyPercent}%`);
-    const weeklyReset = resetIso(quota.weeklyResetAt);
-    if (weeklyReset) parts.push(`resets ${weeklyReset}`);
-    if (quota.monthlyPercent !== undefined) parts.push(`monthly ${quota.monthlyPercent}%`);
-    const monthlyReset = resetIso(quota.monthlyResetAt);
-    if (monthlyReset) parts.push(`resets ${monthlyReset}`);
-  }
+  if (row.paused) parts.push("paused");
+  // Was a second quota dialect: it gated the whole block on weekly/monthly, so an account
+  // reporting only a 5h window printed `quota: unknown` while `quotaParts` five lines below
+  // rendered the same data correctly for the provider path (#2703). Two halves of one file
+  // disagreeing about how to read one DTO is the defect; delegating removes it rather than
+  // teaching the second dialect a third window.
+  const quotaText = row.quota ? quotaParts(row.quota).join(" ") : "";
+  parts.push(quotaText.length > 0 ? quotaText : "quota: unknown");
   if (row.needsReauth) parts.push("needs-reauth");
   return parts.filter(Boolean).join(" ");
 }
