@@ -9,6 +9,12 @@
  * dropping images oldest-first — see toolCallStep in protobuf-request.ts).
  */
 
+import {
+  EMPTY_EXEC_OUTPUT_MESSAGE,
+  EMPTY_EXEC_OUTPUT_REGEX,
+  isCodexExecBridgeTool,
+} from "../exec-tool-result-normalize";
+
 const COMPUTER_USE_TOOL_NAMES = new Set([
   "node_repl",
   "node_repl__js",
@@ -27,31 +33,6 @@ function isNodeReplOrComputerUseTool(toolName?: string, toolNamespace?: string):
   const lower = toolName.toLowerCase();
   if (COMPUTER_USE_TOOL_NAMES.has(lower)) return true;
   return lower.startsWith("mcp__node_repl") || lower.startsWith("mcp__computer_use");
-}
-
-/**
- * Codex exec / shell-bridge tool names (flat and MCP-prefixed display aliases). An empty result
- * here is almost always a code-mode cell that never called text()/notify() — the cursor model
- * reads the blank [tool_result], concludes prior results were lost, and spirals into
- * re-orientation retries (devlog 260826_cursor_responses_gap, live subagent transcripts).
- */
-function isCodexExecBridgeTool(toolName?: string, toolNamespace?: string): boolean {
-  if (toolNamespace && toolNamespace.includes("opencodex-responses")) return true;
-  if (!toolName) return false;
-  const lower = toolName.toLowerCase();
-  return (
-    lower === "exec"
-    || lower === "exec_command"
-    || lower === "shell_command"
-    // Codex CLI/desktop native tool names: the multi-round "이전 출력이 비어 있어 처음부터"
-    // restart loop reproduced via codex exec because `shell` was not in this set
-    // (devlog 260826 gap-8 QA round 2).
-    || lower === "shell"
-    || lower === "local_shell"
-    || lower === "container.exec"
-    || lower.startsWith("mcp_opencodex-responses_")
-    || lower.startsWith("mcp__opencodex-responses__")
-  );
 }
 
 /** Failure states the Computer Use / node_repl runtime reports as PLAIN TEXT inside a non-error result. */
@@ -73,9 +54,6 @@ const RUNTIME_FAILURE_GUIDANCE: ReadonlyArray<{ marker: string; guidance: string
     guidance: "Imports are not available in this exec context; use the injected globals instead.",
   },
 ];
-
-/** Matches exec wrappers whose only payload is an empty-output marker. */
-const EMPTY_EXEC_OUTPUT_REGEX = /^(?:(?:Script completed|Script failed|Command finished|Execution finished)[^\n]*\n+)?(?:Wall time[^\n]*\n+)?(?:Output:\s*)?(?:<empty>)?\s*$/;
 
 export interface NormalizedToolResultText {
   text: string;
@@ -107,7 +85,7 @@ export function normalizeCursorToolResultText(
   }
   if (isCodexExecBridgeTool(options.toolName, options.toolNamespace) && EMPTY_EXEC_OUTPUT_REGEX.test(text.trim())) {
     return {
-      text: "[empty output: the exec cell completed but emitted nothing. This is NOT lost context and NOT a blocked tool — in code mode call text(...) or notify(...) on any value you need to see (a bare await tools.exec_command(...) is not echoed automatically); in shell mode the command simply printed nothing. Do not re-run the same call expecting different output.]",
+      text: EMPTY_EXEC_OUTPUT_MESSAGE,
       isError: false,
       changed: true,
     };

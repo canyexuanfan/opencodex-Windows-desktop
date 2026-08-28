@@ -4,7 +4,14 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKiroAdapter } from "../src/adapters/kiro";
-import { KIRO_TOOL_RESULT_CARRIER_MESSAGE } from "../src/adapters/kiro-constants";
+import {
+  KIRO_ANSWER_DELIVERED_MESSAGE,
+  KIRO_COMPLETION_RETRY_MESSAGE,
+  KIRO_CONTINUATION_MESSAGE,
+  KIRO_EMPTY_TOOL_RESULT_MESSAGE,
+  KIRO_TOOL_RESULT_CARRIER_MESSAGE,
+} from "../src/adapters/kiro-constants";
+import { EMPTY_EXEC_OUTPUT_MESSAGE } from "../src/adapters/exec-tool-result-normalize";
 import { MAX_KIRO_TOOL_CATALOG_BYTES, MAX_KIRO_TOOL_COUNT } from "../src/adapters/kiro-tools";
 import { applyProviderConfigHints, buildCatalogEntries } from "../src/codex/catalog";
 import { getValidAccessTokenSnapshot } from "../src/oauth";
@@ -307,6 +314,92 @@ describe("kiro adapter — buildRequest", () => {
 
     expect(current.content.trim()).not.toBe("");
     expect(current.userInputMessageContext.toolResults[0].content[0].text.trim()).not.toBe("");
+  });
+
+  // An empty code-mode exec result must say WHY it is empty. Without this the model reads a blank
+  // result, concludes earlier context was lost, and restarts finished work.
+  test("an empty code-mode exec result carries the actionable reason, not the generic fallback", async () => {
+    const execTool = { name: "exec", description: "Run JavaScript", parameters: { type: "object" } };
+    for (const raw of ["", "Script completed\nWall time 0.1 seconds\nOutput:\n", "<empty>"]) {
+      const messages = [
+        { role: "user", content: "run it" },
+        { role: "assistant", content: [{ type: "toolCall", id: "call-x", name: "exec", arguments: {} }] },
+        { role: "toolResult", toolCallId: "call-x", toolName: "exec", content: raw, isError: false },
+      ];
+      const { body } = await createKiroAdapter(provider).buildRequest(parsedWith(messages, [execTool]));
+      const resultText = JSON.parse(body).conversationState.currentMessage.userInputMessage
+        .userInputMessageContext.toolResults[0].content[0].text;
+
+      expect(resultText).toBe(EMPTY_EXEC_OUTPUT_MESSAGE);
+      // The generic fallback would leave the model to guess; assert it is NOT what shipped.
+      expect(resultText).not.toBe(KIRO_EMPTY_TOOL_RESULT_MESSAGE);
+    }
+  });
+
+  test("real exec output and empty non-exec results are left alone", async () => {
+    const execTool = { name: "exec", description: "Run JavaScript", parameters: { type: "object" } };
+    const withExecOutput = [
+      { role: "user", content: "run it" },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-x", name: "exec", arguments: {} }] },
+      { role: "toolResult", toolCallId: "call-x", toolName: "exec", content: "Output:\nhello", isError: false },
+    ];
+    const execBody = await createKiroAdapter(provider).buildRequest(parsedWith(withExecOutput, [execTool]));
+    expect(JSON.parse(execBody.body).conversationState.currentMessage.userInputMessage
+      .userInputMessageContext.toolResults[0].content[0].text).toBe("Output:\nhello");
+
+    // A non-exec tool keeps the generic message: asserting code-mode semantics for arbitrary
+    // tools would tell the model to call text()/notify() in a runtime that has neither.
+    const nonExec = [
+      { role: "user", content: "run it" },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-y", name: "bash", arguments: {} }] },
+      { role: "toolResult", toolCallId: "call-y", toolName: "bash", content: "", isError: false },
+    ];
+    const bashBody = await createKiroAdapter(provider).buildRequest(parsedWith(nonExec, [bashTool]));
+    expect(JSON.parse(bashBody.body).conversationState.currentMessage.userInputMessage
+      .userInputMessageContext.toolResults[0].content[0].text).toBe(KIRO_EMPTY_TOOL_RESULT_MESSAGE);
+  });
+
+  // A delivered final answer already ended its turn. Asking it to continue reopens closed work,
+  // which is what made a finished task behave like a still-open goal.
+  test("a delivered final answer is not told to continue or to complete again", async () => {
+    const messages = [
+      { role: "user", content: "do it" },
+      { role: "assistant", phase: "final_answer", content: [{ type: "text", text: "Done: the answer." }] },
+    ];
+    const { body } = await createKiroAdapter(provider).buildRequest(parsedWith(messages, [bashTool]));
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+
+    expect(current.content).toBe(KIRO_ANSWER_DELIVERED_MESSAGE);
+    expect(current.content).not.toContain(KIRO_CONTINUATION_MESSAGE);
+    expect(current.content).not.toContain(KIRO_COMPLETION_RETRY_MESSAGE);
+  });
+
+  test("an unfinished trailing assistant turn still gets the continuation prompt", async () => {
+    // Same shape minus `phase`: proves the new branch keys off the delivered final answer and did
+    // not simply disable continuation for every trailing assistant turn.
+    const messages = [
+      { role: "user", content: "do it" },
+      { role: "assistant", content: [{ type: "text", text: "Working on it..." }] },
+    ];
+    const { body } = await createKiroAdapter(provider).buildRequest(parsedWith(messages, [bashTool]));
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+
+    expect(current.content).toContain(KIRO_CONTINUATION_MESSAGE);
+    expect(current.content).not.toBe(KIRO_ANSWER_DELIVERED_MESSAGE);
+  });
+
+  test("commentary after a final answer reopens continuation", async () => {
+    // A merged assistant turn is terminal only if its LAST component was the final answer.
+    const messages = [
+      { role: "user", content: "do it" },
+      { role: "assistant", phase: "final_answer", content: [{ type: "text", text: "Done." }] },
+      { role: "assistant", content: [{ type: "text", text: "Actually, one more check." }] },
+    ];
+    const { body } = await createKiroAdapter(provider).buildRequest(parsedWith(messages, [bashTool]));
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+
+    expect(current.content).toContain(KIRO_CONTINUATION_MESSAGE);
+    expect(current.content).not.toBe(KIRO_ANSWER_DELIVERED_MESSAGE);
   });
 
   test("tool result images are attached to Kiro carrier user messages", async () => {
