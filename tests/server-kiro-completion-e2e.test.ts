@@ -396,6 +396,13 @@ describe("Kiro local terminal accounting", () => {
         expect(entry!.usage?.outputTokens).toBe(0);
         expect(entry!.attempts?.every(attempt => attempt.sendCount === 0) ?? true).toBe(true);
         expect(entry!.attempts?.every(attempt => attempt.inputTokenEstimate === undefined) ?? true).toBe(true);
+        // The EMBEDDED attempt must agree with its parent row. The re-verification caught this
+        // exact gap: the row read exact while its own attempt still said "estimated", and the
+        // attempt is the detailed accounting a maintainer reads for a zero-send turn.
+        for (const attempt of entry!.attempts ?? []) {
+          expect(attempt.usageStatus).toBe("reported");
+          expect(attempt.usage?.estimated).toBeUndefined();
+        }
       } finally {
         await proxy.stop(true);
         upstream.server.stop(true);

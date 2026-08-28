@@ -51,6 +51,13 @@ export interface PersistedUsageAttempt {
   sendCount: number;
   recoveryKinds: AttemptRecoveryKind[];
   usageStatus: UsageStatus;
+  /**
+   * True when the proxy answered this turn locally and issued no upstream request. It travels on
+   * the attempt itself rather than as a `finishRequestAttempt` argument because that function is
+   * called from six places, and a new parameter would silently default to the wrong answer at any
+   * one of them that was missed. Absent on ordinary attempts so old rows keep their exact shape.
+   */
+  locallyAnswered?: boolean;
   /** Stable non-PII identity for the Codex pool account that served this attempt. */
   accountLogLabel?: CodexUsageAccountLogLabel;
   inputTokenEstimate?: number;

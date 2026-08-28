@@ -1229,6 +1229,7 @@ export function finishRequestAttempt(
     usage ?? attempt.usage,
     attempt.inputTokenEstimate,
     contextWindowForModel(attempt.adapter, attempt.model),
+    attempt.locallyAnswered === true,
   );
   attempt.status = status;
   attempt.durationMs = Math.max(0, durationMs);

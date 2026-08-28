@@ -4866,6 +4866,11 @@ async function handleResponsesInner(
   const localTerminal = activeAdapter.localTerminal?.(parsed);
   if (localTerminal) {
     logCtx.localTerminalReason = localTerminal.reason;
+    // Mark the physical attempt too, not just the parent row. `finishRequestAttempt` finalizes the
+    // attempt through the same estimated-provider path, so without this the row reads exact while
+    // its own attempt still claims an estimate — the detailed accounting a maintainer actually
+    // reads for a zero-send turn.
+    if (logCtx.activeAttempt) logCtx.activeAttempt.locallyAnswered = true;
     cleanupUpstreamAbort();
     upstream.abort();
     const terminalEvents: AdapterEvent[] = [{
