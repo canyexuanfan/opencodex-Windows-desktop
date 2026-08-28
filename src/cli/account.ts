@@ -188,7 +188,8 @@ async function cmdList(rest: string[], deps: AccountDeps): Promise<number> {
     const r = await fetchRows(deps, baseUrl, t.name, t.type, wantsQuota ? { refresh: refreshQuota } : undefined);
     if (r.networkDown) return proxyUnreachable(r.transportError);
     if (r.errorJson) {
-      if (name) return apiError(r.errorJson, `failed to list ${t.name}`, r.status ?? 1);
+      if (name) return apiError(r.errorJson, `failed to list ${t.name}`, r.status);
+
       const errorText = typeof r.errorJson.error === "string" ? r.errorJson.error : "";
       const skipUnknownKey = t.type === "api-key"
         && r.status === 404
@@ -198,7 +199,7 @@ async function cmdList(rest: string[], deps: AccountDeps): Promise<number> {
         && r.status === 400
         && errorText.includes("unknown oauth provider");
       if (skipUnknownKey || skipConfigOAuth) continue;
-      return apiError(r.errorJson, `failed to list ${t.name}`, r.status ?? 1);
+      return apiError(r.errorJson, `failed to list ${t.name}`, r.status);
     }
     if (r.rows.length === 0) {
       if (showAll) notes.push(`${t.name}: no stored accounts or keys`);
@@ -245,7 +246,7 @@ async function cmdCurrent(rest: string[], deps: AccountDeps): Promise<number> {
   if (!baseUrl) return proxyUnreachable();
   const r = await fetchRows(deps, baseUrl, name, c.type);
   if (r.networkDown) return proxyUnreachable(r.transportError);
-  if (r.errorJson) return apiError(r.errorJson, `failed to read ${name}`, r.status ?? 1);
+  if (r.errorJson) return apiError(r.errorJson, `failed to read ${name}`, r.status);
 
   const activeRow = r.rows.find(row => row.active) ?? null;
   if (wantsJson) {

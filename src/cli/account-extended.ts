@@ -238,7 +238,7 @@ function configAndType(deps: AccountDeps, name: string) {
 
 function familyFailure(result: FamilyRows, fallback: string): number | null {
   if (result.networkDown) return proxyUnreachable(result.transportError);
-  if (result.errorJson) return apiError(result.errorJson, fallback, result.status ?? 1);
+  if (result.errorJson) return apiError(result.errorJson, fallback, result.status);
   return null;
 }
 
