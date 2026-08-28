@@ -345,7 +345,19 @@ function validateKiroCapabilities(parsed: OcxParsedRequest): void {
 }
 
 type KiroTurn =
-  | { kind: "user"; content: string; images: KiroImage[]; toolResults: KiroToolResult[] }
+  | {
+      kind: "user";
+      content: string;
+      images: KiroImage[];
+      toolResults: KiroToolResult[];
+      /**
+       * True only for the proxy-generated acknowledgement that follows a delivered final answer.
+       * A flag rather than a content comparison: a real user message may legitimately quote the
+       * same sentence, and treating that as internal state would strip its thinking tags and
+       * completion retry.
+       */
+       answerDeliveredAck?: boolean;
+    }
   | {
       kind: "assistant";
       content: string;
@@ -359,6 +371,27 @@ type KiroTurn =
        */
       finalAnswer?: boolean;
     };
+
+/**
+ * True when the LAST content-bearing message is an assistant final answer that closed its turn.
+ *
+ * Mirrors the turn-merge rule: a tool call in that message, or any later user/tool-result message,
+ * means work continued, so the turn is no longer terminal. Empty assistant messages are skipped
+ * rather than treated as continuation, since they carry no visible turn.
+ */
+function hasTrailingDeliveredFinalAnswer(messages: readonly OcxMessage[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== "assistant") return false;
+    const aMsg = msg as OcxAssistantMessage;
+    const hasToolCall = (aMsg.content ?? []).some(part => part.type === "toolCall");
+    if (hasToolCall) return false;
+    const hasText = (aMsg.content ?? []).some(part => part.type === "text" && part.text.trim());
+    if (!hasText) continue;
+    return aMsg.phase === "final_answer";
+  }
+  return false;
+}
 
 function appendTurnText(target: string, next: string): string {
   if (!next) return target;
@@ -467,8 +500,19 @@ export function buildKiroPayload(
   const registry = createKiroToolNameRegistry();
   const toolContext = convertKiroToolContext(parsed, registry);
   const ordinaryTools = toolContext.tools;
+  // A turn whose history already ENDS with a delivered final answer has nothing to complete.
+  // Leaving completion "required" here would keep advertising codex_kiro_final_answer with its
+  // instructions, so the model answers again, or replies with ordinary text and trips the
+  // `needsFallback` retry, which ends its payload with KIRO_COMPLETION_RETRY_MESSAGE and reopens
+  // the finished task. Suppressing the mode is what actually closes that loop; the neutral
+  // acknowledgement below only stops the resume wording.
+  //
+  // Read from parsed messages because `completionMode` is needed to build the tool catalog, which
+  // happens before the turn list exists. `forcedCompletionMode` still wins: the fallback retry
+  // passes "text_fallback" explicitly and must not be silently downgraded.
+  const trailingDeliveredAnswer = hasTrailingDeliveredFinalAnswer(kiroPayloadMessages(parsed));
   const completionMode: KiroCompletionMode = forcedCompletionMode
-    ?? (ordinaryTools.length > 0 ? "required" : "disabled");
+    ?? (ordinaryTools.length > 0 && !trailingDeliveredAnswer ? "required" : "disabled");
   const kiroTools = completionMode === "disabled"
     ? ordinaryTools
     : [...ordinaryTools, kiroCompletionTool()];
@@ -636,6 +680,7 @@ export function buildKiroPayload(
       content: trailing.finalAnswer ? KIRO_ANSWER_DELIVERED_MESSAGE : resumeText,
       images: [],
       toolResults: [],
+      ...(trailing.finalAnswer ? { answerDeliveredAck: true } : {}),
     });
   }
 
@@ -651,6 +696,8 @@ export function buildKiroPayload(
 
   const currentTurn = turns.pop();
   if (!currentTurn || currentTurn.kind !== "user") throw new Error("Kiro request must end with a user turn");
+  // Survives the pop as state, so the checks below never infer intent from user-supplied text.
+  const answerDeliveredAck = currentTurn.answerDeliveredAck === true;
   const toEntry = (turn: KiroTurn): KiroHistoryEntry => turn.kind === "assistant"
     ? {
         assistantResponseMessage: {
@@ -681,16 +728,16 @@ export function buildKiroPayload(
     currentUim.userInputMessageContext = { ...(currentUim.userInputMessageContext ?? {}), tools: kiroTools };
   }
   if (completionMode === "text_fallback") {
-    // Never append the retry instruction onto the answer-delivered placeholder: that placeholder
-    // exists precisely to avoid asking a finished turn for another completion call, and appending
-    // here would reinstate the loop the placeholder prevents.
-    if (currentUim.content !== KIRO_COMPLETION_RETRY_MESSAGE && currentUim.content !== KIRO_ANSWER_DELIVERED_MESSAGE) {
+    // Never append the retry instruction onto the answer-delivered acknowledgement: it exists
+    // precisely to avoid asking a finished turn for another completion call, and appending here
+    // would reinstate the loop it prevents.
+    if (currentUim.content !== KIRO_COMPLETION_RETRY_MESSAGE && !answerDeliveredAck) {
       currentUim.content = appendTurnText(currentUim.content, KIRO_COMPLETION_RETRY_MESSAGE);
     }
   } else if (
     !currentUim.userInputMessageContext?.toolResults
     && currentUim.content !== KIRO_CONTINUATION_MESSAGE
-    && currentUim.content !== KIRO_ANSWER_DELIVERED_MESSAGE
+    && !answerDeliveredAck
   ) {
     currentUim.content = injectKiroThinkingTags(currentUim.content, parsed);
   }

@@ -11,8 +11,23 @@
  * Kiro consumes this helper directly.
  */
 
-/** Matches exec wrappers whose only payload is an empty-output marker. */
-export const EMPTY_EXEC_OUTPUT_REGEX = /^(?:(?:Script completed|Script failed|Command finished|Execution finished)[^\n]*\n+)?(?:Wall time[^\n]*\n+)?(?:Output:\s*)?(?:<empty>)?\s*$/;
+/**
+ * Matches exec wrappers whose only payload is an empty-output marker.
+ *
+ * `Script failed` is deliberately NOT in this set. A failed cell with no captured output is still
+ * a FAILURE, and the success guidance below ("not a blocked tool", "do not re-run") would erase the
+ * only signal that anything went wrong — reachable through Responses history, where
+ * `function_call_output` is parsed with `isError: false`. Cursor keeps its own broader regex for
+ * Computer Use, where a failed wrapper is separately marked `isError`.
+ */
+export const EMPTY_EXEC_OUTPUT_REGEX = /^(?:(?:Script completed|Command finished|Execution finished)[^\n]*\n+)?(?:Wall time[^\n]*\n+)?(?:Output:\s*)?(?:<empty>)?\s*$/;
+
+/** Wrapper for a cell that FAILED without emitting output: empty, but not a success. */
+export const FAILED_EXEC_OUTPUT_REGEX = /^Script failed[^\n]*\n*(?:Wall time[^\n]*\n*)?(?:Output:\s*)?(?:<empty>)?\s*$/;
+
+/** Guidance for a failed cell whose output was empty: the failure must survive normalization. */
+export const FAILED_EXEC_OUTPUT_MESSAGE =
+  "[exec failed with no captured output: the cell raised before emitting anything. This is a real failure, not an empty success — inspect the call for a thrown error or syntax problem before retrying.]";
 
 /**
  * The guidance itself. Worded to close all three wrong conclusions a model draws from a blank
@@ -62,5 +77,9 @@ export function normalizeEmptyExecToolResultText(
   text: string,
   options: { toolName?: string; toolNamespace?: string } = {},
 ): string | undefined {
-  return isEmptyExecToolResult(text, options) ? EMPTY_EXEC_OUTPUT_MESSAGE : undefined;
+  if (!isCodexExecBridgeTool(options.toolName, options.toolNamespace)) return undefined;
+  const trimmed = text.trim();
+  // Failure first: a failed wrapper must never be described as an empty success.
+  if (FAILED_EXEC_OUTPUT_REGEX.test(trimmed)) return FAILED_EXEC_OUTPUT_MESSAGE;
+  return EMPTY_EXEC_OUTPUT_REGEX.test(trimmed) ? EMPTY_EXEC_OUTPUT_MESSAGE : undefined;
 }

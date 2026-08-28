@@ -7,11 +7,12 @@ import { createKiroAdapter } from "../src/adapters/kiro";
 import {
   KIRO_ANSWER_DELIVERED_MESSAGE,
   KIRO_COMPLETION_RETRY_MESSAGE,
+  KIRO_COMPLETION_TOOL_NAME,
   KIRO_CONTINUATION_MESSAGE,
   KIRO_EMPTY_TOOL_RESULT_MESSAGE,
   KIRO_TOOL_RESULT_CARRIER_MESSAGE,
 } from "../src/adapters/kiro-constants";
-import { EMPTY_EXEC_OUTPUT_MESSAGE } from "../src/adapters/exec-tool-result-normalize";
+import { EMPTY_EXEC_OUTPUT_MESSAGE, FAILED_EXEC_OUTPUT_MESSAGE } from "../src/adapters/exec-tool-result-normalize";
 import { MAX_KIRO_TOOL_CATALOG_BYTES, MAX_KIRO_TOOL_COUNT } from "../src/adapters/kiro-tools";
 import { applyProviderConfigHints, buildCatalogEntries } from "../src/codex/catalog";
 import { getValidAccessTokenSnapshot } from "../src/oauth";
@@ -337,6 +338,21 @@ describe("kiro adapter — buildRequest", () => {
   });
 
   test("real exec output and empty non-exec results are left alone", async () => {
+    // Review finding (Codex P2): a failed cell with no output is empty but NOT a success. The
+    // success guidance would erase the only failure signal — reachable via Responses history,
+    // where function_call_output is parsed with isError: false.
+    const execTool0 = { name: "exec", description: "Run JavaScript", parameters: { type: "object" } };
+    const failed = [
+      { role: "user", content: "run it" },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-f", name: "exec", arguments: {} }] },
+      { role: "toolResult", toolCallId: "call-f", toolName: "exec", content: "Script failed\nWall time 0.1 seconds\nOutput:\n", isError: false },
+    ];
+    const failedBody = await createKiroAdapter(provider).buildRequest(parsedWith(failed, [execTool0]));
+    const failedText = JSON.parse(failedBody.body).conversationState.currentMessage.userInputMessage
+      .userInputMessageContext.toolResults[0].content[0].text;
+    expect(failedText).toBe(FAILED_EXEC_OUTPUT_MESSAGE);
+    expect(failedText).not.toBe(EMPTY_EXEC_OUTPUT_MESSAGE);
+
     const execTool = { name: "exec", description: "Run JavaScript", parameters: { type: "object" } };
     const withExecOutput = [
       { role: "user", content: "run it" },
@@ -386,6 +402,54 @@ describe("kiro adapter — buildRequest", () => {
 
     expect(current.content).toContain(KIRO_CONTINUATION_MESSAGE);
     expect(current.content).not.toBe(KIRO_ANSWER_DELIVERED_MESSAGE);
+  });
+
+  // Review finding (Codex P2): suppressing the resume wording is not enough. While completion
+  // stays "required" the request keeps advertising the completion tool, so the model answers again
+  // or trips the text_fallback retry, which reopens the finished task.
+  test("a delivered final answer stops advertising the completion tool", async () => {
+    const delivered = [
+      { role: "user", content: "do it" },
+      { role: "assistant", phase: "final_answer", content: [{ type: "text", text: "Done." }] },
+    ];
+    const { body } = await createKiroAdapter(provider).buildRequest(parsedWith(delivered, [bashTool]));
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+    const toolNames = (current.userInputMessageContext?.tools ?? [])
+      .map((t: { toolSpecification?: { name?: string } }) => t.toolSpecification?.name);
+
+    expect(toolNames).toContain("bash");
+    expect(toolNames).not.toContain(KIRO_COMPLETION_TOOL_NAME);
+    // The instructions must go too: they tell the model to call a tool that is no longer offered.
+    expect(current.content).not.toContain(KIRO_COMPLETION_TOOL_NAME);
+
+    // Control: an unfinished turn still gets the completion contract.
+    const unfinished = [
+      { role: "user", content: "do it" },
+      { role: "assistant", content: [{ type: "text", text: "Working..." }] },
+    ];
+    const open = await createKiroAdapter(provider).buildRequest(parsedWith(unfinished, [bashTool]));
+    const openNames = (JSON.parse(open.body).conversationState.currentMessage.userInputMessage
+      .userInputMessageContext?.tools ?? [])
+      .map((t: { toolSpecification?: { name?: string } }) => t.toolSpecification?.name);
+    expect(openNames).toContain(KIRO_COMPLETION_TOOL_NAME);
+  });
+
+  // Review finding (CodeRabbit): the acknowledgement was detected by comparing user content, so a
+  // real user message quoting that sentence lost its thinking tags and completion retry.
+  test("a user message quoting the acknowledgement is still treated as user content", async () => {
+    const messages = [
+      { role: "user", content: "do it" },
+      { role: "assistant", content: [{ type: "text", text: "ok" }] },
+      { role: "user", content: KIRO_ANSWER_DELIVERED_MESSAGE },
+    ];
+    const { body } = await createKiroAdapter(provider).buildRequest({
+      ...parsedWith(messages, [bashTool]),
+      options: { reasoning: "xhigh" },
+    } as never);
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+
+    // Real user text keeps its reasoning injection; internal state must not be inferred from it.
+    expect(current.content).toContain("<thinking_mode>");
   });
 
   test("commentary after a final answer reopens continuation", async () => {
