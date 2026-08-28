@@ -187,3 +187,38 @@ describe("ocx usage command", () => {
     expect(out).toContain("grok-4.6");
   });
 });
+
+/**
+ * #2704: `ocx logs` could not filter by conversation at all, even though the server route
+ * had accepted `conversationId` for a long time. The URL is asserted rather than the output,
+ * because a command that prints plausible rows while sending no filter is the failure mode.
+ */
+describe("ocx logs --conversation", () => {
+  const rows = [{ timestamp: "t0", status: 200, provider: "xai", model: "grok-4.6", durationMs: 12, conversationId: "conv-7" }];
+
+  test("both spellings build the same conversationId query", async () => {
+    const long = await run(["logs", "--conversationId", "conv-7"], rows);
+    expect(new URL(long.urls[0]!).searchParams.get("conversationId")).toBe("conv-7");
+
+    // The server accepts `conversation` too (`request-log.ts:1032`), so the CLI should not
+    // make an operator remember which spelling this surface wanted.
+    const short = await run(["logs", "--conversation", "conv-7"], rows);
+    expect(new URL(short.urls[0]!).searchParams.get("conversationId")).toBe("conv-7");
+  });
+
+  test("no filter sends no conversationId", async () => {
+    const { urls } = await run(["logs"], rows);
+    expect(new URL(urls[0]!).searchParams.get("conversationId")).toBeNull();
+  });
+
+  test("the human line names the conversation it claims to have filtered", async () => {
+    const { out } = await run(["logs", "--conversation", "conv-7"], rows);
+    // Without this, an empty result and a wrong-id result are indistinguishable.
+    expect(out).toContain("conv=conv-7");
+  });
+
+  test("a row with no conversation id does not print an empty conv= marker", async () => {
+    const { out } = await run(["logs"], [{ timestamp: "t0", status: 200, provider: "xai", model: "grok-4.6" }]);
+    expect(out).not.toContain("conv=");
+  });
+});

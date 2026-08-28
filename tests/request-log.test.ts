@@ -723,6 +723,36 @@ describe("request log metadata", () => {
     expect(combined.map(entry => entry.requestId)).toEqual(["c"]);
   });
 
+  /**
+   * #2704: there was no `model` clause at all, so `?model=x` was accepted and silently
+   * ignored -- every row came back, and `ocx logs --model x` looked like it had filtered.
+   * The non-matching assertion is the one that matters: an unfiltered implementation passes
+   * the positive case for free.
+   */
+  test("filters logs by model, including the attempt that actually served a failover", () => {
+    const logs = [
+      log({ requestId: "a", model: "gpt-test", provider: "openai" }),
+      log({ requestId: "b", model: "grok-4.6", provider: "xai" }),
+      log({
+        requestId: "c",
+        model: "sonnet-4.6",
+        provider: "anthropic",
+        attempts: [
+          { ordinal: 1, provider: "anthropic", model: "sonnet-4.6", adapter: "anthropic", status: 429, durationMs: 5, sendCount: 1, recoveryKinds: [], usageStatus: "unreported" },
+          { ordinal: 2, provider: "xai", model: "grok-4.6", adapter: "openai", status: 200, durationMs: 7, sendCount: 1, recoveryKinds: [], usageStatus: "reported" },
+        ],
+      }),
+    ];
+
+    expect(filterRequestLogs(logs, new URLSearchParams("model=gpt-test")).map(entry => entry.requestId)).toEqual(["a"]);
+    // "c" matches on its second ATTEMPT, mirroring how `provider` already behaves: the request
+    // was ultimately served by grok-4.6, so a grok-4.6 search has to find it.
+    expect(filterRequestLogs(logs, new URLSearchParams("model=grok-4.6")).map(entry => entry.requestId)).toEqual(["b", "c"]);
+    // The assertion an unfiltered implementation cannot pass.
+    expect(filterRequestLogs(logs, new URLSearchParams("model=absent-model"))).toEqual([]);
+    expect(filterRequestLogs(logs, new URLSearchParams("model=grok-4.6&provider=xai")).map(entry => entry.requestId)).toEqual(["b", "c"]);
+  });
+
   test("filters logs by offset and limit", () => {
     const logs = Array.from({ length: 5 }, (_, i) => log({ requestId: `r${i}`, provider: "openai", status: 200 }));
     expect(filterRequestLogs(logs, new URLSearchParams("limit=2")).map(entry => entry.requestId)).toEqual(["r3", "r4"]);

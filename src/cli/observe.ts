@@ -15,7 +15,7 @@ import { USAGE_RANGES, USAGE_SURFACES } from "../usage/summary";
 
 const USAGE = `Usage:
   ocx observe logs [--provider <name>] [--model <id>] [--status <code>]
-      [--limit <n>] [--follow] [--json|--jsonl]
+      [--conversation <id>] [--limit <n>] [--follow] [--json|--jsonl]
   ocx logs explain <request-id> [--json]
   ocx logs rebuild-index
   ocx logs index-status
@@ -50,7 +50,12 @@ function formatLog(row: LogEntry): string {
   const route = [row.provider, row.model].filter(Boolean).join("/");
   const status = row.status ?? row.statusCode ?? "?";
   const duration = row.durationMs !== undefined ? `${String(row.durationMs)}ms` : "";
-  return [time, String(status), route, duration].filter(Boolean).join("  ");
+  // The conversation id is shown because a conversation FILTER whose output never names the
+  // conversation is hard to trust: an empty result and a wrong-id result look identical (#2704).
+  const conversation = typeof row.conversationId === "string" && row.conversationId.length > 0
+    ? `conv=${row.conversationId}`
+    : "";
+  return [time, String(status), route, duration, conversation].filter(Boolean).join("  ");
 }
 
 async function logs(argv: string[], deps: RuntimeApiDeps): Promise<void> {
@@ -61,13 +66,16 @@ async function logs(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const provider = takeOption(args, "--provider");
   const model = takeOption(args, "--model");
   const status = takeOption(args, "--status");
+  // Both spellings, because the server accepts both (`request-log.ts:1032`) and an operator
+  // should not have to remember which one this surface wanted.
+  const conversationId = takeOption(args, "--conversation") ?? takeOption(args, "--conversationId");
   const limit = takeIntegerOption(args, "--limit", { min: 1 }) ?? 200;
   rejectArgs(args, USAGE);
   if (wantsJson && wantsJsonl) throw new CliUsageError("--json and --jsonl cannot be combined", USAGE);
   if (follow && wantsJson) throw new CliUsageError("--follow uses --jsonl, not --json", USAGE);
   let seen = new Set<string>();
   do {
-    const data = await runtimeRequest(`/api/logs${query({ provider, model, status, limit })}`, {}, deps);
+    const data = await runtimeRequest(`/api/logs${query({ provider, model, status, conversationId, limit })}`, {}, deps);
     const rows = logRows(data);
     if (!follow && wantsJson) printData(data, true);
     else {

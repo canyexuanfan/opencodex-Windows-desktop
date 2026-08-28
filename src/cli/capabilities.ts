@@ -159,6 +159,95 @@ export const CAPABILITIES: readonly Capability[] = [
       "An `(ambiguous)` account row aggregates several accounts; do not read it as one identity.",
     ],
   },
+  {
+    command: ["account", "pause"],
+    summary: "Stop routing new requests to one account in the Codex pool.",
+    // One route, both directions: `resume` is the same PUT with `paused: false`.
+    routes: [{ method: "PUT", path: "/api/codex-auth/accounts/pause" }],
+    flags: [{ name: "--json", value: "boolean", summary: "Emit the pause result as JSON." }],
+    mutates: true,
+    json: "envelope",
+    details: [
+      "Pausing also unbinds threads pinned to the account and selects a fallback if it was active -- side effects of the route, not of the word `pause`.",
+      "The issue that requested this reported the route as POST; it is PUT.",
+    ],
+  },
+  {
+    command: ["account", "resume"],
+    summary: "Return a paused account to the Codex pool.",
+    routes: [{ method: "PUT", path: "/api/codex-auth/accounts/pause" }],
+    flags: [{ name: "--json", value: "boolean", summary: "Emit the resume result as JSON." }],
+    mutates: true,
+    json: "envelope",
+  },
+  {
+    command: ["account", "pause-exhausted"],
+    summary: "Pause every Codex account whose quota is spent.",
+    routes: [{ method: "PUT", path: "/api/codex-auth/accounts/pause-exhausted" }],
+    flags: [{ name: "--json", value: "boolean", summary: "Emit paused ids and the checked/failed counts as JSON." }],
+    mutates: true,
+    json: "envelope",
+    details: [
+      "The route refreshes quota per account and can partially fail; a non-zero failed count exits 1 and sets ok:false, because silence would read as `none were exhausted`.",
+    ],
+  },
+  {
+    command: ["account", "strategy"],
+    summary: "Show or set how an account pool picks the next account.",
+    // Both pools, because both have the setting. The Codex pool reads its applied values
+    // from the active payload; the Anthropic pool has its own GET.
+    routes: [
+      { method: "GET", path: "/api/codex-auth/active" },
+      { method: "PUT", path: "/api/codex-auth/pool-strategy" },
+      { method: "GET", path: "/api/oauth/accounts/pool" },
+      { method: "PUT", path: "/api/oauth/accounts/pool" },
+    ],
+    flags: [{ name: "--json", value: "boolean", summary: "Emit the applied strategy and sticky limit as JSON." }],
+    mutates: true,
+    json: "envelope",
+    details: [
+      "A bare invocation reads and never writes.",
+      "The APPLIED value is echoed, not the requested one, so a server-side normalization stays visible.",
+      "Values are not re-validated in the CLI: the server owns the strategy names and the 1-100 sticky bound.",
+      "`anthropic` is the only OAuth pool with this setting; other OAuth providers are refused without a round-trip.",
+    ],
+  },
+  {
+    command: ["account", "sticky"],
+    summary: "Show or set how many consecutive requests stay on one account.",
+    routes: [
+      { method: "GET", path: "/api/codex-auth/active" },
+      { method: "PUT", path: "/api/codex-auth/pool-strategy" },
+      { method: "GET", path: "/api/oauth/accounts/pool" },
+      { method: "PUT", path: "/api/oauth/accounts/pool" },
+    ],
+    flags: [{ name: "--json", value: "boolean", summary: "Emit the applied strategy and sticky limit as JSON." }],
+    mutates: true,
+    json: "envelope",
+    details: ["Only meaningful under the sticky-capable strategies; the pool strategy is the other half of this setting."],
+  },
+  {
+    command: ["logs"],
+    summary: "Recent request log rows, filterable by provider, model, conversation, and status.",
+    routes: [{ method: "GET", path: "/api/logs" }],
+    flags: [
+      { name: "--provider", value: "string", summary: "Restrict to one provider, matching failover attempts too." },
+      { name: "--model", value: "string", summary: "Restrict to one model id, matching failover attempts too." },
+      { name: "--conversation", value: "string", summary: "Restrict to one conversation id (`--conversationId` is accepted too)." },
+      { name: "--status", value: "string", summary: "An exact code (429) or a class (5xx)." },
+      { name: "--limit", value: "number", summary: "Row cap; defaults to 200." },
+      { name: "--follow", value: "boolean", summary: "Stream new rows as JSONL; implies --jsonl." },
+      { name: "--json", value: "boolean", summary: "Emit the server payload as JSON." },
+      { name: "--jsonl", value: "boolean", summary: "Emit one row per line." },
+    ],
+    mutates: false,
+    json: "payload",
+    details: [
+      "`--provider` and `--model` both match a failover attempt, so a request is findable by what actually served it, not only by what was asked for.",
+      "Rows print `conv=<id>` when the entry carries one, so a conversation filter can be told apart from an empty result.",
+      "`--follow` deduplicates by row id and cannot be combined with `--json`.",
+    ],
+  },
 ];
 
 /** Capabilities that drive `route`, for `ocx capabilities --route`. */

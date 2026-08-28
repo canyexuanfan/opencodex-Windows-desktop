@@ -1033,6 +1033,15 @@ export function filterRequestLogs(logs: RequestLogEntry[], params: URLSearchPara
   if (conversationId) {
     filtered = filtered.filter(entry => matchesLogConversationId(entry.conversationId, conversationId));
   }
+  // #2704: there was no `model` clause at all, so `?model=x` was ACCEPTED and silently
+  // ignored -- worse than an error, because it yields wrong conclusions from output that
+  // looks correct. Attempts are matched for the same reason `provider` matches them: a
+  // request that failed over should be findable by the model that actually served it.
+  const model = params.get("model")?.trim();
+  if (model) {
+    filtered = filtered.filter(entry => entry.model === model
+      || entry.attempts?.some(attempt => attempt.model === model));
+  }
   const status = params.get("status")?.trim().toLowerCase();
   if (status) {
     filtered = /^[1-5]xx$/.test(status)
