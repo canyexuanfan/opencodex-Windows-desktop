@@ -149,15 +149,19 @@ describe("management route registry reconciliation", () => {
     expect(poolStrategy.map(r => r.method).sort()).toEqual(["PATCH", "PUT"]);
   });
 
-  test("the two negated-guard routes are declared", () => {
-    // An equality scan cannot see either, and for /api/storage it finds only the dead
-    // shadowed copy. Both must be present, and the live one must not be the dead one.
+  test("the negated-guard routes are declared, and the dead duplicate is GONE", () => {
+    // An equality scan cannot see a `pathname !== x` guard at all, so both of these are
+    // declared by hand. `/api/storage` previously had TWO declarations: the live guard and a
+    // shadowed copy in logs-usage-routes that could never run, exempted as `dead` with a note
+    // saying to delete rather than expose it. wp7 deleted it, so exactly one remains and it is
+    // the live one -- an unreachable duplicate is a trap for the next reader.
     const storage = MANAGEMENT_ROUTES.filter(r => r.path === "/api/storage");
-    expect(storage).toHaveLength(2);
-    const live = storage.find(r => r.module.endsWith("storage-log-guard-routes"));
-    const dead = storage.find(r => r.module.endsWith("logs-usage-routes"));
-    expect(live?.exempt).toBeUndefined();
-    expect(dead?.exempt?.reason).toBe("dead");
+    expect(storage).toHaveLength(1);
+    expect(storage[0]?.module).toMatch(/storage-log-guard-routes$/);
+    expect(storage[0]?.exempt).toBeUndefined();
+    // No `dead` exemption should survive anywhere: the vocabulary exists for routes awaiting
+    // deletion, so a lingering one means the deletion never happened.
+    expect(MANAGEMENT_ROUTES.filter(r => r.exempt?.reason === "dead")).toEqual([]);
     expect(MANAGEMENT_ROUTES.some(r => r.path === "/api/routing-analytics")).toBe(true);
   });
 });

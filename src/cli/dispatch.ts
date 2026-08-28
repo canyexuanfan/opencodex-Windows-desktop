@@ -547,6 +547,10 @@ const commandRunners: Record<string, CommandRunner> = {
     const { handleObserveCommand } = await import("./observe");
     return await handleObserveCommand(deps.args.slice(1));
   },
+  inspect: async deps => {
+    const { handleInspectCommand } = await import("./inspect");
+    return await handleInspectCommand(deps.args.slice(1));
+  },
   logs: async deps => {
     const { handleObserveCommand } = await import("./observe");
     return await handleObserveCommand([deps.command!, ...deps.args.slice(1)]);
@@ -556,8 +560,12 @@ const commandRunners: Record<string, CommandRunner> = {
     return await handleObserveCommand([deps.command!, ...deps.args.slice(1)]);
   },
   storage: async deps => {
-    const { handleObserveCommand } = await import("./observe");
-    return await handleObserveCommand([deps.command!, ...deps.args.slice(1)]);
+    // `ocx storage` used to be a pure alias of `observe storage`, which reached only the report
+    // route. wp7 gave it cleanup, trash, and policy subcommands, so it dispatches to its own
+    // module -- with `report` as the default subcommand, so a bare `ocx storage` still prints
+    // the same thing it printed before.
+    const { handleStorageCommand } = await import("./storage");
+    return await handleStorageCommand(deps.args.slice(1));
   },
   memory: async deps => {
     const { handleObserveCommand } = await import("./observe");
@@ -584,6 +592,12 @@ const commandRunners: Record<string, CommandRunner> = {
     if (integration === "grok") {
       const { handleGrokCommand } = await import("./integrations");
       return await handleGrokCommand(deps.args.slice(2));
+    } else if (integration === "native") {
+      // The native client toggles are a separate server surface from the reversible file
+      // integrations `client` manages, so they get their own subcommand rather than being
+      // folded into one that means something else.
+      const { handleIntegrationCommand } = await import("./inspect");
+      return await handleIntegrationCommand(deps.args.slice(1));
     } else if (integration === "claude") {
       const { handleClaudeConfigCommand } = await import("./integrations");
       return await handleClaudeConfigCommand(deps.args.slice(2));
