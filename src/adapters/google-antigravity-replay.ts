@@ -625,6 +625,69 @@ export function antigravityUsesReplayCache(model: string): boolean {
 }
 
 /**
+ * Gemini 3 rejects a turn whose FIRST functionCall part carries no thought signature. When
+ * neither the wire metadata nor the replay cache can supply a real one, this is the official
+ * validator-bypass token.
+ */
+const THOUGHT_SIGNATURE_BYPASS = "skip_thought_signature_validator";
+
+/**
+ * True when the model speaks the Gemini wire dialect that requires a thought signature on the
+ * first functionCall of a turn — and therefore accepts the validator-bypass sentinel.
+ *
+ * Deliberately NOT `antigravityUsesReplayCache`. That predicate is broad on purpose (every
+ * non-Claude model participates in signature replay), and reusing it for the sentinel is how a
+ * Gemini-only control token was observed being injected into `gpt-oss-120b-medium`. Replaying a
+ * signature upstream gave us is harmless for any model; *fabricating* a Gemini token is not.
+ *
+ * The boundary alternation covers the namespaces this module actually receives: a bare CCA id
+ * (`gemini-3-pro`), a slash-prefixed id (`google/gemini-3-pro`), and the Vertex replay key built
+ * in `src/adapters/google.ts` as `vertex:<project>:<location>:<modelId>`, whose separator is a
+ * COLON — matching only `/` would silently skip every Vertex Gemini request. The trailing
+ * `[-.\d]` keeps `geminibot` and `my-gemini-clone` out. A model outside this set that genuinely
+ * needs the sentinel must arrive with a captured accepted CCA contract, not by widening this
+ * predicate on inference.
+ */
+export function antigravitySupportsThoughtSignatureSentinel(model: string): boolean {
+  return /(^|[/:])gemini[-.\d]/i.test(model);
+}
+
+/**
+ * Ensure every model turn's FIRST functionCall carries a thought signature, injecting the
+ * validator-bypass sentinel only where one is genuinely absent.
+ *
+ * Split out of `applyAntigravityReplay` on purpose. Replay answers "what did upstream already
+ * tell us about this call", and its absence of a signature is meaningful — 18 assertions in the
+ * suite read `thoughtSignature === undefined` as "the cache did not match", covering eviction,
+ * TTL expiry, oversize refusal and clear-on-invalid. Folding a fabricated token into that
+ * function would overwrite the very signal those tests read. Keeping the sentinel as its own
+ * pass means a cache miss still looks like a cache miss.
+ *
+ * Three properties this must hold, each of which a naive presence-check gets wrong:
+ *  - it decides from `extractSignature`, so a valid NESTED
+ *    `extra_content.google.thought_signature` counts as signed (no competing sentinel) and a
+ *    present-but-too-short value does not (the fallback still fires);
+ *  - it looks at the FIRST functionCall only, so a later sibling receiving a cached signature
+ *    cannot vote away the sentinel the first call requires;
+ *  - it is gated on the Gemini wire dialect, not on replay-cache participation.
+ */
+export function applyAntigravityThoughtSignatureFallback(model: string, contents: unknown[]): unknown[] {
+  if (!antigravitySupportsThoughtSignatureSentinel(model) || !Array.isArray(contents)) return contents;
+  for (const rawContent of contents as { role?: string; parts?: unknown[] }[]) {
+    if (!rawContent || typeof rawContent !== "object" || rawContent.role !== "model") continue;
+    if (!Array.isArray(rawContent.parts)) continue;
+    for (const rawPart of rawContent.parts) {
+      if (!rawPart || typeof rawPart !== "object") continue;
+      const part = rawPart as Record<string, unknown>;
+      if (!part.functionCall) continue;
+      if (!extractSignature(part)) part.thoughtSignature = THOUGHT_SIGNATURE_BYPASS;
+      break;
+    }
+  }
+  return contents;
+}
+
+/**
  * Observe a parsed CCA chunk's `candidates[0].content.parts` and record thought signatures keyed by
  * the functionCall identity (name + args). Accumulates across the whole session so a sequential
  * multi-step tool loop keeps EVERY prior call's signature, not just the latest part-index slot.
