@@ -647,7 +647,7 @@ describe("CLI /api sync wiring for stale app-servers (#476)", () => {
       // restartCodex, quitting the user's app would ride along on a flag whose
       // documented contract is app-server-only.
       expect(handler).toContain('includes("--restart-desktop-app")');
-      expect(handler).toContain("if (restartDesktopApp) await handleDesktopAppRestart(console)");
+      expect(handler).toMatch(/if \(restartDesktopApp\) await handleDesktopAppRestart\((console|jsonSafeLog)\)/);
       expect(handler).not.toContain("restartDesktopApp = restartCodex");
       // Gated behind the same real-write condition as the app-server handling.
       const desktopAt = handler.indexOf("restartDesktopApp) await handleDesktopAppRestart");

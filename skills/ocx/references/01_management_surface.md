@@ -44,7 +44,7 @@ JSON mode: `envelope`.
 
 ### `ocx capabilities`
 
-Enumerate every CLI capability with the management routes it drives.
+List the declared CLI capabilities and the management routes they drive.
 
 Drives no management route.
 
@@ -56,21 +56,21 @@ Drives no management route.
 
 JSON mode: `envelope`.
 
-- Start here when driving ocx programmatically: it is the surface index.
+- Start here when driving ocx programmatically: it is the declared surface index, not a complete verb list.
 
 ### `ocx provider list`
 
 Configured providers with connectivity and selected models.
 
-| Method | Route |
-|---|---|
-| GET | `/api/providers` |
+Drives no management route.
 
 | Flag | Value | Meaning |
 |---|---|---|
 | `--json` | boolean | Emit the provider list as JSON. |
 
-JSON mode: `payload`.
+JSON mode: `envelope`.
+
+- Reads local config; drives no management API route.
 
 ### `ocx account list`
 
@@ -87,7 +87,7 @@ Codex OAuth accounts with pool priority and pause state.
 JSON mode: `payload`.
 
 - STATUS names `paused` alongside `selected`: a paused-but-selected account still receives requests.
-- Quota is only fetched under `--quota` (a deliberate cost decision), so 5h and weekly percentages appear in `account list --quota`, not bare `account list`.
+- `--quota` shows cached Codex windows (including 5h); `--refresh` bypasses the server TTL.
 
 ### `ocx usage`
 
@@ -365,7 +365,7 @@ Pause every Codex account whose quota is spent.
 
 JSON mode: `envelope`.
 
-- The route refreshes quota per account and can partially fail; a non-zero failed count is reported, because silence would read as `none were exhausted`.
+- The route refreshes quota per account and can partially fail; a non-zero failed count exits 1 and sets ok:false, because silence would read as `none were exhausted`.
 
 ### `ocx account strategy`
 

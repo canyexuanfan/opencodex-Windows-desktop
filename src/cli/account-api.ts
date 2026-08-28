@@ -179,7 +179,7 @@ export interface FamilyRows {
   activeId: string | null;
   autoSwitchThreshold?: number;
   /** HTTP status for a completed family read, including failures. */
-  status?: number;
+  status: number;
   /** Set when the family endpoint returned an error. */
   errorJson?: Record<string, unknown>;
   networkDown?: boolean;
