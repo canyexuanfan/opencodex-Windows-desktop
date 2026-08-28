@@ -140,6 +140,12 @@ export interface RequestLogEntry {
   /** TTFT: ms from request start to the first non-empty model output delta; unset for non-streaming/tool-only. */
   firstOutputMs?: number;
   surface?: "claude" | "claude-desktop" | "grok";
+  /**
+   * Set when the proxy answered this turn locally and sent nothing upstream. Without it a zero-send
+   * row is indistinguishable from a request that vanished. A fixed adapter-supplied identifier,
+   * never conversation-derived.
+   */
+  localTerminalReason?: string;
   /** The matched configured key's id. Set ONLY for admissionKind "configured" —
    *  never a sentinel, so a hand-edited entry whose id happens to be "loopback"
    *  cannot absorb unrelated traffic. */
@@ -949,6 +955,7 @@ export function addFinalRequestLog(
     logCtx.usage,
     logCtx.usageLogInputTokens,
     contextWindowForModel(logCtx.providerAdapter ?? logCtx.provider, logCtx.model),
+    logCtx.localTerminalReason !== undefined,
   );
   const attempts = logCtx.attempts?.map(attempt => ({
     ...attempt,
@@ -976,6 +983,9 @@ export function addFinalRequestLog(
     ...(logCtx.apiKeyId ? { apiKeyId: logCtx.apiKeyId } : {}),
     ...(logCtx.admissionKind ? { admissionKind: logCtx.admissionKind } : {}),
     ...(logCtx.inboundProtocol ? { inboundProtocol: logCtx.inboundProtocol } : {}),
+    ...(logCtx.localTerminalReason
+      ? { localTerminalReason: sanitizeLogMetadataString(logCtx.localTerminalReason) }
+      : {}),
     ...(isCodexUsageAccountLogLabel(logCtx.accountLogLabel)
       ? { accountLogLabel: logCtx.accountLogLabel }
       : {}),
@@ -1109,6 +1119,7 @@ function finalizedUsage(
   usage: OcxUsage | undefined,
   inputTokenEstimate: number | undefined,
   contextWindow: number | undefined,
+  locallyAnswered = false,
 ): FinalizedUsageResult {
   // The ESTIMATE itself is capped at the model's context window (codex-router PR #140). The
   // combined value below keeps its max(inputTokens, estimate) behavior — a provider-reported
@@ -1118,7 +1129,7 @@ function finalizedUsage(
     && inputTokenEstimate >= 0
     ? capEstimateAtContextWindow(inputTokenEstimate, contextWindow)
     : undefined;
-  const finalUsage = usageForFinalLog(adapter, usage);
+  const finalUsage = usageForFinalLog(adapter, usage, locallyAnswered);
   const usageFallback = !finalUsage && estimate !== undefined
     ? { inputTokens: estimate, outputTokens: 0, estimated: true }
     : undefined;

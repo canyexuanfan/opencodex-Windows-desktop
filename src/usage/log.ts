@@ -181,8 +181,20 @@ function isEstimatedUsageProvider(providerOrAdapter: string): boolean {
     || providerOrAdapter === "cursor" || providerOrAdapter.startsWith("cursor-");
 }
 
-export function usageForFinalLog(provider: string, usage: OcxUsage | undefined): OcxUsage | undefined {
+export function usageForFinalLog(
+  provider: string,
+  usage: OcxUsage | undefined,
+  /**
+   * True when the proxy answered this turn locally and issued no upstream request. Such a turn's
+   * zero counts are EXACT, so the provider-wide estimated marking must not apply: Kiro and Cursor
+   * are marked estimated because their adapters can only guess a real inference's usage, and a
+   * turn with no inference has nothing to guess. Without this, a no-send turn is indistinguishable
+   * from a real one whose usage frame never arrived.
+   */
+  locallyAnswered = false,
+): OcxUsage | undefined {
   if (!usage) return undefined;
+  if (locallyAnswered) return usage;
   if (usage.estimated || isEstimatedUsageProvider(provider)) return { ...usage, estimated: true };
   return usage;
 }

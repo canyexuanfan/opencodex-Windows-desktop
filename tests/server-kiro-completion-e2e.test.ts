@@ -6,6 +6,7 @@ import { KIRO_COMPLETION_TOOL_NAME } from "../src/adapters/kiro-constants";
 import { saveConfig } from "../src/config";
 import { encodeMessage } from "../src/lib/eventstream-decoder";
 import { startServer } from "../src/server";
+import { clearRequestLogsForTests, getRequestLogEntries } from "../src/server/request-log";
 import type { OcxConfig } from "../src/types";
 import { installIsolatedCodexHome, type IsolatedCodexHome } from "./helpers/isolated-codex-home";
 
@@ -347,4 +348,58 @@ describe("Kiro completion through public server endpoints", () => {
       upstream.server.stop(true);
     }
   });
+});
+
+// The behavioural tests above prove nothing was SENT. This one proves the request log says so.
+// The C-phase verifier caught exactly this gap: the first implementation logged the local terminal
+// with `estimated: true`, because Kiro usage is marked estimated provider-wide. Zero counts from a
+// turn that made no inference are exact, and a row that claims otherwise is indistinguishable from
+// a real turn whose usage frame never arrived.
+describe("Kiro local terminal accounting", () => {
+  for (const stream of [true, false]) {
+    test(`a delivered final answer logs exact zero usage and no send (stream=${stream})`, async () => {
+      const upstream = scriptedKiroUpstream([]);
+      saveConfig(kiroConfig(upstream.server.url.toString()));
+      clearRequestLogsForTests();
+      const proxy = startServer(0);
+      try {
+        const response = await originalFetch(new URL("/v1/responses", proxy.url), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            model: "kiro-test/gpt-5.6-sol",
+            stream,
+            input: [
+              { type: "message", role: "user", content: [{ type: "input_text", text: "what is code mode" }] },
+              {
+                type: "message",
+                role: "assistant",
+                phase: "final_answer",
+                content: [{ type: "output_text", text: "Code mode runs JavaScript that calls tools." }],
+              },
+            ],
+            tools: [{ type: "function", name: "bash", description: "Run a command", parameters: { type: "object" } }],
+          }),
+        });
+        expect(response.status).toBe(200);
+        // The streaming log is written when the body finishes, so drain it before reading.
+        await response.text();
+        expect(upstream.requests).toHaveLength(0);
+
+        const entry = getRequestLogEntries().find(row => row.provider === "kiro-test");
+        expect(entry).toBeDefined();
+        expect(entry!.localTerminalReason).toBe("kiro_final_answer_already_delivered");
+        // Exact, not estimated: this is the assertion the first implementation failed.
+        expect(entry!.usageStatus).toBe("reported");
+        expect(entry!.usage?.estimated).toBeUndefined();
+        expect(entry!.usage?.inputTokens).toBe(0);
+        expect(entry!.usage?.outputTokens).toBe(0);
+        expect(entry!.attempts?.every(attempt => attempt.sendCount === 0) ?? true).toBe(true);
+        expect(entry!.attempts?.every(attempt => attempt.inputTokenEstimate === undefined) ?? true).toBe(true);
+      } finally {
+        await proxy.stop(true);
+        upstream.server.stop(true);
+      }
+    });
+  }
 });
