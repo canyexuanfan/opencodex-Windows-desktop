@@ -100,7 +100,6 @@ import type {
 } from "../../types";
 import {
   forceRefreshOAuthAccessSnapshot,
-  getOAuthCredentialApiBaseUrl,
   getValidAccessTokenForAccount,
   getValidAccessTokenSnapshot,
   publicOAuthAuthenticationErrorMessage,
@@ -127,6 +126,7 @@ import {
   isGenericOAuthFailoverEnabled,
   rotateGenericOAuthAccountOn429,
 } from "../../oauth/generic-account-failover";
+import { resolveCopilotApiBaseUrl } from "../../oauth/github-copilot";
 import { buildWebSearchTool, planWebSearch, runWithWebSearch, shouldResolveOpenAiWebSearchSidecar } from "../../web-search";
 import { buildImageTool, buildVideoTool, planImageBridge, planVideoBridge, runWithImageBridge, clampImageMaxRounds, IMAGE_GEN_TOOL_NAME, VIDEO_GEN_TOOL_NAME } from "../../images";
 import { describeImagesInPlace, isModelTextOnly, planVisionSidecar, resolveOpenAiVisionModel, shouldResolveOpenAiVisionSidecar, stripImagesInPlace } from "../../vision";
@@ -2954,7 +2954,12 @@ async function handleResponsesInner(
    * rotation rather than send a half-applied identity:
    *
    * - Copilot pins its bearer to an account-scoped regional origin, so transport is re-resolved
-   *   with the new account's `apiBaseUrl` instead of inheriting the previous account's host.
+   *   with the new account's `apiBaseUrl` instead of inheriting the previous account's host. The
+   *   snapshot value is RESOLVED first: `rotatedProvider` is a clone of the FAILED account's
+   *   provider, so passing a bare `undefined` origin let the transport resolver fall through its
+   *   own `?? validateCopilotApiBaseUrl(provider.baseUrl)` step to the previous account's host —
+   *   pairing B's bearer with A's accepted origin. Login and refresh always persist a resolved
+   *   origin, so this fallback protects malformed or manually seeded credentials.
    * - A Cloud Code Assist provider needs an account-matched project. Antigravity's refresh path
    *   tolerates project discovery failing, so a stored account can legitimately have no project;
    *   sending that account's bearer with the FAILED account's project is worse than not rotating.
@@ -2967,7 +2972,7 @@ async function handleResponsesInner(
         route.providerName,
         rotatedProvider,
         parsed.options.promptCacheKey,
-        snapshot.apiBaseUrl,
+        resolveCopilotApiBaseUrl(snapshot.apiBaseUrl),
       ) as OcxProviderConfig;
     }
     if (snapshot.projectId) rotatedProvider = { ...rotatedProvider, project: snapshot.projectId };
@@ -3056,7 +3061,9 @@ async function handleResponsesInner(
     route.providerName,
     route.provider,
     parsed.options.promptCacheKey,
-    route.providerName === "github-copilot" ? getOAuthCredentialApiBaseUrl(route.providerName) : undefined,
+    route.providerName === "github-copilot" && route.provider.authMode === "oauth"
+      ? resolveCopilotApiBaseUrl(sentOAuthSnapshot?.apiBaseUrl)
+      : undefined,
   );
   let adapterProvider = resolveWireProtocolOverride(route.providerName, route.modelId, route.provider, inboundWire);
   const stripClaudeMainAuth = options.stripClaudeMainAuthForNoncanonicalForward === true
@@ -3678,7 +3685,9 @@ async function handleResponsesInner(
         route.providerName,
         { ...route.provider, apiKey: refreshed.accessToken },
         parsed.options.promptCacheKey,
-        route.providerName === "github-copilot" ? getOAuthCredentialApiBaseUrl(route.providerName) : undefined,
+        route.providerName === "github-copilot"
+          ? resolveCopilotApiBaseUrl(refreshed.apiBaseUrl)
+          : undefined,
       );
       route.provider = refreshedProvider;
       const refreshedAdapter = resolveAdapter(
@@ -5265,7 +5274,9 @@ async function handleResponsesInner(
           route.providerName,
           { ...route.provider, apiKey: refreshed.accessToken },
           parsed.options.promptCacheKey,
-          route.providerName === "github-copilot" ? getOAuthCredentialApiBaseUrl(route.providerName) : undefined,
+          route.providerName === "github-copilot"
+            ? resolveCopilotApiBaseUrl(refreshed.apiBaseUrl)
+            : undefined,
         );
         route.provider = refreshedProvider;
         invalidateSameTargetRequest();
