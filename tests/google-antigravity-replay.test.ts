@@ -1100,6 +1100,29 @@ describe("thought-signature validator-bypass fallback (#2693)", () => {
     expect(sigOf(other[0].parts[0])).toBeUndefined();
   });
 
+  test("a gemini-named Vertex PROJECT does not arm the sentinel for a non-Gemini model", () => {
+    // The Vertex replay key is vertex:<project>:<location>:<modelId> and the project id is
+    // operator-chosen. Scanning the whole identity meant a project called "gemini-prod" armed
+    // the Gemini-only sentinel for gpt-oss-120b — the same class of defect the predicate exists
+    // to prevent, one layer up. Reduce to the model component before matching.
+    expect(antigravitySupportsThoughtSignatureSentinel("vertex:gemini-prod:global:gpt-oss-120b"))
+      .toBe(false);
+    expect(antigravitySupportsThoughtSignatureSentinel("vertex:gemini-team:us:claude-fable-5"))
+      .toBe(false);
+
+    const contents = [{
+      role: "model",
+      parts: [{ functionCall: { name: "get_x", args: {} } }],
+    }];
+    applyAntigravityThoughtSignatureFallback("vertex:gemini-prod:global:gpt-oss-120b", contents);
+    expect(sigOf(contents[0].parts[0])).toBeUndefined();
+
+    // The positive control still holds under the same parsing.
+    const gemini = [{ role: "model", parts: [{ functionCall: { name: "get_x", args: {} } }] }];
+    applyAntigravityThoughtSignatureFallback("vertex:gemini-prod:global:gemini-3-pro", gemini);
+    expect(sigOf(gemini[0].parts[0])).toBe(BYPASS);
+  });
+
   test("a user-role turn is untouched", () => {
     const contents = [{ role: "user", parts: [{ functionCall: { name: "get_x", args: {} } }] }];
     applyAntigravityThoughtSignatureFallback(MODEL, contents);

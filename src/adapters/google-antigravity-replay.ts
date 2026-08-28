@@ -640,16 +640,22 @@ const THOUGHT_SIGNATURE_BYPASS = "skip_thought_signature_validator";
  * Gemini-only control token was observed being injected into `gpt-oss-120b-medium`. Replaying a
  * signature upstream gave us is harmless for any model; *fabricating* a Gemini token is not.
  *
- * The boundary alternation covers the namespaces this module actually receives: a bare CCA id
- * (`gemini-3-pro`), a slash-prefixed id (`google/gemini-3-pro`), and the Vertex replay key built
- * in `src/adapters/google.ts` as `vertex:<project>:<location>:<modelId>`, whose separator is a
- * COLON — matching only `/` would silently skip every Vertex Gemini request. The trailing
- * `[-.\d]` keeps `geminibot` and `my-gemini-clone` out. A model outside this set that genuinely
- * needs the sentinel must arrive with a captured accepted CCA contract, not by widening this
- * predicate on inference.
+ * The identity must be REDUCED to its model component before matching, not scanned whole. The
+ * Vertex replay key is built in `src/adapters/google.ts` as
+ * `vertex:<project>:<location>:<modelId>`, and the project id is operator-chosen: a project
+ * named `gemini-prod` made a whole-string scan return true for
+ * `vertex:gemini-prod:global:gpt-oss-120b`, arming the Gemini-only sentinel for a non-Gemini
+ * model — the exact class of defect this predicate exists to prevent, reintroduced one layer up.
+ *
+ * So: take the last `:` segment for a Vertex identity, then the last `/` segment for a
+ * namespaced id (`google/gemini-3-pro`), and match only that. The trailing `[-.\d]` keeps
+ * `geminibot` and `my-gemini-clone` out. A model outside this set that genuinely needs the
+ * sentinel must arrive with a captured accepted CCA contract, not by widening this predicate.
  */
 export function antigravitySupportsThoughtSignatureSentinel(model: string): boolean {
-  return /(^|[/:])gemini[-.\d]/i.test(model);
+  const afterTransport = model.slice(model.lastIndexOf(":") + 1);
+  const wireModel = afterTransport.slice(afterTransport.lastIndexOf("/") + 1);
+  return /^gemini[-.\d]/i.test(wireModel);
 }
 
 /**
