@@ -190,8 +190,8 @@ export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): P
     if (args.length > 0 || confirmed || rollback) return reject(args);
     const path = sub === "doctor" ? "/api/native-main-profiles/doctor" : "/api/native-main-profiles";
     const result = await apiJson(deps, baseUrl, "GET", path);
-    if (result.status === 0) return proxyUnreachable();
-    if (result.status !== 200) return apiError(result.json, `failed to ${sub} native profiles`);
+    if (result.status === 0) return proxyUnreachable(result.transportError);
+    if (result.status !== 200) return apiError(result.json, `failed to ${sub} native profiles`, result.status);
     if (wantsJson || sub === "doctor") console.log(JSON.stringify(result.json, null, 2));
     else printProfiles(Array.isArray(result.json.profiles) ? result.json.profiles as PublicProfile[] : []);
     return 0;
@@ -201,8 +201,8 @@ export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): P
     const label = args.shift();
     if (!label || args.length > 0 || confirmed || rollback) return reject(args);
     const result = await apiJson(deps, baseUrl, "POST", "/api/native-main-profiles/register", { label });
-    if (result.status === 0) return proxyUnreachable();
-    if (result.status !== 200) return apiError(result.json, "failed to register the current native login");
+    if (result.status === 0) return proxyUnreachable(result.transportError);
+    if (result.status !== 200) return apiError(result.json, "failed to register the current native login", result.status);
     if (wantsJson) console.log(JSON.stringify(result.json, null, 2));
     else console.log(`Registered '${label}' for ${effectiveCodexHome(result.json)}.`);
     return 0;
@@ -212,8 +212,8 @@ export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): P
     const label = args.shift();
     if (!label || args.length > 0 || wantsJson || confirmed || rollback) return reject(args);
     const stage = await apiJson(deps, baseUrl, "POST", "/api/native-main-profiles/stage", {});
-    if (stage.status === 0) return proxyUnreachable();
-    if (stage.status !== 200) return apiError(stage.json, "failed to prepare native login staging");
+    if (stage.status === 0) return proxyUnreachable(stage.transportError);
+    if (stage.status !== 200) return apiError(stage.json, "failed to prepare native login staging", stage.status);
     const stageId = typeof stage.json.stageId === "string" ? stage.json.stageId : "";
     const writerToken = typeof stage.json.writerToken === "string" ? stage.json.writerToken : "";
     const stagingHome = typeof stage.json.stagingCodexHome === "string" ? stage.json.stagingCodexHome : "";
@@ -258,8 +258,8 @@ export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): P
       if (leaseLost) throw new Error("The native-login staging lease was lost before login completed.");
       if (exitCode !== 0) throw new Error("Official Codex login did not complete successfully.");
       const finish = await apiJson(deps, baseUrl, "POST", "/api/native-main-profiles/stage/finish", { stageId, writerToken, label });
-      if (finish.status === 0) return proxyUnreachable();
-      if (finish.status !== 200) return apiError(finish.json, "failed to encrypt the staged native login");
+      if (finish.status === 0) return proxyUnreachable(finish.transportError);
+      if (finish.status !== 200) return apiError(finish.json, "failed to encrypt the staged native login", finish.status);
       finished = true;
       console.log(`Added encrypted native profile '${label}' for ${effectiveCodexHome(finish.json)}.`);
       return 0;
@@ -283,8 +283,8 @@ export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): P
       return reject(args);
     }
     const result = await apiJson(deps, baseUrl, "POST", "/api/native-main-profiles/switch", { target, confirmedStopped: true });
-    if (result.status === 0) return proxyUnreachable();
-    if (result.status !== 200) return apiError(result.json, "failed to switch the native login");
+    if (result.status === 0) return proxyUnreachable(result.transportError);
+    if (result.status !== 200) return apiError(result.json, "failed to switch the native login", result.status);
     if (wantsJson) console.log(JSON.stringify(result.json, null, 2));
     else {
       const profile = result.json.activeProfile as PublicProfile | undefined;
@@ -301,8 +301,8 @@ export async function cmdNativeMainAccount(args: string[], deps: AccountDeps): P
     const result = await apiJson(deps, baseUrl, "POST", "/api/native-main-profiles/recover", rollback
       ? { rollback: true, confirmedStopped: true }
       : { rollback: false });
-    if (result.status === 0) return proxyUnreachable();
-    if (result.status !== 200) return apiError(result.json, "failed to recover the native-profile transaction");
+    if (result.status === 0) return proxyUnreachable(result.transportError);
+    if (result.status !== 200) return apiError(result.json, "failed to recover the native-profile transaction", result.status);
     if (wantsJson) console.log(JSON.stringify(result.json, null, 2));
     else {
       const home = effectiveCodexHome(result.json);

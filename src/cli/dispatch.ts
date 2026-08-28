@@ -315,8 +315,12 @@ const commandRunners: Record<string, CommandRunner> = {
   },
   tray: async deps => {
     const { windowsTrayCommand } = await import("../tray/windows");
+    // windowsTrayCommand reports failure through process.exitCode (tray/windows.ts sets
+    // it for bad usage and for a failed install/start/stop/uninstall) and returns void,
+    // so a literal 0 here made `ocx tray install` print an error and exit 0 (#2697).
+    process.exitCode = 0;
     await windowsTrayCommand(deps.args.slice(1));
-    return 0;
+    return Number(process.exitCode ?? 0);
   },
   "codex-shim": async deps => {
     const { codexShimStatus, diagnoseCodexShim, installCodexShim, uninstallCodexShim } = await import("../codex/shim");
@@ -418,8 +422,15 @@ const commandRunners: Record<string, CommandRunner> = {
   },
   provider: async deps => {
     const { handleProviderCommand } = await import("./provider");
+    // Reset first, like the service runner below: reading process.exitCode only
+    // reports THIS command's outcome if nothing earlier in the process set it.
+    process.exitCode = 0;
     await handleProviderCommand(deps.args.slice(1));
-    return 0;
+    // handleProviderCommand reports failure through process.exitCode, which it sets
+    // from handleProviderRuntimeCommand. Returning a literal 0 here made index.ts
+    // call process.exit(0) and erase it, so `ocx provider quota` against a stopped
+    // proxy printed an error and still exited 0 (#2697).
+    return Number(process.exitCode ?? 0);
   },
   account: async deps => {
     const { cmdAccount } = await import("./account");
@@ -427,8 +438,11 @@ const commandRunners: Record<string, CommandRunner> = {
   },
   models: async deps => {
     const { handleModels } = await import("./models");
+    process.exitCode = 0;
     await handleModels(deps.args.slice(1));
-    return 0;
+    // Same as the provider runner above: handleModels sets process.exitCode from
+    // handleModelsRuntimeCommand, and a literal 0 discarded it (#2697).
+    return Number(process.exitCode ?? 0);
   },
   alias: async deps => {
     const { handleAliasCommand } = await import("./alias");

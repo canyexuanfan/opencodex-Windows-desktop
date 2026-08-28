@@ -232,8 +232,8 @@ function configAndType(deps: AccountDeps, name: string) {
 }
 
 function familyFailure(result: FamilyRows, fallback: string): number | null {
-  if (result.networkDown) return proxyUnreachable();
-  if (result.errorJson) return apiError(result.errorJson, fallback);
+  if (result.networkDown) return proxyUnreachable(result.transportError);
+  if (result.errorJson) return apiError(result.errorJson, fallback, result.status ?? 1);
   return null;
 }
 
@@ -325,8 +325,8 @@ export async function cmdRefresh(args: string[], deps: AccountDeps): Promise<num
   if (!baseUrl) return proxyUnreachable();
   if (classified.type !== "codex") {
     const result = await fetchProviderQuotaReport(deps, baseUrl, name);
-    if (result.status === 0) return proxyUnreachable();
-    if (result.status !== 200) return apiError(result.errorJson ?? {}, `failed to refresh ${name}`);
+    if (result.status === 0) return proxyUnreachable(result.transportError);
+    if (result.status !== 200) return apiError(result.errorJson ?? {}, `failed to refresh ${name}`, result.status);
     if (wantsJson) console.log(JSON.stringify({ provider: name, report: result.report }, null, 2));
     else console.log(result.report ? providerQuotaLine(name, result.report) : `no quota report available for ${name}`);
     return 0;
@@ -360,15 +360,15 @@ export async function cmdAutoSwitch(args: string[], deps: AccountDeps): Promise<
   if (!baseUrl) return proxyUnreachable();
   if (action === "status") {
     const response = await apiJson(deps, baseUrl, "GET", "/api/codex-auth/active");
-    if (response.status === 0) return proxyUnreachable();
+    if (response.status === 0) return proxyUnreachable(response.transportError);
     if (response.status !== 200 || typeof response.json.autoSwitchThreshold !== "number") {
-      return apiError(response.json, "failed to read auto-switch status");
+      return apiError(response.json, "failed to read auto-switch status", response.status);
     }
     threshold = response.json.autoSwitchThreshold;
   } else {
     const response = await apiJson(deps, baseUrl, "PUT", "/api/codex-auth/auto-switch", { threshold });
-    if (response.status === 0) return proxyUnreachable();
-    if (response.status !== 200) return apiError(response.json, "failed to update auto-switch");
+    if (response.status === 0) return proxyUnreachable(response.transportError);
+    if (response.status !== 200) return apiError(response.json, "failed to update auto-switch", response.status);
   }
   const enabled = threshold! > 0;
   if (wantsJson) console.log(JSON.stringify({ provider: name, autoSwitchThreshold: threshold, enabled }, null, 2));
@@ -459,8 +459,8 @@ export async function cmdAddKey(args: string[], deps: AccountDeps): Promise<numb
   const baseUrl = await resolveBaseUrl(deps);
   if (!baseUrl) return proxyUnreachable();
   const response = await apiJson(deps, baseUrl, "POST", "/api/providers/keys", { name, key, ...(label ? { label } : {}) });
-  if (response.status === 0) return proxyUnreachable();
-  if (response.status !== 201) return apiError(response.json, `failed to add a key for ${name}`);
+  if (response.status === 0) return proxyUnreachable(response.transportError);
+  if (response.status !== 201) return apiError(response.json, `failed to add a key for ${name}`, response.status);
   const id = typeof response.json.id === "string" ? response.json.id : null;
   // Redact the key inside the label BEFORE serialization — a key containing
   // JSON-escaped characters (" or \) would otherwise survive the whole-output
@@ -536,7 +536,7 @@ export async function cmdImport(args: string[], deps: AccountDeps): Promise<numb
     clearTimeout(timer);
   }
   if (response.status === 0) {
-    if (!timedOut) return proxyUnreachable();
+    if (!timedOut) return proxyUnreachable(response.transportError);
     console.error(`Error: import_timeout after ${importTimeoutMs}ms`);
     return 1;
   }
@@ -589,8 +589,8 @@ export async function cmdClearCooldown(args: string[], deps: AccountDeps): Promi
   const baseUrl = await resolveBaseUrl(deps);
   if (!baseUrl) return proxyUnreachable();
   const response = await apiJson(deps, baseUrl, "POST", "/api/codex-auth/accounts/clear-cooldown", { id });
-  if (response.status === 0) return proxyUnreachable();
-  if (response.status !== 200) return apiError(response.json, `failed to clear cooldown for ${requestedId}`);
+  if (response.status === 0) return proxyUnreachable(response.transportError);
+  if (response.status !== 200) return apiError(response.json, `failed to clear cooldown for ${requestedId}`, response.status);
   const cleared = response.json?.cleared === true;
   if (wantsJson) console.log(JSON.stringify({ ok: true, provider: name, id, cleared }, null, 2));
   else if (cleared) console.log(`${name}: cooldown lifted for ${requestedId}`);
@@ -680,8 +680,8 @@ export async function cmdPriority(args: string[], deps: AccountDeps): Promise<nu
   }
 
   const response = await apiJson(deps, baseUrl, "PUT", "/api/codex-auth/accounts/priority", { id, priority });
-  if (response.status === 0) return proxyUnreachable();
-  if (response.status !== 200) return apiError(response.json, `failed to set selection order for ${requestedId}`);
+  if (response.status === 0) return proxyUnreachable(response.transportError);
+  if (response.status !== 200) return apiError(response.json, `failed to set selection order for ${requestedId}`, response.status);
   const applied = typeof response.json.priority === "number" ? response.json.priority : (priority ?? 0);
   if (wantsJson) {
     console.log(JSON.stringify(
@@ -728,8 +728,8 @@ export async function cmdAlias(args: string[], deps: AccountDeps): Promise<numbe
       ? { provider: name, accountId: id, alias }
       : { name, id, alias };
   const response = await apiJson(deps, baseUrl, "PUT", path, body);
-  if (response.status === 0) return proxyUnreachable();
-  if (response.status !== 200) return apiError(response.json, `failed to rename ${requestedId}`);
+  if (response.status === 0) return proxyUnreachable(response.transportError);
+  if (response.status !== 200) return apiError(response.json, `failed to rename ${requestedId}`, response.status);
   const result = { ok: true, provider: name, id, alias: alias || null };
   if (wantsJson) console.log(JSON.stringify(result, null, 2));
   else console.log(alias ? `${name}: ${requestedId} is now “${alias}”` : `${name}: cleared alias for ${requestedId}`);
