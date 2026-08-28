@@ -155,3 +155,48 @@ something no amount of my own green output would have surfaced.
 Fixed by reducing to the model component (last `:` segment, then last `/` segment,
 anchored) rather than widening or blacklisting. Mutation-verified: the whole-string
 scan fails exactly the new regression.
+
+## Admin-merge authorization (2026-08-28)
+
+The user authorized `--admin` merges, which resolved the self-approval deadlock and
+the author-attestation box. Four landed: **#2794** (`bdc1e97bb`), **#2747**
+(`fe063d16e`), the round docs **#2806** (`7dd01bfdd`), and #2740 earlier. Each was
+already fully green — the authorization removed a *process* gate, not a verification
+one, and nothing merged that lacked evidence.
+
+#2770 was closed rather than merged: its branch predated six merges, so its diff
+against current `dev` showed 2439 deletions. #2806 replaced it, cut from current
+`dev`. #2745 was superseded by **#2807**, which carries the same fix rebased with
+both review blockers closed.
+
+## Where the admin merge stopped, and why
+
+Two credential-path PRs were **not** merged despite the rights being available.
+
+**#2638** fails `hygiene` on `unsponsored_surface` naming `src/codex/auth-context.ts`.
+That gate asks whether a human has reviewed a credential path; admin rights answer a
+different question. The `maintainer-sponsored` label *is* the judgement being
+requested, so applying it forges the gate rather than passes it. The author has since
+added `fix(codex): fence retry entitlement refresh`, which closes a real window — the
+initial auth selection releases its admission before the first response arrives, so a
+profile switch could overlap credential discovery. Re-verified at the new head
+`e06ffbaa8`: **272/0** focused, **15465/0** full suite, `tsc` exit 0.
+
+**#2807** is subtler and worth recording precisely. `hygiene` **passes** on it, because
+`src/server/responses/core.ts` is not in `RESTRICTED_FILES` in
+`.github/scripts/pr-sponsored-surface.cjs`. But `.github/CODEOWNERS:46` assigns that
+exact file to `@lidge-jun`, and `MAINTAINERS.md:60` requires explicit security review
+for credential handling — which is exactly what the diff does: it decides which origin
+a rotated-to account's bearer is sent to.
+
+So the automated gate says yes and the written policy says no. **The gate is narrower
+than the rule it encodes**, and a passing check is not permission when the rule it
+exists to enforce plainly applies. I am both the author and the code owner, so there
+is no second pair of eyes on this credential path either way.
+
+That asymmetry deserves fixing at the source: `src/server/responses/core.ts` belongs
+in `RESTRICTED_FILES` if it belongs in CODEOWNERS' security boundary. Recorded as a
+follow-up rather than changed here — widening a security gate mid-round, while holding
+admin rights and an open PR that the widened gate would block, is exactly the kind of
+self-serving edit that deserves its own reviewed change.
+
