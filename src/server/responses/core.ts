@@ -172,7 +172,11 @@ import {
   fetchWithTransientRetry,
   prepareSameTarget429Wait,
 } from "../../lib/upstream-retry";
-import { ForwardAdmissionCredentialError, validateForwardAdmissionCredential } from "../auth-cors";
+import {
+  ForwardAdmissionCredentialError,
+  hasForwardableCodexBearer,
+  validateForwardAdmissionCredential,
+} from "../auth-cors";
 import type { DataPlaneAdmission } from "../auth-cors";
 import { createTranslatorBudget, isTranslatorBudgetExceededError, type TranslatorBudget } from "../../lib/translator-budget";
 import { listOpenAiForwardSidecarCandidates, resolveFirstUsableOpenAiSidecar, type ResolvedOpenAiForwardSidecar } from "../../providers/openai-sidecar";
@@ -1075,6 +1079,7 @@ async function retryCodexPoolOnAlternateAccount(
         {
           excludeAccountId: firstAuthCtx.accountId,
           modelId: route.modelId,
+          requestScopedMainCredential: hasForwardableCodexBearer(req.headers, config),
           beginCodexAccountSelection: codexAccountSelectionForTurn(options.turnAdmissionLease),
           resolveCodexModelEntitlements: entitlementResolver,
         },
@@ -1656,6 +1661,9 @@ async function resolveResponsesCodexAuth(
     // no-ChatGPT-login install keeps working.
     const substituteMainCredential = options.admission?.source === "bearer"
       && (route.codexAccountMode !== undefined || isCanonicalOpenAiForwardProvider(route.provider));
+    const requestScopedMainCredential = route.codexAccountMode !== undefined
+      && !substituteMainCredential
+      && hasForwardableCodexBearer(req.headers, config);
     if (route.codexAccountMode === "direct" && !substituteMainCredential) {
       validateForwardAdmissionCredential(req.headers, config);
     }
@@ -1665,6 +1673,7 @@ async function resolveResponsesCodexAuth(
         accountId: route.codexAccountId,
         modelId: route.modelId,
         substituteMainCredentialForDirect: substituteMainCredential,
+        requestScopedMainCredential,
         beginCodexAccountSelection: codexAccountSelectionForTurn(options.turnAdmissionLease),
         resolveCodexModelEntitlements: options.resolveCodexModelEntitlements,
       });

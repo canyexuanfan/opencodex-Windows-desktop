@@ -39,6 +39,7 @@ import type { CodexAccountMode, OcxConfig, OcxProviderConfig } from "../types";
 import { FORWARD_HEADERS } from "../adapters/openai-responses";
 import { captureConfigGeneration } from "../lib/state-store-sweeper";
 import { retainedUtf8Bytes } from "../lib/admission";
+import { extractAccountId } from "../oauth/chatgpt";
 
 const CODEX_AFFINITY_COMPONENT_MAX_BYTES = 512;
 const CODEX_APP_AFFINITY_KEY = randomBytes(32);
@@ -97,7 +98,7 @@ export type CodexAuthContext =
     }
   | {
       // Main Codex account participating in rotation: token injected from ~/.codex/auth.json
-      // (Option A). Distinct from "main" (passthrough fallback that forwards the client token).
+      // (Option A). Distinct from "main" (request-owned passthrough or Direct mode).
       kind: "main-pool";
       accountId: string;
       writerGeneration: number;
@@ -336,6 +337,8 @@ export interface ResolveCodexAuthContextOptions {
   resolveCodexModelEntitlements?: typeof resolveCodexModelEntitlements;
   /** Direct requests admitted with a proxy bearer substitute the stored native-main credential. */
   substituteMainCredentialForDirect?: boolean;
+  /** A validated native Codex bearer may serve this request without entering Pool state. */
+  requestScopedMainCredential?: boolean;
   /** Test seam for a Direct request's own forwarded ChatGPT credential. */
   isDirectCallerEntitledToCodexModel?: (headers: Headers, modelId: string) => Promise<boolean>;
 }
@@ -353,13 +356,13 @@ export async function resolveCodexAuthContext(
   options: ResolveCodexAuthContextOptions = {},
 ): Promise<CodexAuthContext> {
   const writerGeneration = captureConfigGeneration();
+  const requestScopedMainCredential = options.requestScopedMainCredential === true
+    && hasCallerCodexBearer(headers);
   const fixedAccountId = options.accountId;
   if (fixedAccountId !== undefined && options.excludeAccountId !== undefined) {
     throw new Error("Codex auth context cannot select and exclude an account simultaneously");
   }
-  // An explicit namespace binding is stronger than the provider's default mode. It must use the
-  // selected stored credential even while the canonical OpenAI provider is globally Direct.
-  if (mode === "direct" && fixedAccountId === undefined) {
+  const resolveCallerOwnedMainContext = async (): Promise<CodexAuthContext> => {
     if (!hasCallerCodexBearer(headers)) throw new CodexDirectAuthenticationError();
     const substituteStoredMain = options.substituteMainCredentialForDirect === true;
     if (!substituteStoredMain) {
@@ -405,8 +408,21 @@ export async function resolveCodexAuthContext(
       // the enclosing turn lease until the request or transferred stream settles.
       directSelectionAdmission.release();
     }
+  };
+  // An explicit namespace binding is stronger than the provider's default mode. It must use the
+  // selected stored credential even while the canonical OpenAI provider is globally Direct.
+  // A request-owned bearer is deliberately not represented as `main-pool`: Pool account ids own
+  // durable health, quota, and affinity state, while this credential exists for one request only.
+  if ((mode === "direct" && fixedAccountId === undefined)
+    || (requestScopedMainCredential && fixedAccountId === MAIN_CODEX_ACCOUNT_ID)) {
+    return resolveCallerOwnedMainContext();
   }
-  const affinityKey = fixedAccountId === undefined ? codexPoolAffinityKey(headers) : undefined;
+  // A caller bearer can still accompany a request that selects a configured Pool account. Do not
+  // let that request read, delete, or create a file-main affinity binding while deciding whether a
+  // stored account is available; only the stored credential selected below may own Pool state.
+  const affinityKey = fixedAccountId === undefined && !requestScopedMainCredential
+    ? codexPoolAffinityKey(headers)
+    : undefined;
   // Retained startup recovery makes the physical main identity ineligible. Routing
   // can still preserve service by selecting a healthy configured pool account.
   const nativeMainTrafficBlocked = isNativeMainTrafficBlocked();
@@ -433,7 +449,9 @@ export async function resolveCodexAuthContext(
       // Temporary switch drain keeps the candidate until the atomic claim rejects
       // it. Retained recovery makes main wholly ineligible so pool routing continues.
       nativeMainSelectionOnly,
-      isMainAccountTokenLive: options.isMainAccountTokenLive,
+      isMainAccountTokenLive: requestScopedMainCredential
+        ? () => false
+        : options.isMainAccountTokenLive,
       modelEligibleAccountIds,
     };
     // A pre-drain selector reserves the native identity while reconciliation and
@@ -466,6 +484,9 @@ export async function resolveCodexAuthContext(
     if (resolution.status === "expired") throw new CodexThreadAffinityExpiredError(resolution.accountId);
     const selected = resolution.status === "selected" ? resolution.accountId : null;
     if (!selected) {
+      if (requestScopedMainCredential && fixedAccountId === undefined && !options.excludeAccountId) {
+        return await resolveCallerOwnedMainContext();
+      }
       if (fixedAccountId !== undefined) {
         throw new CodexPoolAuthenticationError(
           modelEligibleAccountIds && !modelEligibleAccountIds.has(fixedAccountId)
@@ -671,6 +692,12 @@ export function materializeCodexUpstreamAuth(
     selected.set("authorization", `Bearer ${ctx.accessToken}`);
     selected.set("chatgpt-account-id", ctx.chatgptAccountId);
     return selected;
+  }
+  if (ctx.kind === "main" && options.substituteMainCredential !== true
+    && !selected.has("chatgpt-account-id")) {
+    const bearer = selected.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+    const accountId = bearer ? extractAccountId(undefined, bearer) : undefined;
+    if (accountId) selected.set("chatgpt-account-id", accountId);
   }
   if (ctx.kind === "main" && options.substituteMainCredential === true) {
     const stored = getMainAccountToken();
