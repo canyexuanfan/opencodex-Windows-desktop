@@ -58,6 +58,20 @@ describe("Grok orphan adoption (#511)", () => {
     return [...content.matchAll(/^\[model\.([^\]]+)\]$/gm)].map(match => match[1]!);
   }
 
+  function countStringValue(value: unknown, target: string): number {
+    if (value === target) return 1;
+    if (Array.isArray(value)) {
+      return value.reduce((count, item) => count + countStringValue(item, target), 0);
+    }
+    if (typeof value === "object" && value !== null) {
+      return Object.values(value).reduce(
+        (count, item) => count + countStringValue(item, target),
+        0,
+      );
+    }
+    return 0;
+  }
+
   test("adopts the stale entry so exactly one table per model survives", () => {
     writeOrphanedConfig();
     const result = injectGrokConfig(10100, MODELS, { grokHome });
@@ -878,14 +892,43 @@ describe("Grok orphan adoption (#511)", () => {
     expect(modelTables(readFileSync(configPath, "utf8"))).toEqual([]);
   });
 
-  test("clears references when an excluded model has no survivor (#2830)", () => {
-    writeOrphanedConfig([
-      OWNERSHIP_MARKER,
+  test("managed exclusion leaves zero references to a removed model (#2830)", () => {
+    const alias = "ocx-gpt-5-6-sol";
+    writeFileSync(configPath, [
+      "[models]",
+      `default = "${alias}"`,
+      `web_search = "${alias}"`,
+      `session_summary = "${alias}"`,
+      `image_description = "${alias}"`,
+      `prompt_suggestion = "${alias}"`,
       "",
       "[ui]",
-      'fork_secondary_model = "ocx-gpt-5-6-sol"',
+      `fork_secondary_model = "${alias}"`,
+      "",
+      "[subagents.models]",
+      `explore = "${alias}"`,
+      "",
+      "[auto_mode]",
+      `classifier_model = "${alias}"`,
+      "",
+      "[goal]",
+      `planner_model = { model = "${alias}", agent_type = "grok-build-plan" }`,
+      "",
+      "[goal.strategist_model]",
+      `model = "${alias}"`,
+      'agent_type = "cursor"',
+      "",
+      "[[goal.skeptic_models]]",
+      `model = "${alias}"`,
+      'agent_type = "grok-build-plan"',
       "",
     ].join("\n"));
+
+    expect(injectGrokConfig(10100, MODELS, { grokHome }))
+      .toMatchObject({ ok: true, changed: true });
+    const activeContent = readFileSync(configPath, "utf8");
+    expect(modelTables(activeContent)).toEqual([alias]);
+    expect(countStringValue(Bun.TOML.parse(activeContent), alias)).toBe(11);
 
     expect(injectGrokConfig(10100, MODELS, {
       grokHome,
@@ -894,8 +937,7 @@ describe("Grok orphan adoption (#511)", () => {
 
     const content = readFileSync(configPath, "utf8");
     expect(modelTables(content)).toEqual([]);
-    expect(content).not.toContain('default = "ocx-gpt-5-6-sol"');
-    expect(content).not.toContain('fork_secondary_model = "ocx-gpt-5-6-sol"');
+    expect(countStringValue(Bun.TOML.parse(content), alias)).toBe(0);
   });
 
   // F7: the sweep must converge, or `changed` is meaningless to callers.

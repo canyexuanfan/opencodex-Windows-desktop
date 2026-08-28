@@ -168,73 +168,6 @@ function tomlContainerEnd(content: string, start: number): number | null {
   return null;
 }
 
-/** Locate one top-level string member inside an inline table without scanning nested prose. */
-function tomlInlineStringValueSpan(
-  content: string,
-  start: number,
-  end: number,
-  targetKey: string,
-): { start: number; end: number } | null {
-  const skipTrivia = (from: number): number => {
-    let cursor = from;
-    while (cursor < end) {
-      while (/[ \t\r\n]/.test(content[cursor] ?? "")) cursor += 1;
-      if (content[cursor] !== "#") break;
-      const newline = content.indexOf("\n", cursor);
-      cursor = newline === -1 || newline >= end ? end : newline + 1;
-    }
-    return cursor;
-  };
-  const keyPattern = new RegExp(DOTTED_KEY, "y");
-  let entryStart = start + 1;
-  while (entryStart < end - 1) {
-    entryStart = skipTrivia(entryStart);
-    if (entryStart >= end - 1 || content[entryStart] === "}") return null;
-    keyPattern.lastIndex = entryStart;
-    const key = keyPattern.exec(content);
-    if (key === null) return null;
-    let cursor = skipTrivia(keyPattern.lastIndex);
-    if (content[cursor] !== "=") return null;
-    const valueStart = skipTrivia(cursor + 1);
-    const segments = canonicalDottedKey(key[0]);
-    if (segments.length === 1 && segments[0] === targetKey) {
-      const value = tomlStringSpanAt(content, valueStart);
-      return value === null ? null : { start: valueStart, end: value.end };
-    }
-
-    const stack: string[] = [];
-    cursor = valueStart;
-    let foundNext = false;
-    while (cursor < end - 1) {
-      const char = content[cursor]!;
-      if (char === "#") {
-        const newline = content.indexOf("\n", cursor);
-        cursor = newline === -1 || newline >= end ? end : newline + 1;
-        continue;
-      }
-      if (char === '"' || char === "'") {
-        const value = tomlStringSpanAt(content, cursor);
-        if (value === null) return null;
-        cursor = value.end;
-        continue;
-      }
-      if (char === "{" || char === "[") stack.push(char);
-      else if (char === "}" || char === "]") {
-        if (stack.length === 0) return null;
-        const expected = char === "}" ? "{" : "[";
-        if (stack.pop() !== expected) return null;
-      } else if (char === "," && stack.length === 0) {
-        entryStart = cursor + 1;
-        foundNext = true;
-        break;
-      }
-      cursor += 1;
-    }
-    if (!foundNext) return null;
-  }
-  return null;
-}
-
 /**
  * A same-length lexical projection for structural scans. Triple-quoted string bytes become
  * spaces while line endings and every byte outside those values keep their original offsets.
@@ -568,18 +501,40 @@ function removeOrphanTables(content: string, orphans: OrphanTable[]): string {
   return removeTableRanges(content, orphanRanges(orphans));
 }
 
+/** Model aliases and routed ids owned by one complete managed region. */
+function managedModelAliases(content: string, region: ManagedRegion | null): Map<string, string> {
+  const models = new Map<string, string>();
+  if (!region) return models;
+  const structure = analyzeTomlStructure(content);
+  for (const [position, header] of structure.headers.entries()) {
+    if (header.array || header.segments.length !== 2 || header.segments[0] !== "model") continue;
+    if (header.index < region.start || header.index >= region.end) continue;
+    const bodyEnd = Math.min(structure.headers[position + 1]?.index ?? content.length, region.end);
+    const modelId = tableBodyKeys(content.slice(header.index + header.length, bodyEnd)).get("model");
+    if (modelId !== undefined) models.set(header.segments[1]!, modelId);
+  }
+  return models;
+}
+
 /** Read one exact path from an already parsed TOML document. */
-function tomlPathString(document: unknown, path: readonly string[]): string | null {
+type TomlPathSegment = string | number;
+
+function tomlPathString(document: unknown, path: readonly TomlPathSegment[]): string | null {
   let value = document;
   for (const segment of path) {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-    value = (value as Record<string, unknown>)[segment];
+    if (typeof segment === "number") {
+      if (!Array.isArray(value)) return null;
+      value = value[segment];
+    } else {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+      value = (value as Record<string, unknown>)[segment];
+    }
   }
   return typeof value === "string" ? value : null;
 }
 
 /** Parse a probe document and read one exact semantic path. */
-function parsedTomlPathString(content: string, path: readonly string[]): string | null {
+function parsedTomlPathString(content: string, path: readonly TomlPathSegment[]): string | null {
   try {
     return tomlPathString(Bun.TOML.parse(content), path);
   } catch {
@@ -587,7 +542,139 @@ function parsedTomlPathString(content: string, path: readonly string[]): string 
   }
 }
 
-/** Rename or remove the two semantic model references without touching user prose. */
+type ModelReferencePatternSegment = string | "*";
+
+interface ModelReferencePath {
+  path: readonly ModelReferencePatternSegment[];
+  /** A structured reference assignment that can be removed whole without losing sibling config. */
+  removableContainerPath?: readonly string[];
+}
+
+/** Grok config values whose strings resolve through the `[model.<alias>]` catalog. */
+const MODEL_REFERENCE_PATHS: readonly ModelReferencePath[] = [
+  { path: ["models", "default"] },
+  { path: ["models", "web_search"] },
+  { path: ["models", "session_summary"] },
+  { path: ["models", "image_description"] },
+  { path: ["models", "prompt_suggestion"] },
+  { path: ["ui", "fork_secondary_model"] },
+  { path: ["subagents", "models", "*"] },
+  { path: ["auto_mode", "classifier_model"] },
+  {
+    path: ["goal", "planner_model", "model"],
+    removableContainerPath: ["goal", "planner_model"],
+  },
+  {
+    path: ["goal", "strategist_model", "model"],
+    removableContainerPath: ["goal", "strategist_model"],
+  },
+  {
+    path: ["goal", "skeptic_models", "*", "model"],
+    removableContainerPath: ["goal", "skeptic_models"],
+  },
+];
+
+interface AliasReference {
+  path: TomlPathSegment[];
+  alias: string;
+  removableContainerPath?: readonly string[];
+}
+
+function collectAliasReferences(document: unknown): AliasReference[] {
+  const references: AliasReference[] = [];
+  const visit = (
+    value: unknown,
+    pattern: readonly ModelReferencePatternSegment[],
+    patternIndex: number,
+    path: TomlPathSegment[],
+    removableContainerPath: readonly string[] | undefined,
+  ): void => {
+    if (patternIndex === pattern.length) {
+      if (typeof value === "string") {
+        references.push({
+          path,
+          alias: value,
+          ...(removableContainerPath ? { removableContainerPath } : {}),
+        });
+      }
+      return;
+    }
+    const segment = pattern[patternIndex]!;
+    if (segment === "*") {
+      if (Array.isArray(value)) {
+        for (const [index, item] of value.entries()) {
+          visit(item, pattern, patternIndex + 1, [...path, index], removableContainerPath);
+        }
+      } else if (typeof value === "object" && value !== null) {
+        for (const [key, item] of Object.entries(value)) {
+          visit(item, pattern, patternIndex + 1, [...path, key], removableContainerPath);
+        }
+      }
+      return;
+    }
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return;
+    visit(
+      (value as Record<string, unknown>)[segment],
+      pattern,
+      patternIndex + 1,
+      [...path, segment],
+      removableContainerPath,
+    );
+  };
+
+  for (const reference of MODEL_REFERENCE_PATHS) {
+    visit(document, reference.path, 0, [], reference.removableContainerPath);
+  }
+  return references;
+}
+
+function sourcePath(path: readonly TomlPathSegment[]): string[] {
+  return path.filter((segment): segment is string => typeof segment === "string");
+}
+
+function pathsEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((segment, index) => segment === right[index]);
+}
+
+function pathStartsWith(path: readonly string[], prefix: readonly string[]): boolean {
+  return path.length >= prefix.length
+    && prefix.every((segment, index) => segment === path[index]);
+}
+
+function tomlContainerStringSpans(
+  content: string,
+  start: number,
+  end: number,
+): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
+  for (let index = start + 1; index < end - 1;) {
+    const char = content[index]!;
+    if (char === "#") {
+      const newline = content.indexOf("\n", index);
+      index = newline === -1 || newline >= end ? end : newline + 1;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      const span = tomlStringSpanAt(content, index);
+      if (span === null || span.end > end) return [];
+      spans.push({ start: index, end: span.end });
+      index = span.end;
+      continue;
+    }
+    index += 1;
+  }
+  return spans;
+}
+
+interface AliasReferenceCandidate {
+  valueStart: number;
+  valueEnd: number;
+  assignmentPath: string[];
+  directLine: { start: number; end: number } | null;
+  containerLine: { start: number; end: number } | null;
+}
+
+/** Rename or remove every declared semantic model reference without touching user prose. */
 function transformAliasReferences(
   content: string,
   replacements: ReadonlyMap<string, string | null>,
@@ -602,14 +689,12 @@ function transformAliasReferences(
       "Grok config rewrite refused: Bun could not parse the TOML document safely.",
     );
   }
+  const references = collectAliasReferences(document);
+  const targets = references.filter(reference => replacements.has(reference.alias));
+  if (targets.length === 0) return content;
   const structure = analyzeTomlStructure(content);
   const edits: Array<{ start: number; end: number; replacement: string }> = [];
-  const candidates: Array<{
-    pathKey: "models.default" | "ui.fork_secondary_model";
-    valueStart: number;
-    valueEnd: number;
-    line: { start: number; end: number } | null;
-  }> = [];
+  const candidates: AliasReferenceCandidate[] = [];
   const assignment = new RegExp(String.raw`^([ \t]*(${DOTTED_KEY})[ \t]*=)`, "gm");
   let headerPosition = -1;
   for (const match of structure.view.matchAll(assignment)) {
@@ -618,64 +703,56 @@ function transformAliasReferences(
     while ((structure.headers[headerPosition + 1]?.index ?? Number.POSITIVE_INFINITY)
       < assignmentStart) headerPosition += 1;
     const currentHeader = headerPosition >= 0 ? structure.headers[headerPosition]! : null;
-    if (currentHeader?.array) continue;
     if (!allowRootDotted && currentHeader === null) continue;
     const segments = canonicalDottedKey(match[2]!);
-    const semanticPath = [...(currentHeader?.segments ?? []), ...segments];
+    const assignmentPath = [...(currentHeader?.segments ?? []), ...segments];
     let valueStart = assignmentStart + match[1]!.length;
     while (content[valueStart] === " " || content[valueStart] === "\t") valueStart += 1;
-    const pathKey = semanticPath.length === 2 && semanticPath[0] === "models"
-      && semanticPath[1] === "default"
-      ? "models.default"
-      : semanticPath.length === 2 && semanticPath[0] === "ui"
-        && semanticPath[1] === "fork_secondary_model"
-        ? "ui.fork_secondary_model"
-        : null;
-    if (pathKey !== null) {
+    const directTargets = targets.filter(target => pathsEqual(sourcePath(target.path), assignmentPath));
+    if (directTargets.length > 0) {
       const value = tomlStringSpanAt(content, valueStart);
-      if (value === null) continue;
-      const suffix = /^[ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/.exec(content.slice(value.end));
-      if (suffix === null) continue;
-      candidates.push({
-        pathKey,
-        valueStart,
-        valueEnd: value.end,
-        line: { start: assignmentStart, end: value.end + suffix[0].length },
-      });
-      continue;
+      if (value !== null) {
+        const suffix = /^[ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/.exec(content.slice(value.end));
+        if (suffix !== null) {
+          candidates.push({
+            valueStart,
+            valueEnd: value.end,
+            assignmentPath,
+            directLine: { start: assignmentStart, end: value.end + suffix[0].length },
+            containerLine: null,
+          });
+          continue;
+        }
+      }
     }
 
-    // The only non-line form we support is a root inline table (`models = { ... }` / `ui =`).
-    const inlineTarget = currentHeader === null && semanticPath.length === 1
-      && semanticPath[0] === "models"
-      ? { pathKey: "models.default" as const, key: "default" }
-      : currentHeader === null && semanticPath.length === 1 && semanticPath[0] === "ui"
-        ? { pathKey: "ui.fork_secondary_model" as const, key: "fork_secondary_model" }
-        : null;
-    if (inlineTarget === null || content[valueStart] !== "{") continue;
-    const inlineEnd = tomlContainerEnd(content, valueStart);
-    if (inlineEnd === null) continue;
-    const value = tomlInlineStringValueSpan(content, valueStart, inlineEnd, inlineTarget.key);
-    if (value === null) continue;
-    candidates.push({
-      pathKey: inlineTarget.pathKey,
-      valueStart: value.start,
-      valueEnd: value.end,
-      line: null,
-    });
+    const containerTargets = targets.filter(target =>
+      pathStartsWith(sourcePath(target.path), assignmentPath));
+    if (containerTargets.length === 0 || (content[valueStart] !== "{" && content[valueStart] !== "[")) continue;
+    const containerEnd = tomlContainerEnd(content, valueStart);
+    if (containerEnd === null) continue;
+    const suffix = /^[ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)/.exec(content.slice(containerEnd));
+    if (suffix === null) continue;
+    const containerLine = { start: assignmentStart, end: containerEnd + suffix[0].length };
+    for (const value of tomlContainerStringSpans(content, valueStart, containerEnd)) {
+      candidates.push({
+        valueStart: value.start,
+        valueEnd: value.end,
+        assignmentPath,
+        directLine: null,
+        containerLine,
+      });
+    }
   }
 
-  const targets = [
-    { path: ["models", "default"] as const, pathKey: "models.default" as const },
-    { path: ["ui", "fork_secondary_model"] as const, pathKey: "ui.fork_secondary_model" as const },
-  ];
   for (const [targetIndex, target] of targets.entries()) {
-    const currentAlias = tomlPathString(document, target.path);
-    if (currentAlias === null || !replacements.has(currentAlias)) continue;
-    const replacement = replacements.get(currentAlias)!;
-    const probeCandidates = candidates.filter(candidate => candidate.pathKey === target.pathKey);
+    const replacement = replacements.get(target.alias)!;
+    const targetSourcePath = sourcePath(target.path);
+    const probeCandidates = candidates.filter(candidate =>
+      pathsEqual(candidate.assignmentPath, targetSourcePath)
+      || pathStartsWith(targetSourcePath, candidate.assignmentPath));
     if (probeCandidates.length === 0 && !allowRootDotted) continue;
-    if (probeCandidates.length === 0 || probeCandidates.length > 32) {
+    if (probeCandidates.length === 0 || probeCandidates.length > 128) {
       throw new Error(
         "Grok config rewrite refused: the model-reference source could not be bounded safely.",
       );
@@ -683,20 +760,37 @@ function transformAliasReferences(
     let located = false;
     for (const candidate of probeCandidates) {
       let sentinel = `__opencodex_reference_probe_${targetIndex}_${candidate.valueStart}__`;
-      while (sentinel === currentAlias) sentinel += "_";
+      while (sentinel === target.alias) sentinel += "_";
       const probe = content.slice(0, candidate.valueStart)
         + tomlString(sentinel)
         + content.slice(candidate.valueEnd);
       if (parsedTomlPathString(probe, target.path) !== sentinel) continue;
-      if (replacement === null && candidate.line === null) {
-        throw new Error(
-          "Grok teardown refused: a model reference uses an inline TOML shape that cannot "
-          + "be removed without rewriting user-owned bytes.",
-        );
+      if (replacement === null) {
+        let removal = candidate.directLine;
+        if (removal === null && candidate.containerLine !== null
+          && target.removableContainerPath
+          && pathsEqual(candidate.assignmentPath, target.removableContainerPath)) {
+          const containerReferences = references.filter(reference =>
+            pathStartsWith(sourcePath(reference.path), candidate.assignmentPath));
+          if (containerReferences.length > 0
+            && containerReferences.every(reference => replacements.get(reference.alias) === null)) {
+            removal = candidate.containerLine;
+          }
+        }
+        if (removal === null) {
+          throw new Error(
+            "Grok teardown refused: a model reference uses an inline TOML shape that cannot "
+            + "be removed without rewriting user-owned bytes.",
+          );
+        }
+        edits.push({ start: removal.start, end: removal.end, replacement: "" });
+      } else {
+        edits.push({
+          start: candidate.valueStart,
+          end: candidate.valueEnd,
+          replacement: tomlString(replacement),
+        });
       }
-      edits.push(replacement === null
-        ? { start: candidate.line!.start, end: candidate.line!.end, replacement: "" }
-        : { start: candidate.valueStart, end: candidate.valueEnd, replacement: tomlString(replacement) });
       located = true;
       break;
     }
@@ -707,7 +801,8 @@ function transformAliasReferences(
     }
   }
   let next = content;
-  for (const edit of edits.sort((a, b) => b.start - a.start)) {
+  const uniqueEdits = new Map(edits.map(edit => [`${edit.start}:${edit.end}:${edit.replacement}`, edit]));
+  for (const edit of [...uniqueEdits.values()].sort((a, b) => b.start - a.start)) {
     next = next.slice(0, edit.start) + edit.replacement + next.slice(edit.end);
   }
   return next;
@@ -874,6 +969,7 @@ export function injectGrokConfig(
     // Ambiguous fence: refuse before the sweep, or "outside the region" could mean the
     // entire file.
     if (originalRegion?.orphaned) return orphanedMarkerResult("injection");
+    const previousManagedModels = managedModelAliases(originalContent, originalRegion);
 
     // Adopt our own pre-fence entries (#511) BEFORE reserving user aliases, so the stale
     // duplicate is replaced instead of routed around forever. Runs inside the normalized
@@ -916,28 +1012,24 @@ export function injectGrokConfig(
       nextContent = `${content}\n${block}\n`;
     }
 
-    // Repoint `default` / `fork_secondary_model` at whichever alias survived. If an
-    // excluded or removed model has no replacement, clear its references with the same
-    // TOML-aware transform used by teardown so the new config cannot point at a deleted table.
-    if (orphans.length > 0) {
-      const survivors = new Map<string, string>();
-      const structure = analyzeTomlStructure(nextContent);
-      const managedRegion = findManagedRegion(nextContent);
-      for (const [position, header] of structure.headers.entries()) {
-        if (header.array || header.segments.length !== 2 || header.segments[0] !== "model") continue;
-        if (!managedRegion || header.index < managedRegion.start || header.index >= managedRegion.end) continue;
-        const alias = header.segments[1]!;
-        const bodyEnd = structure.headers[position + 1]?.index ?? nextContent.length;
-        const modelId = tableBodyKeys(nextContent.slice(header.index + header.length, bodyEnd)).get("model");
-        if (modelId !== undefined && !survivors.has(modelId)) survivors.set(modelId, alias);
-      }
-      const replacements = new Map<string, string | null>();
-      for (const orphan of orphans) {
-        const replacement = survivors.get(orphan.modelId) ?? null;
-        if (replacement !== orphan.alias) replacements.set(orphan.alias, replacement);
-      }
-      nextContent = rewriteAliasReferences(nextContent, replacements);
+    // Repoint every model selector at whichever managed alias survived. Compare both swept
+    // out-of-fence tables and the PREVIOUS managed block: ordinary exclusion removes only the
+    // latter, so tying cleanup to `orphans` made the #2830 path dead code.
+    const nextManagedModels = managedModelAliases(nextContent, findManagedRegion(nextContent));
+    const survivors = new Map<string, string>();
+    for (const [alias, modelId] of nextManagedModels) {
+      if (!survivors.has(modelId)) survivors.set(modelId, alias);
     }
+    const replacements = new Map<string, string | null>();
+    for (const removed of [
+      ...orphans.map(orphan => ({ alias: orphan.alias, modelId: orphan.modelId })),
+      ...[...previousManagedModels].map(([alias, modelId]) => ({ alias, modelId })),
+    ]) {
+      if (nextManagedModels.get(removed.alias) === removed.modelId) continue;
+      const replacement = survivors.get(removed.modelId) ?? null;
+      if (replacement !== removed.alias) replacements.set(removed.alias, replacement);
+    }
+    nextContent = rewriteAliasReferences(nextContent, replacements);
 
     const output = applyEol(nextContent, eol);
     if (output === rawContent) {
