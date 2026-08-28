@@ -1413,6 +1413,9 @@ describe("kiro code-mode catalog nudge", () => {
 
     expect(content).toContain("ALL_TOOLS");
     expect(content).toContain("Codex code mode");
+    // Reaches the ACTUAL Kiro wire prompt, not just the builder: the live 2026-08-28 session that
+    // misread a blank result was a routed Kiro turn.
+    expect(content).toContain("Nothing in the isolate is echoed automatically");
     // The generic fallback must be gone, not merely accompanied.
     expect(content).not.toContain("If a listed tool exposes nested helpers such as a tools.* API");
   });

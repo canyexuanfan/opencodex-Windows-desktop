@@ -37,6 +37,20 @@ export const EMPTY_EXEC_OUTPUT_MESSAGE =
   "[empty output: the exec cell completed but emitted nothing. This is NOT lost context and NOT a blocked tool — in code mode call text(...) or notify(...) on any value you need to see (a bare await tools.exec_command(...) is not echoed automatically); in shell mode the command simply printed nothing. Do not re-run the same call expecting different output.]";
 
 /**
+ * The SAME rule stated BEFORE the first call, for the code-mode tool-catalog nudge.
+ *
+ * `EMPTY_EXEC_OUTPUT_MESSAGE` above is a repair: it fires only after a model has already spent a
+ * call and read a blank result. That recovers the turn but cannot prevent the wasted round trip,
+ * and the model still has to guess whether its command failed or its output was merely dropped.
+ * Stating the echo rule up front removes the failure instead of explaining it afterwards.
+ *
+ * Kept beside the recovery text on purpose: the two are one pair guarding one defect, and wording
+ * that drifts apart is how a model gets told two different things about the same isolate.
+ */
+export const CODE_MODE_RESULT_ECHO_SENTENCE =
+  "Nothing in the isolate is echoed automatically: a bare trailing `await tools.<name>(...)` or final expression value is DISCARDED, and the cell reports empty output. Pass anything you need to read to `text(...)` (or `notify(...)`) in the same cell — for example `text(JSON.stringify(await tools.exec_command({cmd: \"ls\"})))` — and treat an empty result as your own missing `text(...)` call rather than a failed command or lost context.";
+
+/**
  * Codex exec / shell-bridge tool names (flat and MCP-prefixed display aliases). An empty result
  * here is almost always a code-mode cell that never called text()/notify().
  */
