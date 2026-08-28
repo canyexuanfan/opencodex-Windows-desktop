@@ -878,6 +878,26 @@ describe("Grok orphan adoption (#511)", () => {
     expect(modelTables(readFileSync(configPath, "utf8"))).toEqual([]);
   });
 
+  test("clears references when an excluded model has no survivor (#2830)", () => {
+    writeOrphanedConfig([
+      OWNERSHIP_MARKER,
+      "",
+      "[ui]",
+      'fork_secondary_model = "ocx-gpt-5-6-sol"',
+      "",
+    ].join("\n"));
+
+    expect(injectGrokConfig(10100, MODELS, {
+      grokHome,
+      excluded: new Set(["gpt-5.6-sol"]),
+    })).toMatchObject({ ok: true, changed: true });
+
+    const content = readFileSync(configPath, "utf8");
+    expect(modelTables(content)).toEqual([]);
+    expect(content).not.toContain('default = "ocx-gpt-5-6-sol"');
+    expect(content).not.toContain('fork_secondary_model = "ocx-gpt-5-6-sol"');
+  });
+
   // F7: the sweep must converge, or `changed` is meaningless to callers.
   test("is idempotent: the second sync reports no change", () => {
     writeOrphanedConfig();

@@ -713,9 +713,9 @@ function transformAliasReferences(
   return next;
 }
 
-/** Repoint references at whichever alias survived orphan adoption. */
-function rewriteAliasReferences(content: string, renames: Map<string, string>): string {
-  return transformAliasReferences(content, renames);
+/** Repoint references at whichever alias survived orphan adoption, or remove them. */
+function rewriteAliasReferences(content: string, replacements: Map<string, string | null>): string {
+  return transformAliasReferences(content, replacements);
 }
 
 /** Remove only references that name model aliases teardown actually swept. */
@@ -916,9 +916,9 @@ export function injectGrokConfig(
       nextContent = `${content}\n${block}\n`;
     }
 
-    // Repoint `default` / `fork_secondary_model` at whichever alias survived. A removed
-    // model with no replacement keeps its reference untouched — a stale name in a working
-    // file beats a dangling one.
+    // Repoint `default` / `fork_secondary_model` at whichever alias survived. If an
+    // excluded or removed model has no replacement, clear its references with the same
+    // TOML-aware transform used by teardown so the new config cannot point at a deleted table.
     if (orphans.length > 0) {
       const survivors = new Map<string, string>();
       const structure = analyzeTomlStructure(nextContent);
@@ -931,12 +931,12 @@ export function injectGrokConfig(
         const modelId = tableBodyKeys(nextContent.slice(header.index + header.length, bodyEnd)).get("model");
         if (modelId !== undefined && !survivors.has(modelId)) survivors.set(modelId, alias);
       }
-      const renames = new Map<string, string>();
+      const replacements = new Map<string, string | null>();
       for (const orphan of orphans) {
-        const replacement = survivors.get(orphan.modelId);
-        if (replacement && replacement !== orphan.alias) renames.set(orphan.alias, replacement);
+        const replacement = survivors.get(orphan.modelId) ?? null;
+        if (replacement !== orphan.alias) replacements.set(orphan.alias, replacement);
       }
-      nextContent = rewriteAliasReferences(nextContent, renames);
+      nextContent = rewriteAliasReferences(nextContent, replacements);
     }
 
     const output = applyEol(nextContent, eol);
