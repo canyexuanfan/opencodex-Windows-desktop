@@ -112,7 +112,7 @@ export const CAPABILITIES: readonly Capability[] = [
   },
   {
     command: ["capabilities"],
-    summary: "Enumerate every CLI capability with the management routes it drives.",
+    summary: "List the declared CLI capabilities and the management routes they drive.",
     routes: [],
     flags: [
       { name: "--json", value: "boolean", summary: "Emit the full capability table as JSON." },
@@ -126,10 +126,12 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     command: ["provider", "list"],
     summary: "Configured providers with connectivity and selected models.",
-    routes: [{ method: "GET", path: "/api/providers" }],
+    // Local config + PROVIDER_REGISTRY. Does not call GET /api/providers.
+    routes: [],
     flags: [{ name: "--json", value: "boolean", summary: "Emit the provider list as JSON." }],
     mutates: false,
-    json: "payload",
+    json: "envelope",
+    details: ["Reads local config; drives no management API route."],
   },
   {
     command: ["account", "list"],
@@ -140,7 +142,7 @@ export const CAPABILITIES: readonly Capability[] = [
     json: "payload",
     details: [
       "STATUS names `paused` alongside `selected`: a paused-but-selected account still receives requests.",
-      "Quota is only fetched under `--quota` (a deliberate cost decision), so 5h and weekly percentages appear in `account list --quota`, not bare `account list`.",
+      "`--quota` shows cached Codex windows (including 5h); `--refresh` bypasses the server TTL.",
     ],
   },
   {

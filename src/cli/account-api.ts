@@ -259,6 +259,7 @@ export async function fetchCodexRows(
   deps: AccountDeps,
   baseUrl: string,
   forceRefresh = false,
+  includeQuota = forceRefresh,
 ): Promise<FamilyRows> {
   const accountsPath = `/api/codex-auth/accounts${forceRefresh ? "?refresh=1" : ""}`;
   const [accountsRes, activeRes] = await Promise.all([
@@ -298,7 +299,7 @@ export async function fetchCodexRows(
     needsReauth: a.needsReauth,
     priority: typeof a.priority === "number" ? a.priority : 0,
     paused: a.paused === true,
-    ...(forceRefresh ? { quota: projectQuota(a.quota) } : {}),
+    ...(includeQuota ? { quota: projectQuota(a.quota) } : {}),
   }));
   return { rows, activeId, autoSwitchThreshold, status: 200 };
 }
@@ -378,7 +379,7 @@ export function fetchRows(
   type: AccountType,
   quota?: { refresh?: boolean },
 ): Promise<FamilyRows> {
-  if (type === "codex") return fetchCodexRows(deps, baseUrl);
+  if (type === "codex") return fetchCodexRows(deps, baseUrl, Boolean(quota?.refresh), quota !== undefined);
   if (type === "oauth") return fetchOAuthRows(deps, baseUrl, name, quota);
   return fetchKeyRows(deps, baseUrl, name);
 }
