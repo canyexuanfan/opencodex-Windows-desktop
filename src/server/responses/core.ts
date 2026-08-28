@@ -214,7 +214,13 @@ import {
 import { shouldAttemptImageTierRetry } from "../image-retry";
 import { isXaiResponsesDestination, resolveProviderTransport } from "../../providers/xai-transport";
 import type { WsData } from "../ws-bridge";
-import { codexAccountSelectionForTurn, registerTurn, trackStreamLifetime, unregisterTurn } from "../lifecycle";
+import {
+  codexAccountSelectionForTurn,
+  registerTurn,
+  trackStreamLifetime,
+  tryClaimNativeMainProfileForTurn,
+  unregisterTurn,
+} from "../lifecycle";
 import { redactSecretString, sanitizeLogMetadataString } from "../../lib/redact";
 import { readBoundedResponseBody } from "../../lib/bounded-body";
 import type { AdmissionLease } from "../../lib/admission";
@@ -893,6 +899,7 @@ interface CodexPoolAccountRetryArgs {
     codexWsRuntimeIdentity?: BunRuntimeGateInput;
     translatorBudget: TranslatorBudget;
     turnAdmissionLease?: AdmissionLease;
+    resolveCodexModelEntitlements?: typeof resolveCodexModelEntitlements;
   };
   firstAuthCtx: Extract<CodexAuthContext, { kind: "pool" | "main-pool" }>;
   firstResponse: Response;
@@ -922,6 +929,29 @@ type CodexPoolAccountRetryResult =
     error: unknown;
     authCtx: Extract<CodexAuthContext, { kind: "pool" | "main-pool" }>;
   };
+
+/** Keep retry-stage entitlement snapshots inside the native-main selection fence. */
+async function resolveCodexRetryModelEntitlements(
+  config: OcxConfig,
+  resolver: typeof resolveCodexModelEntitlements,
+  turnAdmissionLease?: AdmissionLease,
+): Promise<Awaited<ReturnType<typeof resolveCodexModelEntitlements>>> {
+  // The initial auth selection has already released its admission before the first
+  // response arrives. Re-enter for every refresh so profile switching cannot overlap
+  // credential discovery, and omit main entirely when a drain or recovery owns it.
+  const selectionAdmission = codexAccountSelectionForTurn(turnAdmissionLease)?.();
+  const nativeMainReadsForbidden = isNativeMainTrafficBlocked()
+    || selectionAdmission?.mainProfileDraining === true;
+  try {
+    return await resolver(config, {
+      excludeAccountIds: nativeMainReadsForbidden
+        ? new Set([MAIN_CODEX_ACCOUNT_ID])
+        : undefined,
+    });
+  } finally {
+    selectionAdmission?.release();
+  }
+}
 
 const CODEX_ACCOUNT_GATED_CANONICAL_WIRE_MODELS: ReadonlyMap<string, string> = new Map([
   // The authenticated catalog currently advertises Daybreak Blue, while successful responses
@@ -1011,10 +1041,22 @@ async function retryCodexPoolOnAlternateAccount(
     outcomeStatus, upstream, connectMs, passthroughEstimate, stream,
   } = args;
   const inboundWire = options.inboundWire ?? "responses";
+  const entitlementResolver = options.resolveCodexModelEntitlements ?? resolveCodexModelEntitlements;
   let retryAuthCtx: CodexAuthContext | undefined;
   if (outcomeStatus === 400 && ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(route.modelId)) {
     invalidateCodexModelEntitlementsForAccount(firstAuthCtx.accountId);
-    const refreshed = await resolveCodexModelEntitlements(config);
+    let refreshed;
+    try {
+      refreshed = await resolveCodexRetryModelEntitlements(
+        config,
+        entitlementResolver,
+        options.turnAdmissionLease,
+      );
+    } catch (error) {
+      await firstResponse.body?.cancel().catch(() => undefined);
+      releaseCodexAuthContextProbeLease(firstAuthCtx);
+      throw error;
+    }
     if (entitledCodexAccountIdsForModel(refreshed, route.modelId)?.has(firstAuthCtx.accountId)) {
       // The authenticated roster still grants this exact model. Retry on the same account:
       // upstream shards can briefly disagree during a gated-model rollout, but a pre-stream 400
@@ -1034,15 +1076,20 @@ async function retryCodexPoolOnAlternateAccount(
           excludeAccountId: firstAuthCtx.accountId,
           modelId: route.modelId,
           beginCodexAccountSelection: codexAccountSelectionForTurn(options.turnAdmissionLease),
+          resolveCodexModelEntitlements: entitlementResolver,
         },
       );
   } catch (error) {
-    if (
+    const unexpectedRetryError =
       !(error instanceof CodexPoolAuthenticationError)
       && !(error instanceof CodexAuthContextError)
       && !(error instanceof CodexAccountCooldownError)
-      && !(error instanceof CodexMainProfileDrainingError)
-    ) throw error;
+      && !(error instanceof CodexMainProfileDrainingError);
+    if (unexpectedRetryError) {
+      await firstResponse.body?.cancel().catch(() => undefined);
+      releaseCodexAuthContextProbeLease(firstAuthCtx);
+      throw error;
+    }
   }
   if (retryAuthCtx?.kind !== "pool" && retryAuthCtx?.kind !== "main-pool") {
     return { kind: "no-alternate" };
@@ -1131,24 +1178,30 @@ async function retryCodexPoolOnAlternateAccount(
   try {
     while (true) {
       noteAttemptSend(logCtx.activeAttempt, passthroughEstimate);
-      upstreamResponse = await fetchWithHeaderTimeout(
-        request.url,
-        {
-          method: request.method,
-          headers: request.headers,
-          body: request.body,
-        },
-        upstream.signal,
-        connectMs,
-        stream,
-        providerFetch(route.provider, options.codexWsRuntimeIdentity, {
-          providerName: route.providerName,
-          modelId: route.modelId,
-        }),
-        // Credential-bearing forward send: never follow a redirect into a
-        // dead-host rejection after the credential was seen (#914).
-        route.provider.authMode === "forward",
-      );
+      try {
+        upstreamResponse = await fetchWithHeaderTimeout(
+          request.url,
+          {
+            method: request.method,
+            headers: request.headers,
+            body: request.body,
+          },
+          upstream.signal,
+          connectMs,
+          stream,
+          providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+            providerName: route.providerName,
+            modelId: route.modelId,
+          }),
+          // Credential-bearing forward send: never follow a redirect into a
+          // dead-host rejection after the credential was seen (#914).
+          route.provider.authMode === "forward",
+        );
+      } catch (error) {
+        // Only the forward send is a transport boundary. Entitlement resolver throws below are
+        // deliberately outside this catch so programming errors retain their original path.
+        return { kind: "transport", error, authCtx: retryAuthCtx };
+      }
       retrySendCount += 1;
       args.onResponse?.(upstreamResponse, retryAuthCtx, request);
       if (!retrySameConfirmedAccount || retrySendCount >= maxRetrySends) break;
@@ -1158,13 +1211,23 @@ async function retryCodexPoolOnAlternateAccount(
         options.abortSignal,
       )) break;
       invalidateCodexModelEntitlementsForAccount(retryAuthCtx.accountId);
-      const refreshed = await resolveCodexModelEntitlements(config);
+      let refreshed: Awaited<ReturnType<typeof resolveCodexModelEntitlements>>;
+      try {
+        refreshed = await resolveCodexRetryModelEntitlements(
+          config,
+          entitlementResolver,
+          options.turnAdmissionLease,
+        );
+      } catch (error) {
+        await upstreamResponse.body?.cancel().catch(() => undefined);
+        await firstResponse.body?.cancel().catch(() => undefined);
+        releaseCodexAuthContextProbeLease(firstAuthCtx);
+        releaseCodexAuthContextProbeLease(retryAuthCtx);
+        throw error;
+      }
       if (!entitledCodexAccountIdsForModel(refreshed, route.modelId)?.has(retryAuthCtx.accountId)) break;
       await upstreamResponse.body?.cancel().catch(() => undefined);
     }
-  } catch (error) {
-    // Attribute the transport failure to the alternate account (already selected).
-    return { kind: "transport", error, authCtx: retryAuthCtx };
   } finally {
     request.releaseBodyObservation?.();
   }
@@ -1606,6 +1669,20 @@ async function resolveResponsesCodexAuth(
       });
       options.onCodexAuthContextResolved?.(authCtx);
     } else {
+      // A custom-named canonical-forward provider has no Codex account mode, but an
+      // admission bearer still substitutes the stored main credential below. Claim the
+      // same physical profile before synthesizing the main context so transport-based
+      // substitution cannot bypass a switch drain.
+      if (
+        substituteMainCredential
+        && (
+          isNativeMainTrafficBlocked()
+          || !tryClaimNativeMainProfileForTurn(options.turnAdmissionLease)
+          || isNativeMainTrafficBlocked()
+        )
+      ) {
+        throw new CodexMainProfileDrainingError();
+      }
       authCtx = { kind: "main", accountId: null };
       options.onCodexAuthContextResolved?.(undefined);
     }
@@ -2530,6 +2607,7 @@ async function handleResponsesInner(
       previewNow,
       codexQuotaScopeForModel(modelId),
       { ...previewSelectionOptions, modelEligibleAccountIds },
+      modelId,
     );
     const previewAccountId = route.codexAccountId ?? subagentFallbackAccountPreview(
       route.modelId,
@@ -2651,6 +2729,7 @@ async function handleResponsesInner(
                 previewNow,
                 codexQuotaScopeForModel(modelId),
                 { ...recoverySelectionOptions, modelEligibleAccountIds },
+                modelId,
               );
               const recoveryPreviewAccountId = subagentFallbackAccountPreview(
                 parsed.modelId,

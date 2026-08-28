@@ -361,21 +361,50 @@ export async function resolveCodexAuthContext(
   // selected stored credential even while the canonical OpenAI provider is globally Direct.
   if (mode === "direct" && fixedAccountId === undefined) {
     if (!hasCallerCodexBearer(headers)) throw new CodexDirectAuthenticationError();
-    if (options.modelId && ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(options.modelId)) {
-      const entitled = options.substituteMainCredentialForDirect
-        ? entitledCodexAccountIdsForModel(
-            await (options.resolveCodexModelEntitlements ?? resolveCodexModelEntitlements)(config),
-            options.modelId,
-          )?.has(MAIN_CODEX_ACCOUNT_ID) === true
-        : await (options.isDirectCallerEntitledToCodexModel ?? isDirectCallerEntitledToCodexModel)(
-            headers,
-            options.modelId,
-          );
-      if (!entitled) {
-        throw new CodexPoolAuthenticationError("The selected ChatGPT account does not support this model");
+    const substituteStoredMain = options.substituteMainCredentialForDirect === true;
+    if (!substituteStoredMain) {
+      if (options.modelId && ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(options.modelId)) {
+        const entitled = await (
+          options.isDirectCallerEntitledToCodexModel ?? isDirectCallerEntitledToCodexModel
+        )(headers, options.modelId);
+        if (!entitled) {
+          throw new CodexPoolAuthenticationError("The selected ChatGPT account does not support this model");
+        }
       }
+      return { kind: "main", accountId: null };
     }
-    return { kind: "main", accountId: null };
+
+    // Admission-bearer Direct requests later replace the proxy secret with the stored
+    // native-main credential. Reserve and claim that physical profile before entitlement
+    // discovery or materialization can read it; caller-owned Direct credentials never enter
+    // this branch. A missing turn admission must fail closed instead of recreating an
+    // untracked native-main read.
+    if (isNativeMainTrafficBlocked()) throw new CodexMainProfileDrainingError();
+    const directSelectionAdmission = options.beginCodexAccountSelection?.();
+    if (!directSelectionAdmission) throw new CodexMainProfileDrainingError();
+    try {
+      if (
+        directSelectionAdmission.mainProfileDraining
+        || !directSelectionAdmission.claimMainProfile()
+        || isNativeMainTrafficBlocked()
+      ) {
+        throw new CodexMainProfileDrainingError();
+      }
+      if (options.modelId && ACCOUNT_GATED_NATIVE_OPENAI_MODELS.has(options.modelId)) {
+        const entitled = entitledCodexAccountIdsForModel(
+          await (options.resolveCodexModelEntitlements ?? resolveCodexModelEntitlements)(config),
+          options.modelId,
+        )?.has(MAIN_CODEX_ACCOUNT_ID) === true;
+        if (!entitled) {
+          throw new CodexPoolAuthenticationError("The selected ChatGPT account does not support this model");
+        }
+      }
+      return { kind: "main", accountId: null };
+    } finally {
+      // The short selector reservation ends here. A successful claim remains owned by
+      // the enclosing turn lease until the request or transferred stream settles.
+      directSelectionAdmission.release();
+    }
   }
   const affinityKey = fixedAccountId === undefined ? codexPoolAffinityKey(headers) : undefined;
   // Retained startup recovery makes the physical main identity ineligible. Routing
@@ -383,6 +412,8 @@ export async function resolveCodexAuthContext(
   const nativeMainTrafficBlocked = isNativeMainTrafficBlocked();
   const selectionAdmission = options.beginCodexAccountSelection?.();
   const nativeMainReadsForbidden = nativeMainTrafficBlocked || selectionAdmission?.mainProfileDraining === true;
+  const nativeMainSelectionOnly = !nativeMainTrafficBlocked
+    && selectionAdmission?.mainProfileDraining === true;
   let accountId: string;
   const quotaScope = codexQuotaScopeForModel(options.modelId);
   try {
@@ -401,8 +432,7 @@ export async function resolveCodexAuthContext(
     const selectionOptions = {
       // Temporary switch drain keeps the candidate until the atomic claim rejects
       // it. Retained recovery makes main wholly ineligible so pool routing continues.
-      nativeMainSelectionOnly: !nativeMainTrafficBlocked
-        && selectionAdmission?.mainProfileDraining === true,
+      nativeMainSelectionOnly,
       isMainAccountTokenLive: options.isMainAccountTokenLive,
       modelEligibleAccountIds,
     };
@@ -425,7 +455,14 @@ export async function resolveCodexAuthContext(
             ? { status: "selected" as const, accountId: selected }
             : { status: "none" as const };
         })()
-      : resolveCodexAccountForThreadDetailed(affinityKey ?? null, config, Date.now(), quotaScope, selectionOptions);
+      : resolveCodexAccountForThreadDetailed(
+          affinityKey ?? null,
+          config,
+          Date.now(),
+          quotaScope,
+          selectionOptions,
+          options.modelId,
+        );
     if (resolution.status === "expired") throw new CodexThreadAffinityExpiredError(resolution.accountId);
     const selected = resolution.status === "selected" ? resolution.accountId : null;
     if (!selected) {
@@ -436,12 +473,13 @@ export async function resolveCodexAuthContext(
             : "Selected Codex account is unavailable",
         );
       }
-      // Recovery deliberately makes physical main ineligible. If no healthy
-      // pool route is configured and main is the intended route, report the
-      // temporary fence rather than misclassifying that credential as invalid.
+      // Recovery or a turn drain deliberately makes physical main unobservable.
+      // If no healthy pool route is available, report the temporary fence rather
+      // than turning a credential we were forbidden to inspect into a permanent
+      // model-entitlement denial.
       // A configured pool retry/exclusion that finds no alternate preserves its
       // ordinary pool-auth failure instead of being mislabeled as a main fence.
-      if (nativeMainTrafficBlocked && !options.excludeAccountId) {
+      if (nativeMainReadsForbidden && !options.excludeAccountId) {
         throw new CodexMainProfileDrainingError();
       }
       throw new CodexPoolAuthenticationError(

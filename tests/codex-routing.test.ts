@@ -1801,6 +1801,802 @@ describe("codex account selection order", () => {
     expect(getEffectiveActiveCodexAccountId(config)).toBe("a");
   });
 
+  test("model eligibility stays request-scoped and preserves shared selection plus affinity", () => {
+    const config = orderedConfig({ activeCodexAccountPinned: "b" });
+    const now = Date.now();
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 10);
+
+    expect(resolveCodexAccountForThread("model-gated-task", config, now, "shared")).toBe("b");
+    expect(resolveCodexAccountForThreadDetailed(
+      "model-gated-task",
+      config,
+      now + 1,
+      "shared",
+      { modelEligibleAccountIds: new Set(["a"]) },
+    )).toEqual({ status: "selected", accountId: "a" });
+
+    expect(config.activeCodexAccountId).toBe("b");
+    expect(config.activeCodexAccountPinned).toBe("b");
+    expect(getEffectiveActiveCodexAccountId(config)).toBe("b");
+    expect(resolveCodexAccountForThread("model-gated-task", config, now + 2, "shared")).toBe("b");
+  });
+
+  test("repeated model-gated round-robin requests reuse a separate detour affinity", () => {
+    const now = 1_800_000_000_000;
+    const threadId = "model-detour-affinity";
+    const modelId = "gpt-daybreak-blue-latest";
+    const config = makeConfig({
+      accountPoolStrategy: "round-robin",
+      accountPoolStickyLimit: 1,
+      activeCodexAccountId: "b",
+      activeCodexAccountPinned: "b",
+      codexAccounts: [
+        { id: "a", email: "a@test", isMain: false },
+        { id: "b", email: "b@test", isMain: false },
+        { id: "c", email: "c@test", isMain: false },
+      ],
+    });
+    saveTestCredential("c");
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 10);
+    updateAccountQuota("c", 10);
+    resetCodexRoutingForManualSelection("b");
+    expect(resolveCodexAccountForThread(threadId, config, now, "shared")).toBe("b");
+
+    const eligible = { modelEligibleAccountIds: new Set(["a", "c"]) };
+    const firstPreview = previewCodexAccountForRequest(
+      threadId,
+      config,
+      now + 1,
+      "shared",
+      eligible,
+      modelId,
+    );
+    const first = resolveCodexAccountForThreadDetailed(
+      threadId,
+      config,
+      now + 1,
+      "shared",
+      eligible,
+      modelId,
+    );
+    expect(first).toEqual({ status: "selected", accountId: firstPreview });
+    expect(["a", "c"]).toContain(firstPreview);
+
+    expect(previewCodexAccountForRequest(
+      threadId,
+      config,
+      now + 2,
+      "shared",
+      eligible,
+      modelId,
+    )).toBe(firstPreview);
+    expect(resolveCodexAccountForThreadDetailed(
+      threadId,
+      config,
+      now + 2,
+      "shared",
+      eligible,
+      modelId,
+    )).toEqual(first);
+
+    expect(config.activeCodexAccountId).toBe("b");
+    expect(config.activeCodexAccountPinned).toBe("b");
+    expect(getEffectiveActiveCodexAccountId(config)).toBe("b");
+    expect(resolveCodexAccountForThread(threadId, config, now + 3, "shared")).toBe("b");
+
+    const other = firstPreview === "a" ? "c" : "a";
+    expect(resolveCodexAccountForThreadDetailed(
+      threadId,
+      config,
+      now + 4,
+      "shared",
+      { modelEligibleAccountIds: new Set([other]) },
+      modelId,
+    )).toEqual({ status: "selected", accountId: other });
+    expect(resolveCodexAccountForThreadDetailed(
+      threadId,
+      config,
+      now + 5,
+      "shared",
+      { modelEligibleAccountIds: new Set(["a", "b", "c"]) },
+      modelId,
+    )).toEqual({ status: "selected", accountId: other });
+    expect(resolveCodexAccountForThread(threadId, config, now + 6, "shared")).toBe("b");
+  });
+
+  test("quota detour re-evaluation skips failover-ready cooler candidates", () => {
+    const now = 1_800_000_000_000;
+    const threadId = "quota-detour-failover-candidate";
+    const modelId = "gpt-daybreak-blue-latest";
+    const config = makeConfig({
+      accountPoolStrategy: "quota",
+      activeCodexAccountId: "c",
+      codexAccounts: [
+        { id: "a", email: "a@test", isMain: false },
+        { id: "b", email: "b@test", isMain: false },
+        { id: "c", email: "c@test", isMain: false },
+      ],
+    });
+    saveTestCredential("c");
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 5);
+    updateAccountQuota("c", 10);
+    resetCodexRoutingForManualSelection("c");
+    expect(resolveCodexAccountForThread(threadId, config, now, "shared")).toBe("c");
+    expect(resolveCodexAccountForThreadDetailed(
+      threadId,
+      config,
+      now + 1,
+      "shared",
+      { modelEligibleAccountIds: new Set(["a"]) },
+      modelId,
+    )).toEqual({ status: "selected", accountId: "a" });
+    // B is the highest tier after the detour exists. Filtering only after tier
+    // selection would drop B without ever exposing healthy C to the picker.
+    config.codexAccountPriorities = { b: 2, c: 1 };
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      recordCodexUpstreamOutcome(config, "b", 503, {
+        fixedAccount: true,
+        now: now + attempt + 2,
+      });
+    }
+    updateAccountQuota("a", 90);
+    const resolveAt = now + CODEX_TRANSIENT_SOFT_AVOID_MS + 5;
+    const eligible = { modelEligibleAccountIds: new Set(["a", "b", "c"]) };
+
+    expect(previewCodexAccountForRequest(
+      threadId,
+      config,
+      resolveAt,
+      "shared",
+      eligible,
+      modelId,
+    )).toBe("c");
+    expect(resolveCodexAccountForThreadDetailed(
+      threadId,
+      config,
+      resolveAt,
+      "shared",
+      eligible,
+      modelId,
+    )).toEqual({ status: "selected", accountId: "c" });
+    expect(config.activeCodexAccountId).toBe("c");
+    expect(config.activeCodexAccountPinned).toBeUndefined();
+    expect(getEffectiveActiveCodexAccountId(config)).toBe("c");
+  });
+
+  test("ordinary quota affinity re-evaluation skips a failover-ready higher tier", () => {
+    const now = 1_800_000_000_000;
+    const threadId = "ordinary-quota-failover-candidate";
+    const config = makeConfig({
+      accountPoolStrategy: "quota",
+      activeCodexAccountId: "a",
+      codexAccounts: [
+        { id: "a", email: "a@test", isMain: false },
+        { id: "b", email: "b@test", isMain: false },
+        { id: "c", email: "c@test", isMain: false },
+      ],
+    });
+    saveTestCredential("c");
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 5);
+    updateAccountQuota("c", 10);
+    expect(resolveCodexAccountForThread(threadId, config, now, "shared")).toBe("a");
+    config.codexAccountPriorities = { b: 2, c: 1 };
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      recordCodexUpstreamOutcome(config, "b", 503, {
+        fixedAccount: true,
+        now: now + attempt + 1,
+      });
+    }
+    updateAccountQuota("a", 90);
+    const resolveAt = now + CODEX_TRANSIENT_SOFT_AVOID_MS + 4;
+
+    expect(previewCodexAccountForRequest(threadId, config, resolveAt, "shared")).toBe("c");
+    expect(resolveCodexAccountForThreadDetailed(
+      threadId,
+      config,
+      resolveAt,
+      "shared",
+    )).toEqual({ status: "selected", accountId: "c" });
+    expect(config.activeCodexAccountId).toBe("c");
+    expect(getEffectiveActiveCodexAccountId(config)).toBe("c");
+  });
+
+  test("model preview and final keep a live detour after ordinary affinity cleanup", () => {
+    const now = 1_800_000_000_000;
+    const threadId = "detour-after-ordinary-cleanup";
+    const modelId = "gpt-daybreak-blue-latest";
+    const config = makeConfig({
+      accountPoolStrategy: "round-robin",
+      accountPoolStickyLimit: 1,
+      activeCodexAccountId: "b",
+      activeCodexAccountPinned: "b",
+      codexAccounts: [
+        { id: "a", email: "a@test", isMain: false },
+        { id: "b", email: "b@test", isMain: false },
+        { id: "c", email: "c@test", isMain: false },
+      ],
+    });
+    saveTestCredential("c");
+    resetCodexRoutingForManualSelection("b");
+    expect(resolveCodexAccountForThread(threadId, config, now, "shared")).toBe("b");
+    const eligible = { modelEligibleAccountIds: new Set(["a", "c"]) };
+    const first = resolveCodexAccountForThreadDetailed(
+      threadId,
+      config,
+      now + 1,
+      "shared",
+      eligible,
+      modelId,
+    );
+    expect(first.status).toBe("selected");
+
+    clearThreadAccountMapForAccount("b");
+    if (first.status === "selected") {
+      expect(previewCodexAccountForRequest(
+        threadId,
+        config,
+        now + 2,
+        "shared",
+        eligible,
+        modelId,
+      )).toBe(first.accountId);
+      expect(resolveCodexAccountForThreadDetailed(
+        threadId,
+        config,
+        now + 2,
+        "shared",
+        eligible,
+        modelId,
+      )).toEqual(first);
+    }
+    expect(config.activeCodexAccountPinned).toBe("b");
+  });
+
+  test("model detour affinities are independent within one quota scope", () => {
+    const now = 1_800_000_000_000;
+    const threadId = "independent-model-detours";
+    const config = makeConfig({
+      accountPoolStrategy: "round-robin",
+      accountPoolStickyLimit: 1,
+      activeCodexAccountId: "b",
+      activeCodexAccountPinned: "b",
+      codexAccounts: [
+        { id: "a", email: "a@test", isMain: false },
+        { id: "b", email: "b@test", isMain: false },
+        { id: "c", email: "c@test", isMain: false },
+      ],
+    });
+    saveTestCredential("c");
+    resetCodexRoutingForManualSelection("b");
+    expect(resolveCodexAccountForThread(threadId, config, now, "shared")).toBe("b");
+    const eligible = { modelEligibleAccountIds: new Set(["a", "c"]) };
+
+    const firstModel = resolveCodexAccountForThreadDetailed(
+      threadId,
+      config,
+      now + 1,
+      "shared",
+      eligible,
+      "gpt-daybreak-blue-latest",
+    );
+    const secondModel = resolveCodexAccountForThreadDetailed(
+      threadId,
+      config,
+      now + 2,
+      "shared",
+      eligible,
+      "gpt-other-account-gated",
+    );
+    expect(firstModel.status).toBe("selected");
+    expect(secondModel.status).toBe("selected");
+    if (firstModel.status === "selected" && secondModel.status === "selected") {
+      expect(secondModel.accountId).not.toBe(firstModel.accountId);
+      expect(resolveCodexAccountForThreadDetailed(
+        threadId,
+        config,
+        now + 3,
+        "shared",
+        eligible,
+        "gpt-daybreak-blue-latest",
+      )).toEqual(firstModel);
+      expect(resolveCodexAccountForThreadDetailed(
+        threadId,
+        config,
+        now + 4,
+        "shared",
+        eligible,
+        "gpt-other-account-gated",
+      )).toEqual(secondModel);
+    }
+    expect(resolveCodexAccountForThread(threadId, config, now + 5, "shared")).toBe("b");
+  });
+
+  test("model detour LRU stays bounded without evicting ordinary affinity", () => {
+    const now = 1_800_000_000_000;
+    const threadId = "bounded-model-detours";
+    const config = makeConfig({
+      accountPoolStrategy: "round-robin",
+      accountPoolStickyLimit: 1,
+      activeCodexAccountId: "b",
+      activeCodexAccountPinned: "b",
+      autoSwitchThreshold: 0,
+      codexAccounts: [
+        { id: "a", email: "a@test", isMain: false },
+        { id: "b", email: "b@test", isMain: false },
+        { id: "c", email: "c@test", isMain: false },
+      ],
+    });
+    saveTestCredential("c");
+    resetCodexRoutingForManualSelection("b");
+    expect(resolveCodexAccountForThread(threadId, config, now, "shared")).toBe("b");
+    const eligible = { modelEligibleAccountIds: new Set(["a", "c"]) };
+
+    expect(resolveCodexAccountForThreadDetailed(
+      threadId,
+      config,
+      now + 1,
+      "shared",
+      eligible,
+      "gated-model-0",
+    )).toEqual({ status: "selected", accountId: "a" });
+    for (let index = 1; index <= CODEX_THREAD_AFFINITY_MAX_ENTRIES; index += 1) {
+      expect(resolveCodexAccountForThreadDetailed(
+        threadId,
+        config,
+        now + index + 1,
+        "shared",
+        eligible,
+        `gated-model-${index}`,
+      ).status).toBe("selected");
+    }
+
+    // Detours are the preferred LRU victims, so model churn cannot displace the
+    // task's ordinary account. The oldest detour was evicted; recreating it takes
+    // the next RR account and then becomes sticky again.
+    expect(resolveCodexAccountForThread(
+      threadId,
+      config,
+      now + CODEX_THREAD_AFFINITY_MAX_ENTRIES + 3,
+      "shared",
+    )).toBe("b");
+    expect(resolveCodexAccountForThreadDetailed(
+      threadId,
+      config,
+      now + CODEX_THREAD_AFFINITY_MAX_ENTRIES + 4,
+      "shared",
+      eligible,
+      "gated-model-0",
+    )).toEqual({ status: "selected", accountId: "c" });
+    expect(resolveCodexAccountForThreadDetailed(
+      threadId,
+      config,
+      now + CODEX_THREAD_AFFINITY_MAX_ENTRIES + 5,
+      "shared",
+      eligible,
+      "gated-model-0",
+    )).toEqual({ status: "selected", accountId: "c" });
+  }, STORE_BUDGET_MS);
+
+  test("a gated first request binds its actual account without replacing global active", () => {
+    const config = makeConfig({ activeCodexAccountId: "b" });
+    const now = Date.now();
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 10);
+
+    expect(resolveCodexAccountForThreadDetailed(
+      "gated-first-task",
+      config,
+      now,
+      "shared",
+      { modelEligibleAccountIds: new Set(["a"]) },
+    )).toEqual({ status: "selected", accountId: "a" });
+    expect(config.activeCodexAccountId).toBe("b");
+    expect(getEffectiveActiveCodexAccountId(config)).toBe("b");
+    expect(resolveCodexAccountForThread("gated-first-task", config, now + 1, "shared")).toBe("a");
+  });
+
+  test("model-scoped round-robin advances without replacing shared selection", () => {
+    const config = makeConfig({
+      accountPoolStrategy: "round-robin",
+      accountPoolStickyLimit: 1,
+      activeCodexAccountId: "b",
+    });
+    const selectionOptions = { modelEligibleAccountIds: new Set(["a", "b"]) };
+
+    expect(resolveCodexAccountForThreadDetailed(
+      null,
+      config,
+      Date.now(),
+      "shared",
+      selectionOptions,
+    )).toEqual({ status: "selected", accountId: "a" });
+    expect(resolveCodexAccountForThreadDetailed(
+      null,
+      config,
+      Date.now() + 1,
+      "shared",
+      selectionOptions,
+    )).toEqual({ status: "selected", accountId: "b" });
+    expect(config.activeCodexAccountId).toBe("b");
+    expect(getEffectiveActiveCodexAccountId(config)).toBe("b");
+  });
+
+  test.each(["fill-first", "round-robin"] as const)(
+    "%s preserves healthy shared active, pin, and affinity during a model-only detour",
+    (strategy) => {
+      const now = 1_800_000_000_000;
+      const threadId = `healthy-model-detour-${strategy}`;
+      const config = makeConfig({
+        accountPoolStrategy: strategy,
+        accountPoolStickyLimit: 1,
+        activeCodexAccountId: "b",
+        activeCodexAccountPinned: "b",
+      });
+      updateAccountQuota("a", 10);
+      updateAccountQuota("b", 10);
+      resetCodexRoutingForManualSelection("b");
+      expect(resolveCodexAccountForThread(threadId, config, now, "shared")).toBe("b");
+
+      expect(resolveCodexAccountForThreadDetailed(
+        threadId,
+        config,
+        now + 1,
+        "shared",
+        { modelEligibleAccountIds: new Set(["a"]) },
+      )).toEqual({ status: "selected", accountId: "a" });
+
+      expect(config.activeCodexAccountId).toBe("b");
+      expect(config.activeCodexAccountPinned).toBe("b");
+      expect(getEffectiveActiveCodexAccountId(config)).toBe("b");
+      expect(resolveCodexAccountForThread(threadId, config, now + 2, "shared")).toBe("b");
+    },
+  );
+
+  test.each(["fill-first", "round-robin"] as const)(
+    "%s skips a failover-ready detour candidate while preserving healthy shared state",
+    (strategy) => {
+      const now = 1_800_000_000_000;
+      const config = makeConfig({
+        accountPoolStrategy: strategy,
+        accountPoolStickyLimit: 1,
+        activeCodexAccountId: "c",
+        activeCodexAccountPinned: "c",
+        autoSwitchThreshold: 0,
+        codexAccounts: [
+          { id: "a", email: "a@test", isMain: false },
+          { id: "b", email: "b@test", isMain: false },
+          { id: "c", email: "c@test", isMain: false },
+        ],
+      });
+      saveTestCredential("c");
+      resetCodexRoutingForManualSelection("c");
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        recordCodexUpstreamOutcome(config, "a", 503, {
+          fixedAccount: true,
+          now: now + attempt + 1,
+        });
+      }
+
+      const selectionOptions = { modelEligibleAccountIds: new Set(["a", "b"]) };
+      expect(previewCodexAccountForRequest(
+        null,
+        config,
+        now + CODEX_TRANSIENT_SOFT_AVOID_MS + 4,
+        "shared",
+        selectionOptions,
+        "gpt-daybreak-blue-latest",
+      )).toBe("b");
+
+      expect(resolveCodexAccountForThreadDetailed(
+        null,
+        config,
+        now + CODEX_TRANSIENT_SOFT_AVOID_MS + 4,
+        "shared",
+        selectionOptions,
+      )).toEqual({ status: "selected", accountId: "b" });
+      expect(config.activeCodexAccountId).toBe("c");
+      expect(config.activeCodexAccountPinned).toBe("c");
+      expect(getEffectiveActiveCodexAccountId(config)).toBe("c");
+    },
+  );
+
+  test.each(["fill-first", "round-robin"] as const)(
+    "%s retires shared state when model ineligibility overlaps quota exhaustion",
+    (strategy) => {
+      const now = 1_800_000_000_000;
+      const threadId = `quota-model-overlap-${strategy}`;
+      const config = makeConfig({
+        accountPoolStrategy: strategy,
+        accountPoolStickyLimit: 1,
+        activeCodexAccountId: "b",
+        activeCodexAccountPinned: "b",
+      });
+      updateAccountQuota("a", 10);
+      updateAccountQuota("b", 10);
+      resetCodexRoutingForManualSelection("b");
+      expect(resolveCodexAccountForThread(threadId, config, now, "shared")).toBe("b");
+      updateAccountQuota("b", 90);
+
+      expect(resolveCodexAccountForThreadDetailed(
+        threadId,
+        config,
+        now + 1,
+        "shared",
+        { modelEligibleAccountIds: new Set(["a"]) },
+      )).toEqual({ status: "selected", accountId: "a" });
+      expect(config.activeCodexAccountId).toBe("b");
+      expect(config.activeCodexAccountPinned).toBeUndefined();
+      expect(getEffectiveActiveCodexAccountId(config)).toBe("a");
+
+      updateAccountQuota("b", 10);
+      expect(resolveCodexAccountForThread(threadId, config, now + 2, "shared")).toBe("a");
+    },
+  );
+
+  test.each(["fill-first", "round-robin"] as const)(
+    "%s retires shared state when model ineligibility overlaps failover",
+    (strategy) => {
+      const now = 1_800_000_000_000;
+      const threadId = `failure-model-overlap-${strategy}`;
+      const config = makeConfig({
+        accountPoolStrategy: strategy,
+        accountPoolStickyLimit: 1,
+        activeCodexAccountId: "b",
+        activeCodexAccountPinned: "b",
+        autoSwitchThreshold: 0,
+      });
+      resetCodexRoutingForManualSelection("b");
+      expect(resolveCodexAccountForThread(threadId, config, now, "shared")).toBe("b");
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        recordCodexUpstreamOutcome(config, "b", 503, {
+          fixedAccount: true,
+          now: now + attempt + 1,
+        });
+      }
+      const resolveAt = now + CODEX_TRANSIENT_SOFT_AVOID_MS + 4;
+
+      expect(resolveCodexAccountForThreadDetailed(
+        threadId,
+        config,
+        resolveAt,
+        "shared",
+        { modelEligibleAccountIds: new Set(["a"]) },
+      )).toEqual({ status: "selected", accountId: "a" });
+      expect(config.activeCodexAccountId).toBe("b");
+      expect(config.activeCodexAccountPinned).toBeUndefined();
+      expect(getEffectiveActiveCodexAccountId(config)).toBe("a");
+
+      clearCodexUpstreamHealthForAccount("b");
+      expect(resolveCodexAccountForThread(threadId, config, resolveAt + 1, "shared")).toBe("a");
+    },
+  );
+
+  test.each(["fill-first", "round-robin"] as const)(
+    "%s cannot re-pick a quota-drained shared account that remains model-eligible",
+    (strategy) => {
+      const now = 1_800_000_000_000;
+      const config = makeConfig({
+        accountPoolStrategy: strategy,
+        accountPoolStickyLimit: 1,
+        activeCodexAccountId: "b",
+        activeCodexAccountPinned: "b",
+      });
+      updateAccountQuota("a", 10);
+      updateAccountQuota("b", 90);
+      resetCodexRoutingForManualSelection("b");
+
+      const selectionOptions = { modelEligibleAccountIds: new Set(["a", "b"]) };
+      expect(previewCodexAccountForRequest(
+        null,
+        config,
+        now,
+        "shared",
+        selectionOptions,
+        "gpt-daybreak-blue-latest",
+      )).toBe("a");
+
+      expect(resolveCodexAccountForThreadDetailed(
+        null,
+        config,
+        now,
+        "shared",
+        selectionOptions,
+      )).toEqual({ status: "selected", accountId: "a" });
+      expect(config.activeCodexAccountId).toBe("b");
+      expect(config.activeCodexAccountPinned).toBeUndefined();
+      expect(getEffectiveActiveCodexAccountId(config)).toBe("a");
+    },
+  );
+
+  test.each(["fill-first", "round-robin"] as const)(
+    "%s cannot re-pick a failover-ready shared account that remains model-eligible",
+    (strategy) => {
+      const now = 1_800_000_000_000;
+      const config = makeConfig({
+        accountPoolStrategy: strategy,
+        accountPoolStickyLimit: 1,
+        activeCodexAccountId: "b",
+        activeCodexAccountPinned: "b",
+        autoSwitchThreshold: 0,
+      });
+      resetCodexRoutingForManualSelection("b");
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        recordCodexUpstreamOutcome(config, "b", 503, {
+          fixedAccount: true,
+          now: now + attempt + 1,
+        });
+      }
+      const resolveAt = now + CODEX_TRANSIENT_SOFT_AVOID_MS + 4;
+
+      const selectionOptions = { modelEligibleAccountIds: new Set(["a", "b"]) };
+      expect(previewCodexAccountForRequest(
+        null,
+        config,
+        resolveAt,
+        "shared",
+        selectionOptions,
+        "gpt-daybreak-blue-latest",
+      )).toBe("a");
+
+      expect(resolveCodexAccountForThreadDetailed(
+        null,
+        config,
+        resolveAt,
+        "shared",
+        selectionOptions,
+      )).toEqual({ status: "selected", accountId: "a" });
+      expect(config.activeCodexAccountId).toBe("b");
+      expect(config.activeCodexAccountPinned).toBeUndefined();
+      expect(getEffectiveActiveCodexAccountId(config)).toBe("a");
+    },
+  );
+
+  test("temporary main drain preserves unread health but still retires a known paused pin", () => {
+    const config = makeConfig({
+      activeCodexAccountId: MAIN_CODEX_ACCOUNT_ID,
+      activeCodexAccountPinned: MAIN_CODEX_ACCOUNT_ID,
+      pausedCodexAccountIds: [MAIN_CODEX_ACCOUNT_ID],
+    });
+
+    expect(resolveCodexAccountForThreadDetailed(
+      null,
+      config,
+      Date.now(),
+      "shared",
+      {
+        nativeMainSelectionOnly: true,
+        modelEligibleAccountIds: new Set(),
+      },
+    )).toEqual({ status: "selected", accountId: MAIN_CODEX_ACCOUNT_ID });
+    expect(config.activeCodexAccountPinned).toBeUndefined();
+  });
+
+  test("model-only detour failure does not retire the healthy operator pin", () => {
+    const now = 1_800_000_000_000;
+    const config = makeConfig({
+      activeCodexAccountId: "b",
+      activeCodexAccountPinned: "b",
+      autoSwitchThreshold: 0,
+      codexAccounts: [
+        { id: "a", email: "a@test", isMain: false },
+        { id: "b", email: "b@test", isMain: false },
+        { id: "c", email: "c@test", isMain: false },
+      ],
+    });
+    saveTestCredential("c");
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      recordCodexUpstreamOutcome(config, "a", 503, {
+        fixedAccount: true,
+        now: now + attempt,
+      });
+    }
+
+    expect(resolveCodexAccountForThreadDetailed(
+      null,
+      config,
+      now + CODEX_TRANSIENT_SOFT_AVOID_MS + 3,
+      "shared",
+      { modelEligibleAccountIds: new Set(["a", "c"]) },
+    )).toEqual({ status: "selected", accountId: "c" });
+    expect(config.activeCodexAccountId).toBe("b");
+    expect(config.activeCodexAccountPinned).toBe("b");
+    expect(getEffectiveActiveCodexAccountId(config)).toBe("b");
+  });
+
+  test("genuine quota transition still retires an exhausted pin during model-scoped selection", () => {
+    const config = makeConfig({
+      activeCodexAccountId: "b",
+      activeCodexAccountPinned: "b",
+    });
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 90);
+
+    expect(resolveCodexAccountForThreadDetailed(
+      null,
+      config,
+      Date.now(),
+      "shared",
+      { modelEligibleAccountIds: new Set(["a", "b"]) },
+    )).toEqual({ status: "selected", accountId: "a" });
+    expect(config.activeCodexAccountId).toBe("a");
+    expect(config.activeCodexAccountPinned).toBeUndefined();
+  });
+
+  test("genuine failure transition still retires a failing pin during model-scoped selection", () => {
+    const now = 1_800_000_000_000;
+    const config = makeConfig({
+      activeCodexAccountId: "b",
+      activeCodexAccountPinned: "b",
+      autoSwitchThreshold: 0,
+    });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      recordCodexUpstreamOutcome(config, "b", 503, {
+        fixedAccount: true,
+        now: now + attempt,
+      });
+    }
+
+    expect(resolveCodexAccountForThreadDetailed(
+      null,
+      config,
+      now + CODEX_TRANSIENT_SOFT_AVOID_MS + 3,
+      "shared",
+      { modelEligibleAccountIds: new Set(["a", "b"]) },
+    )).toEqual({ status: "selected", accountId: "a" });
+    expect(config.activeCodexAccountId).toBe("a");
+    expect(config.activeCodexAccountPinned).toBeUndefined();
+  });
+
+  test("model ineligibility does not preserve a simultaneously exhausted pin", () => {
+    const config = makeConfig({
+      activeCodexAccountId: "b",
+      activeCodexAccountPinned: "b",
+    });
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 90);
+
+    expect(resolveCodexAccountForThreadDetailed(
+      null,
+      config,
+      Date.now(),
+      "shared",
+      { modelEligibleAccountIds: new Set(["a"]) },
+    )).toEqual({ status: "selected", accountId: "a" });
+    expect(config.activeCodexAccountId).toBe("a");
+    expect(config.activeCodexAccountPinned).toBeUndefined();
+  });
+
+  test("model ineligibility does not preserve a simultaneously failing pin", () => {
+    const now = 1_800_000_000_000;
+    const config = makeConfig({
+      activeCodexAccountId: "b",
+      activeCodexAccountPinned: "b",
+      autoSwitchThreshold: 0,
+    });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      recordCodexUpstreamOutcome(config, "b", 503, {
+        fixedAccount: true,
+        now: now + attempt,
+      });
+    }
+
+    expect(resolveCodexAccountForThreadDetailed(
+      null,
+      config,
+      now + CODEX_TRANSIENT_SOFT_AVOID_MS + 3,
+      "shared",
+      { modelEligibleAccountIds: new Set(["a"]) },
+    )).toEqual({ status: "selected", accountId: "a" });
+    expect(config.activeCodexAccountId).toBe("a");
+    expect(config.activeCodexAccountPinned).toBeUndefined();
+  });
+
   test("falls through to the lower tier once the higher one is over threshold", () => {
     const config = orderedConfig();
     updateAccountQuota("a", 90);
