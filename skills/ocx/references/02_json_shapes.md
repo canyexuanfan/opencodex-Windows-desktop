@@ -119,7 +119,7 @@ reason: <machine-readable reason>
 hint: <what to do>
 ```
 
-Branch on `reason`, never on the message prose. Under `--json` the server error object is emitted
-with `error.type`, `error.code`, and `error.message`; `error.code` is the same machine-readable
-value as `reason`.
+Branch on `reason` in those stderr lines, never on the message prose. `--json` does **not** wrap
+API failures in `{error:{type,code,message}}`; `runCliAction` still prints the three-liner on
+stderr and returns 4/5/1. Do not parse stdout for an error envelope that is not there.
 

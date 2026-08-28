@@ -30,14 +30,14 @@ describe("ocx account main", () => {
     const errors: string[] = [];
     console.error = (...values: unknown[]) => errors.push(values.join(" "));
 
-    expect(apiError({ error: "validation failed" }, "fallback")).toBe(1);
-    expect(apiError({ error: "validation failed", cleanupRequired: "true" }, "fallback")).toBe(1);
+    expect(apiError({ error: "validation failed" }, "fallback", 500)).toBe(1);
+    expect(apiError({ error: "validation failed", cleanupRequired: "true" }, "fallback", 500)).toBe(1);
     expect(errors).toEqual([
       "Error: validation failed",
       "Error: validation failed",
     ]);
 
-    expect(apiError({ error: "validation failed", cleanupRequired: true }, "fallback")).toBe(1);
+    expect(apiError({ error: "validation failed", cleanupRequired: true }, "fallback", 500)).toBe(1);
     expect(errors.at(-1)).toBe("Warning: native-login staging cleanup is still required; run 'ocx account main doctor'.");
   });
 

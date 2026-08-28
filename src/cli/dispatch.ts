@@ -22,6 +22,7 @@ import { restoreNativeCodexAsync } from "../codex/inject";
 import { stripGrokConfig } from "../grok/inject";
 import { afterCatalogWriteHandleAppServers } from "../codex/app-server-processes";
 import { normalizeUpdateChannel, runGuiUpdateWorker } from "../update/job";
+import { takeFlag } from "./runtime-api";
 
 export interface CliDispatchDeps {
   args: string[];
@@ -70,35 +71,37 @@ const commandRunners: Record<string, CommandRunner> = {
     return Number(process.exitCode ?? 0);
   },
   restore: async deps => {
-    // Order-independent: matching at args[1] meant `ocx restore back --json` silently
-    // ignored the flag, because position 1 held `back`.
-    const restoreJson = deps.args.slice(1).includes("--json");
-    if (deps.args[1] === "back") {
+    const restoreArgs = deps.args.slice(1);
+    const restoreJson = takeFlag(restoreArgs, "--json");
+    if (restoreArgs[0] === "back") {
       // Reverse switch: re-point plain `codex` at the RUNNING proxy without touching its
       // lifecycle — the counterpart of `ocx restore`. Start/stop triggers are unchanged;
       // this only re-runs the same inject (config + catalog + history) `ocx start` does.
+      // takeFlag above makes `ocx restore --json back` restore-back, not eject.
+      const { skippedRestoreEnvelope } = await import("../codex/inject");
+      const emitBack = (success: boolean, message: string, code: number): number => {
+        if (restoreJson) console.log(JSON.stringify(skippedRestoreEnvelope(success, message)));
+        else if (code === 0) console.log(message);
+        else console.error(message);
+        return code;
+      };
       const live = await deps.findLiveProxy();
       if (!live) {
-        console.error("No running proxy found. Run 'ocx start' — it injects opencodex automatically.");
-        return 1;
+        return emitBack(false, "No running proxy found. Run 'ocx start' — it injects opencodex automatically.", 1);
       }
       const desired = setIntegrationEnabled("codex", true);
       if (!desired.ok) {
-        console.error(`Codex desired state was not saved (${desired.reason}).`);
-        return desired.reason === "conflict" ? 2 : 1;
+        return emitBack(false, `Codex desired state was not saved (${desired.reason}).`, desired.reason === "conflict" ? 2 : 1);
       }
       const synced = await syncModelsToCodex(live.port);
       if (synced.status === "skipped") {
-        console.error("Codex integration is OFF; restore back did not change Codex. Retry after the competing integration change finishes.");
-        return 2;
+        return emitBack(false, "Codex integration is OFF; restore back did not change Codex. Retry after the competing integration change finishes.", 2);
       }
       if (!synced.ok) {
-        console.error("Plain `codex` was not switched back to opencodex. Fix the reported Codex config issue and retry.");
-        return 1;
+        return emitBack(false, "Plain `codex` was not switched back to opencodex. Fix the reported Codex config issue and retry.", 1);
       }
       const target = collectOrcaCodexHomeDiagnostic();
-      console.log(`Plain \`codex\` now routes through opencodex in ${target.effectiveCodexHome} (undo with: ocx restore).`);
-      return 0;
+      return emitBack(true, `Plain \`codex\` now routes through opencodex in ${target.effectiveCodexHome} (undo with: ocx restore).`, 0);
     }
     const desired = setIntegrationEnabled("codex", false);
     if (!desired.ok) {
@@ -352,14 +355,16 @@ const commandRunners: Record<string, CommandRunner> = {
     const invalidated = withCatalogWriteSerialization(owningCodexHome, permit =>
       invalidateCodexModelsCacheWithPermit(permit, owningCodexHome, { allowWhenDesiredDisabled: true }));
     const cacheJson = cacheArgs.includes("--json");
+    const jsonSafeLog = cacheJson
+      ? { log: (...values: unknown[]) => console.error(...values), error: (...values: unknown[]) => console.error(...values) }
+      : console;
     // Only warn/restart when models_cache was actually rewritten from a readable catalog.
     if (invalidated.kind === "completed" && invalidated.value) {
-      afterCatalogWriteHandleAppServers({ restart: restartCodex, log: console });
-      if (restartDesktopApp) await handleDesktopAppRestart(console);
-    } else if (desiredDisabled) {
-      // Worth saying, because it explains why nothing was written in the common case --
-      // but it is not a skip verdict: the refresh was attempted anyway (see the exit-code
-      // reasoning below), so the exit code still reflects whether it actually succeeded.
+      afterCatalogWriteHandleAppServers({ restart: restartCodex, log: jsonSafeLog });
+      if (restartDesktopApp) await handleDesktopAppRestart(jsonSafeLog);
+    } else if (desiredDisabled && !cacheJson) {
+      // Worth saying in the human path, because it explains why nothing was written.
+      // Under --json this belongs on the envelope, not as a second stdout line.
       console.log("Codex integration is OFF; no catalog or cache write resulted.");
     }
     // `completed` with a falsy value means the cache was NOT rewritten. Previously every
@@ -402,6 +407,7 @@ const commandRunners: Record<string, CommandRunner> = {
         reason: invalidated.kind === "unavailable" ? invalidated.reason : undefined,
         // Which of the two benign skips this was, so `skipped: true` is never opaque.
         skippedReason: contended ? "contended" : noCatalog ? "no_catalog" : undefined,
+        desiredDisabled,
         codexHome: owningCodexHome,
       }, null, 2));
     } else if (contended) {

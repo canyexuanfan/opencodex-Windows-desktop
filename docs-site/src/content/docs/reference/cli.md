@@ -56,7 +56,7 @@ The specific codes are set in one place, so every management command agrees:
 | 5 | HTTP 409 — conflict; a lock is held or state changed underneath |
 | 1 | everything else, including transport failure and other HTTP errors |
 
-Exit 0 always means the operation happened. A command never prints an error and exits 0.
+Exit 0 means no error was reported. Preview verbs (for example `ocx storage cleanup` without `--yes`) also exit 0 without mutating. A command never prints an error and exits 0.
 
 Destructive removal, import, credit-consumption, and update operations that advertise confirmation
 require `--yes` in non-interactive use. The flag is an explicit opt-in; omitting it must not silently

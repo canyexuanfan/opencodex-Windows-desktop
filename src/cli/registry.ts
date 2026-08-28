@@ -375,7 +375,7 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
   {
     name: "capabilities",
     usage: "ocx capabilities [--json] [--mutating-only] [--route <path>]",
-    summary: "Enumerate every CLI capability with the management routes it drives.",
+    summary: "List the declared CLI capabilities and the management routes they drive.",
     details: [
       "The machine-readable surface index: start here when driving ocx programmatically instead of parsing help text.",
       "--route <path> answers the inverse question: which commands drive this management route.",

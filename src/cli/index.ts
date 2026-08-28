@@ -46,7 +46,7 @@ import { runReady, type ReadyArgs } from "./ready";
 import { runCli } from "./root";
 import { ProxyOwnershipRefusedError, stopProxy } from "../lib/process-control";
 import { loadServiceTokenFromFile } from "../lib/service-secrets";
-import { diagnoseService, isServiceOwnershipError, serviceCommand, serviceEnvironmentOwnedHere, serviceStartableFromTray, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "../service";
+import { assertNotAdminToken, diagnoseService, isServiceOwnershipError, serviceCommand, serviceEnvironmentOwnedHere, serviceStartableFromTray, serviceStatusSummary, stopServiceIfInstalled, uninstallServiceIfInstalled } from "../service";
 import { formatStartupRoutingDetail, startupHealthSummary } from "../codex/autostart-health";
 import { drainAndShutdown, isRecyclingForExit, startServer } from "../server";
 import { injectSystemEnv, reconcileShellHook, revertSystemEnv, uninstallShellHook } from "../server/system-env";
@@ -224,6 +224,11 @@ async function handleStart(options: { block?: boolean } = {}) {
   // auth path reads OPENCODEX_API_AUTH_TOKEN from the environment.
   const serviceToken = loadServiceTokenFromFile(process.env);
   if (serviceToken) process.env.OPENCODEX_API_AUTH_TOKEN = serviceToken;
+  // The service wrapper (and WinSW via OCX_API_TOKEN_FILE) can still export a colliding
+  // token that install now refuses to write. Refuse it here too, before bind, so an
+  // already-broken file cannot fence /api/* closed at boot (#2696).
+  const present = process.env.OPENCODEX_API_AUTH_TOKEN?.trim();
+  if (present) assertNotAdminToken(present);
   const requestedPort = parsePortOption();
   const owner = await findProxyOwnerBeforeJournalRecovery();
   if (owner.live) {

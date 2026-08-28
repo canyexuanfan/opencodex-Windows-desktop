@@ -413,7 +413,12 @@ describe("Cursor discovery bounded retry", () => {
       }
       stream.respond({ ":status": 200, "content-type": "application/proto" });
       stream.end(body);
-    }, baseUrl => fetchCursorUsableModels({ apiKey: "test-token", baseUrl, timeoutMs: 120 }));
+      // 120ms was enough on a quiet machine but the retry attempt shares the
+      // same budget (min(timeoutMs, retry cap)) and flaked on loaded CI
+      // runners: the second, succeeding attempt also timed out. 1s keeps the
+      // test deterministic; the never-responding first attempt still bounds
+      // total runtime at ~1.5s.
+    }, baseUrl => fetchCursorUsableModels({ apiKey: "test-token", baseUrl, timeoutMs: 1_000 }));
 
     expect(requests).toBe(2);
     expect(result).toEqual({ ok: true, models: ["gpt-5.5-high"] });

@@ -237,8 +237,8 @@ function configAndType(deps: AccountDeps, name: string) {
 }
 
 function familyFailure(result: FamilyRows, fallback: string): number | null {
-  if (result.networkDown) return proxyUnreachable();
-  if (result.errorJson) return apiError(result.errorJson, fallback, result.status);
+  if (result.networkDown) return proxyUnreachable(result.transportError);
+  if (result.errorJson) return apiError(result.errorJson, fallback, result.status ?? 1);
   return null;
 }
 
@@ -327,7 +327,7 @@ export async function cmdRefresh(args: string[], deps: AccountDeps): Promise<num
   if (!baseUrl) return proxyUnreachable();
   if (classified.type !== "codex") {
     const result = await fetchProviderQuotaReport(deps, baseUrl, name);
-    if (result.status === 0) return proxyUnreachable();
+    if (result.status === 0) return proxyUnreachable(result.transportError);
     if (result.status !== 200) return apiError(result.errorJson ?? {}, `failed to refresh ${name}`, result.status);
     if (wantsJson) console.log(JSON.stringify({ provider: name, report: result.report }, null, 2));
     else console.log(result.report ? providerQuotaLine(name, result.report) : `no quota report available for ${name}`);
@@ -538,7 +538,7 @@ export async function cmdImport(args: string[], deps: AccountDeps): Promise<numb
     clearTimeout(timer);
   }
   if (response.status === 0) {
-    if (!timedOut) return proxyUnreachable();
+    if (!timedOut) return proxyUnreachable(response.transportError);
     console.error(`Error: import_timeout after ${importTimeoutMs}ms`);
     return 1;
   }
@@ -778,19 +778,26 @@ export async function cmdPauseExhausted(args: string[], deps: AccountDeps): Prom
   const checked = typeof response.json.checkedAccountCount === "number" ? response.json.checkedAccountCount : null;
   const failed = typeof response.json.failedAccountCount === "number" ? response.json.failedAccountCount : null;
 
+  const complete = failed === null || failed === 0;
+  const ok = complete;
+  if (failed !== null && failed > 0) {
+    console.error(`Quota refresh failed for ${failed} account(s); those were not evaluated.`);
+  }
   if (wantsJson) {
-    console.log(JSON.stringify({ ok: true, provider: name, pausedAccountIds: pausedIds, checkedAccountCount: checked, failedAccountCount: failed }, null, 2));
-    return 0;
+    console.log(JSON.stringify({
+      ok,
+      complete,
+      provider: name,
+      pausedAccountIds: pausedIds,
+      checkedAccountCount: checked,
+      failedAccountCount: failed,
+    }, null, 2));
+    return ok ? 0 : 1;
   }
   console.log(pausedIds.length > 0
     ? `${name}: paused ${pausedIds.length} exhausted account(s): ${pausedIds.join(", ")}`
     : `${name}: no exhausted accounts to pause`);
-  // A quota refresh that failed for some accounts means those were not evaluated at all, so
-  // silence here would read as "none were exhausted" -- a different and wrong conclusion.
-  if (failed !== null && failed > 0) {
-    console.error(`Quota refresh failed for ${failed} account(s); those were not evaluated.`);
-  }
-  return 0;
+  return ok ? 0 : 1;
 }
 
 /**

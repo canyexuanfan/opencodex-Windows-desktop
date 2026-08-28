@@ -131,10 +131,25 @@ describe("ocx capabilities output", () => {
   });
 
   test("--mutating-only keeps only mutating capabilities", async () => {
+    const expected = CAPABILITIES.filter(c => c.mutates);
     const cap = captureStdout();
     try { await runCapabilities(["--mutating-only", "--json"]); } finally { cap.restore(); }
     const parsed = JSON.parse(cap.lines.join("\n")) as { capabilities: { mutates: boolean }[] };
+    expect(parsed.capabilities).toHaveLength(expected.length);
     expect(parsed.capabilities.every(c => c.mutates)).toBe(true);
+  });
+
+  test("ocx provider list does not claim GET /api/providers", () => {
+    const cap = CAPABILITIES.find(c => c.command[0] === "provider" && c.command[1] === "list");
+    expect(cap).toBeDefined();
+    expect(cap?.routes).toEqual([]);
+  });
+
+  test("--route without a path is usage, not a full table dump", async () => {
+    const cap = captureStdout();
+    let code: number;
+    try { code = await runCapabilities(["--route"]); } finally { cap.restore(); }
+    expect(code).toBe(64);
   });
 
   test("every route a capability declares exists in the management registry", async () => {

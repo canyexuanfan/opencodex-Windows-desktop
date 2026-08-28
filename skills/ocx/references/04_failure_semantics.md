@@ -16,9 +16,9 @@ Set in one place (`runCliAction`), so every verb agrees:
 
 Two consequences worth internalizing:
 
-**Exit 0 always means the operation happened.** Commands once printed a failure and still exited 0.
-They do not any more, and a source scan keeps that from returning. So you never need to parse
-stdout to find out whether a command worked.
+**Exit 0 means no error was reported, not that a mutation happened.** Preview verbs
+(`storage cleanup` without `--yes`) exit 0 after a read-only preview. Parse `--json` (or the
+human summary) to see whether anything was written. A command that failed will not exit 0.
 
 **Exit 2 means nothing was sent.** A usage error is rejected locally, before any request. Retrying
 the same arguments produces the same result; fix the arguments.
@@ -70,8 +70,8 @@ credential conflict looks like progress and produces nothing.
 
 ## Destructive verbs fail closed
 
-`storage cleanup`, `storage trash restore`, and `storage policy run` exit 2 without `--yes` and send
-no mutating request at all. So an accidental invocation is a no-op, not a partial delete.
+`storage trash restore` and `storage policy run` exit 2 without `--yes` and send no mutating
+request. `storage cleanup` without `--yes` previews and exits 0; only `--yes` deletes.
 
 `storage cleanup` also refuses locally if the preview returned no digest, rather than sending an
 empty one and getting a 400 that looks like a bug in the verb.

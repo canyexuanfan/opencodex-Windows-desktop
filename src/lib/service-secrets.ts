@@ -23,3 +23,18 @@ export function loadServiceTokenFromFile(env: Record<string, string | undefined>
     return null;
   }
 }
+
+/**
+ * Contents of the installed service token file. The launch wrapper always re-exports
+ * this file as OPENCODEX_API_AUTH_TOKEN, so doctor and start must inspect it even
+ * when the calling shell has no data-plane env var.
+ * Returns the token or null — never throws, never logs the value.
+ */
+export function readInstalledServiceToken(): string | null {
+  try {
+    const token = readFileSync(serviceApiTokenFilePath(), "utf8").trim();
+    return token || null;
+  } catch {
+    return null;
+  }
+}

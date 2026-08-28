@@ -5,8 +5,9 @@ description: Drive a running opencodex (`ocx`) proxy from the CLI — account po
 
 # Operating `ocx`
 
-`ocx` controls a locally running opencodex proxy. Most of what the dashboard can do, the CLI can do,
-with one deliberate exception recorded under Consent below.
+`ocx` controls a locally running opencodex proxy. The CLI covers the dashboard's operational
+surface, with one consent exception (starring) recorded under Consent below. `ocx capabilities`
+lists the *declared* index, not every verb.
 
 Be precise about the gap, because guessing costs you more than reading: the capability index below
 is complete and authoritative for what it lists, and it does not yet list every management route.
@@ -23,10 +24,10 @@ is for installing one, and the repository `AGENTS.md` is for changing the codeba
 ocx capabilities --json
 ```
 
-That is the machine-readable index of the declared verbs, the routes each drives, its flags, and
-whether it mutates. Read it first rather than guessing a command name — it is generated from the
-same table that generates the CLI help, so it cannot describe a verb that does not exist. The
-converse does not hold yet: a verb can exist without appearing here.
+That is the machine-readable index of declared verbs, the routes they drive, their flags, and whether they
+mutate. Read it first rather than guessing a command name. It is not exhaustive — an unmatched
+`--route` exits 4 when the table has no row, even if a working verb exists. The converse of
+generation also holds: a verb can exist without appearing here (`ocx access key`, `ocx route policy`).
 
 Narrow it when you already know what you want:
 
@@ -58,7 +59,8 @@ not exist in the running build yet.
 | 1 | everything else, including transport failure and any other HTTP error |
 
 **Never read a printed error with exit 0 as success.** Commands used to print a failure and exit 0;
-they no longer do, and a source scan keeps it that way. If you see exit 0, the operation happened.
+they no longer do, and a source scan keeps it that way. Exit 0 means no error was reported;
+inspect the result to see whether anything mutated (cleanup without `--yes` is a preview).
 
 ## Reading a failure
 
@@ -90,9 +92,9 @@ The same boundary covers the session-gated `/api/codex-prompt` writes: read them
 
 ## Destructive verbs
 
-`storage cleanup`, `storage trash restore`, and `storage policy run` delete or move the operator's
-data. All three refuse without `--yes`, and there is no interactive prompt — a prompt an agent can
-answer is not a safety boundary, so the flag is.
+`storage trash restore` and `storage policy run` refuse without `--yes` (exit 2, nothing sent).
+`storage cleanup` without `--yes` is a preview that exits 0 having mutated nothing — do not treat
+that 0 as a delete. There is no interactive prompt.
 
 The expected sequence is preview, report, then ask:
 

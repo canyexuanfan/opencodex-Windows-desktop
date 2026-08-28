@@ -131,7 +131,7 @@ that answers `list` is not necessarily one that answers a request.
 ```bash
 ocx ready --json     # is it up at all?
 ocx status --json    # is it the build you think, on the port you think?
-ocx doctor           # what is structurally wrong (human output only -- see below)
+ocx doctor           # what is structurally wrong (human; `--json` is refused with exit 2)
 ```
 
 In that order. `ready` false with `doctor` clean usually means it is still starting; `ready` true

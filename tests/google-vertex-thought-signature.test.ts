@@ -126,7 +126,9 @@ describe("Vertex thought-signature continuation (#1254)", () => {
     const otherThread = await createGoogleAdapter(provider).buildRequest(
       scopedReplayRequest(continuation(), "thread-b", "shared-cache-cohort"),
     );
-    expect(replayedFunctionCall(otherThread.body as string).thoughtSignature).toBeUndefined();
+    // #1312 isolation still holds: thread-b gets the CONSTANT sentinel, never thread-a's real
+    // signature. A genuine cross-namespace leak would surface the real value here and fail.
+    expect(replayedFunctionCall(otherThread.body as string).thoughtSignature).toBe("skip_thought_signature_validator");
 
     const originalThread = await createGoogleAdapter(provider).buildRequest(
       scopedReplayRequest(continuation(), "thread-a", "different-cache-cohort"),
