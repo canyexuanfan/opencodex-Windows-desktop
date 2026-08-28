@@ -14,7 +14,7 @@ Six merges, no direct commit (verified: first-parent count 6, no-merges count 0)
 | #2764 | Ingwannu | L1 | **MERGED** | `3b5302410`; rebased, patch ID unchanged, 26 green |
 | #2767 | Ingwannu | L1 | **MERGED** | `50e955604`; rebased, patch ID unchanged, 26 green |
 | #2729 | lidge-jun | L4 | **CLOSED-SUPERSEDED** | by #2769; patch IDs match exactly |
-| #2769 | lidge-jun | L4 | **NEEDS_HUMAN** (approval) | CI green at head `16cb875b8`; self-approval refused |
+| #2769 | lidge-jun | L4 | **NEEDS_HUMAN** (approval) | head `16cb875b8`: CI 23 green / 0 fail, full suite 15350/0; self-approval refused |
 | #2747 | olddonkey | L1 | **NEEDS_AUTHOR** (rebase) | approved; fork head, rerun cannot move base |
 | #2740 | luvs01 | L1 | **NEEDS_AUTHOR** (ready+rebase) | reviewed, oracle 2/0 vs 0/2, tsc 0 |
 | #2693 | yxr1995-maker | L4 | **BLOCKED** (author) | 3 reproduced blockers stand, 131 behind |
@@ -84,6 +84,14 @@ incorrect correction is worse than the original error.
 7. A safety net that exists in code is not a safety net that functions.
 8. `gh run rerun` replays the same commit. When the fix landed elsewhere, only a
    rebase moves the evidence.
+9. A stalled remote suite is not necessarily a wedged suite. `ocx-run` reported
+   `RUNNING (775s since last output)` while `bun scripts/test.ts` sat printing
+   "another Bun test run holds the machine lock; waiting". The owner recorded in
+   `/tmp/opencodex-bun-test.lock/owner.json` was pid `2108243`, and `ps` showed it
+   dead — a **root-owned stale lock** blocking a user-owned run, which is the
+   documented failure mode. Removed the lock directory; the suite resumed within
+   seconds. `OCX_TEST_NO_QUEUE=1` remains the wrong answer: it leaks into the child
+   process `tests/test-runner.test.ts` spawns and fails the machine-lock cases.
 
 ## Follow-ups outside this round's scope
 
