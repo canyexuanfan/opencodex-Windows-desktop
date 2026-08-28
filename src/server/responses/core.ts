@@ -41,6 +41,10 @@ import {
   rememberResponseState,
 } from "../../responses/state";
 import {
+  bindTurnTerminationScope,
+  rememberDeliveredFinalAnswer,
+} from "../../responses/turn-termination";
+import {
   isValidProviderContinuationOwner,
   mergeProviderContinuationPayload,
   providerContinuationOwnerFromReplayIdentity,
@@ -2380,6 +2384,10 @@ async function handleResponsesInner(
     threadIdHeader: req.headers.get("thread-id"),
     cursorConversationId: parsed._cursorConversationId,
   });
+  bindTurnTerminationScope(parsed, resolvedConversationId);
+  const rememberKiroDeliveredFinalAnswer = (adapterName: string, response: unknown): void => {
+    if (adapterName === "kiro") rememberDeliveredFinalAnswer(parsed, response);
+  };
   // _clientThreadId remains the routing/continuation identity supplied by Codex. Replay state uses
   // a dedicated raw conversation namespace so mixed headers that carry the same identity still
   // match, and a shared/synthetic session_id cannot coalesce distinct thread/Cursor conversations.
@@ -4440,6 +4448,7 @@ async function handleResponsesInner(
       ...(options.forceEmptyResponseId ? { forceEmptyResponseId: true } : {}),
       onCompletedResponse: (response, providerState) => {
         commitReasoningReplayServingRoute();
+        rememberKiroDeliveredFinalAnswer(adapter.name, response);
         rememberResponseState(
           parsed._rawBody,
           response,
@@ -4755,6 +4764,7 @@ async function handleResponsesInner(
           },
           onCompletedResponse: (response: Record<string, unknown>, providerState?: OcxProviderContinuationState) => {
             commitReasoningReplayServingRoute();
+            rememberKiroDeliveredFinalAnswer(adapter.name, response);
             if (!routedCompaction) {
               rememberResponseState(
                 parsed._rawBody,
@@ -4824,6 +4834,7 @@ async function handleResponsesInner(
       },
     });
     if (!routedCompaction) {
+      rememberKiroDeliveredFinalAnswer(adapter.name, json);
       rememberResponseState(
         parsed._rawBody,
         json,
@@ -5764,6 +5775,7 @@ async function handleResponsesInner(
         },
         onCompletedResponse: (response: Record<string, unknown>, providerState?: OcxProviderContinuationState) => {
           commitReasoningReplayServingRoute();
+          rememberKiroDeliveredFinalAnswer(activeAdapter.name, response);
           // Compaction turns must NOT enter the continuation cache: _rawBody still holds the full
           // PRE-compaction history, and a later previous_response_id expansion would rehydrate the
           // giant stale chain Codex just replaced.
@@ -5841,6 +5853,7 @@ async function handleResponsesInner(
     });
     // See the streaming branch: compaction turns skip the continuation cache.
     if (!routedCompaction) {
+      rememberKiroDeliveredFinalAnswer(activeAdapter.name, json);
       rememberResponseState(
         parsed._rawBody,
         json,

@@ -313,6 +313,181 @@ describe("Kiro completion through public server endpoints", () => {
     }
   }
 
+  test("a proxy-recorded final answer suppresses replay when the client drops phase", async () => {
+    const deliveredAnswer = "Code mode runs JavaScript that calls tools.";
+    const upstream = scriptedKiroUpstream([completionFrames(deliveredAnswer)]);
+    saveConfig(kiroConfig(upstream.server.url.toString()));
+    const proxy = startServer(0);
+    try {
+      const first = await originalFetch(new URL("/v1/responses", proxy.url), {
+        method: "POST",
+        headers: { "content-type": "application/json", session_id: "kiro-recorded-final-thread" },
+        body: JSON.stringify({
+          model: "kiro-test/gpt-5.6-sol",
+          stream: false,
+          input: "what is code mode",
+          tools: [{ type: "function", name: "bash", description: "Run a command", parameters: { type: "object" } }],
+        }),
+      });
+      expect(first.status).toBe(200);
+      await first.text();
+      expect(upstream.requests).toHaveLength(1);
+
+      const replay = await originalFetch(new URL("/v1/responses", proxy.url), {
+        method: "POST",
+        headers: { "content-type": "application/json", session_id: "kiro-recorded-final-thread" },
+        body: JSON.stringify({
+          model: "kiro-test/gpt-5.6-sol",
+          stream: false,
+          input: [
+            { type: "message", role: "user", content: [{ type: "input_text", text: "what is code mode" }] },
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: deliveredAnswer }],
+            },
+          ],
+          tools: [{ type: "function", name: "bash", description: "Run a command", parameters: { type: "object" } }],
+        }),
+      });
+
+      expect(replay.status).toBe(200);
+      expect((await replay.json() as { output?: unknown[] }).output ?? []).toHaveLength(0);
+      // The second turn is byte-for-byte replay history except for the client-dropped phase. A
+      // send here means the proxy forgot its own delivered answer and restarted finished work.
+      expect(upstream.requests).toHaveLength(1);
+
+      // Suppression must SURVIVE being used. A local terminal emits no output, so it writes no new
+      // record; if the read consumed or overwrote the original one, the second identical replay
+      // would send upstream and the loop this fix exists to end would return one turn later. The
+      // observed live failure was exactly a repeated identical history, not a single stray turn.
+      const replayAgain = await originalFetch(new URL("/v1/responses", proxy.url), {
+        method: "POST",
+        headers: { "content-type": "application/json", session_id: "kiro-recorded-final-thread" },
+        body: JSON.stringify({
+          model: "kiro-test/gpt-5.6-sol",
+          stream: false,
+          input: [
+            { type: "message", role: "user", content: [{ type: "input_text", text: "what is code mode" }] },
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: deliveredAnswer }],
+            },
+          ],
+          tools: [{ type: "function", name: "bash", description: "Run a command", parameters: { type: "object" } }],
+        }),
+      });
+      expect(replayAgain.status).toBe(200);
+      expect((await replayAgain.json() as { output?: unknown[] }).output ?? []).toHaveLength(0);
+      expect(upstream.requests).toHaveLength(1);
+    } finally {
+      await proxy.stop(true);
+      upstream.server.stop(true);
+    }
+  });
+
+  test("a new user request after a proxy-recorded final answer is not suppressed", async () => {
+    const deliveredAnswer = "Code mode runs JavaScript that calls tools.";
+    const upstream = scriptedKiroUpstream([
+      completionFrames(deliveredAnswer),
+      completionFrames("Yes — one JavaScript cell can make several tool calls."),
+    ]);
+    saveConfig(kiroConfig(upstream.server.url.toString()));
+    const proxy = startServer(0);
+    try {
+      const first = await originalFetch(new URL("/v1/responses", proxy.url), {
+        method: "POST",
+        headers: { "content-type": "application/json", session_id: "kiro-recorded-follow-up-thread" },
+        body: JSON.stringify({
+          model: "kiro-test/gpt-5.6-sol",
+          stream: false,
+          input: "what is code mode",
+          tools: [{ type: "function", name: "bash", description: "Run a command", parameters: { type: "object" } }],
+        }),
+      });
+      expect(first.status).toBe(200);
+      await first.text();
+
+      const followUp = await originalFetch(new URL("/v1/responses", proxy.url), {
+        method: "POST",
+        headers: { "content-type": "application/json", session_id: "kiro-recorded-follow-up-thread" },
+        body: JSON.stringify({
+          model: "kiro-test/gpt-5.6-sol",
+          stream: false,
+          input: [
+            { type: "message", role: "user", content: [{ type: "input_text", text: "what is code mode" }] },
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: deliveredAnswer }],
+            },
+            { type: "message", role: "user", content: [{ type: "input_text", text: "so it batches calls?" }] },
+          ],
+          tools: [{ type: "function", name: "bash", description: "Run a command", parameters: { type: "object" } }],
+        }),
+      });
+
+      expect(followUp.status).toBe(200);
+      await followUp.text();
+      // A later user message is the new work. The remembered answer may suppress only when that
+      // same assistant answer is still the trailing content-bearing message.
+      expect(upstream.requests).toHaveLength(2);
+    } finally {
+      await proxy.stop(true);
+      upstream.server.stop(true);
+    }
+  });
+
+  test("a recorded final answer is isolated to its conversation scope", async () => {
+    const deliveredAnswer = "Code mode runs JavaScript that calls tools.";
+    const upstream = scriptedKiroUpstream([
+      completionFrames(deliveredAnswer),
+      completionFrames("This is a separate thread, so I answered independently."),
+    ]);
+    saveConfig(kiroConfig(upstream.server.url.toString()));
+    const proxy = startServer(0);
+    try {
+      const first = await originalFetch(new URL("/v1/responses", proxy.url), {
+        method: "POST",
+        headers: { "content-type": "application/json", session_id: "kiro-record-owner-thread" },
+        body: JSON.stringify({
+          model: "kiro-test/gpt-5.6-sol",
+          stream: false,
+          input: "what is code mode",
+          tools: [{ type: "function", name: "bash", description: "Run a command", parameters: { type: "object" } }],
+        }),
+      });
+      expect(first.status).toBe(200);
+      await first.text();
+
+      const otherThread = await originalFetch(new URL("/v1/responses", proxy.url), {
+        method: "POST",
+        headers: { "content-type": "application/json", session_id: "kiro-record-other-thread" },
+        body: JSON.stringify({
+          model: "kiro-test/gpt-5.6-sol",
+          stream: false,
+          input: [
+            { type: "message", role: "user", content: [{ type: "input_text", text: "what is code mode" }] },
+            {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: deliveredAnswer }],
+            },
+          ],
+          tools: [{ type: "function", name: "bash", description: "Run a command", parameters: { type: "object" } }],
+        }),
+      });
+
+      expect(otherThread.status).toBe(200);
+      await otherThread.text();
+      expect(upstream.requests).toHaveLength(2);
+    } finally {
+      await proxy.stop(true);
+      upstream.server.stop(true);
+    }
+  });
+
   // Control for the above: the predicate keys off the trailing turn, so a genuine follow-up
   // question after a delivered answer is an ordinary turn and MUST still reach Kiro. Without this,
   // a short-circuit that swallowed every turn would pass the tests above.

@@ -36,6 +36,7 @@ import type {
   OcxTool,
   OcxUsage,
 } from "../types";
+import { hasRecordedTrailingDeliveredFinalAnswer } from "../responses/turn-termination";
 import type { ProviderAdapter } from "./base";
 import type { AdapterFetchContext, AdapterRequest } from "./base";
 import { extractKiroImages, normalizeKiroImages, type KiroImage } from "./kiro-images";
@@ -379,7 +380,7 @@ type KiroTurn =
  * means work continued, so the turn is no longer terminal. Empty assistant messages are skipped
  * rather than treated as continuation, since they carry no visible turn.
  */
-function hasTrailingDeliveredFinalAnswer(messages: readonly OcxMessage[]): boolean {
+function hasTrailingDeliveredFinalAnswer(messages: readonly OcxMessage[], parsed?: OcxParsedRequest): boolean {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (msg.role !== "assistant") return false;
@@ -388,7 +389,8 @@ function hasTrailingDeliveredFinalAnswer(messages: readonly OcxMessage[]): boole
     if (hasToolCall) return false;
     const hasText = (aMsg.content ?? []).some(part => part.type === "text" && part.text.trim());
     if (!hasText) continue;
-    return aMsg.phase === "final_answer";
+    return aMsg.phase === "final_answer"
+      || (parsed !== undefined && hasRecordedTrailingDeliveredFinalAnswer(parsed, messages));
   }
   return false;
 }
@@ -510,7 +512,7 @@ export function buildKiroPayload(
   // Read from parsed messages because `completionMode` is needed to build the tool catalog, which
   // happens before the turn list exists. `forcedCompletionMode` still wins: the fallback retry
   // passes "text_fallback" explicitly and must not be silently downgraded.
-  const trailingDeliveredAnswer = hasTrailingDeliveredFinalAnswer(kiroPayloadMessages(parsed));
+  const trailingDeliveredAnswer = hasTrailingDeliveredFinalAnswer(kiroPayloadMessages(parsed), parsed);
   const completionMode: KiroCompletionMode = forcedCompletionMode
     ?? (ordinaryTools.length > 0 && !trailingDeliveredAnswer ? "required" : "disabled");
   const kiroTools = completionMode === "disabled"
@@ -2015,7 +2017,7 @@ export function createKiroAdapter(provider: OcxProviderConfig): ProviderAdapter 
     // turn only, and the adapter-owned bounded retry passes "text_fallback" through `build`
     // directly, never through this path.
     localTerminal(parsed: OcxParsedRequest) {
-      return hasTrailingDeliveredFinalAnswer(kiroPayloadMessages(parsed))
+      return hasTrailingDeliveredFinalAnswer(kiroPayloadMessages(parsed), parsed)
         ? { reason: "kiro_final_answer_already_delivered" }
         : undefined;
     },
