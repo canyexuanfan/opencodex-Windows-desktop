@@ -38,6 +38,7 @@ export interface PolicyJobOutcome {
   freedBytes?: number;
   removed?: number;
   trashDir?: string;
+  metadataPersistenceError?: PolicyRunResult["metadataPersistenceError"];
 }
 
 export interface PolicyJobState {
@@ -238,6 +239,7 @@ export async function abortStorageCleanupPolicyJobAsync(): Promise<void> {
   }
 }
 
+/** Project a run result into the bounded management-API job outcome. */
 function outcomeFromResult(result: PolicyRunResult): PolicyJobOutcome {
   return {
     ok: result.ok,
@@ -248,18 +250,26 @@ function outcomeFromResult(result: PolicyRunResult): PolicyJobOutcome {
     ...(result.freedBytes !== undefined ? { freedBytes: result.freedBytes } : {}),
     ...(result.removed !== undefined ? { removed: result.removed } : {}),
     ...(result.trashDir ? { trashDir: result.trashDir } : {}),
+    ...(result.metadataPersistenceError
+      ? { metadataPersistenceError: result.metadataPersistenceError }
+      : {}),
   };
 }
 
+/** Publish one completed evaluation without losing successful cleanup effects. */
 function applyFinished(result: PolicyRunResult): void {
   // Prefer the latest persisted policy over `result.policy`. The worker (or
   // in-process run) already merged run metadata into disk; a concurrent PUT
   // may also have landed after that write. Re-reading avoids applying a stale
   // start-of-job snapshot when the run skipped without saving.
-  try {
-    livePolicyApply?.(readStorageCleanupPolicyFromConfig());
-  } catch {
-    livePolicyApply?.(result.policy);
+  // A best-effort fallback policy may predate concurrent edits; keep the current
+  // live config untouched when the durable metadata write did not land.
+  if (!result.metadataPersistenceError) {
+    try {
+      livePolicyApply?.(readStorageCleanupPolicyFromConfig());
+    } catch {
+      livePolicyApply?.(result.policy);
+    }
   }
   state = {
     status: "idle",

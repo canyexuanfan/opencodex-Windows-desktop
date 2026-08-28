@@ -1705,6 +1705,7 @@ export const zh: Record<TKey, string> = {
   "storage.policy.skippedEmpty": "没有匹配目标的归档候选项。",
   "storage.policy.doneQuarantine": "策略已隔离 {count} 个文件（{size}）。",
   "storage.policy.donePermanent": "策略已永久删除 {count} 个文件（{size}）。",
+  "storage.policy.metadataSaveWarning": "策略运行已完成，但无法保存其调度元数据。",
   "modal.back": "返回",
   "modal.badge.oauth": "OAuth",
   "modal.customProvider": "自定义提供方",

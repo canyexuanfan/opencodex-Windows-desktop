@@ -1685,6 +1685,7 @@ export const de: Record<TKey, string> = {
   "storage.policy.skippedEmpty": "Keine Archivkandidaten passend zum Ziel.",
   "storage.policy.doneQuarantine": "Richtlinie hat {count} Datei(en) in Quarantäne ({size}).",
   "storage.policy.donePermanent": "Richtlinie hat {count} Datei(en) endgültig gelöscht ({size}).",
+  "storage.policy.metadataSaveWarning": "Der Richtlinienlauf wurde beendet, aber seine Planungsmetadaten konnten nicht gespeichert werden.",
   "modal.back": "Zurück",
   "modal.badge.oauth": "OAuth",
   "modal.customProvider": "Benutzerdefinierter Anbieter",
