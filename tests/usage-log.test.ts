@@ -784,6 +784,24 @@ describe("usage log", () => {
     expect(usageForFinalLog("openai", { ...usage, estimated: true })).toEqual({ ...usage, estimated: true });
   });
 
+  // A turn the proxy answered locally issued no upstream request, so its zero counts are exact.
+  // The provider-wide estimated marking exists because the Kiro/Cursor adapters can only guess a
+  // real inference's usage; there is nothing to guess when there was no inference, and marking it
+  // estimated makes a no-send turn indistinguishable from one whose usage frame never arrived.
+  test("a locally answered turn keeps exact usage instead of the provider estimated marking", () => {
+    const zero = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    expect(usageForFinalLog("kiro", zero, true)).toEqual(zero);
+    expect(usageForFinalLog("kiro-p9d8524", zero, true)).toEqual(zero);
+    // Default and explicit-false keep the existing behavior: this is opt-in per turn, so an
+    // ordinary Kiro turn cannot lose its estimated marking by omission.
+    expect(usageForFinalLog("kiro", zero)).toEqual({ ...zero, estimated: true });
+    expect(usageForFinalLog("kiro", zero, false)).toEqual({ ...zero, estimated: true });
+    // The flag reports a fact about the turn, not about the numbers: an adapter that genuinely
+    // estimated something still says so.
+    const guessed = { inputTokens: 4, outputTokens: 6, estimated: true };
+    expect(usageForFinalLog("kiro", guessed, true)).toEqual(guessed);
+  });
+
   test("preserves cached token counts alongside estimated status", () => {
     appendUsageEntry({
       requestId: "ocx-cache",

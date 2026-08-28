@@ -4,7 +4,15 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKiroAdapter } from "../src/adapters/kiro";
-import { KIRO_TOOL_RESULT_CARRIER_MESSAGE } from "../src/adapters/kiro-constants";
+import {
+  KIRO_ANSWER_DELIVERED_MESSAGE,
+  KIRO_COMPLETION_RETRY_MESSAGE,
+  KIRO_COMPLETION_TOOL_NAME,
+  KIRO_CONTINUATION_MESSAGE,
+  KIRO_EMPTY_TOOL_RESULT_MESSAGE,
+  KIRO_TOOL_RESULT_CARRIER_MESSAGE,
+} from "../src/adapters/kiro-constants";
+import { EMPTY_EXEC_OUTPUT_MESSAGE, FAILED_EXEC_OUTPUT_MESSAGE } from "../src/adapters/exec-tool-result-normalize";
 import { MAX_KIRO_TOOL_CATALOG_BYTES, MAX_KIRO_TOOL_COUNT } from "../src/adapters/kiro-tools";
 import { applyProviderConfigHints, buildCatalogEntries } from "../src/codex/catalog";
 import { getValidAccessTokenSnapshot } from "../src/oauth";
@@ -307,6 +315,155 @@ describe("kiro adapter — buildRequest", () => {
 
     expect(current.content.trim()).not.toBe("");
     expect(current.userInputMessageContext.toolResults[0].content[0].text.trim()).not.toBe("");
+  });
+
+  // An empty code-mode exec result must say WHY it is empty. Without this the model reads a blank
+  // result, concludes earlier context was lost, and restarts finished work.
+  test("an empty code-mode exec result carries the actionable reason, not the generic fallback", async () => {
+    const execTool = { name: "exec", description: "Run JavaScript", parameters: { type: "object" } };
+    for (const raw of ["", "Script completed\nWall time 0.1 seconds\nOutput:\n", "<empty>"]) {
+      const messages = [
+        { role: "user", content: "run it" },
+        { role: "assistant", content: [{ type: "toolCall", id: "call-x", name: "exec", arguments: {} }] },
+        { role: "toolResult", toolCallId: "call-x", toolName: "exec", content: raw, isError: false },
+      ];
+      const { body } = await createKiroAdapter(provider).buildRequest(parsedWith(messages, [execTool]));
+      const resultText = JSON.parse(body).conversationState.currentMessage.userInputMessage
+        .userInputMessageContext.toolResults[0].content[0].text;
+
+      expect(resultText).toBe(EMPTY_EXEC_OUTPUT_MESSAGE);
+      // The generic fallback would leave the model to guess; assert it is NOT what shipped.
+      expect(resultText).not.toBe(KIRO_EMPTY_TOOL_RESULT_MESSAGE);
+    }
+  });
+
+  test("real exec output and empty non-exec results are left alone", async () => {
+    // Review finding (Codex P2): a failed cell with no output is empty but NOT a success. The
+    // success guidance would erase the only failure signal — reachable via Responses history,
+    // where function_call_output is parsed with isError: false.
+    const execTool0 = { name: "exec", description: "Run JavaScript", parameters: { type: "object" } };
+    const failed = [
+      { role: "user", content: "run it" },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-f", name: "exec", arguments: {} }] },
+      { role: "toolResult", toolCallId: "call-f", toolName: "exec", content: "Script failed\nWall time 0.1 seconds\nOutput:\n", isError: false },
+    ];
+    const failedBody = await createKiroAdapter(provider).buildRequest(parsedWith(failed, [execTool0]));
+    const failedText = JSON.parse(failedBody.body).conversationState.currentMessage.userInputMessage
+      .userInputMessageContext.toolResults[0].content[0].text;
+    expect(failedText).toBe(FAILED_EXEC_OUTPUT_MESSAGE);
+    expect(failedText).not.toBe(EMPTY_EXEC_OUTPUT_MESSAGE);
+
+    const execTool = { name: "exec", description: "Run JavaScript", parameters: { type: "object" } };
+    const withExecOutput = [
+      { role: "user", content: "run it" },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-x", name: "exec", arguments: {} }] },
+      { role: "toolResult", toolCallId: "call-x", toolName: "exec", content: "Output:\nhello", isError: false },
+    ];
+    const execBody = await createKiroAdapter(provider).buildRequest(parsedWith(withExecOutput, [execTool]));
+    expect(JSON.parse(execBody.body).conversationState.currentMessage.userInputMessage
+      .userInputMessageContext.toolResults[0].content[0].text).toBe("Output:\nhello");
+
+    // A non-exec tool keeps the generic message: asserting code-mode semantics for arbitrary
+    // tools would tell the model to call text()/notify() in a runtime that has neither.
+    const nonExec = [
+      { role: "user", content: "run it" },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-y", name: "bash", arguments: {} }] },
+      { role: "toolResult", toolCallId: "call-y", toolName: "bash", content: "", isError: false },
+    ];
+    const bashBody = await createKiroAdapter(provider).buildRequest(parsedWith(nonExec, [bashTool]));
+    expect(JSON.parse(bashBody.body).conversationState.currentMessage.userInputMessage
+      .userInputMessageContext.toolResults[0].content[0].text).toBe(KIRO_EMPTY_TOOL_RESULT_MESSAGE);
+  });
+
+  // A delivered final answer already ended its turn. Asking it to continue reopens closed work,
+  // which is what made a finished task behave like a still-open goal.
+  test("a delivered final answer is not told to continue or to complete again", async () => {
+    const messages = [
+      { role: "user", content: "do it" },
+      { role: "assistant", phase: "final_answer", content: [{ type: "text", text: "Done: the answer." }] },
+    ];
+    const { body } = await createKiroAdapter(provider).buildRequest(parsedWith(messages, [bashTool]));
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+
+    expect(current.content).toBe(KIRO_ANSWER_DELIVERED_MESSAGE);
+    expect(current.content).not.toContain(KIRO_CONTINUATION_MESSAGE);
+    expect(current.content).not.toContain(KIRO_COMPLETION_RETRY_MESSAGE);
+  });
+
+  test("an unfinished trailing assistant turn still gets the continuation prompt", async () => {
+    // Same shape minus `phase`: proves the new branch keys off the delivered final answer and did
+    // not simply disable continuation for every trailing assistant turn.
+    const messages = [
+      { role: "user", content: "do it" },
+      { role: "assistant", content: [{ type: "text", text: "Working on it..." }] },
+    ];
+    const { body } = await createKiroAdapter(provider).buildRequest(parsedWith(messages, [bashTool]));
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+
+    expect(current.content).toContain(KIRO_CONTINUATION_MESSAGE);
+    expect(current.content).not.toBe(KIRO_ANSWER_DELIVERED_MESSAGE);
+  });
+
+  // Review finding (Codex P2): suppressing the resume wording is not enough. While completion
+  // stays "required" the request keeps advertising the completion tool, so the model answers again
+  // or trips the text_fallback retry, which reopens the finished task.
+  test("a delivered final answer stops advertising the completion tool", async () => {
+    const delivered = [
+      { role: "user", content: "do it" },
+      { role: "assistant", phase: "final_answer", content: [{ type: "text", text: "Done." }] },
+    ];
+    const { body } = await createKiroAdapter(provider).buildRequest(parsedWith(delivered, [bashTool]));
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+    const toolNames = (current.userInputMessageContext?.tools ?? [])
+      .map((t: { toolSpecification?: { name?: string } }) => t.toolSpecification?.name);
+
+    expect(toolNames).toContain("bash");
+    expect(toolNames).not.toContain(KIRO_COMPLETION_TOOL_NAME);
+    // The instructions must go too: they tell the model to call a tool that is no longer offered.
+    expect(current.content).not.toContain(KIRO_COMPLETION_TOOL_NAME);
+
+    // Control: an unfinished turn still gets the completion contract.
+    const unfinished = [
+      { role: "user", content: "do it" },
+      { role: "assistant", content: [{ type: "text", text: "Working..." }] },
+    ];
+    const open = await createKiroAdapter(provider).buildRequest(parsedWith(unfinished, [bashTool]));
+    const openNames = (JSON.parse(open.body).conversationState.currentMessage.userInputMessage
+      .userInputMessageContext?.tools ?? [])
+      .map((t: { toolSpecification?: { name?: string } }) => t.toolSpecification?.name);
+    expect(openNames).toContain(KIRO_COMPLETION_TOOL_NAME);
+  });
+
+  // Review finding (CodeRabbit): the acknowledgement was detected by comparing user content, so a
+  // real user message quoting that sentence lost its thinking tags and completion retry.
+  test("a user message quoting the acknowledgement is still treated as user content", async () => {
+    const messages = [
+      { role: "user", content: "do it" },
+      { role: "assistant", content: [{ type: "text", text: "ok" }] },
+      { role: "user", content: KIRO_ANSWER_DELIVERED_MESSAGE },
+    ];
+    const { body } = await createKiroAdapter(provider).buildRequest({
+      ...parsedWith(messages, [bashTool]),
+      options: { reasoning: "xhigh" },
+    } as never);
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+
+    // Real user text keeps its reasoning injection; internal state must not be inferred from it.
+    expect(current.content).toContain("<thinking_mode>");
+  });
+
+  test("commentary after a final answer reopens continuation", async () => {
+    // A merged assistant turn is terminal only if its LAST component was the final answer.
+    const messages = [
+      { role: "user", content: "do it" },
+      { role: "assistant", phase: "final_answer", content: [{ type: "text", text: "Done." }] },
+      { role: "assistant", content: [{ type: "text", text: "Actually, one more check." }] },
+    ];
+    const { body } = await createKiroAdapter(provider).buildRequest(parsedWith(messages, [bashTool]));
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+
+    expect(current.content).toContain(KIRO_CONTINUATION_MESSAGE);
+    expect(current.content).not.toBe(KIRO_ANSWER_DELIVERED_MESSAGE);
   });
 
   test("tool result images are attached to Kiro carrier user messages", async () => {
@@ -1256,6 +1413,9 @@ describe("kiro code-mode catalog nudge", () => {
 
     expect(content).toContain("ALL_TOOLS");
     expect(content).toContain("Codex code mode");
+    // Reaches the ACTUAL Kiro wire prompt, not just the builder: the live 2026-08-28 session that
+    // misread a blank result was a routed Kiro turn.
+    expect(content).toContain("Nothing in the isolate is echoed automatically");
     // The generic fallback must be gone, not merely accompanied.
     expect(content).not.toContain("If a listed tool exposes nested helpers such as a tools.* API");
   });
