@@ -188,7 +188,7 @@ export const CAPABILITIES: readonly Capability[] = [
     mutates: true,
     json: "envelope",
     details: [
-      "The route refreshes quota per account and can partially fail; a non-zero failed count is reported, because silence would read as `none were exhausted`.",
+      "The route refreshes quota per account and can partially fail; a non-zero failed count exits 1 and sets ok:false, because silence would read as `none were exhausted`.",
     ],
   },
   {

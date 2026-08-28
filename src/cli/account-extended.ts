@@ -778,19 +778,26 @@ export async function cmdPauseExhausted(args: string[], deps: AccountDeps): Prom
   const checked = typeof response.json.checkedAccountCount === "number" ? response.json.checkedAccountCount : null;
   const failed = typeof response.json.failedAccountCount === "number" ? response.json.failedAccountCount : null;
 
+  const complete = failed === null || failed === 0;
+  const ok = complete;
+  if (failed !== null && failed > 0) {
+    console.error(`Quota refresh failed for ${failed} account(s); those were not evaluated.`);
+  }
   if (wantsJson) {
-    console.log(JSON.stringify({ ok: true, provider: name, pausedAccountIds: pausedIds, checkedAccountCount: checked, failedAccountCount: failed }, null, 2));
-    return 0;
+    console.log(JSON.stringify({
+      ok,
+      complete,
+      provider: name,
+      pausedAccountIds: pausedIds,
+      checkedAccountCount: checked,
+      failedAccountCount: failed,
+    }, null, 2));
+    return ok ? 0 : 1;
   }
   console.log(pausedIds.length > 0
     ? `${name}: paused ${pausedIds.length} exhausted account(s): ${pausedIds.join(", ")}`
     : `${name}: no exhausted accounts to pause`);
-  // A quota refresh that failed for some accounts means those were not evaluated at all, so
-  // silence here would read as "none were exhausted" -- a different and wrong conclusion.
-  if (failed !== null && failed > 0) {
-    console.error(`Quota refresh failed for ${failed} account(s); those were not evaluated.`);
-  }
-  return 0;
+  return ok ? 0 : 1;
 }
 
 /**
