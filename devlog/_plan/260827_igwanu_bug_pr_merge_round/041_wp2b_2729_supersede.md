@@ -124,10 +124,24 @@ carries no competing keyword, and 25/25 passed straight over the defect.
 
 Fixed by moving the check ahead of the overload keywords in both functions: the
 explicit gRPC status is a structured backend signal, while `unavailable` and
-`temporarily` beside it are inference over free text. Differential against
-`origin/dev`: exactly one case moves (503 -> 400); real overloads, auth, rate
-limit, timeout and invalid-request are unchanged, and authentication still
-outranks both.
+`temporarily` beside it are inference over free text.
+
+Differential against `origin/dev`: **the whole failed-precondition class moves to
+400**, not a single case. Constructible inputs that change:
+
+```
+failed_precondition + "unavailable"    503 -> 400
+failed_precondition + "temporarily"    503 -> 400
+"failed precondition" + "overloaded"   503 -> 400
+bare failed_precondition               502 -> 400
+```
+
+The non-precondition controls are unchanged: real overload 503, authentication
+401, rate limit 429, timeout 504, invalid request 400.
+
+(An earlier draft said "exactly one case moves". That was the sample I happened to
+probe, not the size of the change — the correct framing is a class, and describing
+a class by one member is how a differential stops being evidence.)
 
 **This is the third time in one PR that a fix was correct in principle and wrong
 in precedence** — the envelope masking, my blanket 502, and now this. The pattern
