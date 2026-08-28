@@ -4874,21 +4874,26 @@ async function handleResponsesInner(
       usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
     }];
     if (parsed.stream) {
+      const localSse = bridgeToResponsesSSE(
+        (async function* () { yield* terminalEvents; })(),
+        parsed._responseModelId ?? parsed.modelId,
+        toolBridgeMaps.toolNsMap,
+        toolBridgeMaps.freeformToolNames,
+        toolBridgeMaps.toolSearchToolNames,
+        undefined,
+        2_000,
+        {
+          translatorBudget,
+          ...(options.forceEmptyResponseId ? { responseId: "" } : {}),
+          ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
+        },
+      );
+      // Same lifetime tracking as every other streaming return in this function: the turn
+      // admission lease is released when the body finishes or the client disconnects. Returning
+      // the raw stream would hold a lease for a turn that already has all of its output.
+      const localTurnAc = new AbortController();
       return new Response(
-        bridgeToResponsesSSE(
-          (async function* () { yield* terminalEvents; })(),
-          parsed._responseModelId ?? parsed.modelId,
-          toolBridgeMaps.toolNsMap,
-          toolBridgeMaps.freeformToolNames,
-          toolBridgeMaps.toolSearchToolNames,
-          undefined,
-          2_000,
-          {
-            translatorBudget,
-            ...(options.forceEmptyResponseId ? { responseId: "" } : {}),
-            ...(options.onFirstOutput ? { onFirstOutput: options.onFirstOutput } : {}),
-          },
-        ),
+        trackStreamLifetime(localSse, localTurnAc, undefined, options.turnAdmissionLease),
         {
           headers: {
             "Content-Type": "text/event-stream",
