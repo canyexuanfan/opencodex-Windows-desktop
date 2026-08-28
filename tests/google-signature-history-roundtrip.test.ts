@@ -311,7 +311,9 @@ describe("#1735 thought signature survives history replay", () => {
     });
     const request = await createGoogleAdapter(provider).buildRequest(parsed);
     const part = modelParts(request.body as string).find(candidate => "functionCall" in candidate);
-    expect(part?.thoughtSignature).toBeUndefined();
+    // The sentinel, not a borrowed signature: nothing was inherited from another call. The
+    // property this guards is anti-borrowing, and a constant carries no other call's identity.
+    expect(part?.thoughtSignature).toBe("skip_thought_signature_validator");
   });
 
   test("a signature the proxy remembered re-signs a replay the client sent without extra_content", async () => {
@@ -430,7 +432,8 @@ describe("#1735 thought signature survives history replay", () => {
     });
     const request = await createGoogleAdapter(provider).buildRequest(parsed);
     const part = modelParts(request.body as string).find(candidate => "functionCall" in candidate);
-    expect(part?.thoughtSignature).toBeUndefined();
+    // Unknown call_id borrows nothing; it receives the constant bypass sentinel instead.
+    expect(part?.thoughtSignature).toBe("skip_thought_signature_validator");
   });
 
   test("the same call_id in a different thread does not borrow the signature (#1823)", () => {

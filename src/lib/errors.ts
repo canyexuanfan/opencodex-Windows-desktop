@@ -335,6 +335,12 @@ export function inferHttpStatusFromAdapterMessage(message: string): number {
   // subscription/permission wording.
   if (isAuthenticationMessage(lower)) return 401;
   if (isSubscriptionGateMessage(lower) || isPermissionMessage(lower)) return 403;
+  // Same precedence rule as classifyCursorError: an explicit gRPC FAILED_PRECONDITION is a
+  // structured, deterministic rejection, so it outranks the overload keywords that routinely
+  // appear beside it ("failed_precondition: model unavailable for this plan"). Without this,
+  // the message matched "unavailable" and returned a retryable 503, so clients kept retrying
+  // a rejection that can never succeed.
+  if (lower.includes("failed_precondition") || lower.includes("failed precondition")) return 400;
   if (
     lower.includes("unavailable") ||
     lower.includes("overloaded") ||
@@ -410,6 +416,24 @@ export function httpStatusFromTerminalError(error: {
   if (message && isClientClosedMessage(message)) return 499;
   if (error.type === "invalid_request_error") return 400;
   if (error.type === "proxy_error") return 500;
-  if (message) return inferHttpStatusFromAdapterMessage(message);
+  // A structured server class must not be downgraded to a CLIENT error by message wording.
+  // classifyError assigns `server_error` + `upstream_server_error` to every 5xx it sees, so
+  // the class is authoritative about blame: the upstream failed, the caller did not send a
+  // bad request. What it is NOT authoritative about is which server status fits — a stall is
+  // genuinely 504 and an overload genuinely 503, and flattening those to 502 discards
+  // information both the log surface and the retry policy read. So message inference still
+  // chooses the specific status, and only a client-error verdict is overridden.
+  //
+  // The override is deliberately narrowed to 400 alone. 429, 499, 401 and 403 are all
+  // actionable signals the caller routes on — retry-after, client cancellation, re-auth,
+  // entitlement — and overriding them would trade one kind of misreport for another. 400 is
+  // the single verdict that both blames the caller and stops the retry, which is the failure
+  // being fixed: an upstream 500 whose text happens to contain "malformed" or "invalid
+  // request" used to return 400, so Claude Code stopped retrying a retryable failure.
+  const structuredServerClass = error.type === "server_error" || error.code === "upstream_server_error";
+  if (message) {
+    const inferred = inferHttpStatusFromAdapterMessage(message);
+    return structuredServerClass && inferred === 400 ? 502 : inferred;
+  }
   return 502;
 }

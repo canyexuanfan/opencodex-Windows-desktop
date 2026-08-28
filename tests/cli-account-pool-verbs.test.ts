@@ -129,11 +129,26 @@ describe("ocx account pause-exhausted", () => {
     // "none were exhausted", which is a different and wrong conclusion.
     const out = capture();
     try {
-      await cmdPauseExhausted(["openai"], deps(() => ({
+      const code = await cmdPauseExhausted(["openai"], deps(() => ({
         json: { ok: true, pausedAccountIds: [], checkedAccountCount: 1, failedAccountCount: 2 },
       }), []));
+      expect(code).toBe(1);
     } finally { out.restore(); }
     expect(out.errors.join("\n")).toContain("2 account(s)");
+  });
+
+  test("a partial failure is not ok:true under --json", async () => {
+    const out = capture();
+    try {
+      const code = await cmdPauseExhausted(["openai", "--json"], deps(() => ({
+        json: { ok: true, pausedAccountIds: ["acct_1"], checkedAccountCount: 2, failedAccountCount: 1 },
+      }), []));
+      expect(code).toBe(1);
+    } finally { out.restore(); }
+    const payload = JSON.parse(out.lines.join("\n")) as { ok: boolean; complete: boolean; failedAccountCount: number };
+    expect(payload.ok).toBe(false);
+    expect(payload.complete).toBe(false);
+    expect(payload.failedAccountCount).toBe(1);
   });
 
   test("no exhausted accounts says so instead of printing an empty list", async () => {

@@ -19,6 +19,7 @@ import { BUN_RUNTIME_PATH_ENV, BUN_RUNTIME_SOURCE_ENV, durableBunRuntime } from 
 import type { BunRuntimeSource } from "./lib/bun-runtime";
 import { isProcessAlive, stopProxy } from "./lib/process-control";
 import { serviceApiTokenFilePath } from "./lib/service-secrets";
+import { tokenCollidesWithAdmin } from "./lib/admin-secrets";
 import { PROXY_ENV_KEYS } from "./lib/proxy-env";
 import { randomUUID } from "node:crypto";
 import {
@@ -366,8 +367,6 @@ export function serviceRetryCommand(
   return diag.installed && !diag.conflict ? "ocx service repair" : "ocx service install";
 }
 
-const ADMIN_TOKEN_PREFIX = "ocx_admin_";
-
 /**
  * Refuse a management (admin) token as the data-plane secret.
  *
@@ -381,14 +380,11 @@ const ADMIN_TOKEN_PREFIX = "ocx_admin_";
  *
  * Nothing in this codebase puts an admin token in that env var; it arrives from the
  * installing shell. This function is the chokepoint that should refuse it rather than
- * writing a file that produces a broken service.
+ * writing a file that produces a broken service. Comparison is the same helper doctor
+ * uses: minted `ocx_admin_…` prefix, or byte-equal to configuredAdminToken (env or file).
  */
 export function assertNotAdminToken(token: string, env: NodeJS.ProcessEnv = process.env): void {
-  // Prefix covers a minted management token; the equality arm covers an operator-set
-  // admin token that does not carry the prefix, which the prefix test alone would miss.
-  const admin = env.OPENCODEX_ADMIN_AUTH_TOKEN?.trim();
-  const collides = token.startsWith(ADMIN_TOKEN_PREFIX) || (Boolean(admin) && token === admin);
-  if (!collides) return;
+  if (!tokenCollidesWithAdmin(token, env)) return;
   throw new Error(
     "OPENCODEX_API_AUTH_TOKEN holds a management (admin) token. The service exports it "
       + "as the data-plane secret, which fences the whole management API closed and makes "

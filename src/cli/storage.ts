@@ -207,12 +207,16 @@ async function policy(argv: string[], deps: RuntimeApiDeps): Promise<void> {
 }
 
 export async function handleStorageCommand(argv: string[], deps: RuntimeApiDeps = {}): Promise<number> {
+  const hasSub = argv[0] !== undefined && !argv[0].startsWith("-");
+  const sub = hasSub ? argv[0]! : "report";
+  const rest = hasSub ? argv.slice(1) : argv;
+  if (sub === "codex-logs") {
+    // Doctor and the Log Guard guides still document `ocx storage codex-logs …`.
+    // This module owns cleanup/trash/policy; log-guard stays on the observe handler.
+    const { handleObserveCommand } = await import("./observe");
+    return handleObserveCommand(["storage", "codex-logs", ...rest], deps);
+  }
   return runCliAction(async () => {
-    // A leading FLAG is not a subcommand: `ocx storage --json` worked before this module existed
-    // and has to keep working, so only a non-flag first argument selects a subcommand.
-    const hasSub = argv[0] !== undefined && !argv[0].startsWith("-");
-    const sub = hasSub ? argv[0]! : "report";
-    const rest = hasSub ? argv.slice(1) : argv;
     if (sub === "report") {
       const args = [...rest];
       const wantsJson = takeFlag(args, "--json");
