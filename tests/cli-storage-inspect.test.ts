@@ -168,6 +168,18 @@ describe("ocx storage keeps its old meaning", () => {
       expect(calls[0]).toMatchObject({ method: "GET", path: "/api/storage" });
     }
   });
+
+  test("codex-logs still reaches the log-guard route", async () => {
+    // Doctor and the published Log Guard guides still tell the operator to run
+    // `ocx storage codex-logs repair`. Treating that as an unknown subcommand
+    // would make the documented recovery path exit 2.
+    const { calls, deps } = harness(() => ({ json: { ok: true } }));
+    const cap = capture();
+    let code: number;
+    try { code = await handleStorageCommand(["codex-logs", "status"], deps); } finally { cap.restore(); }
+    expect(code).toBe(0);
+    expect(calls[0]).toMatchObject({ method: "GET", path: "/api/storage/codex-logs" });
+  });
 });
 
 describe("ocx inspect", () => {

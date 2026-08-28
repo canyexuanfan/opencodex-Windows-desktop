@@ -5,8 +5,9 @@ description: Drive a running opencodex (`ocx`) proxy from the CLI — account po
 
 # Operating `ocx`
 
-`ocx` controls a locally running opencodex proxy. Everything the dashboard can do, the CLI can do,
-with one deliberate exception recorded under Consent below.
+`ocx` controls a locally running opencodex proxy. The CLI covers the dashboard's operational
+surface, with one consent exception (starring) recorded under Consent below. `ocx capabilities`
+lists the *declared* index, not every verb.
 
 This skill is for **operating** a proxy. Two neighbours cover different jobs: `AGENTS_INSTALL.md`
 is for installing one, and the repository `AGENTS.md` is for changing the codebase.
@@ -17,9 +18,9 @@ is for installing one, and the repository `AGENTS.md` is for changing the codeba
 ocx capabilities --json
 ```
 
-That is the machine-readable index of every verb, the routes it drives, its flags, and whether it
-mutates. Read it first rather than guessing a command name — it is generated from the same table
-that generates the CLI help, so it cannot describe a verb that does not exist.
+That is the machine-readable index of declared verbs, the routes they drive, their flags, and whether they
+mutate. Read it first rather than guessing a command name. It is not exhaustive — an unmatched
+`--route` exits 4 when the table has no row, even if a working verb exists.
 
 Narrow it when you already know what you want:
 
@@ -83,9 +84,9 @@ The same boundary covers the session-gated `/api/codex-prompt` writes: read them
 
 ## Destructive verbs
 
-`storage cleanup`, `storage trash restore`, and `storage policy run` delete or move the operator's
-data. All three refuse without `--yes`, and there is no interactive prompt — a prompt an agent can
-answer is not a safety boundary, so the flag is.
+`storage trash restore` and `storage policy run` refuse without `--yes` (exit 2, nothing sent).
+`storage cleanup` without `--yes` is a preview that exits 0 having mutated nothing — do not treat
+that 0 as a delete. There is no interactive prompt.
 
 The expected sequence is preview, report, then ask:
 
