@@ -512,10 +512,10 @@ export function antigravityReplaySessionKeysForTests(): string[] {
 
 function extractSignature(part: Record<string, unknown>): string | undefined {
   const direct = part.thoughtSignature ?? part.thought_signature;
-  if (typeof direct === "string" && direct.length >= MIN_SIGNATURE_LEN) return direct;
+  if (typeof direct === "string" && direct.length >= MIN_SIGNATURE_LEN && direct !== THOUGHT_SIGNATURE_BYPASS) return direct;
   const extra = part.extra_content as { google?: { thought_signature?: unknown } } | undefined;
   const nested = extra?.google?.thought_signature;
-  if (typeof nested === "string" && nested.length >= MIN_SIGNATURE_LEN) return nested;
+  if (typeof nested === "string" && nested.length >= MIN_SIGNATURE_LEN && nested !== THOUGHT_SIGNATURE_BYPASS) return nested;
   return undefined;
 }
 
