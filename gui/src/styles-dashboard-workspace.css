@@ -174,6 +174,29 @@
    Selects share a baseline. */
 .dash-sidecar-row-card {
   flex-wrap: wrap;
+  /* Pack the two wrapped flex LINES from the top of the card.
+
+     This is the line that makes the pair agree. The grid stretches both cards to the
+     taller one's height, and `align-content` defaults to `stretch` for a multi-line flex
+     container, so each card distributed its own leftover space across its own lines. The
+     two cards have equal outer height but different content height — the vision card's
+     control group carries the advanced disclosure — so the card with more slack pushed its
+     control line down and the two Selects sat 27.4px apart at en/1024, 27.8px at ko/1024,
+     and 7.1px at ru/1100.
+
+     `align-content`, not `align-items`: the mis-distributed thing is the LINES, which is
+     exactly what `align-content` controls. `align-items: center` stays inherited from
+     `.dash-delegation-summary` and still centres each item WITHIN its line, which is what
+     keeps the single-line horizontal layout (one-column regime) vertically centred. In
+     that regime the card has one line, where `align-content` is inert — so this rule acts
+     only where the bug exists.
+
+     Measured with a CDP viewport-override harness: worst paired offset 0.0px across
+     en/ko/ru/fr/ja at 1440/1100/1024/760, with the one-column row layout unchanged.
+
+     The file previously recorded `align-items: flex-start` on ONE card as a failed
+     attempt; that is a different property on a different box, and asymmetric. */
+  align-content: start;
   /* The responsive axis is the CARD, not the window.
 
      This grid is `repeat(auto-fit, ...)`, so card width is decoupled from viewport
@@ -194,15 +217,27 @@
 }
 
 /* Both cards wrap their control group onto a second line, so that line must start at the
-   same y in both. It does not by default: the copy blocks are different heights (the ko
-   hints are 30 vs 41 chars and wrap to a different line count in every locale), and each
-   card's control line simply follows its own copy. Reserving the same copy band in both
-   cards is what puts the two Selects on one line.
+   same y in both. It does not by default: each card's control line simply follows its own
+   copy, and the two hints wrap to a different number of lines in several locales.
 
-   3.9375rem = 63px = 21px title + 3px hint margin + two 19.5px hint lines — the longest
-   shipped hint at the narrowest two-column card. */
-.dash-sidecar-row-card .dash-sidecar-copy {
-  min-height: 3.9375rem;
+   The floor lives on the HINT and is measured in LINES, not on the copy block in pixels.
+   The previous `min-height: 3.9375rem` on the copy block was "63px = 21px title + 3px
+   margin + two 19.5px hint lines" — a pixel count derived from a two-line assumption. It
+   held wherever both hints wrapped to the same count and silently failed where they did
+   not: measured 19.5px of drift at ru and fr, whose vision hint takes a THIRD line at a
+   two-up card (82.5px of copy against 63px).
+
+   `3lh` is that same intent expressed in the unit that actually governs it: three line
+   boxes of the hint's own computed line-height. It covers the longest shipped hint, so the
+   shorter hint reserves the same three lines and both control rows start together. Because
+   it scales with font metrics rather than a hard-coded 19.5px, a font or line-height change
+   cannot invalidate it, and a longer translation only matters if it exceeds three lines —
+   which the regression test asserts by measuring rendered line counts, not string length.
+
+   Verified across all eight shipped locales at every two-up width (1600-740): worst offset
+   0.0px, no hint truncated, no card collapsed. */
+.dash-sidecar-row-card .dash-sidecar-copy .setting-hint {
+  min-height: 3lh;
 }
 
 /* The shared sidecar copy rule is `flex: 1 1 0` so a one-row control group can

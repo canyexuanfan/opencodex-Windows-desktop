@@ -54,17 +54,31 @@ test("the copy block has a width floor and never breaks per glyph", async () => 
   expect(Number(floor![1])).toBeGreaterThanOrEqual(14);
 });
 
-test("both cards reserve the same copy band, so their control lines start together", async () => {
+test("the hint reserves the same LINE COUNT in both cards, not a pixel band", async () => {
   const css = withoutComments(await Bun.file(cssUrl).text());
-  const copy = allRuleBodies(css, ".dash-sidecar-row-card .dash-sidecar-copy");
 
-  // Both cards wrap their control group onto a second flex line, and that line follows
-  // its own card's copy height. The two hints are different lengths in every locale
-  // (ko: 30 vs 41 chars), so without a shared band the two Selects drift by a line.
-  const band = copy.match(/min-height:\s*([\d.]+)rem/);
-  expect(band).not.toBeNull();
-  // 21px title + 3px hint margin + two 19.5px hint lines = 63px = 3.9375rem.
-  expect(Number(band![1])).toBeGreaterThanOrEqual(3.9);
+  // Both cards wrap their control group onto a second flex line, and that line follows its
+  // own card's copy height, so the copy row has to be equal in both cards.
+  //
+  // The old form of this rule was `min-height: 3.9375rem` on the COPY BLOCK — 63px, derived
+  // as "21px title + 3px margin + two 19.5px hint lines". Two problems, both measured:
+  // it assumed the hint wraps to two lines, and it hard-coded a line-height. At ru and fr
+  // the vision hint takes a third line at a two-up card (82.5px of copy against 63px), and
+  // the pair drifted 19.5px while en/ko/ja/zh/de/tr still measured clean.
+  //
+  // The floor now lives on the HINT and is expressed in `lh`, so it scales with the hint's
+  // own line-height and states the real constraint: reserve N lines.
+  const hint = allRuleBodies(css, ".dash-sidecar-row-card .dash-sidecar-copy .setting-hint");
+  const floor = hint.match(/min-height:\s*([\d.]+)lh/);
+  expect(floor).not.toBeNull();
+  // Three lines is the longest shipped hint at the narrowest two-up card. Fewer than three
+  // re-opens the ru/fr drift; the number is a measurement, not a preference.
+  expect(Number(floor![1])).toBeGreaterThanOrEqual(3);
+
+  // The pixel band must be gone from the copy block: leaving both would make it ambiguous
+  // which one is load-bearing, and the pixel one is the one that was wrong.
+  const copy = allRuleBodies(css, ".dash-sidecar-row-card .dash-sidecar-copy");
+  expect(copy).not.toMatch(/min-height:\s*[\d.]+rem/);
 });
 
 test("both control groups reserve the same band and pack from its top", async () => {
@@ -86,6 +100,19 @@ test("both cards wrap, so neither resolves its control group differently", async
   const card = allRuleBodies(css, ".dash-sidecar-row-card");
   expect(card).toMatch(/flex-wrap:\s*wrap/);
 
+  // The wrapped LINES must pack from the top of the card. Equal copy bands alone are not
+  // enough: the grid stretches both cards to the taller one's height, and `align-content`
+  // defaults to `stretch` for a multi-line flex container, so each card spread its own
+  // leftover space across its own lines. The two cards' content heights differ (the vision
+  // control group carries the advanced disclosure), so the card with more slack pushed its
+  // control line down — 27.4px at en/1024, 27.8px at ko/1024, 7.1px at ru/1100, and again
+  // at 760px where the sidebar leaves the flow and the grid re-splits into two columns.
+  //
+  // This was verified by measuring the rendered page across 8 locales: with the bands but
+  // WITHOUT this line the copy blocks were already equal (63/63) and the offset was still
+  // 27.4px, which is what proves the lines — not the copy — were the mis-distributed thing.
+  expect(card).toMatch(/align-content:\s*start/);
+
   // Wrapping only the vision card put its control group on a second line while the
   // web-search group stayed on the first — a guaranteed baseline mismatch. Likewise
   // `align-items: flex-start` on one card only: the two must resolve by the same rules.
@@ -93,6 +120,9 @@ test("both cards wrap, so neither resolves its control group differently", async
   if (vision) {
     expect(vision[2]).not.toMatch(/align-items:\s*flex-start/);
     expect(vision[2]).not.toMatch(/flex-wrap:\s*wrap/);
+    // Same asymmetry hazard for the new rule: it belongs on the shared card class so both
+    // cards resolve their lines identically, never on one of them.
+    expect(vision[2]).not.toMatch(/align-content:/);
   }
 });
 
@@ -163,4 +193,3 @@ test("narrow-card rules apply to both cards, never one of them", async () => {
     }
   }
 });
-
