@@ -490,7 +490,7 @@ export function comboRouteDecisionTrace(
       reason: "combo-pick",
       candidateIndex: pick.targetIndex,
       ...(combo
-        ? { tieBreak: combo.strategy === "round-robin" ? "round-robin" : "failover" }
+        ? { tieBreak: combo.strategy }
         : {}),
     },
     candidates: combo ? comboRouteCandidates(config, pick, combo) : undefined,
@@ -769,7 +769,7 @@ export function routeModel(
       reason: route.routeReason,
       ...(route.combo ? { candidateIndex: route.combo.targetIndex } : {}),
       ...(combo
-        ? { tieBreak: combo.strategy === "round-robin" ? "round-robin" : "failover" }
+        ? { tieBreak: combo.strategy }
         : {}),
     },
     candidates: route.routeKind === "combo" && route.combo && combo
