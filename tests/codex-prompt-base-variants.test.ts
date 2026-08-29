@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  encodeBasicString,
   MAX_BASE_VARIANTS,
   readBaseVariants,
   readPromptLayers,
@@ -60,6 +61,20 @@ describe("base variant selection", () => {
     });
   });
 
+  // A Windows path is the case where reading the literal verbatim and decoding it
+  // differ, because `encodeBasicString` escapes every backslash on the way in.
+  // The verbatim read returned the doubled form, so a variant this code had just
+  // selected came back as `external` -- the UI would show the user's own base
+  // prompt as replaced by a stranger's file. Asserted with a literal rather than
+  // a platform branch, so the POSIX lanes guard it too.
+  test("a Windows path survives the config round trip and is not read doubled", () => {
+    const paths = fixture("model_instructions_file = \"C:\\\\Users\\\\jun\\\\prompt.md\"\n");
+    expect(readPromptLayers(paths).baseSelection).toEqual({
+      kind: "external",
+      path: "C:\\Users\\jun\\prompt.md",
+    });
+  });
+
   test("selecting a variant writes an absolute path, and the default removes the key", () => {
     const paths = fixture("model = \"x\"\n");
     const created = writeBaseVariant({ id: null, title: "Terse", body: "Be brief." }, rev(paths), paths);
@@ -69,7 +84,14 @@ describe("base variant selection", () => {
     expect(selectBaseVariant({ kind: "variant", id }, rev(paths), paths).ok).toBe(true);
     const withVariant = read(paths.configPath)!;
     expect(withVariant).toContain("model_instructions_file = ");
-    expect(withVariant).toContain(resolve(join(paths.baseVariantDir, id + ".md")));
+    // Compare against the ENCODED literal, not the raw path. TOML escapes
+    // backslashes, so on Windows the correct bytes on disk are C:\\Users\\... and a
+    // raw-path substring check fails against a file that is exactly right. What
+    // the assertion is for -- an absolute path, not a relative one -- is unchanged.
+    expect(withVariant).toContain(encodeBasicString(resolve(join(paths.baseVariantDir, id + ".md"))));
+    // And it must read back as the real path, which is the round trip the encoding
+    // exists to survive.
+    expect(readPromptLayers(paths).baseSelection).toEqual({ kind: "variant", id });
     expect(readPromptLayers(paths).baseSelection).toEqual({ kind: "variant", id });
 
     expect(selectBaseVariant({ kind: "default" }, rev(paths), paths).ok).toBe(true);
