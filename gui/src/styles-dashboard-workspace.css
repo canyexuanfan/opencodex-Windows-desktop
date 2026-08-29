@@ -231,8 +231,12 @@
    boxes of the hint's own computed line-height. It covers the longest shipped hint, so the
    shorter hint reserves the same three lines and both control rows start together. Because
    it scales with font metrics rather than a hard-coded 19.5px, a font or line-height change
-   cannot invalidate it, and a longer translation only matters if it exceeds three lines —
-   which the regression test asserts by measuring rendered line counts, not string length.
+   cannot invalidate it, and a longer translation only matters if it exceeds three lines.
+
+   The committed regression is source-text only (happy-dom performs no layout): it asserts
+   the floor is expressed in `lh` with at least 3 lines and that the old `rem` band is gone.
+   The three-line number itself came from rendered measurement in a real browser, which is
+   recorded in devlog/_plan/260829_gui_dashboard_slop/013, not re-derived by the test.
 
    Verified across all eight shipped locales at every two-up width (1600-740): worst offset
    0.0px, no hint truncated, no card collapsed. */

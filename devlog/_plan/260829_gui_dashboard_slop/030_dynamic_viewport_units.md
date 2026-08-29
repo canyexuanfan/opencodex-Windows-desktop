@@ -6,12 +6,16 @@
 > pass found both.
 >
 > Rules below are named by selector, not line number: the fix this document
-> describes inserted lines above the very rules it cites, so the original
-> citations (`styles.css:2003`, `:755`, `:1222`) now land on unrelated CSS.
+> describes inserted lines above the very rules it cites, so most of its original
+> citations stopped describing what they pointed at — `styles.css:2003` is now
+> `min-width: 220px` and `:1222` is a `z-index`. `:755` still lands on
+> `.action-toast`'s `max-width` by coincidence, which is why the selector is the
+> reference and the line is only a hint.
 
 ## Defect
 
-`.logs-table-wrap` in `gui/src/styles.css` (line 2011 as shipped):
+`.logs-table-wrap` in `gui/src/styles.css` — **as it was before the fix**; the
+rule now sits at line 2011 and carries `100dvh`:
 
 ```css
 .logs-table-wrap { max-height: calc(100vh - 260px); }
@@ -23,10 +27,12 @@ rows under the browser UI. The rest of the shell already moved to `100dvh` —
 `.app` (244), the sidebar (247), `.main-inner--combos` (411-412) and the mobile
 drawer (2213) — so this line is an outlier, not a convention.
 
-`.action-toast` (749) and `.notice` (1215) cap toast width with `calc(100vw - Npx)`. Per CSS
-Values and Units 4, `100vw` includes the classic scrollbar gutter, so a
-scrollbar-reserving platform can in principle render a cap wider than the visible
-area.
+`.action-toast` (749) and `.toast-notice` (1229) cap toast width with
+`calc(100vw - Npx)`. Per CSS Values and Units 4, `100vw` includes the classic
+scrollbar gutter, so a scrollbar-reserving platform can in principle render a cap
+wider than the visible area. (`.notice` at 1215 is a different rule: it caps with
+`var(--prose-measure)`, which is what makes it win the cascade below — it does not
+use a viewport unit at all.)
 
 A separate, *reproduced* toast defect turned up while measuring that one: the
 cap on `.action-toast` never applied at all. Every toast also carries `.notice`,

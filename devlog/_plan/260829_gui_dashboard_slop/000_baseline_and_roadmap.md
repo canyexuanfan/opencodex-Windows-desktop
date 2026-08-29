@@ -51,10 +51,16 @@ stretches them to equal height. Below ~`36rem` of *card* width the container
 query gives copy and controls `flex-basis: 100%`, so each card becomes two
 wrapped flex lines. The two cards then have **equal outer height but different
 content height** — vision's control column is taller (select row + advanced
-disclosure). Flexbox distributes the leftover space of each card independently
-and `align-items: center` centres each line within its own leftover, so the
-shorter card's control row sinks by half the difference. Nothing ties one card's
-second line to the other's.
+disclosure). Flexbox distributes the leftover space of each card independently,
+so the shorter card's control row sinks. Nothing ties one card's second line to
+the other's.
+
+> **Corrected during implementation.** This paragraph originally blamed
+> `align-items: center`. That is the wrong property: `align-items` centres each item
+> *within* its line, while the mis-distributed thing is the **lines**, which is
+> `align-content` — defaulting to `stretch` on a multi-line flex container. The fix
+> is `align-content: start`; `align-items: center` stays and is what keeps the
+> single-line (one-column) regime centred. See `013`.
 
 The shipped mitigation is a hard-coded reserved band:
 
@@ -89,12 +95,21 @@ third card is added to either grid.
 
 ## Defect 3 — static viewport units in scroll surfaces
 
-`gui/src/styles.css:2003` caps `.logs-table-wrap` with
+**As measured before the fix.** `.logs-table-wrap` capped with
 `max-height: calc(100vh - 260px)`. Static `vh` resolves against the *large*
 viewport, ignoring mobile browser chrome, while the rest of the shell already
-uses `100dvh` (styles.css:244, 247, 411, 412, 2198). The log table is therefore
-sized for a viewport the user cannot see. `styles.css:755` and `1222` cap toast
-width with `calc(100vw - Npx)`, which ignores classic scrollbar width.
+used `100dvh` (`.app`, the sidebar, `.main-inner--combos`, the mobile drawer). The
+log table was therefore sized for a viewport the user cannot see. `.action-toast`
+and `.toast-notice` cap toast width with `calc(100vw - Npx)`, which ignores classic
+scrollbar width.
+
+Rules are named by selector rather than line number on purpose: the fix itself
+inserted lines above them, so most of the original citations no longer describe
+what they pointed at. `:2003` is now `min-width: 220px`, `:1222` is the toast
+host's `z-index`, and `:2198` is `background: var(--glass-rail)`. `:755` still
+happens to land on `.action-toast`'s `max-width`, which is the point rather than a
+reprieve: one of four survived by coincidence, and nothing marks which. Current
+locations are in `030` and the Outcome section below.
 
 The probe measures this behaviourally — comparing each scroll container's
 computed cap against `visualViewport.height` — rather than grepping for the

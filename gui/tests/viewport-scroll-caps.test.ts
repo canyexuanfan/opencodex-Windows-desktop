@@ -18,10 +18,63 @@ function withoutComments(css: string): string {
 
 /** All bodies for a selector, which may be declared more than once. */
 function allRuleBodies(css: string, selector: string): string {
+  return ruleBodies(css, selector).join("\n");
+}
+
+/** Every body for a selector, in source order. */
+function ruleBodies(css: string, selector: string): string[] {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const matches = [...css.matchAll(new RegExp("(^|\\n)\\s*" + escaped + "\\s*\\{([^}]*)\\}", "g"))];
   if (matches.length === 0) throw new Error("rule not found: " + selector);
-  return matches.map((m) => m[2]).join("\n");
+  return matches.map((m) => m[2]);
+}
+
+/**
+ * The last *textual* declaration of a property across all bodies of an exact selector,
+ * matched on the property's canonical lowercase spelling.
+ *
+ * Two false negatives, both found by review and both reproduced before being closed:
+ *
+ * 1. Concatenating bodies and taking the FIRST match let a second rule for the same
+ *    selector, added later with a wrong value, win the cascade while the earlier correct
+ *    declaration still satisfied the assertion. Hence reading the last occurrence.
+ * 2. An unanchored property name matched inside a CUSTOM PROPERTY, so
+ *    `max-height: calc(100dvh - 261px); --max-height: calc(100dvh - 260px)` passed with
+ *    the rendered cap wrong. Hence the boundary below: the property must start the body
+ *    or follow `;`/newline, and must not be preceded by `-`.
+ *
+ * CSS property names are case-insensitive, and an identifier may be written with escapes
+ * (`max\\2d height` is `max-height`). A case-sensitive literal match therefore reported the
+ * wrong winner when the real declaration used `MAX-HEIGHT`. Matching is now case-insensitive,
+ * and an escape in the property name is rejected outright rather than silently skipped:
+ * nothing in this stylesheet writes one, so its appearance means the oracle no longer
+ * understands the file and should fail loudly instead of guessing.
+ *
+ * Scope, stated because an earlier version of this comment overclaimed: this is source
+ * order within one exact selector string. It does not model `!important`, competing
+ * selectors of different specificity, or @-rule nesting. For these two rules that is
+ * enough - each is declared once, and the cascade question that matters (`.notice` beating
+ * a single-class `.action-toast`) is asserted separately below.
+ */
+function effectiveDeclaration(css: string, selector: string, property: string): string {
+  const escaped = property.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp("(?:^|[;{\\n])\\s*" + escaped + "\\s*:\\s*([^;}]+)", "gi");
+  let winner: string | null = null;
+  // Only an escape in PROPERTY-NAME position defeats this reader. Scanning the whole body
+  // would also reject an escape in a value - `content: "\\2014"` is ordinary CSS - so the
+  // guard is anchored the same way the matcher is: body start or after `;`/newline, then a
+  // name containing a hex escape, then a colon.
+  const escapedName = /(?:^|[;{\n])\s*[-\w]*\\[0-9a-fA-F]/;
+  for (const body of ruleBodies(css, selector)) {
+    // An escaped identifier would need CSS unescaping to compare; refuse rather than report
+    // a value this reader cannot prove is the winner.
+    if (escapedName.test(body)) {
+      throw new Error("escaped property identifier in " + selector + "; this reader cannot resolve it");
+    }
+    for (const m of body.matchAll(pattern)) winner = m[1].trim();
+  }
+  if (winner === null) throw new Error("property not found: " + selector + " { " + property + " }");
+  return winner;
 }
 
 test("the log table caps its scroll height against the dynamic viewport", async () => {
@@ -33,7 +86,13 @@ test("the log table caps its scroll height against the dynamic viewport", async 
   // last rows sit underneath the address bar. The rest of the shell (.app, .sidebar,
   // .main-inner--combos, the mobile drawer) already uses 100dvh, so this rule was the
   // outlier rather than the convention.
-  expect(wrap).toMatch(/max-height:\s*calc\(\s*100dvh\s*-/);
+  // The subtrahend is locked, not just the unit: a `calc(100dvh - <anything>)` would
+  // satisfy a unit-only assertion while silently resizing the table. Read from the
+  // EFFECTIVE declaration so a later duplicate rule cannot hide behind this one.
+  const effective = effectiveDeclaration(css, ".logs-table-wrap", "max-height");
+  const cap = effective.match(/^calc\(\s*100dvh\s*-\s*([\d.]+)px\s*\)$/);
+  expect(cap).not.toBeNull();
+  expect(Number(cap![1])).toBe(260);
   expect(wrap).not.toMatch(/max-height:\s*calc\(\s*100vh\s*-/);
 });
 
@@ -45,15 +104,21 @@ test("the toast width cap outranks the later .notice rule", async () => {
   // order therefore won and a single-class `.action-toast` cap never applied - the toast
   // rendered 542px instead of its design width. Two classes is what wins the cascade, so
   // the cap must stay on the compound selector.
-  const compound = allRuleBodies(css, ".action-toast.notice");
-  const cap = compound.match(/max-width:\s*min\(\s*([\d.]+)px\s*,\s*calc\(\s*100vw\s*-\s*([\d.]+)px\s*\)\s*\)/);
+  // Again the EFFECTIVE declaration, for the same reason: a second `.action-toast.notice`
+  // rule added later with a wrong width would win the cascade while the first one still
+  // matched a first-occurrence assertion.
+  const effective = effectiveDeclaration(css, ".action-toast.notice", "max-width");
+  const cap = effective.match(/^min\(\s*([\d.]+)px\s*,\s*calc\(\s*100vw\s*-\s*([\d.]+)px\s*\)\s*\)$/);
 
   // Both halves are asserted on purpose. An earlier revision kept only the design width,
   // which dropped the viewport term and let the toast reach the screen edge at narrow
   // widths (measured left = 0 at 430px, losing the 24px inset the right side keeps).
+  // Exact values, not merely positive ones: a 1px design width or a 1px inset would pass
+  // a `> 0` check while destroying the layout. 480px is the design width and 48px is the
+  // 24px inset doubled, both measured on the rendered toast.
   expect(cap).not.toBeNull();
-  expect(Number(cap![1])).toBeGreaterThan(0);
-  expect(Number(cap![2])).toBeGreaterThan(0);
+  expect(Number(cap![1])).toBe(480);
+  expect(Number(cap![2])).toBe(48);
 
   // Guard the ordering premise itself: if `.notice` ever moved ABOVE this rule, a
   // single-class cap would start working and someone could "simplify" the compound
@@ -62,4 +127,66 @@ test("the toast width cap outranks the later .notice rule", async () => {
   const compoundIndex = css.search(/(^|\n)\s*\.action-toast\.notice\s*\{/);
   expect(compoundIndex).toBeGreaterThanOrEqual(0);
   expect(noticeIndex).toBeGreaterThan(compoundIndex);
+});
+
+test("the cap reader is not fooled by a custom property or an earlier duplicate", () => {
+  // Both of these are regressions, not hypotheticals: each passed a previous revision of
+  // this file while the rendered cap was wrong, and each was reproduced against the real
+  // stylesheet before being closed. The fixture is inline so the guard is testable without
+  // touching gui/src/styles.css.
+
+  // A custom property whose NAME contains the property being read. Reading `max-height`
+  // without a declaration boundary matched `--max-height` and reported the good value
+  // while the real declaration was 261px.
+  const masked = [
+    ".logs-table-wrap {",
+    "  max-height: calc(100dvh - 261px);",
+    "  --max-height: calc(100dvh - 260px);",
+    "}",
+  ].join("\n");
+  expect(effectiveDeclaration(masked, ".logs-table-wrap", "max-height")).toBe("calc(100dvh - 261px)");
+
+  // A later duplicate rule for the same selector wins the cascade. Taking the FIRST match
+  // reported the earlier correct value.
+  const duplicated = [
+    ".action-toast.notice { max-width: min(480px, calc(100vw - 48px)); }",
+    ".action-toast.notice { max-width: min(200px, calc(100vw - 8px)); }",
+  ].join("\n");
+  expect(effectiveDeclaration(duplicated, ".action-toast.notice", "max-width")).toBe("min(200px, calc(100vw - 8px))");
+
+  // A property that genuinely is not there must throw rather than silently report a
+  // neighbouring declaration.
+  expect(() => effectiveDeclaration(".logs-table-wrap { overflow-y: auto; }", ".logs-table-wrap", "max-height")).toThrow();
+});
+
+test("the cap reader survives case variants and refuses escaped identifiers", () => {
+  // CSS property names are case-insensitive, so `MAX-HEIGHT` is a real declaration and won
+  // the cascade while a case-sensitive reader reported the earlier lowercase value. Both of
+  // these were demonstrated in a browser before being closed here.
+  const shouted = [
+    ".logs-table-wrap {",
+    "  max-height: calc(100dvh - 260px);",
+    "  MAX-HEIGHT: calc(100dvh - 261px);",
+    "}",
+  ].join("\n");
+  expect(effectiveDeclaration(shouted, ".logs-table-wrap", "max-height")).toBe("calc(100dvh - 261px)");
+
+  // An escaped identifier (`max\\2d height` is `max-height`) would need CSS unescaping to
+  // compare. Rather than skip it and report a value it cannot prove is the winner, the
+  // reader fails loudly - nothing in this stylesheet writes one.
+  const escapedIdent = ".logs-table-wrap { max-height: calc(100dvh - 260px); max\\2d height: calc(100dvh - 261px); }";
+  expect(() => effectiveDeclaration(escapedIdent, ".logs-table-wrap", "max-height")).toThrow(/escaped/);
+});
+
+test("an escape in a VALUE is ordinary CSS and must not trip the guard", () => {
+  // The escape guard exists for property NAMES. Scanning the whole rule body would also
+  // reject `content: "\\2014"`, which is ordinary CSS and says nothing about which
+  // declaration wins - a false failure is as much a broken oracle as a false pass.
+  const valueEscape = [
+    ".logs-table-wrap {",
+    "  content: \"\\\\2014\";",
+    "  max-height: calc(100dvh - 260px);",
+    "}",
+  ].join("\n");
+  expect(effectiveDeclaration(valueEscape, ".logs-table-wrap", "max-height")).toBe("calc(100dvh - 260px)");
 });
