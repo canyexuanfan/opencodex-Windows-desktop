@@ -54,7 +54,7 @@ account を削除しても mapping は保持され、同じ id を再追加す�
 
 |フィールド |タイプ |意味 |
 | --- | --- | --- |
-| `adapter` | `string` | `openai-chat`、`openai-responses`、`anthropic`、`google`、`kiro`、`cursor`、`azure-openai` (または別名 `azure`) のいずれか。 |
+| `adapter` | `string` | `openai-chat`、`openai-responses`、`anthropic`、`google`、`kiro`、`cursor`、`ollama-native`、`azure-openai` (または別名 `azure`) のいずれか。 |
 | `baseUrl` | `string` |アップストリーム API のベース URL。ほとんどの組み込み固定エンドポイントは不一致を無視します。衝突安全キー プリセットは、古い同じ名前のカスタム宛先を保持します。 |
 | `requestPacing?` | `{ enabled, requestsPerMinute?, minIntervalMs?, models? }` | 上流の使用量、請求、レート制限表示とは別の、クライアント側の送信開始間隔調整です。プロバイダー制限は全モデルに適用され、`models` は上流の正確なモデル ID に一致し、遅延を増やす場合のみ有効です。キュー待機は応答ヘッダーのタイムアウトを消費しません。HTTP、Responses WebSocket、明示的なアダプターの `fetchResponse`/`runTurn` 送信を対象にします。 |
 | `responsesPath?` | `string` |キー認証 `openai-responses` リクエストの相対リソース パス。 `/` で始まり、スキーム、クエリ、またはフラグメントが含まれていない必要があります。 |
@@ -337,7 +337,6 @@ OpenRouter は、複数の推論プロバイダーを通じて 1 つのモデル
       "defaultModel": "claude-sonnet-4-6"
     },
     "ollama-cloud": {
-      "adapter": "openai-chat",
       "baseUrl": "https://ollama.com/v1",
       "apiKey": "${OLLAMA_API_KEY}",
       "defaultModel": "glm-5.2",

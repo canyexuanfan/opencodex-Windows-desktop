@@ -74,7 +74,7 @@ alanlı seçilmiş kimlikleri yalın kimliklere yeniden yazar.
 
 | Alan | Tip | Anlamı |
 | --- | --- | --- |
-| `adapter` | `string` | `openai-chat`, `openai-responses`, `anthropic`, `google`, `kiro`, `cursor`, `azure-openai` (veya takma ad `azure`) seçeneklerinden biri. |
+| `adapter` | `string` | `openai-chat`, `openai-responses`, `anthropic`, `google`, `kiro`, `cursor`, `ollama-native`, `azure-openai` (veya takma ad `azure`) seçeneklerinden biri. |
 | `baseUrl` | `string` | Yukarı akış API temel URL'si. Çoğu yerleşik sabit uç nokta uyumsuzluğu yok sayar; çakışma güvenli anahtar önayarları aynı adlı daha eski özel bir hedefi korur. |
 | `responsesPath?` | `string` | Anahtar kimlik doğrulamalı `openai-responses` istekleri için göreli kaynak yolu. `/` ile başlamalı ve şema, sorgu veya parça içermemelidir. |
 | `supportsServiceTier?` | `boolean` | Üç durumlu `service_tier` yeteneği. `true`: hızlı mod enjekte edebilir ve arayan değerleri korunur. `false`: alan kaldırılır ve asla enjekte edilmez (desteklemediği belgelenen yukarı akış bunu almamalıdır). Yok: sağlayıcı sınıflandırılmamıştır — arayan tarafından sağlanan değerler dokunulmadan korunur ve hızlı mod asla enjekte etmez. Kayıt defteri kurallı OpenAI'yi (`true`), DeepSeek'i ve Volcengine Ark'ı (`false`) sınıflandırır; bunu yalnızca katmanları gerçekten destekleyen özel ağ geçitleri için açıkça ayarlayın. |
@@ -462,7 +462,6 @@ bildirir; senkronize edilen katalog `xhigh`'ı ayrı tutarken `max` bildirir.
       "defaultModel": "claude-sonnet-4-6"
     },
     "ollama-cloud": {
-      "adapter": "openai-chat",
       "baseUrl": "https://ollama.com/v1",
       "apiKey": "${OLLAMA_API_KEY}",
       "defaultModel": "glm-5.2",

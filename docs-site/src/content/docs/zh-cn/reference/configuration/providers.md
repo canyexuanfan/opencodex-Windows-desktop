@@ -54,7 +54,7 @@ selector，而不是分配一个新名称。
 
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
-| `adapter` | `string` | `openai-chat`、`openai-responses`、`anthropic`、`google`、`kiro`、`cursor`、`azure-openai`（或别名 `azure`）之一。 |
+| `adapter` | `string` | `openai-chat`、`openai-responses`、`anthropic`、`google`、`kiro`、`cursor`、`ollama-native`、`azure-openai`（或别名 `azure`）之一。 |
 | `baseUrl` | `string` | 上游 API 基础 URL。大多数内置固定端点会忽略不匹配的值；具备冲突安全键的预设会保留一个更早、同名的自定义目标。 |
 | `requestPacing?` | `{ enabled, requestsPerMinute?, minIntervalMs?, models? }` | 可选的客户端出站请求启动节流，与上游用量、计费和限流指标相互独立。提供商限制适用于所有模型，`models` 按上游模型精确 ID 匹配且只能增加延迟。排队等待不计入响应头超时。覆盖 HTTP、Responses WebSocket 以及显式适配器 `fetchResponse`/`runTurn` 调用。 |
 | `responsesPath?` | `string` | 用于 key-auth `openai-responses` 请求的相对资源路径。必须以 `/` 开头，且不能包含 scheme、query 或 fragment。 |
@@ -340,7 +340,6 @@ OpenRouter 可以通过多个推理提供者来提供同一个模型。`openRout
       "defaultModel": "claude-sonnet-4-6"
     },
     "ollama-cloud": {
-      "adapter": "openai-chat",
       "baseUrl": "https://ollama.com/v1",
       "apiKey": "${OLLAMA_API_KEY}",
       "defaultModel": "glm-5.2",

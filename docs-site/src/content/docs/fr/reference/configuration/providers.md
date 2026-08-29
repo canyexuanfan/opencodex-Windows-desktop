@@ -64,7 +64,7 @@ sauvegarde dont le contenu diffère, puis réécrit en identifiants sans préfix
 
 | Champ | Type | Signification |
 | --- | --- | --- |
-| `adapter` | `string` | L'un des `openai-chat`, `openai-responses`, `anthropic`, `google`, `kiro`, `cursor`, `azure-openai` (ou alias `azure`). |
+| `adapter` | `string` | L'un des `openai-chat`, `openai-responses`, `anthropic`, `google`, `kiro`, `cursor`, `ollama-native`, `azure-openai` (ou alias `azure`). |
 | `baseUrl` | `string` | URL de base de l'API en amont. La plupart des points de terminaison fixes intégrés ignorent une valeur incompatible ; les préréglages de clés protégés contre les collisions préservent une ancienne destination personnalisée portant le même nom. |
 | `requestPacing?` | `{ enabled, requestsPerMinute?, minIntervalMs?, models? }` | Cadencement facultatif du démarrage des requêtes sortantes côté client, distinct de l’utilisation, de la facturation et des indicateurs de limitation en amont. Le nombre de requêtes par minute est converti en intervalle régulier ; `minIntervalMs` peut imposer un intervalle plus long. Les limites du fournisseur s’appliquent à tous ses modèles, tandis que les entrées `models` ciblent les identifiants exacts des modèles en amont, par exemple `nvidia/llama-3.1-nemotron-ultra-253b-v1`, et ne peuvent qu’ajouter du délai. L’attente dans la file ne consomme pas le délai d’expiration des en-têtes de réponse en amont. Les requêtes HTTP, Responses WebSocket et les distributions explicites `fetchResponse`/`runTurn` des adaptateurs sont couvertes. |
 | `responsesPath?` | `string` | Chemin de ressource relatif pour les requêtes d'authentification par clé `openai-responses`. Il doit commencer par `/` et ne contenir aucun schéma, requête ou fragment. |
@@ -419,7 +419,6 @@ avec un contexte de `922000` et une entrée maximale de `922000` ; OpenRouter i
       "defaultModel": "claude-sonnet-4-6"
     },
     "ollama-cloud": {
-      "adapter": "openai-chat",
       "baseUrl": "https://ollama.com/v1",
       "apiKey": "${OLLAMA_API_KEY}",
       "defaultModel": "glm-5.2",

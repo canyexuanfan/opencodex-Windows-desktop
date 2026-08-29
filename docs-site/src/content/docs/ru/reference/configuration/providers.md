@@ -67,7 +67,7 @@ cross-route credential fallback не существует. Строки API GPT-
 
 | Поле | Тип | Значение |
 | --- | --- | --- |
-| `adapter` | `string` | Один из `openai-chat`, `openai-responses`, `anthropic`, `google`, `kiro`, `cursor`, `azure-openai` (или alias `azure`). |
+| `adapter` | `string` | Один из `openai-chat`, `openai-responses`, `anthropic`, `google`, `kiro`, `cursor`, `ollama-native`, `azure-openai` (или alias `azure`). |
 | `baseUrl` | `string` | Базовый URL API upstream'а. Большинство built-in fixed-endpoint'ов игнорируют несовпадение; collision-safe key-preset'ы сохраняют старый custom destination с тем же именем. |
 | `requestPacing?` | `{ enabled, requestsPerMinute?, minIntervalMs?, models? }` | Опциональное клиентское выравнивание начала исходящих запросов, отдельное от учёта использования, биллинга и индикаторов rate limit апстрима. Лимит провайдера действует на все модели, а `models` сопоставляется с точными ID моделей апстрима и может только увеличить задержку. Ожидание очереди не расходует таймаут заголовков ответа. Поддерживаются HTTP, Responses WebSocket и явные вызовы адаптеров `fetchResponse`/`runTurn`. |
 | `responsesPath?` | `string` | Relative resource path для key-auth запросов `openai-responses`. Должен начинаться с `/` и не может содержать scheme, query или fragment. |
@@ -423,7 +423,6 @@ Pool/Direct рекламирует `922000`; синхронизированны�
       "defaultModel": "claude-sonnet-4-6"
     },
     "ollama-cloud": {
-      "adapter": "openai-chat",
       "baseUrl": "https://ollama.com/v1",
       "apiKey": "${OLLAMA_API_KEY}",
       "defaultModel": "glm-5.2",

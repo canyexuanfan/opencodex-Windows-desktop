@@ -2554,13 +2554,23 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   {
     id: "ollama-cloud",
     label: "Ollama Cloud",
+    // The upstream /v1 spelling is deliberately unchanged: ollamaNativeChatUrl() normalizes it
+    // to /api/chat, and live model discovery declares its own /v1/models path against the origin,
+    // so the native transport needs no base-URL edit here or in the free-provider directory.
     baseUrl: "https://ollama.com/v1",
-    adapter: "openai-chat",
+    // The native transport must be declared HERE, not in configuration. routedProviderConfig()
+    // overwrites provider.adapter with the registry adapter for every row whose transport
+    // matches, so a config-level adapter is silently discarded.
+    adapter: "ollama-native",
     authKind: "key",
     dashboardUrl: "https://ollama.com/settings/keys",
     // Live IDs verified 2026-07-10; qwen3-coder:480b retires 2026-07-15.
     models: ["glm-5.3", "glm-5.3-flash", "glm-5.2", "deepseek-v4-pro", "qwen3-coder:480b", "gpt-oss:120b", "kimi-k2.6", "minimax-m3", "qwen3.5:397b", "gemma4:31b"],
     defaultModel: "glm-5.3",
+    // Owner-audited exact outage fallback: these current Ollama Cloud GLM-5.3 rows have
+    // 1,048,576-token context windows. Live discovery and successful /api/show enrichment keep
+    // their existing precedence; these values prevent a failed show from becoming generic.
+    modelContextWindows: { "glm-5.3": 1_048_576, "glm-5.3-flash": 1_048_576 },
     noVisionModels: [
       // glm-5.3-flash is absent on purpose: native VLM
       // (docs.z.ai/guides/vlm/glm-5.3-flash), so its images skip the sidecar.
@@ -2570,6 +2580,19 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       "deepseek-v4-pro", "deepseek-v4-flash",
       "gpt-oss", "qwen3-coder:480b",
     ],
+    // Ollama's native chat API has no `text.verbosity` equivalent and the ollama-native adapter
+    // never emits one, so a routed row must not inherit the Codex template's verbosity picker.
+    // Provider-wide rather than per-model: this catalog is discovery-authoritative, so ids that
+    // arrive later from live discovery must opt out too (the live-discovery gap closed by #2578).
+    supportsVerbosity: false,
+    // Live model discovery: Ollama serves the standard OpenAI-style data[] envelope at /v1/models,
+    // so the generic discovery pipeline needs no special-casing. The path is spelled against the
+    // ORIGIN (model-discovery resolves a leading-slash path against base.origin). A discovery
+    // spec is REQUIRED here: without one the pipeline probes https://ollama.com/models, which
+    // 307-redirects to /search and discovery falls back to the configured list.
+    modelDiscovery: {
+      path: "/v1/models",
+    },
   },
   // FREEZE 2026-07-10: codestral-latest is unconfirmed behind auth. Evidence: devlog/_plan/260710_provider_hardening/003_research_aggregators.md.
   { id: "mistral", label: "Mistral", baseUrl: "https://api.mistral.ai/v1", adapter: "openai-chat", authKind: "key", dashboardUrl: "https://console.mistral.ai/api-keys", defaultModel: "codestral-latest" },

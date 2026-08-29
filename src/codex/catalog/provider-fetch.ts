@@ -71,6 +71,7 @@ import {
   type ProviderModelsApiItem,
   type ResolvedProviderModelDiscovery,
 } from "../../providers/model-discovery";
+import { applyConfiguredHeadersLast, fetchOllamaShowEnrichment, ollamaShowEnrichable } from "../../providers/ollama-show";
 import upstreamModelsSnapshot from "../data/upstream-models.json";
 import { createAdmissionGate, ResourceAdmissionError, type AdmissionMetrics } from "../../lib/admission";
 
@@ -1370,7 +1371,16 @@ async function fetchProviderModelsWithAuth(
     );
   }
   const url = request.url;
-  const headers = materializeCapturedHeaders(request, apiKey);
+  let headers = materializeCapturedHeaders(request, apiKey);
+  // One Ollama authority contract: for canonical ollama-cloud/ollama-native rows, discovery
+  // (/v1/models), enrichment (/api/show) and inference (/api/chat) must all materialize the
+  // SAME effective credential/header authority. buildModelsRequest's generic tail writes the
+  // generated Bearer AFTER configured headers, but the native inference adapter applies
+  // provider.headers LAST (configured wins, case-insensitive collapse). Reapply the configured
+  // provider headers here so the whole Ollama request family shares that one authority.
+  if (ollamaShowEnrichable(name, prov)) {
+    headers = applyConfiguredHeadersLast(headers, prov.headers);
+  }
   const urlClass = new URL(url).hostname.endsWith("aiplatform.googleapis.com")
     ? "vertex-aiplatform"
     : "provider-models";
@@ -1500,13 +1510,40 @@ async function fetchProviderModelsWithAuth(
       return observed(models, "degraded");
     }
     const items = extracted.items;
+    // Ollama Cloud enrichment: /v1/models carries no per-model context or capability metadata,
+    // so a newly announced id would otherwise publish generic defaults. /api/show fills that
+    // per model, fail-soft, bounded, and cached with this gather's result. Explicit configured
+    // metadata keeps its normal precedence (applyProviderConfigHints applies the discovered
+    // window only where exact config is absent, and the provider context cap still caps it).
+    const showEnrichment = ollamaShowEnrichable(name, prov)
+      ? await fetchOllamaShowEnrichment({
+        headers,
+        discoveryUrl: request.url,
+        modelIds: items.map(m => m.id),
+        provider: prov,
+      }).catch(() => undefined)
+      : undefined;
     const live = items.map(m => {
       const ownedBy = boundedOwnedBy(m.owned_by);
+      // Precedence: the authoritative /v1/models row wins; /api/show fills only metadata the
+      // models-API row does not carry. applyProviderConfigHints then applies explicit
+      // configured metadata over both, and the provider context cap still caps the result.
+      const modelsApiHints = catalogHintsFromModelsApiItem(name, m);
+      const show = showEnrichment?.metadata.get(m.id);
+      const discoveredHints = {
+        ...modelsApiHints,
+        ...(modelsApiHints.contextWindow === undefined && show?.contextWindow !== undefined
+          ? { contextWindow: show.contextWindow }
+          : {}),
+        ...(modelsApiHints.inputModalities === undefined && show?.nativeVision === true
+          ? { inputModalities: ["text", "image"] as string[] }
+          : {}),
+      };
       return applyProviderConfigHints(name, prov, {
         id: m.id,
         provider: name,
         ...(ownedBy ? { owned_by: ownedBy } : {}),
-        ...catalogHintsFromModelsApiItem(name, m),
+        ...discoveredHints,
       }, contextCap);
     })
       .filter(m => shouldExposeProviderModel(name, m.id));

@@ -54,7 +54,7 @@ managed map을 활성화하면 privacy-safe selector를 만들고, 이후 계정
 
 | 필드 | 타입 | 의미 |
 | --- | --- | --- |
-| `adapter` | `string` | `openai-chat`, `openai-responses`, `anthropic`, `google`, `kiro`, `cursor`, `azure-openai` 중 하나이며, `azure`는 별칭입니다. |
+| `adapter` | `string` | `openai-chat`, `openai-responses`, `anthropic`, `google`, `kiro`, `cursor`, `ollama-native`, `azure-openai` 중 하나이며, `azure`는 별칭입니다. |
 | `baseUrl` | `string` | 상위 API 기본 URL입니다. 대부분의 내장 고정 엔드포인트는 불일치를 무시합니다. 충돌 안전 키 프리셋은 같은 이름의 이전 사용자 지정 목적지를 보존합니다. |
 | `requestPacing?` | `{ enabled, requestsPerMinute?, minIntervalMs?, models? }` | 업스트림 사용량, 과금, rate-limit 지표와 별개인 선택적 클라이언트 측 아웃바운드 요청 시작 속도 조절입니다. Provider 제한은 모든 모델에 적용되고 `models` 항목은 정확한 업스트림 모델 ID와 일치하며 지연을 더 늘릴 때만 적용됩니다. 큐 대기는 응답 헤더 타임아웃을 소모하지 않습니다. HTTP, Responses WebSocket, 명시적 어댑터 `fetchResponse`/`runTurn` 전송을 포함합니다. |
 | `responsesPath?` | `string` | 키 인증 `openai-responses` 요청의 상대 리소스 경로입니다. 반드시 `/`로 시작해야 하며 스킴, query, fragment를 포함하면 안 됩니다. |
@@ -338,7 +338,6 @@ OpenRouter는 하나의 모델을 여러 추론 공급자로 제공할 수 있�
       "defaultModel": "claude-sonnet-4-6"
     },
     "ollama-cloud": {
-      "adapter": "openai-chat",
       "baseUrl": "https://ollama.com/v1",
       "apiKey": "${OLLAMA_API_KEY}",
       "defaultModel": "glm-5.2",
