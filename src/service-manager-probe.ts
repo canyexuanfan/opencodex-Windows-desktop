@@ -95,6 +95,57 @@ export type RawProbeRunner = (
   spawnFailed: boolean;
 };
 
+type RawProbeResult = ReturnType<RawProbeRunner>;
+
+/**
+ * Startup-local memo for the expensive full Task Scheduler listing.
+ *
+ * The targeted `/tn ... /xml` query is deliberately NOT cached: it is the
+ * race-sensitive evidence that a task appeared between two ownership checks.
+ * A listing may be reused only when that fresh targeted query returned exactly
+ * the same bytes and status as the query that caused the listing. If the
+ * targeted evidence changes, the old absence proof is stale and another
+ * listing is required rather than turning uncertainty into absence.
+ *
+ * Only a SUCCESSFUL listing is retained. A stall or spawn failure is not
+ * evidence of anything, and caching it made one transient 20s timeout poison the
+ * rest of the startup: the targeted query is byte-identical on the next
+ * inspection, so the identity check passed, the listing was never retried, and
+ * ownership stayed unprovable for the whole run — refusing the write that #2914
+ * exists to allow.
+ */
+export interface WindowsTaskListingCache {
+  getOrRun(targetedQuery: RawProbeResult, run: () => RawProbeResult): RawProbeResult;
+}
+
+function rawProbeIdentity(result: RawProbeResult): string {
+  return [
+    result.status === null ? "null" : String(result.status),
+    result.timedOut ? "1" : "0",
+    result.spawnFailed ? "1" : "0",
+    result.stdout.toString("base64"),
+    result.stderr.toString("base64"),
+  ].join("\u0000");
+}
+
+/** Create one bounded cache for the synchronous ownership phase of one startup. */
+export function createWindowsTaskListingCache(): WindowsTaskListingCache {
+  let identity: string | null = null;
+  let result: RawProbeResult | null = null;
+  return {
+    getOrRun(targetedQuery, run) {
+      const nextIdentity = rawProbeIdentity(targetedQuery);
+      if (result !== null && identity === nextIdentity) return result;
+      const next = run();
+      if (!next.timedOut && !next.spawnFailed && next.status === 0) {
+        identity = nextIdentity;
+        result = next;
+      }
+      return next;
+    },
+  };
+}
+
 export const defaultProbeRunner: ProbeRunner = (file, args) => {
   const result = spawnSync(file, [...args], {
     encoding: "utf8",
@@ -139,6 +190,8 @@ export interface ProbeDeps {
   readonly winswStatus?: () => "started" | "stopped" | "nonexistent" | "unknown";
   /** Test seam for redirected Windows legacy-codepage output. */
   readonly windowsLocale?: string;
+  /** Startup-local full-listing cache; targeted task queries always bypass it. */
+  readonly windowsTaskListingCache?: WindowsTaskListingCache;
 }
 
 const LABEL = "com.opencodex.proxy";
@@ -579,7 +632,8 @@ const SCHTASKS_TASK_NOT_FOUND_EN = /cannot find the file specified/i;
  * fallback, and only a successful list without our task proves absence.
  */
 function probeWindowsTaskRegistration(
-  deps: Required<Pick<ProbeDeps, "runRaw">> & Pick<ProbeDeps, "windowsLocale">,
+  deps: Required<Pick<ProbeDeps, "runRaw">>
+    & Pick<ProbeDeps, "windowsLocale" | "windowsTaskListingCache">,
 ): {
   registered: "present" | "absent" | "unknown";
   registeredXml: string;
@@ -606,11 +660,14 @@ function probeWindowsTaskRegistration(
     return { registered: "absent", registeredXml: "" };
   }
 
-  const listed = deps.runRaw(
+  const runListing = () => deps.runRaw(
     schtasks,
     ["/query", "/fo", "CSV", "/nh"],
     { timeoutMs: SERVICE_PROBE_LISTING_TIMEOUT_MS },
   );
+  const listed = deps.windowsTaskListingCache
+    ? deps.windowsTaskListingCache.getOrRun(queried, runListing)
+    : runListing();
   if (listed.spawnFailed || listed.timedOut || listed.status !== 0) {
     return { registered: "unknown", registeredXml: "" };
   }
@@ -654,7 +711,7 @@ function probeWinswRegistration(
 
 function inspectWindows(
   deps: Required<Pick<ProbeDeps, "runRaw" | "home">>
-    & Pick<ProbeDeps, "configDir" | "winswStatus" | "windowsLocale">,
+    & Pick<ProbeDeps, "configDir" | "winswStatus" | "windowsLocale" | "windowsTaskListingCache">,
 ): ServiceManagerInstallation {
   const configDir = windowsConfigDirPath(deps);
   const taskXmlPath = join(configDir, "opencodex-service-task.xml");
@@ -934,6 +991,7 @@ export function inspectServiceManagerInstallation(deps: ProbeDeps = {}): Service
       configDir: deps.configDir,
       winswStatus: deps.winswStatus,
       windowsLocale: deps.windowsLocale,
+      windowsTaskListingCache: deps.windowsTaskListingCache,
     });
   }
   return unknown(`no service manager probe for platform ${platform}`);
