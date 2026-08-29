@@ -423,7 +423,12 @@ describe("routing profile management editor API", () => {
       req,
       new URL(req.url),
       config,
-      deps(() => { saves += 1; }),
+      {
+        ...deps(() => { saves += 1; }),
+        // Generated Claude agent files are part of this migration side effect,
+        // but a route test must keep them inside its own temporary root.
+        claudeAgentConfigDir: join(testDir, "claude"),
+      },
     );
 
     expect(response?.status).toBe(200);

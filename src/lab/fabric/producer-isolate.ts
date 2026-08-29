@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureRestrictedDir } from "../paths";
 import { FABRIC_LIMITS } from "./constants";
 import {
   FABRIC_PRODUCER_PROTOCOL_MAX_BYTES,
@@ -35,15 +36,23 @@ interface IsolateRequest {
  * The environment an isolated producer child runs with.
  *
  * Exported so a test that spawns `producer-child.ts` directly cannot drift from
- * the environment production actually uses. The Windows-only additions below
- * are load-bearing, and a test carrying its own literal copy of this object
- * silently loses them.
+ * the environment production actually uses. The Windows loader state and the
+ * scratch-owned temp paths below are load-bearing, and a test carrying its own
+ * literal copy of this object silently loses them.
  */
 export function minimalFabricChildEnv(scratchRoot: string): Record<string, string> {
+  const childTempDir = join(scratchRoot, ".tmp");
+  ensureRestrictedDir(childTempDir, scratchRoot);
   const env: Record<string, string> = {
     TZ: "UTC",
     NO_COLOR: "1",
     OCX_FABRIC_SCRATCH_ROOT: scratchRoot,
+    // Executors commonly use os.tmpdir() through libraries they import. Keep
+    // those writes inside the same scratch boundary instead of forwarding the
+    // user's ambient temp directory (Windows) or falling back to /tmp (POSIX).
+    TEMP: childTempDir,
+    TMP: childTempDir,
+    TMPDIR: childTempDir,
   };
   if (process.platform !== "win32") return env;
   // Windows has no equivalent of "run with an (almost) empty environment". A
@@ -54,11 +63,9 @@ export function minimalFabricChildEnv(scratchRoot: string): Record<string, strin
   // reports harness_failure -- which is what turned every CL-07 producer case
   // into "inconclusive" on the Windows leg while POSIX stayed green.
   //
-  // These are OS-owned process bootstrap state, not caller-supplied
-  // configuration: the sandbox boundary is the scratch root plus the absent
-  // credential/config variables, and neither is weakened by letting the child
-  // find its own loader and temp directory.
-  for (const name of ["SystemRoot", "windir", "TEMP", "TMP"] as const) {
+  // These are OS-owned loader state, not caller-supplied configuration. Temp
+  // state is deliberately not forwarded; it is rooted in scratch above.
+  for (const name of ["SystemRoot", "windir"] as const) {
     const value = process.env[name];
     if (value) env[name] = value;
   }
