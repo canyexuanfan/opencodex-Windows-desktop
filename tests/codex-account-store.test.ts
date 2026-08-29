@@ -689,6 +689,70 @@ describe("codex-account-store CRUD", () => {
     }
   });
 
+  /*
+   * #2892 gap 2. Flights are shared: a later caller on the same grant joins the
+   * running promise instead of opening its own. The flight's abort signal used to
+   * include the INITIATING caller's signal, so one cancelled request aborted the
+   * token fetch every other waiter depended on — and a joiner cannot tell that
+   * apart from a real upstream failure, so a cancelled Codex tab could get a
+   * healthy account marked for reauthentication on behalf of a live request.
+   */
+  test("cancelling the caller that opened a refresh flight does not cancel a live joiner (#2892)", async () => {
+    const { forceRefreshCodexPoolToken, readCodexAccountRecord, saveCodexAccountCredential } =
+      await import("../src/codex/account-store");
+    saveCodexAccountCredential("cancel-owner", {
+      accessToken: "rejected",
+      refreshToken: "cancel-grant",
+      expiresAt: Date.now() + 3600_000,
+      chatgptAccountId: "acc",
+    });
+    const generation = readCodexAccountRecord("cancel-owner")!.generation;
+
+    const originalFetch = globalThis.fetch;
+    let sawAbort = false;
+    let calls = 0;
+    let releaseFetch: (() => void) | undefined;
+    const fetchStarted = new Promise<void>(resolve => {
+      globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+        calls += 1;
+        resolve();
+        await new Promise<void>(release => { releaseFetch = release; });
+        // The flight must still be alive after the initiating caller gave up.
+        if (init?.signal?.aborted) sawAbort = true;
+        return Response.json({ access_token: "rotated", refresh_token: "cancel-grant2", expires_in: 3600 });
+      }) as typeof fetch;
+    });
+
+    try {
+      const owner = new AbortController();
+      const ownerCall = forceRefreshCodexPoolToken("cancel-owner", {
+        rejectedGeneration: generation,
+        rejectedAccessToken: "rejected",
+        signal: owner.signal,
+      });
+      await fetchStarted;
+      // A joiner arrives on the same grant while the flight is parked in fetch.
+      const joinerCall = forceRefreshCodexPoolToken("cancel-owner", {
+        rejectedGeneration: generation,
+        rejectedAccessToken: "rejected",
+      });
+      // The client that started it goes away.
+      owner.abort(new Error("client disconnected"));
+      await expect(ownerCall).rejects.toThrow("client disconnected");
+
+      releaseFetch?.();
+      const joined = await joinerCall;
+
+      // The joiner gets the rotated credential, not an abort.
+      expect(sawAbort).toBe(false);
+      expect(joined.accessToken).toBe("rotated");
+      expect(calls).toBe(1);
+      expect(readCodexAccountRecord("cancel-owner")!.credential!.accessToken).toBe("rotated");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("a joined flight cannot copy a sibling account's replacement credential (#2887 review)", async () => {
     // Flights are keyed by refresh GRANT and shared across every account holding it. If the
     // owner's own credential is externally replaced BEFORE it takes the file lock, the

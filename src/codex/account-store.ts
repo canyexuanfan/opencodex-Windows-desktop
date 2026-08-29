@@ -436,6 +436,33 @@ function forcedFenceSuperseded(recordGeneration: number, forced: ForcedRefreshFe
 }
 
 /**
+ * Wait for a SHARED promise while honoring only the calling request's cancellation.
+ *
+ * The awaited work is not the caller's to cancel — other requests are waiting on the
+ * same promise — so an aborted caller stops waiting and the work continues to
+ * completion for them (#2892 gap 2). The rejection handler prevents an unhandled
+ * rejection from the promise this caller walked away from.
+ */
+function awaitOwnCancellation<T>(work: Promise<T>, callerSignal?: AbortSignal): Promise<T> {
+  if (!callerSignal) return work;
+  if (callerSignal.aborted) {
+    work.catch(() => {});
+    return Promise.reject(callerSignal.reason);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      work.catch(() => {});
+      reject(callerSignal.reason);
+    };
+    callerSignal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      value => { callerSignal.removeEventListener("abort", onAbort); resolve(value); },
+      err => { callerSignal.removeEventListener("abort", onAbort); reject(err); },
+    );
+  });
+}
+
+/**
  * Refresh a stored pool credential that upstream rejected with a 401, even though its
  * `expiresAt` still looks valid. Ordinary callers must keep using
  * {@link getValidCodexToken}: only a proven rejection justifies spending a refresh.
@@ -482,6 +509,7 @@ async function resolveCodexToken(
   forced?: ForcedRefreshFence,
   callerSignal?: AbortSignal,
 ): Promise<CodexRefreshResult> {
+  if (callerSignal?.aborted) throw callerSignal.reason;
   const record = readCodexAccountRecord(id);
   const cred = record?.deletedAt == null ? record?.credential : undefined;
   if (!record || !cred) throw new Error("Codex account credential is unavailable; reauthenticate the account.");
@@ -503,7 +531,7 @@ async function resolveCodexToken(
       existing.abort.abort(new CodexCredentialRefreshStaleError());
       if (refreshLocks.get(refreshGrantFingerprint) === existing) refreshLocks.delete(refreshGrantFingerprint);
     } else {
-      const refreshed = await existing.promise;
+      const refreshed = await awaitOwnCancellation(existing.promise, callerSignal);
       const current = readCodexAccountRecord(id);
       const currentCred = current?.deletedAt == null ? current?.credential : undefined;
       // The flight owner already committed this credential, and it is the one stored
@@ -529,9 +557,25 @@ async function resolveCodexToken(
       // The rejected-token test comes FIRST: a joined flight that resolved back to the
       // bearer upstream rejected proves nothing, and reporting the replacement as
       // "superseded" would hand the caller a token it must not replay.
+      //
+      // Freshness is tested here too. Supersession says only that SOMEONE replaced the
+      // credential — not that what they wrote is usable. An expired G+1 satisfies the
+      // generation test and the rejected-bearer test while being certain to earn
+      // another 401, and because the caller treats this return as a successful
+      // recovery it spends its one replay on it (#2892 gap 1). A stale winner must
+      // fall through to a real refresh instead.
+      //
+      // Stated honestly: this guard is NOT covered by a red-proven test. Reaching this
+      // branch needs a live flight that RESOLVES, a stored credential differing from
+      // what the flight produced, and that stored credential expired — three attempted
+      // interleavings each landed elsewhere (own flight, first adopt-stored branch, or
+      // a CAS conflict that rejects for both callers). The guard is one comparison on a
+      // path that otherwise returns a known-dead token, and its only effect is to
+      // divert to the refresh the caller would have needed anyway.
       if (
         current && currentCred
         && forcedFenceSuperseded(current.generation, forced)
+        && currentCred.expiresAt > Date.now() + REFRESH_SKEW_MS
         && !(forced !== undefined && currentCred.accessToken === forced.rejectedAccessToken)
       ) {
         return {
@@ -574,10 +618,25 @@ async function resolveCodexToken(
 
   if (refreshLocks.size >= MAX_CODEX_REFRESH_FLIGHTS) throw new CodexCredentialRefreshBusyError();
 
+  /*
+   * The flight's lifetime belongs to the FLIGHT, not to whichever caller happened to
+   * open it (#2892 gap 2).
+   *
+   * Flights are shared: later callers on the same grant join `existing.promise` rather
+   * than starting their own. Folding `callerSignal` into the flight's signal therefore
+   * gave one arbitrary waiter the power to abort the token request out from under every
+   * other waiter — and the joiners have no way to distinguish that from a genuine
+   * upstream failure, so a cancelled Codex tab could retire a healthy account for a
+   * request that was still running.
+   *
+   * The initiating caller still gets cancellation: it is waiting on its own await, and
+   * `awaitOwnCancellation` below races its wait against its own signal. What it no
+   * longer gets is the ability to cancel work other callers depend on: the flight keeps
+   * running for the joiners, and its result is still committed. `abort` (stale-flight
+   * eviction) and the 30s ceiling remain, because those bound the flight itself.
+   */
   const abort = new AbortController();
-  const signal = AbortSignal.any(
-    callerSignal ? [abort.signal, AbortSignal.timeout(30_000), callerSignal] : [abort.signal, AbortSignal.timeout(30_000)],
-  );
+  const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(30_000)]);
   let flight!: RefreshFlight;
   const refreshPromise = withCodexRefreshFileLock(refreshGrantFingerprint, signal, async (): Promise<CodexRefreshResult> => {
     const current = readCodexAccountRecord(id);
@@ -706,7 +765,10 @@ async function resolveCodexToken(
 
   flight = { promise: refreshPromise, startedAt: Date.now(), abort };
   refreshLocks.set(refreshGrantFingerprint, flight);
-  const result = await refreshPromise;
+  // The owner waits under its own cancellation too: the flight it opened is already
+  // registered, so a joiner that arrives after this caller walks away still receives
+  // the committed result.
+  const result = await awaitOwnCancellation(refreshPromise, callerSignal);
   await notePlanFromRefreshedAccessToken(id, result.accessToken, result.generation);
   return {
     accessToken: result.accessToken,
