@@ -218,6 +218,97 @@ export function saveCodexAccountCredentialIfGeneration(
   });
 }
 
+/**
+ * Commit a refreshed credential to its owner AND to any record that is provably an untouched
+ * duplicate of the pre-refresh credential (#2892 gap 3).
+ *
+ * A refresh normally rotates the refresh token, and the owner CAS above changes only the owner's
+ * record. A second non-deleted record holding the same grant that is not participating in the
+ * flight therefore keeps a refresh token upstream has just rotated away. Its next refresh sends a
+ * dead grant, and `invalid_grant` classifies as `revoked` — retiring a healthy account because we
+ * rotated its grant and never told it.
+ *
+ * Eligibility is deliberately narrow, and each condition earns its place:
+ *
+ * - Same pre-refresh grant fingerprint, access token, AND expiry. Anything else means the alias was
+ *   updated concurrently, and repairing only its grant while keeping its own access token would
+ *   advance a generation without advancing the access-token JWT. `plan-from-token` reads a higher
+ *   generation as proof of a newer JWT (that is how JWT plan claims supersede a WHAM observation),
+ *   so that combination lets a stale JWT overwrite an authoritative plan. It would also hand a live
+ *   forced-refresh joiner back its own 401-rejected bearer: flights are keyed by grant and do not
+ *   record participants, so a scan cannot tell a dormant alias from a joiner, and the recursion's
+ *   freshness shortcut does not re-compare against the rejected token.
+ * - Same `chatgptAccountId` as the owner. A fingerprint is `sha256` of the refresh token and
+ *   carries no identity claim; no invariant here guarantees one grant cannot span two account ids,
+ *   so identity is compared rather than assumed.
+ *
+ * The rotated access token, refresh token, and expiry move together, keeping a generation bump
+ * meaning what every fence already assumes. `replacedAt` and the validation metadata survive
+ * because the probe-lease settlement check accepts only an intact `G → G+1` lineage.
+ *
+ * One lock acquisition and one `persist` for the owner and every alias: `persist` writes the whole
+ * store, so a second pass would open a window in which some records hold the dead grant.
+ */
+export function commitRefreshedCodexCredentialWithAliases(
+  id: string,
+  generation: number,
+  cred: CodexAccountCredentials,
+): { committed: boolean; propagatedAliases: { id: string; generation: number }[] } {
+  return withCredentialMutationLockSync(() => {
+    const store = loadCodexAccountRecordStore();
+    const current = store[id];
+    if (!current || current.generation !== generation || current.deletedAt != null || !current.credential) {
+      return { committed: false, propagatedAliases: [] };
+    }
+    const priorCredential = current.credential;
+    const priorFingerprint = recordGrantFingerprint(current);
+    const refreshGrantFingerprint = priorCredential.refreshToken === cred.refreshToken
+      ? current.refreshGrantFingerprint ?? refreshGrantFingerprintForToken(cred.refreshToken)
+      : refreshGrantFingerprintForToken(cred.refreshToken);
+    store[id] = {
+      credential: cred,
+      generation: generation + 1,
+      refreshGrantFingerprint,
+      replacedAt: current.replacedAt,
+      ...preservedValidationMetadata(current),
+    };
+
+    // Each alias carries its OWN committed generation: aliases need not share one, and the plan
+    // reconciliation below is generation-fenced, so an id alone would be reconciled at the wrong fence.
+    const propagatedAliases: { id: string; generation: number }[] = [];
+    // Nothing to propagate when the grant did not actually rotate: the aliases already hold it.
+    // An absent owner identity fails closed: two empty strings compare equal but prove nothing about
+    // which upstream account either record was meant to use, and a matching bearer snapshot only
+    // shows they copied the same token once. Leave those dormant records alone.
+    if (
+      priorFingerprint !== undefined
+      && priorCredential.refreshToken !== cred.refreshToken
+      && !!priorCredential.chatgptAccountId
+    ) {
+      for (const [aliasId, alias] of Object.entries(store)) {
+        if (aliasId === id || alias.deletedAt != null || !alias.credential) continue;
+        if (recordGrantFingerprint(alias) !== priorFingerprint) continue;
+        if (alias.credential.accessToken !== priorCredential.accessToken) continue;
+        if (alias.credential.expiresAt !== priorCredential.expiresAt) continue;
+        if (!alias.credential.chatgptAccountId) continue;
+        if (alias.credential.chatgptAccountId !== priorCredential.chatgptAccountId) continue;
+        const aliasGeneration = alias.generation + 1;
+        store[aliasId] = {
+          // The alias keeps its OWN chatgptAccountId value, which the guard above proved equal.
+          credential: { ...cred, chatgptAccountId: alias.credential.chatgptAccountId },
+          generation: aliasGeneration,
+          refreshGrantFingerprint,
+          replacedAt: alias.replacedAt,
+          ...preservedValidationMetadata(alias),
+        };
+        propagatedAliases.push({ id: aliasId, generation: aliasGeneration });
+      }
+    }
+    persist(store);
+    return { committed: true, propagatedAliases };
+  });
+}
+
 export function tombstoneCodexAccount(id: string): number {
   return withCredentialMutationLockSync(() => {
     const store = loadCodexAccountRecordStore();
@@ -288,6 +379,12 @@ function withCredentialMutationLockSync<T>(fn: () => T): T {
 type CodexTokenResult = { accessToken: string; chatgptAccountId: string; generation: number };
 type CodexRefreshResult = CodexTokenResult & {
   credential?: CodexAccountCredentials;
+  /**
+   * Records that adopted this refresh's rotated credential through same-grant propagation, each
+   * with its own committed generation (#2892 gap 3). Carried on the result so the flight settles
+   * every plan in one place rather than the commit doing its own (#2933).
+   */
+  propagatedAliases?: { id: string; generation: number }[];
   /**
    * Grant the returned credential actually belongs to.
    *
@@ -394,12 +491,20 @@ function findFreshCredentialForGrant(
   refreshGrantFingerprint: string,
   excludeId: string,
   rejectedAccessToken?: string,
+  expectedChatgptAccountId?: string,
 ): CodexAccountCredentials | null {
   const now = Date.now();
   const records = loadCodexAccountRecordStore();
+  // Adoption copies another record's access AND refresh tokens onto the caller, so the two records
+  // must be the same upstream identity. A grant fingerprint is `sha256` of the refresh token and
+  // carries no identity claim, and nothing here guarantees one grant cannot span two accounts, so
+  // require both ids to be present and exactly equal rather than inferring identity from the grant.
+  if (!expectedChatgptAccountId) return null;
   for (const [candidateId, candidate] of Object.entries(records)) {
     if (candidateId === excludeId || candidate.deletedAt != null || !candidate.credential) continue;
     if (recordGrantFingerprint(candidate) !== refreshGrantFingerprint) continue;
+    if (!candidate.credential.chatgptAccountId) continue;
+    if (candidate.credential.chatgptAccountId !== expectedChatgptAccountId) continue;
     // A sibling alias can hold a still-unexpired copy of the exact token upstream
     // just rejected. Reusing it would bump the generation and replay the identical
     // bearer — a second 401 dressed up as recovery.
@@ -679,6 +784,7 @@ async function resolveCodexToken(
       refreshGrantFingerprint,
       id,
       forced?.rejectedAccessToken,
+      lockedCred.chatgptAccountId,
     );
     if (sameGrantFreshCredential) {
       if (!saveCodexAccountCredentialIfGeneration(id, startGeneration, sameGrantFreshCredential)) {
@@ -745,14 +851,26 @@ async function resolveCodexToken(
       expiresAt: safeExpiresAt,
       chatgptAccountId: lockedCred.chatgptAccountId,
     };
-    if (!saveCodexAccountCredentialIfGeneration(id, startGeneration, updated)) {
+    // Commit to the owner and, in the same write, to any record that is still an untouched
+    // duplicate of the credential this flight started from (#2892 gap 3). Without this the rotated
+    // grant reaches only the owner and live joiners, and a dormant same-grant record is left
+    // holding a refresh token upstream has invalidated.
+    const commit = commitRefreshedCodexCredentialWithAliases(id, startGeneration, updated);
+    if (!commit.committed) {
       throw new CodexCredentialGenerationConflictError();
+    }
+    if (commit.propagatedAliases.length > 0) {
+      console.warn(`[codex-auth] rotated refresh grant propagated to ${commit.propagatedAliases.length} dormant same-grant account record(s)`);
     }
     return {
       accessToken: updated.accessToken,
       chatgptAccountId: updated.chatgptAccountId,
       generation: startGeneration + 1,
       credential: updated,
+      // Aliases that adopted this rotated credential travel on the result so the FLIGHT settles
+      // their plans in the same single place as the owner's (#2933). Each carries its own committed
+      // generation because the plan note is generation-fenced.
+      ...(commit.propagatedAliases.length > 0 ? { propagatedAliases: commit.propagatedAliases } : {}),
       // The grant this flight was OPENED for, not the rotated one it produced. Joiners
       // are waiting on that key, and a successful refresh normally rotates the refresh
       // token — tagging the new grant would make every legitimate joiner look foreign.
@@ -774,6 +892,12 @@ async function resolveCodexToken(
    */
   const refreshPromise = fetchPromise.then(async (result): Promise<CodexRefreshResult> => {
     await notePlanFromRefreshedAccessToken(id, result.accessToken, result.generation);
+    // One settlement path for the whole flight: the refreshing account, then any dormant alias that
+    // adopted the same rotated JWT. An alias holds the identical access token, so a changed
+    // `chatgpt_plan_type` applies to it too, and its cached-token fast path would never reconcile it.
+    for (const alias of result.propagatedAliases ?? []) {
+      await notePlanFromRefreshedAccessToken(alias.id, result.accessToken, alias.generation);
+    }
     return result;
   }).finally(() => {
     if (refreshLocks.get(refreshGrantFingerprint) === flight) refreshLocks.delete(refreshGrantFingerprint);
