@@ -32,6 +32,19 @@ import { WINSW_SERVICE_ID } from "./lib/winsw";
 /** Short: this runs inside admission, and a slow answer is the same as none. */
 export const SERVICE_PROBE_TIMEOUT_MS = 2_000;
 
+/**
+ * The one query that is allowed to be slow: the full `schtasks` listing.
+ *
+ * 2s is the right budget for a targeted query and the wrong one for enumerating
+ * every task on the machine — measured at 12.3s on a host with 401 of them, which
+ * killed the listing and left ownership unprovable (#2914). This is not a general
+ * relaxation: the targeted queries keep the 2s ceiling, and after the
+ * locale-independent absence check above, a healthy host decides before the
+ * listing runs at all. Only a host that has already exhausted the cheap evidence
+ * pays this, and for it the alternative is not a fast answer but no answer.
+ */
+export const SERVICE_PROBE_LISTING_TIMEOUT_MS = 20_000;
+
 export type ServiceManagerBackend = "launchd" | "systemd" | "scheduler" | "winsw";
 
 export interface ServiceManagerClaim {
@@ -70,7 +83,11 @@ export interface ProbeRunner {
  * Windows probe runner: preserves schtasks stdout/stderr as raw bytes so the
  * UTF-16LE task XML is not corrupted by a UTF-8 decode.
  */
-export type RawProbeRunner = (file: string, args: readonly string[]) => {
+export type RawProbeRunner = (
+  file: string,
+  args: readonly string[],
+  options?: { readonly timeoutMs?: number },
+) => {
   status: number | null;
   stdout: Buffer;
   stderr: Buffer;
@@ -94,11 +111,11 @@ export const defaultProbeRunner: ProbeRunner = (file, args) => {
   };
 };
 
-export const defaultRawProbeRunner: RawProbeRunner = (file, args) => {
+export const defaultRawProbeRunner: RawProbeRunner = (file, args, options) => {
   const result = spawnSync(file, [...args], {
     encoding: "buffer",
     windowsHide: true,
-    timeout: SERVICE_PROBE_TIMEOUT_MS,
+    timeout: options?.timeoutMs ?? SERVICE_PROBE_TIMEOUT_MS,
   });
   return {
     status: result.status,
@@ -535,7 +552,22 @@ function windowsTaskListContains(body: string, taskName: string): boolean {
   });
 }
 
-/** English hosts provide a decisive fast path; other locales fall back to a full listing. */
+/**
+ * The English message: a fast path on an English host, and nothing more.
+ *
+ * It cannot match a localized host — on zh-CN schtasks answers with the CP936
+ * bytes of `错误: 系统找不到指定的文件。` — which is why absence there has to be
+ * settled by the locale-neutral listing below (#2914). Adding more translated
+ * substrings would only cover the languages someone thought of, and each one is
+ * a chance to read a DIFFERENT refusal as absence.
+ *
+ * Deriving the host's own not-found wording from a control query looks like the
+ * general fix and is not: schtasks exits 1 for both "not found" and "access
+ * denied", so a locked-down host answers the control and the real query
+ * identically, and comparing them yields a false `absent` — the one direction
+ * that lets an unattended write proceed into a home another process owns.
+ * `tests/codex-service-manager-probe.test.ts` covers exactly that host.
+ */
 const SCHTASKS_TASK_NOT_FOUND_EN = /cannot find the file specified/i;
 
 /**
@@ -574,7 +606,11 @@ function probeWindowsTaskRegistration(
     return { registered: "absent", registeredXml: "" };
   }
 
-  const listed = deps.runRaw(schtasks, ["/query", "/fo", "CSV", "/nh"]);
+  const listed = deps.runRaw(
+    schtasks,
+    ["/query", "/fo", "CSV", "/nh"],
+    { timeoutMs: SERVICE_PROBE_LISTING_TIMEOUT_MS },
+  );
   if (listed.spawnFailed || listed.timedOut || listed.status !== 0) {
     return { registered: "unknown", registeredXml: "" };
   }

@@ -138,6 +138,76 @@ function taskAbsentRunner(calls: Array<{ file: string; args: readonly string[] }
 }
 
 describe("Windows ownership probe hardening regressions", () => {
+  /*
+   * #2914, the reported host: zh-CN Windows, no task, no service, 401 scheduled
+   * tasks. The targeted query answers in CP936, which the English regex cannot
+   * match, so absence is settled by the locale-neutral listing — and that
+   * listing needed 12.3s while the probe killed it at 2s, leaving `unknown` and
+   * an `ocx sync` that refused to write for want of ownership proof.
+   */
+  const GBK_TASK_NOT_FOUND = Buffer.from(
+    "b4edcef33a20cfb5cdb3d5d2b2bbb5bdd6b8b6a8b5c4cec4bcfea1a3",
+    "hex",
+  );
+
+  test("the reported zh-CN host reaches absence through the listing (#2914)", () => {
+    const calls: Array<{ file: string; args: readonly string[]; timeoutMs?: number }> = [];
+    const runRaw: RawProbeRunner = (file, args, runnerOptions) => {
+      calls.push({ file, args, timeoutMs: runnerOptions?.timeoutMs });
+      if (file.toLowerCase().endsWith("sc.exe")) return raw(1, "", "1060");
+      if (args.includes("/xml")) {
+        return { status: 1, stdout: Buffer.alloc(0), stderr: GBK_TASK_NOT_FOUND, timedOut: false, spawnFailed: false };
+      }
+      // 401 tasks, none of them ours.
+      if (args.includes("/fo")) return raw(0, '"\\SomeOtherTask","N/A","Ready"\r\n');
+      return raw(1, "", "");
+    };
+
+    const result = inspectServiceManagerInstallation({
+      platform: "win32",
+      home,
+      configDir,
+      windowsLocale: "zh-CN",
+      runRaw,
+      winswStatus: () => "nonexistent",
+    });
+
+    // "absent" is the answer that admits the write; "unknown" is what refused it.
+    expect(result.kind).toBe("absent");
+    // The listing is the only locale-neutral evidence, so it MUST get the budget
+    // that a 401-task host can actually finish inside.
+    const listing = calls.find(call => call.args.includes("/fo"));
+    expect(listing?.timeoutMs).toBe(20_000);
+    // Targeted queries keep the short admission ceiling: this is not a general
+    // relaxation of the probe's budget.
+    for (const call of calls.filter(c => c.args.includes("/xml"))) {
+      expect(call.timeoutMs).toBeUndefined();
+    }
+  });
+
+  test("a listing that outruns even the wider budget stays unknown (#2914)", () => {
+    const runRaw: RawProbeRunner = (file, args) => {
+      if (file.toLowerCase().endsWith("sc.exe")) return raw(1, "", "1060");
+      if (args.includes("/xml")) {
+        return { status: 1, stdout: Buffer.alloc(0), stderr: GBK_TASK_NOT_FOUND, timedOut: false, spawnFailed: false };
+      }
+      if (args.includes("/fo")) return raw(null, "", "", { timedOut: true });
+      return raw(1, "", "");
+    };
+
+    const result = inspectServiceManagerInstallation({
+      platform: "win32",
+      home,
+      configDir,
+      windowsLocale: "zh-CN",
+      runRaw,
+      winswStatus: () => "nonexistent",
+    });
+
+    // A wider budget must not become an excuse to guess when it still expires.
+    expect(result.kind).toBe("unknown");
+  });
+
   test("a scheduler registered for another OpenCodex home does not claim the current home (#2800)", () => {
     const foreignConfigDir = join(home, "foreign-opencodex");
     const foreignLauncher = join(foreignConfigDir, "opencodex-service-launcher.vbs");
