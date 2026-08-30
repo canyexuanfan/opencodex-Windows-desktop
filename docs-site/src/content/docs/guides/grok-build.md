@@ -15,13 +15,28 @@ into `~/.grok/config.toml`:
 
 ```toml
 # >>> opencodex managed block — do not edit (removed by `ocx stop`) >>>
-[model.ocx-gpt-5-6-sol]
-model = "gpt-5.6-sol"
+[model_providers.opencodex]
 base_url = "http://127.0.0.1:10100/v1"
 api_backend = "responses"
 api_key = "opencodex-loopback"
+extra_headers = { "x-opencodex-grok" = "1" }
+
+[model.ocx-gpt-5-6-sol]
+model = "gpt-5.6-sol"
+model_provider = "opencodex"
 name = "OCX gpt-5.6-sol"
-# ... one [model.ocx-*] table per visible model ...
+context_window = 272000
+supports_reasoning_effort = true
+reasoning_effort = "low"
+
+[[model.ocx-gpt-5-6-sol.reasoning_efforts]]
+id = "low"
+value = "low"
+label = "Low"
+description = "Quick, fast implementations"
+default = true
+# ... remaining rungs for this model, then one [model.ocx-*] table per visible model,
+# each referencing model_provider = "opencodex" ...
 # <<< opencodex managed block <<<
 ```
 
@@ -51,15 +66,22 @@ grok -m ocx-anthropic-claude-opus-4-8 -p "hello"
 Grok Build's `/effort` (and `--effort`) only works for models whose catalog entry
 advertises the ladder: its model list fetch reads the raw `GET /v1/models` response, and
 entries there must carry `supports_reasoning_effort` plus `reasoning_efforts` menu
-options. For routed model entries, opencodex mirrors the configured provider tiers
-(`reasoningEfforts` / `modelReasoningEfforts`, and the default from
-`modelDefaultReasoningEfforts`) onto that response. This metadata describes the
-proxy-configured routed ladder — it does not claim native upstream reasoning support,
-and adapters may emulate reasoning or map levels onto provider-specific fields. Routed
-models with a configured ladder show the effort control in Grok Build just like they do
-in Codex. Models with an empty tier list keep no effort control, matching Codex
-behavior. Native GPT-5.6 entries are separate: they preserve and expose their pinned
-upstream reasoning ladders rather than provider-configured routed metadata.
+options. A Grok-compatible projection of that ladder is written into each managed
+`[model.*]` table
+(`supports_reasoning_effort`, default `reasoning_effort`, and
+`[[model.<alias>.reasoning_efforts]]` picker rows) so the menu is present when Grok
+reads the model from `config.toml`. For routed model entries, opencodex mirrors the
+configured provider tiers (`reasoningEfforts` / `modelReasoningEfforts`, and the default
+from `modelDefaultReasoningEfforts`). This metadata describes the proxy-configured
+routed ladder. Adapters may emulate reasoning or map levels onto provider-specific
+fields. Routed models with a configured ladder show the effort control in Grok Build
+just like they do in Codex.
+Models with an empty tier list keep no effort control, matching Codex behavior. Native
+GPT-5.6 entries are separate: they preserve and expose their pinned upstream reasoning
+ladders rather than provider-configured routed metadata. Valid Grok rungs, including
+`none` and `minimal`, are preserved when advertised. Unsupported or duplicate rungs,
+including Codex-only `ultra`, are omitted from the file, keeping every emitted picker
+option selectable.
 
 Grok Build talks to opencodex over the Responses API. When the route advertises a reasoning
 ladder, the Responses passthrough forwards `reasoning.summary` as configured, so thinking
@@ -84,44 +106,51 @@ outside the managed markers, where nothing opencodex does can clobber them. See
 `base_url` (a host that is actually reachable from where you run `grok`) and `api_key`
 (your `OPENCODEX_API_AUTH_TOKEN`).
 
-Do not replace `api_key` with `env_key` here. With no `model_provider` set, an `env_key`
-that fails to resolve does not stop the request — Grok falls through to your xAI session
+Do not replace `api_key` with `env_key` here. An `env_key` that fails to resolve does not
+stop the request — Grok falls through to your xAI session
 token and sends it to whatever `base_url` the entry names, which for a LAN deployment is a
 plaintext HTTP endpoint that is not xAI.
 
-The injected per-model `api_key` sits first in Grok's credential chain for these models,
-so turns against opencodex need no additional Grok login. Keep your normal `grok login` /
-`XAI_API_KEY` setup for native grok models and any harness features that contact xAI
-directly.
+The injected `api_key` on the provider entry sits first in Grok's credential chain for
+these models, so turns against opencodex need no additional Grok login. Keep your normal
+`grok login` / `XAI_API_KEY` setup for native grok models and any harness features that
+contact xAI directly.
 
 ## Manual recipe (without auto-registration)
 
 If you manage `~/.grok/config.toml` yourself — or opencodex is on a non-loopback bind — add
-per-model tables with **direct fields**, outside the `# >>> opencodex managed block` markers:
+a `[model_providers.opencodex]` block and per-model tables that reference it, outside the
+`# >>> opencodex managed block` markers:
 
 ```toml
-[model.ocx-opus]
-model = "anthropic/claude-opus-4-8"
+[model_providers.opencodex]
 base_url = "http://127.0.0.1:10100/v1"
 api_backend = "responses"
 api_key = "opencodex-loopback"
+
+[model.ocx-opus]
+model = "anthropic/claude-opus-4-8"
+model_provider = "opencodex"
 ```
 
 For a proxy reachable over the network, point `base_url` at the address `grok` can actually
 dial and use your admission token:
 
 ```toml
-[model.ocx-opus]
-model = "anthropic/claude-opus-4-8"
+[model_providers.opencodex]
 base_url = "http://192.168.1.10:10100/v1"   # the reachable host, not 127.0.0.1
 api_backend = "responses"
 api_key = "your-OPENCODEX_API_AUTH_TOKEN"
+
+[model.ocx-opus]
+model = "anthropic/claude-opus-4-8"
+model_provider = "opencodex"
 ```
 
-Do not rely on `[model_providers.<id>]` inheritance for the endpoint: as of Grok Build
-0.2.101 the inherited `base_url` is not applied to inference routing (requests fall
-through to the default xAI proxy and fail with 401). Direct per-model fields route
-correctly.
+This uses `[model_providers.<id>]` inheritance, which requires Grok Build 0.2.109 or later
+(released 2026-07-21). On older versions the inherited `base_url` is not applied to inference
+routing — upgrade, or fall back to per-model direct fields (`base_url`/`api_backend`/`api_key`
+on each `[model.*]` table).
 
 Quote any alias containing a dot: bare `[model.grok-4.5]` is a three-segment key path, not
 the id `grok-4.5`. Generated aliases avoid dots entirely for this reason.
@@ -139,8 +168,9 @@ the id `grok-4.5`. Generated aliases avoid dots entirely for this reason.
   `[model]` table actually changes (roughly a one-second debounce, compared by content), so
   a refreshed block reaches an open session without a restart. To confirm what Grok parsed,
   run `grok inspect`: it lists the config sources it loaded and warns about any field it
-  rejected. It does not print the resolved model list. Note that a single TOML error
-  invalidates the *entire* user config layer, which is why opencodex writes the file
-  atomically — Grok never sees a half-written config.
+  rejected. It does not print the resolved model list. Current Grok Build reports and skips
+  invalid model fields while retaining the rest of the model entry. A TOML syntax error still
+  prevents the file from loading. opencodex writes atomically, so Grok observes a complete
+  document on every reload.
 - **Catalog updates:** the fenced block reflects the catalog at injection time. After
   adding providers or models, run `ocx ensure` (or restart the proxy) to refresh it.

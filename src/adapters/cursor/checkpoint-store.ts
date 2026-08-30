@@ -23,7 +23,12 @@ export type CursorCheckpointInvalidationReason =
   | "trailing_tool_result"
   | "force_fresh"
   | "upstream_invalid_argument"
-  | "lineage_mismatch";
+  | "lineage_mismatch"
+  /**
+   * The checkpoint's own roots leave no room for the uncovered suffix inside Cursor's root envelope.
+   * Resuming would send history the model cannot see; a full replay prunes coherently instead.
+   */
+  | "envelope_exhausted";
 
 export interface CursorCheckpointSnapshot {
   ref: string;
@@ -236,6 +241,7 @@ export function commitCursorCheckpoint(input: {
 }
 
 export function getCursorCheckpointForPrefix(input: {
+  conversationId: string;
   prefixDigest: string;
   systemDigest: string;
   coveredMessageCount: number;
@@ -244,17 +250,21 @@ export function getCursorCheckpointForPrefix(input: {
 }): CursorCheckpointSnapshot | undefined {
   prune();
   const refs = store.prefixIndex.get(input.prefixDigest);
-  if (!refs || refs.size !== 1) return undefined;
-  const [ref] = refs;
-  if (!ref) return undefined;
-  const snapshot = getCursorCheckpoint(ref);
-  if (!snapshot) return undefined;
+  if (!refs) return undefined;
   const identityScope = input.identityScope?.trim() || "local";
-  if (snapshot.systemDigest !== input.systemDigest) return undefined;
-  if (snapshot.coveredMessageCount !== input.coveredMessageCount) return undefined;
-  if (snapshot.identityScope !== identityScope) return undefined;
-  if (snapshot.modelId !== input.modelId) return undefined;
-  return snapshot;
+  let foundRef: string | undefined;
+  for (const ref of refs) {
+    const snapshot = store.snapshots.get(ref);
+    if (!snapshot) continue;
+    if (snapshot.conversationId !== input.conversationId) continue;
+    if (snapshot.systemDigest !== input.systemDigest) continue;
+    if (snapshot.coveredMessageCount !== input.coveredMessageCount) continue;
+    if (snapshot.identityScope !== identityScope) continue;
+    if (snapshot.modelId !== input.modelId) continue;
+    if (foundRef) return undefined;
+    foundRef = ref;
+  }
+  return getCursorCheckpoint(foundRef);
 }
 
 export function getLatestCursorCheckpoint(

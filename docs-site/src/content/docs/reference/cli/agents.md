@@ -40,12 +40,12 @@ Manage the Codex `multi_agent_v2` feature flag and the three-state multi-agent s
 | Subcommand | Action |
 | --- | --- |
 | `status` (default) | Report the current v2 flag, multi-agent mode, and thread concurrency. |
-| `on` | Enable the `multi_agent_v2` feature and resync the catalog. |
+| `on` | Enable the global `multi_agent_v2` feature and resync the catalog. Rejected while the v2 hybrid pin is active because the global override would defeat it. |
 | `off` | Disable the `multi_agent_v2` feature and resync the catalog. |
 | `mode v1` | Force all models to v1, disable native v2, and preserve the active thread limit. |
 | `mode default` | Respect upstream model surface pins. |
-| `mode v2` | Force models to v2, enable native v2, and preserve the active thread limit. ChatGPT-native models are exempt while `keep-native-v1` is on. |
-| `keep-native-v1 on\|off` | Under `mode v2`, keep ChatGPT-native models on v1 instead of stamping them v2. |
+| `mode v2` | Force models to v2 and preserve the active thread limit. With `keep-native-v1` off, enable global native v2; with it on, disable the global override and use catalog pins. |
+| `keep-native-v1 on\|off` | Under `mode v2`, keep ChatGPT-native models on v1 and routed models on v2. Enabling it disables the global V2 override before catalog sync. |
 | `threads <n>` | Set the active v1/v2 thread limit to an integer of at least 1. |
 | `mode-hint <text>` | Set the Proactive delegation hint (Ultra mode) for every model and effort. |
 | `mode-hint --clear` | Remove the hint so the effort-derived policy (ultra = proactive) resumes. |
@@ -64,6 +64,10 @@ The `mode` subcommand writes `multiAgentMode` to the opencodex config and resync
 Mode and flag transitions move the current numeric thread limit between the valid v1/v2 Codex keys;
 a failed transition restores the original `config.toml`. Changes apply to new Codex sessions, while
 running sessions keep their pinned surface.
+
+Codex resolves an enabled global `multi_agent_v2` override before the selected model's catalog
+pin. The hybrid `keep-native-v1` contract therefore keeps that global override off; otherwise a
+native row stamped `v1` would still start on V2 and produce backend-encrypted child tasks.
 
 `mode-hint` writes `features.multi_agent_v2.multi_agent_mode_hint_text` in Codex's
 `$CODEX_HOME/config.toml` even when `multi_agent_v2` is currently disabled. The
@@ -107,12 +111,27 @@ Inspect proxy requests, usage, storage, memory, and debug data. The direct alias
 | Alias | Equivalent resource |
 | --- | --- |
 | `ocx logs [filters] [--follow] [--json|--jsonl]` | `ocx observe logs` |
-| `ocx usage [--range <7d|30d|all>] [--surface <all|codex|claude|grok>] [--json]` | `ocx observe usage` |
+| `ocx usage [--range <today|1d|7d|30d|all>] [--surface <all|codex|claude|grok>] [--provider <name>] [--model <id>] [--json]` | `ocx observe usage` |
 | `ocx storage [--json]` | `ocx observe storage` |
 | `ocx memory [--json]` | `ocx observe memory` |
 
 ```bash
 ocx observe usage --range 30d --json
+```
+
+`--range today` (alias `1d`) reports the current local day. `--provider` and
+`--model` narrow the report to one upstream target — distinct from
+`--surface`, which selects the calling client (Codex, Claude Code, Grok)
+rather than the provider serving the request.
+
+The default view prints request, token and estimated-cost totals plus
+per-provider and per-model breakdowns. Costs are API list-price equivalents,
+not a billing receipt: subscription plans and provider credits are billed
+separately, and requests with no matching price row are counted as
+`unpriced`/`unmetered` rather than folded in as zero.
+
+```bash
+ocx usage --range today --provider xai
 ```
 
 ### `ocx debug <provider|usage|injection|claude> <on|off|status|reset|logs [-f]>`
@@ -161,6 +180,7 @@ Claude Desktop profile commands are:
 ```text
 ocx claude desktop [apply]                         Save and apply the four-family profile
 ocx claude desktop show [--json]                   Show routes, families, and defaults
+ocx claude desktop status [--json]                 Show applied state, drift, and health
 ocx claude desktop move <route> <family> [--default]
 ocx claude desktop default <family> <route|none>
 ocx claude desktop export <path|->                 Export versioned JSON (`-` = stdout)
@@ -243,6 +263,16 @@ The MCode, ZCode and Prime exports are loopback-only for the same reason and lik
 differs. A relative path in any of those three environment overrides is refused, because the proxy
 and the client can have different working directories and would otherwise disagree about which
 file is meant.
+
+ZCode 3.8.1 may save runtime-derived `reasoning`, `limit.output`, and default context metadata back
+into the generated `provider.opencodex.models` entries. Managed integration status treats only
+those documented additions as refreshable drift. Provider identity and connection settings,
+including `options.baseURL`, model membership, names, modalities, and any context limit OpenCodex
+emitted authoritatively remain protected; editing them reports `conflict / foreign-edit` instead of
+overwriting the file. An ownership record created by an older OpenCodex version can recover
+automatically when the generated catalog is otherwise unchanged. If both the catalog and the block
+changed, re-apply only after reviewing the file because the older record cannot prove which change
+was ZCode-derived.
 
 :::caution[Merge, never replace]
 `ocx export` never writes your real client config. The destination is printed for you to merge by

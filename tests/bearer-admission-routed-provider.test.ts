@@ -4,7 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
 import { startServer } from "../src/server";
+import {
+  acquireNativeMainProfileDrain,
+  getNativeMainProfileRequestCount,
+} from "../src/server/lifecycle";
+import { waitForNativeMainStartupGate } from "../src/codex/native-profile-startup";
+import { handleNativeProfileAPI } from "../src/codex/native-profile-api";
+import type { NativeProfileManager } from "../src/codex/native-profile-manager";
 import type { OcxConfig } from "../src/types";
+import { ownedServiceHomeInspection } from "./helpers/owned-service-home-inspection";
 
 /**
  * Issue #2132: bearer admission must not require a stored ChatGPT credential.
@@ -33,6 +41,7 @@ let nativeAuth: Array<string | null> = [];
 
 const ADMISSION_SECRET = "ocx_data_2132secret";
 const ROUTED_KEY = "sk-routed-provider-key";
+const inspectNativeCodexOwnership = ownedServiceHomeInspection("bearer admission routed provider test");
 
 /** A JWT whose `exp` is far in the future, so a stored main token reads as live. */
 function liveJwt(): string {
@@ -57,7 +66,7 @@ function mixedConfig(): OcxConfig {
         baseUrl: "https://chatgpt.com/backend-api/codex",
         authMode: "forward",
         codexAccountMode: "direct",
-        defaultModel: "gpt-5.6-luna",
+        defaultModel: "gpt-5.5",
       },
       gateway: {
         adapter: "openai-chat",
@@ -131,7 +140,7 @@ describe("#2132 bearer admission does not require a ChatGPT credential for route
     // The reported install: no ChatGPT login was ever performed.
     writeFileSync(join(codexHome, "auth.json"), JSON.stringify({ tokens: {} }));
 
-    const server = startServer(0);
+    const server = startServer(0, { inspectNativeCodexOwnership });
     try {
       const response = await postResponses(server.url, "gateway/gateway-model");
 
@@ -151,9 +160,10 @@ describe("#2132 bearer admission does not require a ChatGPT credential for route
     saveConfig(mixedConfig());
     writeFileSync(join(codexHome, "auth.json"), JSON.stringify({ tokens: {} }));
 
-    const server = startServer(0);
+    const server = startServer(0, { inspectNativeCodexOwnership });
     try {
-      const response = await postResponses(server.url, "gpt-5.6-luna");
+      await waitForNativeMainStartupGate();
+      const response = await postResponses(server.url, "gpt-5.5");
 
       // This is the #1686 guarantee and it must survive: a native route genuinely needs the
       // stored credential, so it fails BEFORE any upstream I/O rather than forwarding ours.
@@ -173,9 +183,10 @@ describe("#2132 bearer admission does not require a ChatGPT credential for route
       JSON.stringify({ tokens: { access_token: stored, account_id: "stored_main_acc" } }),
     );
 
-    const server = startServer(0);
+    const server = startServer(0, { inspectNativeCodexOwnership });
     try {
-      const response = await postResponses(server.url, "gpt-5.6-luna");
+      await waitForNativeMainStartupGate();
+      const response = await postResponses(server.url, "gpt-5.5");
 
       expect(response.status).toBe(200);
       expect(nativeAuth).toEqual([`Bearer ${stored}`]);
@@ -213,7 +224,7 @@ describe("an admission bearer never reaches a canonical ChatGPT transport, whate
           adapter: "openai-responses",
           baseUrl: "https://chatgpt.com/backend-api/codex",
           authMode: "forward",
-          defaultModel: "gpt-5.6-luna",
+          defaultModel: "gpt-5.5",
         },
       },
     } as OcxConfig;
@@ -223,9 +234,10 @@ describe("an admission bearer never reaches a canonical ChatGPT transport, whate
     saveConfig(customNamedCanonicalConfig());
     writeFileSync(join(codexHome, "auth.json"), JSON.stringify({ tokens: {} }));
 
-    const server = startServer(0);
+    const server = startServer(0, { inspectNativeCodexOwnership });
     try {
-      const response = await postResponses(server.url, "mirror/gpt-5.6-luna");
+      await waitForNativeMainStartupGate();
+      const response = await postResponses(server.url, "mirror/gpt-5.5");
 
       // Fail-before-I/O is the contract (src/codex/auth-context.ts): the only two acceptable
       // outcomes for an admission bearer are replaced-with-stored-main, or refused. Reaching
@@ -245,13 +257,111 @@ describe("an admission bearer never reaches a canonical ChatGPT transport, whate
       JSON.stringify({ tokens: { access_token: stored, account_id: "stored_main_acc" } }),
     );
 
-    const server = startServer(0);
+    const server = startServer(0, { inspectNativeCodexOwnership });
     try {
-      await postResponses(server.url, "mirror/gpt-5.6-luna");
+      await waitForNativeMainStartupGate();
+      await postResponses(server.url, "mirror/gpt-5.5");
 
       expect(nativeAuth.join("|")).not.toContain(ADMISSION_SECRET);
       for (const sent of nativeAuth) expect(sent).toBe(`Bearer ${stored}`);
     } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("stored-main substitution respects a native-main drain", async () => {
+    saveConfig(customNamedCanonicalConfig());
+    const stored = liveJwt();
+    writeFileSync(
+      join(codexHome, "auth.json"),
+      JSON.stringify({ tokens: { access_token: stored, account_id: "stored_main_acc" } }),
+    );
+
+    const server = startServer(0, { inspectNativeCodexOwnership });
+    let drain: ReturnType<typeof acquireNativeMainProfileDrain> = null;
+    try {
+      await waitForNativeMainStartupGate();
+      drain = acquireNativeMainProfileDrain("custom-forward-substitution");
+      expect(drain).not.toBeNull();
+      const response = await postResponses(server.url, "mirror/gpt-5.5");
+
+      expect(response.status).toBe(503);
+      expect(response.headers.get("retry-after")).toBe("1");
+      expect(nativeAuth).toHaveLength(0);
+      expect(routedAuth).toHaveLength(0);
+    } finally {
+      drain?.release();
+      await server.stop(true);
+    }
+  });
+
+  test("stored-main substitution holds ownership until the upstream request settles", async () => {
+    saveConfig(customNamedCanonicalConfig());
+    const stored = liveJwt();
+    writeFileSync(
+      join(codexHome, "auth.json"),
+      JSON.stringify({ tokens: { access_token: stored, account_id: "stored_main_acc" } }),
+    );
+    let signalUpstreamStarted!: () => void;
+    const upstreamStarted = new Promise<void>((resolve) => { signalUpstreamStarted = resolve; });
+    let releaseUpstream!: () => void;
+    const upstreamGate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
+    globalThis.fetch = (async (input, init) => {
+      const raw = input instanceof Request ? input.url : String(input);
+      const headers = new Headers(input instanceof Request ? input.headers : init?.headers);
+      if (new URL(raw).hostname === "chatgpt.com") {
+        nativeAuth.push(headers.get("authorization"));
+        signalUpstreamStarted();
+        await upstreamGate;
+        return Response.json({ id: "resp_2132_held", object: "response", status: "completed", output: [] });
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    const server = startServer(0, { inspectNativeCodexOwnership });
+    let pending: Promise<Response> | null = null;
+    try {
+      await waitForNativeMainStartupGate();
+      pending = postResponses(server.url, "mirror/gpt-5.5");
+      const switchUrl = new URL("http://localhost/api/native-main-profiles/switch");
+      const switchRequest = () => new Request(switchUrl, {
+        method: "POST",
+        body: JSON.stringify({ target: "target", confirmedStopped: true }),
+      });
+      let switches = 0;
+      const manager = {
+        switch: async () => {
+          switches += 1;
+          return { ok: true };
+        },
+      } as unknown as NativeProfileManager;
+      await upstreamStarted;
+      expect(getNativeMainProfileRequestCount()).toBe(1);
+      const blocked = await handleNativeProfileAPI(
+        switchRequest(),
+        switchUrl,
+        {} as OcxConfig,
+        { manager, drainTimeoutMs: 0 },
+      );
+      expect(blocked?.status).toBe(409);
+      expect(switches).toBe(0);
+
+      releaseUpstream();
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(nativeAuth).toEqual([`Bearer ${stored}`]);
+      expect(getNativeMainProfileRequestCount()).toBe(0);
+      const switched = await handleNativeProfileAPI(
+        switchRequest(),
+        switchUrl,
+        {} as OcxConfig,
+        { manager, drainTimeoutMs: 0 },
+      );
+      expect(switched?.status).toBe(200);
+      expect(switches).toBe(1);
+    } finally {
+      releaseUpstream();
+      await pending?.catch(() => {});
       await server.stop(true);
     }
   });

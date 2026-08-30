@@ -9,12 +9,46 @@ import type { OcxConfig } from "../types";
 import { truncateRetainedUtf8 } from "../lib/admission";
 
 const CACHE_TTL_MS = 30_000;
-const PROBE_TIMEOUT_MS = 5_000;
-const INITIAL_PROBE_WAIT_MS = 5_500;
+const PROBE_TIMEOUT_MS = probeTimeoutMs();
+const INITIAL_PROBE_WAIT_MS = PROBE_TIMEOUT_MS + 500;
 const MAX_DIAGNOSTIC_VALUE_BYTES = 8 * 1024;
+
+/**
+ * How long the isolated probe child gets before its reading is abandoned.
+ *
+ * The child is a full Bun CLI start that then runs `diagnoseService()`, and on
+ * Windows that means shelling out to `sc.exe` / `schtasks.exe` — external
+ * processes whose latency is set by the service-control manager, not by us.
+ * Under load those overran the flat 5s, the probe was abandoned, and the
+ * endpoint answered `diagnosticStale: true` for a machine it could have read.
+ * That is a real dashboard regression, not only a test failure: it downgrades a
+ * `protected` host to `at-risk` and recommends a repair command for a healthy
+ * service.
+ *
+ * Raising it only on Windows keeps the tighter bound everywhere else. It stays a
+ * bound in both cases: a wedged probe is still abandoned, and the caller still
+ * receives the previous reading rather than waiting on it.
+ */
+function probeTimeoutMs(): number {
+  return process.platform === "win32" ? 15_000 : 5_000;
+}
+
+/** The probe bound, so a test's own budget cannot fall below what it must wait for. */
+export function startupHealthProbeTimeoutMs(): number {
+  return PROBE_TIMEOUT_MS;
+}
 let cached: { timestamp: number; value: StartupHealth } | null = null;
 let inflight: Promise<StartupHealth> | null = null;
 let generation = 0;
+
+export interface StartupHealthCacheDeps {
+  now?: () => number;
+  probe?: (config: Pick<OcxConfig, "codexAutoStart">) => Promise<StartupHealth>;
+  waitForProbe?: (
+    probe: Promise<StartupHealth>,
+    timeoutMs: number,
+  ) => Promise<StartupHealth | null>;
+}
 
 export function markStartupHealthDiagnosticStale(value: StartupHealth): StartupHealth {
   if (!value.localRoutingDependency) return { ...value, diagnosticStale: true };
@@ -94,11 +128,16 @@ function runProbe(config: Pick<OcxConfig, "codexAutoStart">): Promise<StartupHea
   });
 }
 
-function refreshInBackground(config: Pick<OcxConfig, "codexAutoStart">): void {
+function refreshInBackground(
+  config: Pick<OcxConfig, "codexAutoStart">,
+  deps: StartupHealthCacheDeps,
+): void {
   if (inflight) return;
   const startedGeneration = generation;
-  const probe = runProbe(config).then(value => {
-    if (startedGeneration === generation) cached = { timestamp: Date.now(), value };
+  const probe = (deps.probe ?? runProbe)(config).then(value => {
+    if (startedGeneration === generation) {
+      cached = { timestamp: (deps.now ?? Date.now)(), value };
+    }
     return value;
   });
   inflight = probe.finally(() => {
@@ -107,18 +146,25 @@ function refreshInBackground(config: Pick<OcxConfig, "codexAutoStart">): void {
 }
 
 /** Stale-while-revalidate: service-manager probes never hold open a model/UI request. */
-export async function getCachedStartupHealth(config: Pick<OcxConfig, "codexAutoStart">): Promise<StartupHealth> {
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) return cached.value;
-  refreshInBackground(config);
+export async function getCachedStartupHealth(
+  config: Pick<OcxConfig, "codexAutoStart">,
+  deps: StartupHealthCacheDeps = {},
+): Promise<StartupHealth> {
+  const now = deps.now ?? Date.now;
+  if (cached && now() - cached.timestamp < CACHE_TTL_MS) return cached.value;
+  refreshInBackground(config, deps);
   // An expired or empty read is an explicit protection check. Wait for the
   // isolated probe instead of presenting a synthetic failure while that probe
   // is still running. The probe remains child-process isolated and hard-capped
-  // at 5s; stale state is returned only if that bounded probe cannot settle.
+  // by the platform-specific deadline; stale state is returned only if that
+  // bounded probe cannot settle.
   if (inflight) {
-    const settled = await Promise.race([
-      inflight,
-      new Promise<null>(resolve => setTimeout(() => resolve(null), INITIAL_PROBE_WAIT_MS)),
-    ]);
+    const settled = await (deps.waitForProbe
+      ? deps.waitForProbe(inflight, INITIAL_PROBE_WAIT_MS)
+      : Promise.race([
+          inflight,
+          new Promise<null>(resolve => setTimeout(() => resolve(null), INITIAL_PROBE_WAIT_MS)),
+        ]));
     if (settled) return settled;
   }
   return cached ? markStartupHealthDiagnosticStale(cached.value) : conservativeFallback(config);

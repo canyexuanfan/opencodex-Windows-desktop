@@ -35,6 +35,7 @@ import {
   startServer,
 } from "../src/server";
 import { clearRequestLogsForTests, getRequestLogEntries } from "../src/server/request-log";
+import { readUsageEntries } from "../src/usage/log";
 import { handleManagementAPI } from "../src/server/management-api";
 import { handleResponses } from "../src/server/responses";
 import type { OcxConfig } from "../src/types";
@@ -150,7 +151,7 @@ afterEach(() => {
   if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
 });
 
-const POOL_RETRY_MODEL = "gpt-5.6-sol";
+const POOL_RETRY_MODEL = "gpt-5.5";
 
 function unsupportedModelBody(model = POOL_RETRY_MODEL): string {
   return JSON.stringify({
@@ -167,6 +168,7 @@ type PoolRetryHarness = {
     model?: string;
     path?: "/v1/responses" | "/v1/responses/compact";
     callerBearer?: boolean;
+    headers?: Record<string, string>;
     extraBody?: Record<string, unknown>;
   }) => Promise<Response>;
   restoreFetch: () => void;
@@ -314,12 +316,14 @@ async function startPoolRetryHarness(
       model = POOL_RETRY_MODEL,
       path = "/v1/responses",
       callerBearer = true,
+      headers = {},
       extraBody = {},
     } = {}) => originalGlobalFetch(new URL(path, server.url), {
       method: "POST",
       headers: {
         "content-type": "application/json",
         ...(callerBearer ? { authorization: "Bearer inbound-token" } : {}),
+        ...headers,
       },
       body: JSON.stringify({ model, input: path.endsWith("/compact") ? [] : "hello", stream, ...extraBody }),
       signal,
@@ -346,6 +350,172 @@ async function expectOriginal400(response: Response, body: string): Promise<void
   expect(response.headers.get("x-pool-retry-test")).toBe("original");
   expect(await response.text()).toBe(body);
 }
+
+describe("Responses request identity handoff", () => {
+  test("returns the generated request id and overwrites an upstream value", async () => {
+    const harness = await startPoolRetryHarness(() => Response.json({
+      id: "resp_request_identity",
+      object: "response",
+      status: "completed",
+      output: [],
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    }, {
+      headers: { "x-opencodex-request-id": "upstream-spoofed-value" },
+    }), { secondAccount: false });
+    try {
+      const response = await harness.request({
+        headers: { "x-opencodex-request-id": "caller-injected-value" },
+      });
+      const requestId = response.headers.get("x-opencodex-request-id");
+      expect(requestId).toMatch(/^ocx-[a-f0-9]{32}$/);
+      expect(requestId).not.toBe("upstream-spoofed-value");
+      expect(requestId).not.toBe("caller-injected-value");
+      await response.text();
+      expect(getRequestLogEntries().filter(entry => entry.requestId === requestId)).toHaveLength(1);
+      expect(readUsageEntries().filter(entry => entry.requestId === requestId)).toHaveLength(1);
+    } finally {
+      await stopPoolRetryHarness(harness);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
+
+  test("names the request id in Access-Control-Expose-Headers so browser JS can read it", async () => {
+    const harness = await startPoolRetryHarness(() => Response.json({
+      id: "resp_request_identity_expose",
+      object: "response",
+      status: "completed",
+      output: [],
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    }), { secondAccount: false });
+    try {
+      const response = await harness.request();
+      const requestId = response.headers.get("x-opencodex-request-id");
+      expect(requestId).toMatch(/^ocx-[a-f0-9]{32}$/);
+
+      // The header being present above is not enough: cross-origin JavaScript may read only
+      // the CORS-safelisted response headers plus whatever the expose-list names, so without
+      // this the id ships on every response and no browser caller can ever see it.
+      const exposed = (response.headers.get("Access-Control-Expose-Headers") ?? "")
+        .split(",")
+        .map(name => name.trim().toLowerCase());
+      expect(exposed).toContain("x-opencodex-request-id");
+      await response.text();
+    } finally {
+      await stopPoolRetryHarness(harness);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
+
+  test("binds the same generated request id on a streaming terminal", async () => {
+    let releaseTerminal!: () => void;
+    let terminalReleased = false;
+    const terminalGate = new Promise<void>(resolve => {
+      releaseTerminal = () => {
+        terminalReleased = true;
+        resolve();
+      };
+    });
+    const createdPayload = JSON.stringify({
+      type: "response.created",
+      response: { id: "resp_request_identity_sse", object: "response", status: "in_progress", output: [] },
+    });
+    const completedPayload = JSON.stringify({
+      type: "response.completed",
+      response: {
+        id: "resp_request_identity_sse",
+        object: "response",
+        status: "completed",
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      },
+    });
+    const encoder = new TextEncoder();
+    const harness = await startPoolRetryHarness(() => new Response(
+      new ReadableStream<Uint8Array>({
+        async start(controller) {
+          controller.enqueue(encoder.encode(`event: response.created\ndata: ${createdPayload}\n\n`));
+          await terminalGate;
+          controller.enqueue(encoder.encode(`event: response.completed\ndata: ${completedPayload}\n\n`));
+          controller.close();
+        },
+      }),
+      { headers: { "content-type": "text/event-stream", "x-opencodex-request-id": "upstream-spoofed-value" } },
+    ), { secondAccount: false });
+    try {
+      const response = await harness.request({ stream: true });
+      const requestId = response.headers.get("x-opencodex-request-id");
+      expect(requestId).toMatch(/^ocx-[a-f0-9]{32}$/);
+      expect(requestId).not.toBe("upstream-spoofed-value");
+      const reader = response.body!.getReader();
+      const first = await reader.read();
+      expect(new TextDecoder().decode(first.value)).toContain("response.created");
+      expect(terminalReleased).toBe(false);
+      releaseTerminal();
+      while (!(await reader.read()).done) { /* drain */ }
+      expect(getRequestLogEntries().filter(entry => entry.requestId === requestId)).toHaveLength(1);
+      expect(readUsageEntries().filter(entry => entry.requestId === requestId)).toHaveLength(1);
+    } finally {
+      await stopPoolRetryHarness(harness);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
+
+  test("binds the same generated request id on an upstream error", async () => {
+    const harness = await startPoolRetryHarness(() => Response.json(
+      { error: { type: "upstream_error", message: "bounded test error" } },
+      {
+        status: 503,
+        headers: { "x-opencodex-request-id": "upstream-spoofed-value" },
+      },
+    ), { secondAccount: false });
+    try {
+      const response = await harness.request();
+      const requestId = response.headers.get("x-opencodex-request-id");
+      expect(requestId).toMatch(/^ocx-[a-f0-9]{32}$/);
+      expect(requestId).not.toBe("upstream-spoofed-value");
+      await response.text();
+      expect(getRequestLogEntries().filter(entry => entry.requestId === requestId)).toHaveLength(1);
+      expect(readUsageEntries().filter(entry => entry.requestId === requestId)).toHaveLength(1);
+    } finally {
+      await stopPoolRetryHarness(harness);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
+
+  test("does not issue a request id before authentication and origin admission", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    process.env.OPENCODEX_API_AUTH_TOKEN = "local-secret";
+    clearRequestLogsForTests();
+    saveConfig({ ...config("0.0.0.0"), port: 0 });
+
+    const server = startServer(0);
+    const url = `http://127.0.0.1:${server.port}/v1/responses`;
+    const body = JSON.stringify({ model: "gpt-test", input: "hello" });
+    try {
+      const missingAuth = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      });
+      expect(missingAuth.status).toBe(401);
+      expect(missingAuth.headers.get("x-opencodex-request-id")).toBeNull();
+
+      const rejectedOrigin = await fetch(url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-opencodex-api-key": "local-secret",
+          origin: "https://attacker.test",
+        },
+        body,
+      });
+      expect(rejectedOrigin.status).toBe(403);
+      expect(rejectedOrigin.headers.get("x-opencodex-request-id")).toBeNull();
+      expect(getRequestLogEntries()).toHaveLength(0);
+      expect(readUsageEntries()).toHaveLength(0);
+    } finally {
+      await server.stop(true);
+    }
+  }, { timeout: SERVER_BUDGET_MS });
+});
 
 describe("server local API auth", () => {
   test("responses timeout helper disables Bun request timeout when available", () => {
@@ -1353,12 +1523,35 @@ describe("server local API auth", () => {
     const upstream = Bun.serve({
       port: 0,
       fetch(req) {
-        seen.push({
+        const observed = {
           host: req.headers.get("x-test-original-host") ?? "",
           authorization: req.headers.get("authorization"),
           chatgptAccountId: req.headers.get("chatgpt-account-id"),
-        });
-        return Response.json({ id: "resp_tier", object: "response", status: "completed", output: [] });
+        };
+        seen.push(observed);
+        const status = observed.authorization === "Bearer caller-invalid-401"
+          ? 401
+          : observed.authorization === "Bearer caller-invalid-403"
+            ? 403
+            : observed.authorization === "Bearer caller-quota-429"
+              ? 429
+              : observed.authorization === "Bearer caller-transient-500"
+                ? 500
+                : 200;
+        const quotaHeaders = observed.authorization === "Bearer caller-quota-headers"
+          || observed.authorization === "Bearer caller-quota-429"
+          ? {
+              "x-codex-primary-used-percent": "100",
+              "x-codex-primary-window-minutes": "300",
+              "x-codex-primary-reset-at": "1900000000",
+            }
+          : observed.authorization === "Bearer caller-transient-500"
+            ? { "retry-after": "0" }
+            : undefined;
+        return Response.json(
+          { id: "resp_tier", object: "response", status: "completed", output: [] },
+          { status, headers: quotaHeaders },
+        );
       },
     });
     let whamRequests = 0;
@@ -1510,7 +1703,83 @@ describe("server local API auth", () => {
       }
       clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
       clearCodexUpstreamHealth();
+      clearAccountQuota();
       rmSync(join(isolatedCodexHome!.path, "auth.json"), { force: true });
+
+      const nativeCallerConfig = {
+        ...mainOnlyConfig(),
+        hostname: "0.0.0.0",
+      } as OcxConfig;
+      saveConfig(nativeCallerConfig);
+      const beforeNativeCaller = seen.length;
+      const nativeCaller = startServer(0, { inspectNativeCodexOwnership });
+      try {
+        await waitForNativeMainStartupGate();
+
+        expect((await request(nativeCaller, {
+          authorization: "Bearer local-secret",
+          "chatgpt-account-id": "must-not-forward",
+        })).status).toBe(401);
+        expect(seen).toHaveLength(beforeNativeCaller);
+        writeMainToken("opaque-file-main-token");
+
+        const fileMainBaseline = {
+          reauth: isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID),
+          quota: structuredClone(getAccountQuota(MAIN_CODEX_ACCOUNT_ID)),
+          health: structuredClone(getCodexUpstreamHealth(MAIN_CODEX_ACCOUNT_ID)),
+          active: loadConfig().activeCodexAccountId,
+        };
+        const expectFileMainUnchanged = () => {
+          expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(fileMainBaseline.reauth);
+          expect(getAccountQuota(MAIN_CODEX_ACCOUNT_ID)).toEqual(fileMainBaseline.quota);
+          expect(getCodexUpstreamHealth(MAIN_CODEX_ACCOUNT_ID)).toEqual(fileMainBaseline.health);
+          expect(loadConfig().activeCodexAccountId).toBe(fileMainBaseline.active);
+        };
+        const isolatedCallerFailures = [
+          ["caller-invalid-401", 401],
+          ["caller-invalid-403", 403],
+          ["caller-quota-429", 429],
+          ["caller-transient-500", 500],
+        ] as const;
+        for (const [token, status] of isolatedCallerFailures) {
+          const headers = {
+            authorization: `Bearer ${token}`,
+            "chatgpt-account-id": `${token}-account`,
+          };
+          expect((await request(nativeCaller, headers)).status).toBe(status);
+          expect((await compact(nativeCaller, headers)).status).toBe(status);
+          expect(await wsTurn(nativeCaller, headers)).toContain(String(status));
+          expectFileMainUnchanged();
+        }
+        const quotaOnlyHeaders = {
+          authorization: "Bearer caller-quota-headers",
+          "chatgpt-account-id": "caller-quota-headers-account",
+        };
+        expect((await request(nativeCaller, quotaOnlyHeaders)).status).toBe(200);
+        expect((await compact(nativeCaller, quotaOnlyHeaders)).status).toBe(200);
+        expect(await wsTurn(nativeCaller, quotaOnlyHeaders)).toContain("resp_tier");
+        expectFileMainUnchanged();
+
+        markAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+
+        const nativeHeaders = {
+          authorization: "Bearer caller-keyring-token",
+          "chatgpt-account-id": "caller-keyring-account",
+        };
+        const beforeHealthyNativeCaller = seen.length;
+        expect((await request(nativeCaller, nativeHeaders)).status).toBe(200);
+        expect((await compact(nativeCaller, nativeHeaders)).status).toBe(200);
+        expect(seen.slice(beforeHealthyNativeCaller)).toEqual(Array.from({ length: 2 }, () => ({
+          host: "chatgpt.com",
+          authorization: "Bearer caller-keyring-token",
+          chatgptAccountId: "caller-keyring-account",
+        })));
+        expect(isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)).toBe(true);
+      } finally {
+        await nativeCaller.stop(true);
+        clearAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID);
+        rmSync(join(isolatedCodexHome!.path, "auth.json"), { force: true });
+      }
 
       saveConfig({
         port: 0,
@@ -2167,7 +2436,10 @@ describe("server local API auth", () => {
     const harness = await startPoolRetryHarness(
       async (_accountId, request) => {
         upstreamBody = await request.json() as Record<string, unknown>;
-        return Response.json({ id: "canonical-wire-success", status: "completed", output: [] });
+        return Response.json(
+          { id: "canonical-wire-success", status: "completed", output: [], usage: { input_tokens: 1000, output_tokens: 100 } },
+          { headers: { "openai-model": "gpt-5.6-sol" } },
+        );
       },
       {
         secondAccount: false,
@@ -2183,6 +2455,14 @@ describe("server local API auth", () => {
       expect(upstreamBody?.model).toBe("gpt-5.6-sol");
       expect(upstreamBody).not.toHaveProperty("prompt_cache_retention");
       expect(harness.dispatches).toEqual(["acct-pool-a"]);
+
+      const logs = logsFromApiBody(await fetch(new URL("/api/logs?tail=1", harness.server.url), { headers: managementHeaders() }).then(r => r.json()));
+      expect(logs.at(-1)).toMatchObject({
+        model: "gpt-daybreak-blue-latest",
+        status: 200,
+      });
+      expect(logs.at(-1)?.resolvedModel).toBeUndefined();
+      expect(logs.at(-1)?.displayMetrics?.cost?.kind).toBe("value");
     } finally {
       await stopPoolRetryHarness(harness);
     }
@@ -2232,7 +2512,11 @@ describe("server local API auth", () => {
     } finally {
       await stopPoolRetryHarness(harness);
     }
-  });
+    // Same budget as the other harness cases in this file: this one starts a real server and
+    // was left on Bun's 5s default, so it timed out at 5003ms under full-suite parallel load
+    // while passing 3/3 in isolation on two machines. A server-backed case measured against a
+    // default meant for pure unit tests is a load flake, not a signal.
+  }, { timeout: SERVER_BUDGET_MS });
 
   test("#2097: a confirmed entitled account survives two transient unsupported-model 400s in place", async () => {
     const model = "gpt-daybreak-blue-latest";
@@ -2957,11 +3241,29 @@ describe("server local API auth", () => {
     }
   }, { timeout: SERVER_BUDGET_MS });
 
+  // #2398 changed what the caller sees here, and this test had to move with it.
+  //
+  // The invariant this test exists for is unchanged and still asserted: an oversized 400
+  // must NOT authorize a pool retry, so exactly one account is dispatched and neither
+  // account is marked unhealthy. What changed is the body. Relaying 65 KiB of
+  // attacker-controlled bytes back to the client is precisely what #2398 stopped, so the
+  // caller now gets #452's bounded status-only JSON instead of the original prefix
+  // (pinned from the other side by "oversized passthrough errors become bounded
+  // status-only JSON" in tests/issue-452-empty-503.test.ts).
+  //
+  // The upstream's own headers still survive, which is what keeps pool-retry diagnostics
+  // honest — that part is still checked below.
   test("oversized 400 body never authorizes a pool retry", async () => {
-    const body = `${unsupportedModelBody()}${"x".repeat(65_536)}`;
+    const hostileSuffix = "x".repeat(65_536);
+    const body = `${unsupportedModelBody()}${hostileSuffix}`;
     const harness = await startPoolRetryHarness(() => rejectionResponse(body));
     try {
-      await expectOriginal400(await harness.request(), body);
+      const response = await harness.request();
+      expect(response.status).toBe(400);
+      const text = await response.text();
+      expect(text).not.toContain(hostileSuffix);
+      expect(text.length).toBeLessThan(1_024);
+
       expect(harness.dispatches).toEqual(["acct-pool-a"]);
       expect(getCodexUpstreamHealth("pool-a")).toBeNull();
       expect(getCodexUpstreamHealth("pool-b")).toBeNull();
@@ -3397,7 +3699,7 @@ describe("server local API auth", () => {
       await server.stop(true);
       await upstream.stop(true);
     }
-  });
+  }, { timeout: SERVER_BUDGET_MS });
 
   test("passthrough SSE cyber terminal is logged as 400 cyber_policy", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });

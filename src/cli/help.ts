@@ -5,7 +5,14 @@ import { findCommand } from "./registry";
 
 const repoRoot = dirname(fileURLToPath(new URL("../../package.json", import.meta.url)));
 
-function packageVersion(): string {
+/**
+ * Version of the `ocx` bundle this process is running from.
+ *
+ * Exported so `status`/`doctor` can compare it against the version the live proxy reports,
+ * which is how a stale `ocx` earlier on PATH becomes visible (#2701). Returns `"unknown"`
+ * rather than throwing; callers must treat that as "cannot compare", not as a mismatch.
+ */
+export function packageVersion(): string {
   const raw = readFileSync(join(repoRoot, "package.json"), "utf8");
   const parsed = JSON.parse(raw) as { version?: unknown };
   return typeof parsed.version === "string" ? parsed.version : "unknown";
@@ -24,8 +31,8 @@ Usage:
   ocx stop                    Stop the proxy AND restore native Codex (plain codex works again)
   ocx restore                 Restore native Codex without stopping (alias: eject)
   ocx restore back            Re-point codex at the running proxy (undo restore)
-  ocx recover-history --legacy-openai
-                               Explicitly recover pre-backup syncResumeHistory rows
+  ocx recover-history --legacy-openai --yes
+                               Force all user-message opencodex rows to OpenAI (legacy recovery)
   ocx uninstall               Remove service/shim/config and restore native Codex (alias: remove)
   ocx service [sub]           Run as a background service (default: install/update/start)
   ocx codex-shim <sub>        Auto-start proxy when \`codex\` launches (install|status|uninstall|remove)
@@ -48,17 +55,21 @@ Usage:
   ocx restart                  Stop and restart the proxy
   ocx v2 <sub>                multi_agent_v2 surface (status|on|off|mode|keep-native-v1|threads|mode-hint)
   ocx health [--json]          Check proxy health (exit 0=healthy, 1=not)
+  ocx capabilities [--json]    List declared capabilities and the API routes they drive
   ocx ready [--json] [--wait [--timeout <s>]]  Check post-sync readiness (exit 0 only when ready)
   ocx provider <sub>          Providers, connectivity, quota, and selected models
   ocx account <sub>           Accounts, login/reauth, key pools, and quota controls
   ocx models <sub>            Live/custom models, visibility, context, and shadow calls
-  ocx combo <sub>             Combo failover/round-robin routing
+  ocx alias <sub>             Short names for providers and models (list, set, rm, defaults)
+  ocx combo <sub>             Combo routing strategies and failover
   ocx agent <sub>             Subagents, injection, effort caps, and sidecars
   ocx observe <sub>           Logs, usage, storage, memory, and debug data
+  ocx inspect <sub>           Effective config, catalog, analytics, pacing, client-config
   ocx route <sub>             Routing features (combo, policy)
   ocx logs [filters]          Alias of ocx observe logs
-  ocx usage [--range <7d|30d|all>]  Alias of ocx observe usage
-  ocx storage [--json]        Alias of ocx observe storage
+  ocx usage [--range <today|1d|7d|30d|all>] [--provider <name>] [--model <id>]
+                              Token and estimated-cost report (alias of ocx observe usage)
+  ocx storage <sub>           Storage report, cleanup, trash, and the cleanup policy
   ocx memory [--json]         Alias of ocx observe memory
   ocx api-key <sub>           Alias of ocx access key
   ocx access <sub>            External API keys and endpoint information

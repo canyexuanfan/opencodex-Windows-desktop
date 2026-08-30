@@ -14,7 +14,7 @@ import type {
   OcxToolResultMessage,
   OcxUsage,
 } from "../types";
-import { isAllowedToolChoice, namespacedToolName, resolveToolChoiceWireName, toolAllowedByChoice } from "../types";
+import { isAllowedToolChoice, namespacedToolName, resolveToolChoiceWireName, toolChoiceToolPredicate } from "../types";
 import { ANTHROPIC_OAUTH_BETA, CLAUDE_CODE_SYSTEM_INSTRUCTION, applyClaudeToolPrefix, stripClaudeToolPrefix } from "../oauth/anthropic";
 import { parseDataUrl } from "./image";
 import { enforceAnthropicImageLimits } from "./anthropic-image-guard";
@@ -27,6 +27,8 @@ import { CLAUDE_CODE_HEADERS, claudeCodeSessionId } from "./client-fingerprint";
 import { buildNonOpenAIToolCatalogNudgeForTools } from "./tool-catalog-nudge";
 import { decodeServerSentEvents } from "../lib/sse-decoder";
 import { isTranslatorBudgetExceededError, retainTranslatedEventBatch, type TranslatorBudget } from "../lib/translator-budget";
+import { isReasoningEffortOmitted, modelRecordValue } from "../reasoning-effort";
+import { applyAgentRouterLanguageFraming, isAgentRouterEndpoint } from "./agentrouter";
 
 /** Map a user content part to an Anthropic content block (text or image source). */
 function toAnthropicContentPart(p: OcxContentPart): unknown {
@@ -36,6 +38,7 @@ function toAnthropicContentPart(p: OcxContentPart): unknown {
       ? { type: "image", source: { type: "base64", media_type: data.mediaType, data: data.base64 } }
       : { type: "image", source: { type: "url", url: p.imageUrl } };
   }
+  if (p.type === "video") return { type: "text", text: "[video]" };
   return { type: "text", text: p.text };
 }
 
@@ -264,6 +267,39 @@ export function formatAnthropicErrorBody(status: number, _headers: Headers, payl
   return redactSecretString(detail).slice(0, 400);
 }
 
+function isAnthropicRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function anthropicStructuralValueType(value: unknown): string {
+  if (value === null) return "null";
+  return Array.isArray(value) ? "array" : typeof value;
+}
+
+interface InvalidAnthropicShapeDiagnostic {
+  reason: "content_not_array" | "content_block_not_object";
+  blockIndex?: number;
+  valueType: string;
+}
+
+/**
+ * Structured refusal for a malformed buffered response body, shaped like the google adapter's
+ * `invalidGoogleShapeEvent` so an operator reading a log can tell which rung failed: the content
+ * container, or one block inside an otherwise well-formed container.
+ */
+function invalidAnthropicShapeEvent(
+  diagnostic: InvalidAnthropicShapeDiagnostic,
+): Extract<AdapterEvent, { type: "error" }> {
+  const at = diagnostic.blockIndex !== undefined ? `; blockIndex=${diagnostic.blockIndex}` : "";
+  const subject = diagnostic.reason === "content_not_array" ? "content" : "content block";
+  return {
+    type: "error",
+    message: `anthropic response contained invalid ${subject} (${diagnostic.reason}${at}; valueType=${diagnostic.valueType})`,
+    status: 502,
+    errorType: "upstream_error",
+  };
+}
+
 function extractAnthropicErrorDetail(parsed: unknown): string | undefined {
   if (typeof parsed === "string") return parsed.trim() || undefined;
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
@@ -469,10 +505,10 @@ function claudeFamilyVersion(modelId: string): { family: string; major: number; 
   // Find the segment that actually starts with `claude-`, rather than assuming it is either
   // the first (breaks `anthropic/claude-sonnet-5`) or the last (breaks `claude-sonnet-5/variant`,
   // where the slash carries a vendor suffix rather than a routing prefix).
-  const match = /(?:^|\/)claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?!\d)/.exec(modelId);
+  const match = /(?:^|\/)claude-([a-z]+)-(\d+)(?:[.-](\d{1,2}))?(?!\d)/i.exec(modelId);
   if (!match) return undefined;
   return {
-    family: match[1]!,
+    family: match[1]!.toLowerCase(),
     major: Number(match[2]),
     minor: match[3] === undefined ? 0 : Number(match[3]),
   };
@@ -516,6 +552,18 @@ function supportsExplicitThinkingDisable(modelId: string): boolean {
 /** `output_config.effort` accepts low|medium|high|xhigh|max — "minimal" is rejected with a 400. */
 function adaptiveEffort(effort: string): string {
   return effort === "minimal" ? "low" : effort;
+}
+
+function defaultReasoningEffort(provider: OcxProviderConfig, modelId: string): string | undefined {
+  const value = modelRecordValue(provider.modelDefaultReasoningEfforts, modelId);
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  // `__omit__` means "send no reasoning field", not "an effort literally named
+  // __omit__". Without this the sentinel reached the wire as
+  // `output_config.effort: "__omit__"` on adaptive models, and enabled budget
+  // thinking on the rest — the opposite of what it asks for (#2432).
+  if (!trimmed || isReasoningEffortOmitted(trimmed)) return undefined;
+  return trimmed;
 }
 
 function usageFromAnthropic(usage: Record<string, number> | undefined): OcxUsage | undefined {
@@ -600,57 +648,6 @@ function orphanToolResultText(msg: OcxToolResultMessage): string {
  * user content, so an Anthropic `system` string cannot reach it — the framing has to sit in the
  * first user turn.
  */
-const AGENTROUTER_LANGUAGE_PREAMBLE =
-  "[Instruction: Process the user request below and respond in the appropriate language.]";
-
-/**
- * Exact host match, not a substring.
- *
- * A `hostname.includes("agentrouter")` test also matches `notagentrouter.example` and
- * `agentrouter.org.attacker.example`, which would let an unrelated destination silently
- * receive an injected instruction block. A prompt mutation keyed on a provider's identity
- * must be keyed on that identity exactly.
- */
-function isAgentRouterEndpoint(baseUrl: string): boolean {
-  try {
-    const { hostname } = new URL(baseUrl);
-    return hostname === "agentrouter.org" || hostname.endsWith(".agentrouter.org");
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Prepend the framing as its OWN text block instead of splicing it into the user's string.
- *
- * The distinction matters: rewriting `content` to `${marker}\n\n${original}` edits what the
- * user wrote, and every downstream consumer — logs, retries, an upstream that echoes the turn —
- * then sees a sentence the user never typed as if they had. A separate leading block carries the
- * same signal to the filter while the original text survives byte-for-byte.
- *
- * Only the first user turn is framed, because only the first is what the gateway rejects.
- */
-function applyAgentRouterLanguageFraming(messages: unknown[]): void {
-  const firstUser = messages.find(
-    (m): m is { role: string; content: unknown } =>
-      typeof m === "object" && m !== null && (m as { role?: unknown }).role === "user",
-  );
-  if (!firstUser) return;
-  const preamble = { type: "text", text: AGENTROUTER_LANGUAGE_PREAMBLE };
-  if (typeof firstUser.content === "string") {
-    firstUser.content = firstUser.content === ""
-      ? [preamble]
-      : [preamble, { type: "text", text: firstUser.content }];
-    return;
-  }
-  if (!Array.isArray(firstUser.content)) return;
-  // Idempotence is keyed on the LEADING block being exactly the marker. A substring test would
-  // let a user who quotes the marker later in their own prompt suppress the framing entirely.
-  const [head] = firstUser.content as { type?: unknown; text?: unknown }[];
-  if (head?.type === "text" && head.text === AGENTROUTER_LANGUAGE_PREAMBLE) return;
-  (firstUser.content as unknown[]).unshift(preamble);
-}
-
 function messagesToAnthropicFormat(
   parsed: OcxParsedRequest,
   toolNames: { toWire: (name: string) => string },
@@ -796,11 +793,8 @@ function messagesToAnthropicFormat(
 
 function toolsToAnthropicFormat(parsed: OcxParsedRequest, toolNames: { toWire: (name: string) => string }): unknown[] | undefined {
   if (!parsed.context.tools || parsed.context.tools.length === 0) return undefined;
-  const allowed = isAllowedToolChoice(parsed.options.toolChoice)
-    ? new Set(parsed.options.toolChoice.allowedTools)
-    : undefined;
-  const tools = allowed
-    ? parsed.context.tools.filter(t => toolAllowedByChoice(t, allowed, parsed.context.tools))
+  const tools = isAllowedToolChoice(parsed.options.toolChoice)
+    ? parsed.context.tools.filter(toolChoiceToolPredicate(parsed.options.toolChoice, parsed.context.tools))
     : parsed.context.tools;
   if (tools.length === 0) return undefined;
   const converted = tools.map(t => ({
@@ -929,18 +923,20 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
       // anyway, and thinking shares the caller's `max_tokens` — which truncates a small-budget
       // request before it can emit its stop sequence (#545). Say "disabled" out loud where the
       // model both defaults to thinking and accepts being told not to.
-      if (parsed.options.reasoning === "none" && supportsExplicitThinkingDisable(parsed.modelId)) {
+      const effectiveReasoning = parsed.options.reasoning ?? defaultReasoningEffort(provider, parsed.modelId);
+      if (effectiveReasoning === "none" && supportsExplicitThinkingDisable(parsed.modelId)) {
         body.thinking = { type: "disabled" };
-      } else if (typeof parsed.options.reasoning === "string" && parsed.options.reasoning !== "none") {
+      } else if (typeof effectiveReasoning === "string" && effectiveReasoning !== "none") {
         if (usesAdaptiveThinking(parsed.modelId)) {
           // Adaptive-thinking models replace the token budget with an effort knob and reject
           // `thinking.type: "enabled"` outright. `max_tokens` still caps thinking plus visible
           // output, so high effort needs the same total-token headroom as budget thinking or a
           // default 8192-token request can spend everything on thought and return empty text.
           body.thinking = { type: "adaptive" };
-          body.output_config = { effort: adaptiveEffort(parsed.options.reasoning) };
+          const effort = adaptiveEffort(effectiveReasoning);
+          body.output_config = { effort };
           const explicitMaxOut = parsed.options.maxOutputTokens;
-          const wantBudget = reasoningBudget(parsed.options.reasoning);
+          const wantBudget = reasoningBudget(effort);
           const floor = wantBudget + OUTPUT_HEADROOM;
           // Preserve explicit caller limits as-is; for omitted limits use the adaptive ceiling
           // so effort=max (budget=32k) still leaves OUTPUT_HEADROOM tokens for visible output.
@@ -953,7 +949,7 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
           // 400s ("max_tokens must be greater than thinking.budget_tokens"). Size them so max_tokens
           // always exceeds the budget within a model-safe ceiling, reserving room for visible output.
           const maxOut = parsed.options.maxOutputTokens ?? DEFAULT_MAX_TOKENS;
-          const wantBudget = reasoningBudget(parsed.options.reasoning);
+          const wantBudget = reasoningBudget(effectiveReasoning);
           const maxTokens = Math.min(REASONING_MAX_TOKENS_CEILING, Math.max(maxOut, wantBudget + OUTPUT_HEADROOM));
           const budget = Math.max(MIN_THINKING_BUDGET, Math.min(wantBudget, maxTokens - OUTPUT_FLOOR));
           body.max_tokens = maxTokens;
@@ -1267,12 +1263,55 @@ export function createAnthropicAdapter(provider: OcxProviderConfig, cacheRetenti
     },
 
     async parseResponse(response: Response, budget: TranslatorBudget): Promise<AdapterEvent[]> {
-      const json = await response.json() as Record<string, unknown>;
+      const parsed: unknown = await response.json();
+      // `response.json()` resolves a body of `null` to `null` without throwing, so the cast below
+      // used to reach `json.content` on it — the #1219 defect at the buffered body root. The
+      // streaming parser has skipped a non-record frame since #1240, but a buffered body has no
+      // next frame to recover into, so this fails closed instead.
+      if (!isAnthropicRecord(parsed)) {
+        return [{
+          type: "error",
+          message: `anthropic response was not a JSON object (${anthropicStructuralValueType(parsed)})`,
+          status: 502,
+          errorType: "upstream_error",
+        }];
+      }
+      const json = parsed;
       const responseBytes = new TextEncoder().encode(JSON.stringify(json)).byteLength;
       budget.chargeRetained(responseBytes, { kind: "retained_collectors" });
       try {
       const events: AdapterEvent[] = [];
-      const content = json.content as { type: string; text?: string; id?: string; name?: string; input?: unknown; thinking?: string; reasoning?: string; signature?: string; data?: string }[] | undefined;
+      // Same retain-then-return tail every other terminal branch in this function uses; naming it
+      // keeps the two shape guards below from drifting out of step with the accounting.
+      const finishWithEvents = (batch: AdapterEvent[]): AdapterEvent[] => {
+        retainTranslatedEventBatch(batch, budget);
+        return batch;
+      };
+      const rawContent: unknown = json.content;
+      // `content` is claimed model output inside a well-formed response, so it is governed by the
+      // #1332 nested-shape rule (fail closed) rather than #1240's root-frame padding rule (skip).
+      // Absence stays legal in both encodings. A present non-array was silently accepted and is
+      // the dangerous case: a string is iterable, so `for (const block of "text")` walked it one
+      // CHARACTER at a time, read `undefined` from every `block.type`, and completed the turn as a
+      // successful empty response — the #2231 failure mode on a different adapter.
+      if (rawContent !== undefined && rawContent !== null && !Array.isArray(rawContent)) {
+        return finishWithEvents([invalidAnthropicShapeEvent({
+          reason: "content_not_array",
+          valueType: anthropicStructuralValueType(rawContent),
+        })]);
+      }
+      if (Array.isArray(rawContent)) {
+        for (let blockIndex = 0; blockIndex < rawContent.length; blockIndex++) {
+          if (!isAnthropicRecord(rawContent[blockIndex])) {
+            return finishWithEvents([invalidAnthropicShapeEvent({
+              reason: "content_block_not_object",
+              blockIndex,
+              valueType: anthropicStructuralValueType(rawContent[blockIndex]),
+            })]);
+          }
+        }
+      }
+      const content = rawContent as { type: string; text?: string; id?: string; name?: string; input?: unknown; thinking?: string; reasoning?: string; signature?: string; data?: string }[] | undefined;
       if (content) {
         for (const block of content) {
           if (block.type === "text" && block.text) {

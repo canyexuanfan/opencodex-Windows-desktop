@@ -36,7 +36,7 @@ import { ProviderOutboundPolicyError, providerOutboundGet, providerOutboundPost,
 import { fetchCursorUsableModels } from "../../adapters/cursor/live-models";
 import { parseAntigravityAvailableModels } from "../../providers/antigravity-models";
 import { enrichProviderFromCatalog, listKeyLoginProviders } from "../../oauth/key-providers";
-import { deriveProviderPresets } from "../../providers/derive";
+import { deriveProviderPresets, providerConfigSeed } from "../../providers/derive";
 import { effectiveGoogleMode, providerCodexAccountMode, providerMatchesRegistryTransport } from "../../providers/registry";
 import {
   extractModelEnvelopeRows,
@@ -54,6 +54,7 @@ import { clearThreadAccountMap } from "../../codex/routing";
 import { primeCodexPoolQuotas } from "../../codex/auth-api";
 import { clearModelCache, getProviderDiscoveryStatus } from "../../codex/model-cache";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../../providers/context-cap";
+import { modelAutoCompactTokenLimitsConfigError } from "../../providers/auto-compact-budget";
 import { resolveCodexHomeDir } from "../../codex/home";
 import { readUsageEntries } from "../../usage/log";
 import { getUsageDebugLogEntries } from "../../usage/debug";
@@ -76,6 +77,7 @@ import { estimateComboCost, estimateRequestCost, normalizeCostTokens, tokensPerS
 import type { PersistedUsageAttempt } from "../../usage/log";
 import { isAllowedRequestOrigin, jsonResponse, providerManagementConfigError, publicProviderBaseUrl, safeConfigDTO } from "../auth-cors";
 import { providerServiceTierConfigError } from "./provider-capability-config";
+import { providerEmptyToolOutputConfigError } from "../../config/provider-validation";
 import { applySystemEnvToggle } from "../system-env";
 import {
   LOCAL_PROVIDER_RELOAD_NAME_HEADER,
@@ -186,6 +188,17 @@ function applyProviderPatchFields(
     next.liveModels = rawBody.liveModels;
     touched = true;
   }
+  if (Object.hasOwn(rawBody, "annotateEmptyToolOutputs")) {
+    const value = rawBody.annotateEmptyToolOutputs;
+    if (value === null) {
+      delete next.annotateEmptyToolOutputs;
+    } else if (typeof value === "boolean") {
+      next.annotateEmptyToolOutputs = value;
+    } else {
+      return { error: "annotateEmptyToolOutputs must be a boolean or null" };
+    }
+    touched = true;
+  }
   if (Object.hasOwn(rawBody, "xaiResponsesOptIn")) {
     if (name !== "xai") return { error: "xaiResponsesOptIn is valid only for provider xai" };
     if (typeof rawBody.xaiResponsesOptIn !== "boolean") {
@@ -263,6 +276,29 @@ function applyProviderPatchFields(
       }
       if (Object.keys(windows).length > 0) next.modelContextWindows = windows;
       else delete next.modelContextWindows;
+    }
+    touched = true;
+  }
+  if (Object.hasOwn(rawBody, "modelAutoCompactTokenLimits")) {
+    const value = rawBody.modelAutoCompactTokenLimits;
+    const error = modelAutoCompactTokenLimitsConfigError(value, {
+      allowTombstones: true,
+      requireNativeIds: name === "openai",
+    });
+    if (error) return { error };
+    if (value === null) {
+      delete next.modelAutoCompactTokenLimits;
+    } else {
+      const budgets: Record<string, number> = Object.assign(
+        Object.create(null) as Record<string, number>,
+        next.modelAutoCompactTokenLimits ?? {},
+      );
+      for (const [model, budget] of Object.entries(value as Record<string, number | null>)) {
+        if (budget === null) delete budgets[model];
+        else budgets[model] = budget;
+      }
+      if (Object.keys(budgets).length > 0) next.modelAutoCompactTokenLimits = budgets;
+      else delete next.modelAutoCompactTokenLimits;
     }
     touched = true;
   }
@@ -369,6 +405,29 @@ function applyProviderPatchFields(
   return { next, touched, editorTouched, enablingOpenAi, headersTouched };
 }
 
+/** Validate the canonical OpenAI soft-budget overlay against a fresh registry seed. */
+function canonicalOpenAiBudgetPatchError(
+  provider: OcxProviderConfig,
+  rawBody: Record<string, unknown>,
+  keys: string[],
+  config: OcxConfig,
+): string | null {
+  if (!isCanonicalOpenAiForwardProvider(provider)) {
+    return "provider openai must be the canonical built-in provider";
+  }
+  const entry = getProviderRegistryEntry("openai");
+  if (!entry) return "provider openai registry seed is unavailable";
+  const seed = providerConfigSeed(entry);
+  if (provider.codexAccountMode !== undefined) seed.codexAccountMode = provider.codexAccountMode;
+  if (provider.modelAutoCompactTokenLimits !== undefined) {
+    seed.modelAutoCompactTokenLimits = { ...provider.modelAutoCompactTokenLimits };
+  }
+  const applied = applyProviderPatchFields("openai", seed, rawBody, keys, config);
+  if ("error" in applied) return applied.error;
+  return providerManagementConfigError("openai", applied.next)
+    ?? providerEmptyToolOutputConfigError("openai", applied.next);
+}
+
 export async function handleProviderRoutes(ctx: ManagementContext): Promise<Response | null> {
   const { req, url, config, deps, principal, convergeCodexCatalog, syncClaudeAgentDefsBestEffort } = ctx;
 
@@ -405,6 +464,7 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       models: p.models ?? [],
       contextWindow: p.contextWindow,
       modelContextWindows: p.modelContextWindows,
+      modelAutoCompactTokenLimits: p.modelAutoCompactTokenLimits,
       modelSupportsServiceTier: p.modelSupportsServiceTier,
       noStructuredOutputModels: p.noStructuredOutputModels,
       upstreamHttpVersion: p.upstreamHttpVersion,
@@ -437,7 +497,8 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       return jsonResponse({ error: "provider reload target unavailable" }, 404);
     }
     const provider = diskConfig.providers[name]!;
-    const providerError = providerManagementConfigError(name, provider);
+    const providerError = providerManagementConfigError(name, provider)
+      ?? providerEmptyToolOutputConfigError(name, provider);
     if (providerError) return jsonResponse({ error: "provider reload target invalid" }, 409);
     const namespaceCollision = codexAccountNamespaceProviderCollisionError(
       diskConfig.codexAccountNamespaces,
@@ -496,7 +557,8 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     let body: { name?: unknown; provider?: unknown; setDefault?: boolean };
     try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
     const name = typeof body.name === "string" ? body.name.trim() : "";
-    const providerError = providerManagementConfigError(name, body.provider);
+    const providerError = providerManagementConfigError(name, body.provider)
+      ?? providerEmptyToolOutputConfigError(name, body.provider);
     if (providerError) return jsonResponse({ error: providerError }, 400);
     const serviceTierError = providerServiceTierConfigError(name, body.provider);
     if (serviceTierError) return jsonResponse({ error: serviceTierError }, 400);
@@ -536,7 +598,13 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     // call can never fire.
     const submittedContextWindow = Object.hasOwn(prov, "contextWindow");
     const submittedModelContextWindows = Object.hasOwn(prov, "modelContextWindows");
+    const submittedModelAutoCompactTokenLimits = Object.hasOwn(prov, "modelAutoCompactTokenLimits");
     const submittedRequestPacing = Object.hasOwn(prov, "requestPacing");
+    // Same trap, one more field: DeepSeek carries a registry default of `true` for
+    // annotateEmptyToolOutputs, so enrichment cannot distinguish "the client omitted it"
+    // from "the registry supplied it" either. Without this sample, an unrelated edit that
+    // omits the key resurrects the registry default over an operator's explicit `false`.
+    const submittedAnnotateEmptyToolOutputs = Object.hasOwn(prov, "annotateEmptyToolOutputs");
     enrichProviderFromCatalog(name, prov);
     const { saveConfigPreservingClaudeCode: save } = await import("../../config");
     // Overwriting an existing provider must not drop its multi-key pool: carry it over, then
@@ -548,6 +616,12 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     // erase hand-edited per-model prices from Logs/Usage estimates.
     const existingCosts = config.providers[name]?.modelCosts;
     if (existingCosts && !prov.modelCosts) prov.modelCosts = existingCosts;
+    // And to the per-provider account-failover opt-out (#2568d). `ProviderPayload` has no
+    // member for it either, so an add/edit save structurally cannot carry it — and dropping it
+    // silently ENABLES rotation, because activation is presence-driven once the knob is gone.
+    // An overwrite must not spend a second subscription account's quota as a side effect.
+    const existingFailover = config.providers[name]?.oauthAccountFailover;
+    if (existingFailover && !prov.oauthAccountFailover) prov.oauthAccountFailover = existingFailover;
     // ...and to hand-edited context windows. `ProviderPayload` (gui/src/provider-payload.ts)
     // has no member for either field, so the add/edit form structurally cannot send them:
     // absence in the request means "not carried", never "the user deleted it". Deletion goes
@@ -559,6 +633,11 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     if (!submittedContextWindow && existing?.contextWindow !== undefined) {
       prov.contextWindow = existing.contextWindow;
     }
+    // `!== undefined` rather than a truthiness test: the whole point of this field is that
+    // an explicit `false` must survive, and `false` is falsy.
+    if (!submittedAnnotateEmptyToolOutputs && existing?.annotateEmptyToolOutputs !== undefined) {
+      prov.annotateEmptyToolOutputs = existing.annotateEmptyToolOutputs;
+    }
     if (existing?.modelContextWindows) {
       // When the client did send a map, its keys win and the user's other keys survive. When
       // it did not, the stored value is the user's map alone: merging the registry seed in
@@ -567,6 +646,11 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
       prov.modelContextWindows = submittedModelContextWindows
         ? { ...existing.modelContextWindows, ...(prov.modelContextWindows ?? {}) }
         : { ...existing.modelContextWindows };
+    }
+    if (existing?.modelAutoCompactTokenLimits) {
+      prov.modelAutoCompactTokenLimits = submittedModelAutoCompactTokenLimits
+        ? { ...existing.modelAutoCompactTokenLimits, ...(prov.modelAutoCompactTokenLimits ?? {}) }
+        : { ...existing.modelAutoCompactTokenLimits };
     }
     config.providers[name] = stripRegistryOnlyStaticHeaders(name, prov);
     if (body.setDefault === true) config.defaultProvider = name;
@@ -591,6 +675,9 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
     const keys = Object.keys(rawBody);
     const hasMode = Object.hasOwn(rawBody, "codexAccountMode");
     const hasSetDefault = Object.hasOwn(rawBody, "setDefault");
+    const canonicalBudgetOnly = name === "openai"
+      && keys.length === 1
+      && keys[0] === "modelAutoCompactTokenLimits";
 
     // codexAccountMode keeps its dedicated side-effect path (quota cache clear, thread map
     // clear, pool prime) and is mutually exclusive with every other patch field.
@@ -653,12 +740,17 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
 
     const pacingOnly = keys.every(key => key === "requestPacing");
     if (applied.editorTouched && !pacingOnly) {
-      const providerError = providerManagementConfigError(name, next);
+      const providerError = canonicalBudgetOnly
+        ? canonicalOpenAiBudgetPatchError(next, rawBody, keys, config)
+        : providerManagementConfigError(name, next)
+          ?? providerEmptyToolOutputConfigError(name, next);
       if (providerError) return jsonResponse({ error: providerError }, 400);
-      const serviceTierError = providerServiceTierConfigError(name, next);
-      if (serviceTierError) return jsonResponse({ error: serviceTierError }, 400);
-      const resolvedError = await providerDestinationResolvedError(name, next);
-      if (resolvedError) return jsonResponse({ error: resolvedError }, 400);
+      if (!canonicalBudgetOnly) {
+        const serviceTierError = providerServiceTierConfigError(name, next);
+        if (serviceTierError) return jsonResponse({ error: serviceTierError }, 400);
+        const resolvedError = await providerDestinationResolvedError(name, next);
+        if (resolvedError) return jsonResponse({ error: resolvedError }, 400);
+      }
     } else if (applied.enablingOpenAi) {
       // Same DNS gate as POST: Clash fake-IP only. Never honor a persisted
       // allowPrivateNetwork on this path — it must not bypass the built-in guard.
@@ -682,15 +774,20 @@ export async function handleProviderRoutes(ctx: ManagementContext): Promise<Resp
         return;
       }
       if (replay.editorTouched && !pacingOnly) {
-        const syncError = providerManagementConfigError(name, replay.next);
+        const syncError = canonicalBudgetOnly
+          ? canonicalOpenAiBudgetPatchError(replay.next, rawBody, keys, config)
+          : providerManagementConfigError(name, replay.next)
+            ?? providerEmptyToolOutputConfigError(name, replay.next);
         if (syncError) {
           replayError = syncError;
           return;
         }
-        const serviceTierError = providerServiceTierConfigError(name, replay.next);
-        if (serviceTierError) {
-          replayError = serviceTierError;
-          return;
+        if (!canonicalBudgetOnly) {
+          const serviceTierError = providerServiceTierConfigError(name, replay.next);
+          if (serviceTierError) {
+            replayError = serviceTierError;
+            return;
+          }
         }
       } else if (replay.enablingOpenAi && !isCanonicalOpenAiForwardProvider(replay.next)) {
         replayError = "provider openai must be the canonical built-in provider";

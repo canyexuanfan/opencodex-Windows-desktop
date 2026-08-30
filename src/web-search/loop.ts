@@ -13,7 +13,7 @@ import type { WebSearchBackendId } from "./index";
 import { clearableDeadline } from "../lib/abort";
 import { redactSecretString } from "../lib/redact";
 import { readBoundedResponseBody } from "../lib/bounded-body";
-import { fetchWithResetRetry, prepareSameTarget429Wait } from "../lib/upstream-retry";
+import { applyUpstreamRecoveryInit, fetchWithResetRetry, prepareSameTarget429Wait } from "../lib/upstream-retry";
 import { rateLimitRetryDelayMs } from "../providers/key-failover";
 import {
   isTranslatorBudgetExceededError,
@@ -304,10 +304,11 @@ export interface WebSearchLoopDeps {
   /** Called before each routed-model dispatch in the loop, for attempt telemetry. Same-target 429 replays pass the `rate-limit-429` recovery kind. */
   onAttemptSend?: (recovery?: AttemptRecoveryKind) => void;
   /**
-   * 429 key-failover hook: rotate the provider's active pool key and return a rebuilt adapter,
-   * or null when the pool is exhausted (same semantics as the normal routed path).
+   * 429 failover hook: rotate the provider's active credential and return a rebuilt adapter,
+   * or null when the pool is exhausted. Async hooks support OAuth refresh; existing synchronous
+   * key-pool hooks remain valid.
    */
-  on429?: (retryAfterHeader: string | null) => ProviderAdapter | null;
+  on429?: (retryAfterHeader: string | null) => ProviderAdapter | null | Promise<ProviderAdapter | null>;
   /** Opt-in same-target 429 policy (key-auth providers). When present, 429 replays on the SAME key before on429 rotation. */
   retryOn429Policy?: Required<RateLimitRetryPolicy> | null;
   /** Called only when the final bridged Responses stream reaches completed or incomplete. */
@@ -322,6 +323,7 @@ export interface WebSearchLoopDeps {
  */
 export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Response> {
   const translatorBudget = deps.incomingMeta.translatorBudget;
+  const routedProviderFetch = deps.incomingMeta.providerFetch ?? globalThis.fetch;
   const { parsed, selectedForwardHeaders, forwardProvider, hostedTool, settings, maxSearches, abortSignal, recordSidecarOutcome } = deps;
   const backend = deps.backend ?? "openai";
   const anthropicSidecar = deps.anthropicSidecar;
@@ -425,6 +427,7 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
           request = cachedRequest;
         } else {
           request = await requestAdapter.buildRequest(iterParsed, {
+            ...deps.incomingMeta,
             headers: selectedForwardHeaders,
             abortSignal: headerDeadline.signal,
             translatorBudget,
@@ -446,6 +449,7 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
               timeoutMs: connectTimeoutMs,
               returnRawErrors: true,
               stream: true,
+              executor: routedProviderFetch,
             });
           } else {
             response = await fetchWithResetRetry(
@@ -456,12 +460,17 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
                 deps.onAttemptSend?.(retryRecovery ?? recovery);
                 const h = new Headers(request.headers);
                 if (!h.has("accept-encoding")) h.set("accept-encoding", "identity");
-                return fetch(request.url, {
+                // A connection-reset replay must leave the half-closed pooled socket, not just
+                // ask politely: Bun has ignored a bare `Connection: close` (oven-sh/bun#20492),
+                // so the transport-level `keepalive: false` this helper adds is what actually
+                // opens a new connection. Spending `retryRecovery` on telemetry alone left every
+                // replay on this leg eligible for the same dead socket the reset came from.
+                return routedProviderFetch(request.url, applyUpstreamRecoveryInit({
                   method: request.method,
                   headers: h,
                   body: request.body,
                   signal: headerDeadline.signal,
-                });
+                }, retryRecovery));
               },
               { abortSignal: headerDeadline.signal, label: "web-search-loop" },
             );
@@ -509,7 +518,7 @@ export async function runWithWebSearch(deps: WebSearchLoopDeps): Promise<Respons
       // 429 key-failover parity with the normal routed path: rotate pool keys until one responds
       // or the pool is exhausted (deps.on429 returns null — cooldown map guarantees termination).
       while (prepared.response.status === 429 && deps.on429) {
-        const rotated = deps.on429(prepared.response.headers.get("retry-after"));
+        const rotated = await deps.on429(prepared.response.headers.get("retry-after"));
         if (!rotated) break;
         // Never let a broken body's cancel promise outlive the cumulative header deadline. Observe
         // it, but proceed immediately to the rotated fetch under the SAME deadline signal.

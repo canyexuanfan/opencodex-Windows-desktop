@@ -61,6 +61,57 @@ export function sessionIdHeaderFromRequest(headers: Headers): string | null {
   return headers.get("session_id") ?? headers.get("session-id");
 }
 
+/**
+ * Fixed-size logical turn lane (#820).
+ *
+ * A lane must be as SPECIFIC as the identity available, which is the opposite of what
+ * `codexPoolAffinityKey` wants. Affinity deliberately prefers the parent thread so a whole
+ * subagent fan-out pins to one account; a lane keyed that way would put every parallel
+ * subagent of one parent into a single lane and reject all but the first with 503 — the
+ * fan-out is the normal case, not an abuse.
+ *
+ * So the parent is a QUALIFIER, never the lane on its own when a child thread exists: the
+ * pair separates siblings while still keeping one conversation's overlapping turns together.
+ */
+export function sessionLaneIdFromRequest(headers: Headers): string | undefined {
+  const parent = normalizeLogConversationId(headers.get("x-codex-parent-thread-id"));
+  const thread = normalizeLogConversationId(headers.get("thread-id"));
+  const session = normalizeLogConversationId(sessionIdHeaderFromRequest(headers));
+  const specific = thread ?? session;
+  if (parent && specific) return `${parent}\u0000${specific}`;
+  return specific ?? parent;
+}
+
+function firstSanitizedConversationId(
+  ...values: Array<string | null | undefined>
+): string | undefined {
+  for (const value of values) {
+    const sanitized = sanitizeConversationIdInput(value);
+    if (sanitized) return sanitized;
+  }
+  return undefined;
+}
+
+/**
+ * Conversation namespace for reasoning replay. Unlike the persisted log id, this stays the raw
+ * sanitized identity so mixed headers that carry the same conversation still hit one serving
+ * record. Do not hash, and do not prefer session_id over a true per-conversation thread/Cursor
+ * identity: session_id can be synthesized from a shared prompt_cache_key.
+ */
+export function reasoningReplayConversationIdFromResponsesRequest(input: {
+  clientThreadId?: string;
+  threadIdHeader?: string | null;
+  cursorConversationId?: string;
+  sessionIdHeader?: string | null;
+}): string | undefined {
+  return firstSanitizedConversationId(
+    input.clientThreadId,
+    input.threadIdHeader,
+    input.cursorConversationId,
+    input.sessionIdHeader,
+  );
+}
+
 export function conversationIdFromResponsesRequest(input: {
   clientThreadId?: string;
   sessionIdHeader?: string | null;

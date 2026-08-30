@@ -15,6 +15,26 @@ export interface CursorRunRequest {
   requestedModelParameters?: readonly CursorRequestedModelParameter[];
   /** Cursor Router optimization parameter; valid only while modelId is the `default` wire model. */
   routingLevel?: CursorRoutingLevel;
+  /**
+   * Cursor Max Mode (ultra/big-context). Set from a synthetic `-1m` picker variant; the wire
+   * keeps the original model id and raises RequestedModel.maxMode + ModelDetails.maxMode
+   * (both fields — missing either can invalid_argument upstream). Devlog 260826 070.
+   */
+  maxMode?: boolean;
+  /**
+   * Bare API callers (no caller tools, no Codex thread identity) pay a ~10-15K input-token
+   * preamble because an absent AgentRunRequest.mcp_tools field makes Cursor inject its default
+   * native tool catalog. When true, an explicitly empty McpTools wrapper is serialized instead,
+   * suppressing that default. Codex-identified sessions keep the absent-field behavior.
+   */
+  suppressDefaultCursorToolCatalog?: boolean;
+  /**
+   * Corrective active-turn text for the single envelope-echo retry (devlog 260826 gap-10).
+   * When set on an external tool-result continuation, buildPreparedCursorRunRequest uses it as
+   * the userMessageAction text instead of the standard continuation text; rawMessages stay
+   * untouched so history replay is unchanged.
+   */
+  echoRetryContinuationText?: string;
   conversationId: string;
   system: string[];
   messages: CursorRequestMessage[];

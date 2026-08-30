@@ -1,6 +1,14 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  acquireTestRunLock,
+  resolveWrappedTestRunLockPath,
+  TEST_RUN_ID_ENV,
+  TEST_RUN_LOCK_PATH_ENV,
+  TEST_RUN_LOCK_TOKEN_ENV,
+} from "./test-run-lock";
 
 export interface IsolatedTestEnvironment {
   root: string;
@@ -59,105 +67,497 @@ export function createIsolatedTestEnvironment(
   };
 }
 
+function hasCliFlag(requested: string[], name: string): boolean {
+  const delimiterIndex = requested.indexOf("--");
+  const wrapperArgs = delimiterIndex === -1 ? requested : requested.slice(0, delimiterIndex);
+  return wrapperArgs.some(arg => arg === name || arg.startsWith(`${name}=`));
+}
+
+const DEFAULT_TEST_PARALLELISM = 4;
+
+// Bun 1.4.0 builds `bun test` options from its test, runtime, transpiler, and base tables.
+// Only required values consume the next argument. Optional values such as `--parallel=2`
+// must stay attached so a bare option cannot hide the positional filter that follows it.
+const BUN_TEST_OPTIONS_REQUIRING_VALUES = new Set([
+  // Test options.
+  "--timeout",
+  "--rerun-each",
+  "--retry",
+  "--seed",
+  "--coverage-reporter",
+  "--coverage-dir",
+  "-t",
+  "--test-name-pattern",
+  "--grep",
+  "--reporter",
+  "--reporter-outfile",
+  "--max-concurrency",
+  "--path-ignore-patterns",
+  "--parallel-delay",
+  "--shard",
+  "--timings",
+  // Runtime options accepted by `bun test`.
+  "--watch-kill-signal",
+  "-r",
+  "--preload",
+  "--require",
+  "--import",
+  "--cpu-prof-name",
+  "--cpu-prof-dir",
+  "--cpu-prof-interval",
+  "--heap-prof-name",
+  "--heap-prof-dir",
+  "--heap-prof-interval",
+  "--install",
+  "-e",
+  "--eval",
+  "-p",
+  "--print",
+  "--port",
+  "--origin",
+  "--conditions",
+  "--fetch-preconnect",
+  "--max-http-header-size",
+  "--dns-result-order",
+  "--redirect-warnings",
+  "--disable-warning",
+  "--title",
+  "--unhandled-rejections",
+  "--console-depth",
+  "--user-agent",
+  "--cron-title",
+  "--cron-period",
+  "--trace-event-categories",
+  "--trace-event-file-pattern",
+  "--stack-trace-limit",
+  // Transpiler and base options accepted by `bun test`.
+  "--main-fields",
+  "--extension-order",
+  "--tsconfig-override",
+  "-d",
+  "--define",
+  "--drop",
+  "--feature",
+  "-l",
+  "--loader",
+  "--jsx-factory",
+  "--jsx-fragment",
+  "--jsx-import-source",
+  "--jsx-runtime",
+  "--env-file",
+  "--cwd",
+  "-c",
+  "--config",
+]);
+
+export interface ChangedRunPreflight {
+  comparisonRef: string;
+  comparisonCommit: string;
+  changedFiles: string[];
+}
+
+const changedComparisonRefs = ["upstream/dev", "origin/dev", "dev"] as const;
+
+/** Choose the highest-priority conventional dev ref without assuming which remote is canonical. */
+export function selectChangedComparisonRef(refExists: (ref: string) => boolean): string | null {
+  return changedComparisonRefs.find(refExists) ?? null;
+}
+
+function decodeOutput(output: Uint8Array | undefined): string {
+  return output ? new TextDecoder().decode(output) : "";
+}
+
+function changedComparisonRef(requested: string[]): string | null {
+  const delimiterIndex = requested.indexOf("--");
+  const wrapperArgs = delimiterIndex === -1 ? requested : requested.slice(0, delimiterIndex);
+  const changedArg = wrapperArgs.find(arg => arg === "--changed" || arg.startsWith("--changed="));
+  if (!changedArg) return null;
+  if (changedArg === "--changed" || changedArg === "--changed=") {
+    throw new Error(
+      "[test] changed mode requires an explicit comparison ref; use --changed=<ref> so the selection can be validated.",
+    );
+  }
+  return changedArg.slice("--changed=".length);
+}
+
+function gitRefExists(
+  ref: string,
+  cwd: string,
+  env: Record<string, string | undefined>,
+): boolean {
+  const result = Bun.spawnSync(["git", "rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
+    cwd,
+    env,
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  return result.exitCode === 0;
+}
+
+function gitOutput(
+  args: string[],
+  cwd: string,
+  env: Record<string, string | undefined>,
+): string {
+  const result = Bun.spawnSync(["git", ...args], {
+    cwd,
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (result.exitCode !== 0) {
+    const detail = decodeOutput(result.stderr).trim() || `exit ${result.exitCode ?? "unknown"}`;
+    throw new Error(`[test] git ${args[0]} failed while validating changed mode: ${detail}`);
+  }
+  return decodeOutput(result.stdout);
+}
+
+/** Resolve changed mode and inventory the diff against that commit before invoking Bun. */
+export function inspectChangedRun(
+  requested: string[],
+  cwd: string = process.cwd(),
+  env: Record<string, string | undefined> = process.env,
+): ChangedRunPreflight | null {
+  const requestedComparisonRef = changedComparisonRef(requested);
+  if (!requestedComparisonRef) return null;
+  if (requestedComparisonRef.startsWith("-")) {
+    throw new Error(
+      `[test] --changed comparison ref ${JSON.stringify(requestedComparisonRef)} is invalid.`,
+    );
+  }
+
+  const comparisonRef = requestedComparisonRef === "dev"
+    ? selectChangedComparisonRef(ref => gitRefExists(ref, cwd, env))
+    : requestedComparisonRef;
+  if (!comparisonRef) {
+    throw new Error(
+      `[test] --changed=dev could not resolve a comparison ref; none of ${changedComparisonRefs.join(", ")} exists.`,
+    );
+  }
+
+  if (!gitRefExists(comparisonRef, cwd, env)) {
+    throw new Error(
+      `[test] --changed comparison ref ${JSON.stringify(comparisonRef)} does not resolve to a commit.`,
+    );
+  }
+
+  const comparisonCommit = gitOutput(["merge-base", "HEAD", comparisonRef], cwd, env).trim();
+  if (!comparisonCommit) {
+    throw new Error(
+      `[test] --changed comparison ref ${JSON.stringify(comparisonRef)} has no merge base with HEAD.`,
+    );
+  }
+
+  const diff = gitOutput(["diff", "--name-only", comparisonCommit, "--"], cwd, env);
+  const changedFiles = [...new Set(diff.split("\n").filter(Boolean))];
+  return { comparisonRef, comparisonCommit, changedFiles };
+}
+
+/** Refuse a successful changed-mode run when Bun silently selected no tests for a real diff. */
+export function changedSelectionFailure(
+  preflight: ChangedRunPreflight,
+  output: string,
+): string | null {
+  if (preflight.changedFiles.length === 0) return null;
+  const summary = output
+    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "")
+    .match(/Ran\s+(\d+)\s+tests?\s+across\s+(\d+)\s+files?\b/i);
+  if (!summary) {
+    return `[test] could not validate --changed=${preflight.comparisonCommit} (${preflight.comparisonRef} merge base): Bun did not emit a recognizable selection summary for a diff containing ${preflight.changedFiles.length} changed file(s).`;
+  }
+  if (Number(summary[1]) !== 0 || Number(summary[2]) !== 0) return null;
+  return `[test] --changed=${preflight.comparisonCommit} (${preflight.comparisonRef} merge base) selected 0 tests across 0 files, but the diff contains ${preflight.changedFiles.length} changed file(s). Bun follows only the parsed module graph; run the relevant focused tests for subprocess, read-as-data, or golden-file dependencies, or run the full suite.`;
+}
+
 /**
- * Other `bun test` runners already on this machine.
- *
- * Two full suites sharing one CPU do not fail — they crawl. A run that normally
- * finishes in about 210s took 26 minutes against a runner an earlier session had
- * left behind, and neither process said anything, so the slowdown read as a hang
- * in this suite. Bun's own timeouts cannot see the contention, so name it here.
- *
- * `pgrep` is absent on Windows and may exit non-zero for "no matches"; both cases
- * mean "nothing to warn about" rather than an error worth failing a test run over.
+ * True for a filter-less `bun run test`: no file arguments and no `--changed`.
+ * `--timeout` / `--dots` / `--parallel=N` still count as full.
  */
-function findCompetingTestRunners(selfPid: number): number[] {
+/** True for a filter-less `bun run test`. `--timeout` / `--dots` / `--parallel=N` still count. */
+function isFullSuiteRun(requested: string[]): boolean {
+  const delimiterIndex = requested.indexOf("--");
+  const wrapperArgs = delimiterIndex === -1 ? requested : requested.slice(0, delimiterIndex);
+  const passedThrough = delimiterIndex === -1 ? [] : requested.slice(delimiterIndex + 1);
+  if (passedThrough.length > 0) return false;
+  if (hasCliFlag(requested, "--changed")) return false;
+
+  for (let index = 0; index < wrapperArgs.length; index++) {
+    const arg = wrapperArgs[index];
+    if (arg === "-" || !arg.startsWith("-")) return false;
+    if (!arg.includes("=") && BUN_TEST_OPTIONS_REQUIRING_VALUES.has(arg)) index++;
+  }
+  return true;
+}
+
+/**
+ * Default `bun test` argv for this repo.
+ *
+ * `--isolate` keeps a fresh global per file. Bounded parallelism is what makes the suite
+ * finishable: with isolate alone Bun re-evaluates
+ * the module graph once per file on a single core, so past ~900 files the run stops looking slow
+ * and starts looking hung — measured here at 1 h 29 m with zero output, ~57 % CPU and 8.5 MB RSS,
+ * against a few minutes for the identical suite with four workers. Leaving Bun to select all ten
+ * workers made deadline-sensitive tests fail under load, so the repository default is deterministic.
+ * A caller-supplied `--parallel` or `--parallel=N` is left alone.
+ */
+export function resolveBunTestArgs(
+  requested: string[],
+  comparisonCommit?: string,
+): string[] {
+  const delimiterIndex = requested.indexOf("--");
+  const effectiveRequested = comparisonCommit
+    ? requested.map((arg, index) => (
+        (delimiterIndex === -1 || index < delimiterIndex)
+          && (arg === "--changed" || arg.startsWith("--changed="))
+          ? "--changed=" + comparisonCommit
+          : arg
+      ))
+    : requested;
+  const args = ["--isolate"];
+  if (!hasCliFlag(effectiveRequested, "--parallel")) {
+    args.push(`--parallel=${DEFAULT_TEST_PARALLELISM}`);
+  }
+  args.push(...effectiveRequested);
+  if (isFullSuiteRun(effectiveRequested)) args.push("./tests/");
+  return args;
+}
+
+export const SERIAL_FULL_SUITE_FILES = [
+  "codex-shim.test.ts",
+  "cursor-native-exec-shell.test.ts",
+  "issue-452-empty-503.test.ts",
+  "openai-provider-option-e2e.test.ts",
+  "release-helper.test.ts",
+  "update-stop-first.test.ts",
+] as const;
+
+const SERIAL_LANE_TIMEOUT_MS: Partial<Record<(typeof SERIAL_FULL_SUITE_FILES)[number], number>> = {
+  // This file intentionally exercises 33 complete release-script subprocess trees.
+  // It is ~90s on an idle machine and measured at ~170s under unrelated host load.
+  "release-helper.test.ts": 5 * 60 * 1000,
+};
+
+export interface BunTestLane {
+  label: string;
+  args: string[];
+  timeoutMs: number;
+}
+
+function withoutParallelOverride(requested: string[]): string[] {
+  return requested.filter(arg => arg !== "--parallel" && !arg.startsWith("--parallel="));
+}
+
+function canUseSerialLanes(requested: string[]): boolean {
+  if (!isFullSuiteRun(requested)) return false;
+  return !["--changed", "--shard", "--reporter-outfile", "--update-timings"].some(flag => hasCliFlag(requested, flag));
+}
+
+/** Build the default full-suite plan: one bounded main lane plus isolated risky files. */
+export function resolveBunTestPlan(requested: string[], comparisonCommit?: string): BunTestLane[] {
+  if (!canUseSerialLanes(requested)) {
+    return [{ label: "suite", args: resolveBunTestArgs(requested, comparisonCommit), timeoutMs: 15 * 60 * 1000 }];
+  }
+
+  const mainArgs = resolveBunTestArgs(requested, comparisonCommit);
+  const rootIndex = mainArgs.lastIndexOf("./tests/");
+  const ignores = SERIAL_FULL_SUITE_FILES.flatMap(file => ["--path-ignore-patterns", `**/${file}`]);
+  mainArgs.splice(rootIndex === -1 ? mainArgs.length : rootIndex, 0, ...ignores);
+  const serialRequested = withoutParallelOverride(requested);
+  return [
+    { label: "parallel suite", args: mainArgs, timeoutMs: 15 * 60 * 1000 },
+    ...SERIAL_FULL_SUITE_FILES.map(file => ({
+      label: file,
+      args: resolveBunTestArgs(["--parallel=1", ...serialRequested, `./tests/${file}`]),
+      timeoutMs: SERIAL_LANE_TIMEOUT_MS[file] ?? 3 * 60 * 1000,
+    })),
+  ];
+}
+
+function waitWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(null), timeoutMs);
+    promise.then(
+      value => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      error => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function runTestLane(
+  lane: BunTestLane,
+  runId: string,
+  inheritedLock: { lockPath: string; ownerToken: string } | undefined,
+  capture = false,
+): Promise<{ exitCode: number; output: string }> {
+  const isolated = createIsolatedTestEnvironment({
+    ...process.env,
+    [TEST_RUN_ID_ENV]: runId,
+    [TEST_RUN_LOCK_PATH_ENV]: inheritedLock?.lockPath,
+    [TEST_RUN_LOCK_TOKEN_ENV]: inheritedLock?.ownerToken,
+  });
+  const startedAt = Date.now();
+  let interrupted: NodeJS.Signals | null = null;
+  const child = Bun.spawn([process.execPath, "test", ...lane.args], {
+    env: isolated.env,
+    stdin: "inherit",
+    stdout: capture ? "pipe" : "inherit",
+    stderr: capture ? "pipe" : "inherit",
+  });
+  const stdoutP = capture ? new Response(child.stdout).text() : Promise.resolve("");
+  const stderrP = capture ? new Response(child.stderr).text() : Promise.resolve("");
+  const forward = (signal: NodeJS.Signals) => {
+    interrupted = signal;
+    try { child.kill(signal); } catch { /* child already exited */ }
+  };
+  const onInterrupt = () => forward("SIGINT");
+  const onTerminate = () => forward("SIGTERM");
+  process.once("SIGINT", onInterrupt);
+  process.once("SIGTERM", onTerminate);
+
+  const exited = child.exited;
   try {
-    const found = Bun.spawnSync(["pgrep", "-f", "bun.*test --isolate"], {
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    if (!found.success) return [];
-    return new TextDecoder().decode(found.stdout)
-      .split("\n")
-      .map(line => Number.parseInt(line.trim(), 10))
-      .filter(pid => Number.isInteger(pid) && pid > 0 && pid !== selfPid);
-  } catch {
-    return [];
+    const exitCode = await waitWithTimeout(exited, lane.timeoutMs);
+    if (exitCode === null) {
+      console.error(`[test] ${lane.label} exceeded ${Math.round(lane.timeoutMs / 1000)}s; terminating pid ${child.pid}.`);
+      try { child.kill("SIGTERM"); } catch { /* child already exited */ }
+      const graceful = await waitWithTimeout(exited, 5_000);
+      if (graceful === null) {
+        try { child.kill("SIGKILL"); } catch { /* child already exited */ }
+        await waitWithTimeout(exited, 2_000);
+      }
+      return { exitCode: 124, output: "" };
+    }
+    const [stdout, stderr] = await Promise.all([stdoutP, stderrP]);
+    if (stdout) process.stdout.write(stdout);
+    if (stderr) process.stderr.write(stderr);
+    const output = stdout + "\n" + stderr;
+    if (interrupted === "SIGINT") return { exitCode: 130, output };
+    if (interrupted === "SIGTERM") return { exitCode: 143, output };
+    const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+    console.warn(`[test] ${lane.label} finished in ${seconds}s (exit ${exitCode}).`);
+    return { exitCode, output };
+  } finally {
+    process.off("SIGINT", onInterrupt);
+    process.off("SIGTERM", onTerminate);
+    isolated.cleanup();
   }
 }
 
 /**
- * Wait until this machine has no other full-suite runner, then proceed.
+ * `gui` is not a workspace of the root package and declares React only in `gui/package.json`, so a
+ * root `bun install` never creates `gui/node_modules`. Twenty-five files under `tests/` import
+ * modules from `gui/src`, which makes those tests fail on a fresh clone or worktree with
+ * `Cannot find package 'react'` — reported as an "Unhandled error between tests" that names no
+ * test, so the cause is not obvious from the output.
  *
- * Warning about contention was not enough: the warning scrolls past, the run still
- * starts, and four concurrent suites drove load average to 10 and turned a ~210s
- * suite into a 13-minute one that read as a hang. Agents in parallel worktrees each
- * think they are the only runner, so the serialization has to live here rather than
- * in anyone's discipline.
- *
- * Queue rather than refuse: a failed `bun run test` invites `bun test` directly,
- * which bypasses this file entirely. Waiting is the behavior that survives being
- * worked around. `OCX_TEST_NO_QUEUE=1` opts out for anyone who really wants overlap.
+ * `.github/workflows/ci.yml` already installs them explicitly for exactly this reason; the local
+ * runner had no equivalent. Install on demand rather than fail, because the tests genuinely
+ * require the dependency and `gui/node_modules` is a gitignored build artifact, not source.
  */
-async function waitForExclusiveRun(selfPid: number): Promise<void> {
-  if (process.env.OCX_TEST_NO_QUEUE === "1") return;
-  const pollMs = 5_000;
-  // Long enough for a full suite plus slack; past this, assume the holder is wedged
-  // rather than working and let this run start anyway.
-  const maxWaitMs = 45 * 60 * 1000;
-  const startedAt = Date.now();
-  let announced = false;
-  for (;;) {
-    const competing = findCompetingTestRunners(selfPid);
-    if (competing.length === 0) {
-      if (announced) {
-        console.warn(`[test] the other runner(s) finished after ${Math.round((Date.now() - startedAt) / 1000)}s; starting.`);
-      }
-      return;
-    }
-    if (Date.now() - startedAt > maxWaitMs) {
-      console.warn(
-        `[test] still waiting on pid ${competing.join(", ")} after ${Math.round(maxWaitMs / 60000)} minutes. `
-        + "Assuming they are stuck and starting anyway; expect a slow run.",
-      );
-      return;
-    }
-    if (!announced) {
-      announced = true;
-      console.warn(
-        `[test] ${competing.length} other bun test runner(s) already running (pid ${competing.join(", ")}). `
-        + "Waiting for them to finish so the suites do not fight over the CPU. "
-        + "Set OCX_TEST_NO_QUEUE=1 to run concurrently anyway.",
-      );
-    }
-    await Bun.sleep(pollMs);
-  }
+export function ensureGuiDependencies(io: {
+  cwd?: string;
+  exists?: (path: string) => boolean;
+  install?: (guiDir: string) => { ok: boolean; detail: string };
+  log?: (message: string) => void;
+} = {}): { kind: "present" | "installed" | "absent" | "failed"; detail?: string } {
+  const cwd = io.cwd ?? process.cwd();
+  const exists = io.exists ?? existsSync;
+  const log = io.log ?? (message => console.warn(message));
+  const guiDir = join(cwd, "gui");
+  if (!exists(join(guiDir, "package.json"))) return { kind: "absent" };
+  if (exists(join(guiDir, "node_modules", "react", "package.json"))) return { kind: "present" };
+
+  log("[test] gui dependencies are missing or incomplete; installing them so tests importing gui/src can resolve React.");
+  const install = io.install ?? ((dir: string) => {
+    const result = Bun.spawnSync(["bun", "install", "--frozen-lockfile"], {
+      cwd: dir,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    return {
+      ok: result.exitCode === 0,
+      detail: decodeOutput(result.stderr) || decodeOutput(result.stdout),
+    };
+  });
+  const outcome = install(guiDir);
+  if (outcome.ok) return { kind: "installed" };
+  return { kind: "failed", detail: outcome.detail };
 }
 
 if (import.meta.main) {
-  const isolated = createIsolatedTestEnvironment();
-  try {
-    const requestedTests = process.argv.slice(2);
-    await waitForExclusiveRun(process.pid);
-    const startedAt = Date.now();
-    const child = Bun.spawnSync(
-      [process.execPath, "test", "--isolate", ...(requestedTests.length > 0 ? requestedTests : ["./tests/"])],
-      {
-        env: isolated.env,
-        stdin: "inherit",
-        stdout: "inherit",
-        stderr: "inherit",
-      },
+  const requestedTests = process.argv.slice(2);
+  const guiDependencies = ensureGuiDependencies();
+  if (guiDependencies.kind === "failed") {
+    console.error(
+      "[test] could not install gui/node_modules, which tests importing gui/src need to resolve React.\n"
+      + "       Run it manually: cd gui && bun install --frozen-lockfile\n"
+      + (guiDependencies.detail ? `       ${guiDependencies.detail.trim().split("\n").slice(-3).join("\n       ")}` : ""),
     );
-    const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
-    if (requestedTests.length === 0 && elapsedSeconds > 600) {
+    process.exitCode = 1;
+  }
+  let changedRun: ReturnType<typeof inspectChangedRun> = null;
+  if (process.exitCode !== 1) {
+    try {
+      changedRun = inspectChangedRun(requestedTests);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  }
+  if (process.exitCode !== 1) {
+    if (changedRun) {
       console.warn(
-        `[test] the suite took ${elapsedSeconds}s; it normally runs in about 210s on an idle machine. `
-        + "Check for another test runner, a busy CPU, or a test that started polling something real.",
+        `[test] changed mode comparison ref: ${changedRun.comparisonRef}; merge base: ${changedRun.comparisonCommit}`,
       );
     }
-    process.exitCode = child.exitCode ?? 1;
-  } finally {
-    isolated.cleanup();
+    const runId = randomUUID();
+    const lockPath = resolveWrappedTestRunLockPath({ env: process.env });
+    const lock = await acquireTestRunLock({
+      runId,
+      lockPath,
+      validatedRuntimePath: lockPath !== undefined,
+      onWait: owner => console.warn(
+        `[test] another Bun test run${owner ? ` (pid ${owner.pid})` : ""} holds the user lock; waiting. `
+        + "Set OCX_TEST_NO_QUEUE=1 only for intentional overlap.",
+      ),
+      onAcquiredAfterWait: elapsedMs => console.warn(`[test] acquired the user lock after ${Math.round(elapsedMs / 1000)}s.`),
+    });
+    const startedAt = Date.now();
+    try {
+      const inheritedLock = process.platform === "win32" && lockPath && lock.owner
+        ? { lockPath, ownerToken: lock.owner.token }
+        : undefined;
+      let exitCode = 0;
+      let captured = "";
+      for (const lane of resolveBunTestPlan(requestedTests, changedRun?.comparisonCommit)) {
+        const result = await runTestLane(lane, runId, inheritedLock, Boolean(changedRun));
+        captured += result.output;
+        if (result.exitCode !== 0 && exitCode === 0) exitCode = result.exitCode;
+        if ([124, 130, 143].includes(result.exitCode)) break;
+      }
+      if (exitCode === 0 && changedRun) {
+        const selectionFailure = changedSelectionFailure(changedRun, captured);
+        if (selectionFailure) {
+          console.error(selectionFailure);
+          exitCode = 1;
+        }
+      }
+      const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
+      if (isFullSuiteRun(requestedTests) && elapsedSeconds > 600) {
+        console.warn(
+          `[test] the suite took ${elapsedSeconds}s; with --parallel=${DEFAULT_TEST_PARALLELISM} it should finish in a few minutes on an idle machine. `
+          + "Check for another test runner, a busy CPU, or a test that started polling something real.",
+        );
+      }
+      process.exitCode = exitCode;
+    } finally {
+      lock.release();
+    }
   }
 }

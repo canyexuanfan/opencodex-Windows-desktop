@@ -7,8 +7,18 @@ import type {
   OcxUsage,
 } from "./types";
 import { coerceIntegerToolArguments } from "./lib/tool-argument-integers";
-import { adapterFailureFromMessage, classifyError, CYBER_POLICY_ERROR_CODE, isCyberPolicyCode, type OcxErrorPayload } from "./lib/errors";
+import {
+  adapterFailureFromMessage,
+  classifyError,
+  cyberPolicyErrorType,
+  CYBER_POLICY_ERROR_CODE,
+  isCyberPolicyCode,
+  type OcxErrorPayload,
+} from "./lib/errors";
+import { redactSecretString } from "./lib/redact";
+import { repairFreeformToolInput } from "./responses/apply-patch-envelope";
 import { encodeCompactionSummary } from "./responses/compaction";
+import { compileCodeModeHelperInput } from "./responses/code-mode-helper-compat";
 import { isTruncatedStopReason, truncationReasonFor } from "./responses/truncated-stop-reason";
 import { encodeReasoningEnvelope, type ReasoningEnvelope } from "./responses/reasoning-envelope";
 import { rememberReasoningForCall } from "./responses/reasoning-replay-cache";
@@ -18,6 +28,7 @@ import {
   awaitThoughtSignatureDurability,
 } from "./responses/thought-signature-replay";
 import { resolveStallTimeoutSec } from "./stall-timeout";
+import { normalizeDeclaredToolName } from "./types";
 import { usageDisplayTotalTokens } from "./usage/totals";
 import { appendSafeWebSearchSource, safeWebSearchSources } from "./web-search/sources";
 import {
@@ -112,18 +123,19 @@ function toolCallArgumentsUsable(args: string): boolean {
 }
 
 function adapterFailureFromEvent(event: Extract<AdapterEvent, { type: "error" }>): { httpStatus: number; error: OcxErrorPayload } {
+  const message = redactSecretString(event.message);
   if (event.status === undefined && event.errorType === undefined && event.code === undefined) {
-    return adapterFailureFromMessage(event.message);
+    return adapterFailureFromMessage(message);
   }
-  const fallback = adapterFailureFromMessage(event.message);
+  const fallback = adapterFailureFromMessage(message);
   let httpStatus = event.status ?? fallback.httpStatus;
-  const error = classifyError(httpStatus, event.errorType ?? fallback.error.type, event.message);
+  const error = classifyError(httpStatus, event.errorType ?? fallback.error.type, message);
   if (event.errorType !== undefined) error.type = event.errorType;
   if (event.code !== undefined) error.code = event.code;
   // Codex maps cyber_policy on HTTP 400 (body) or mid-stream code; never leave it as 502.
   if (isCyberPolicyCode(error.code) || isCyberPolicyCode(event.code)) {
     error.code = CYBER_POLICY_ERROR_CODE;
-    error.type = "invalid_request_error";
+    error.type = cyberPolicyErrorType(event.errorType);
     httpStatus = 400;
   }
   return { httpStatus, error };
@@ -230,12 +242,17 @@ export function bridgeToResponsesSSE(
   const replayCacheScope = options?.replayCacheScope;
   const setBeatInterval = options?.timers?.setInterval ?? ((handler: () => void, ms: number) => setInterval(handler, ms));
   const clearBeatInterval = options?.timers?.clearInterval ?? ((id: unknown) => clearInterval(id as ReturnType<typeof setInterval>));
-  // Freeform/custom tools (apply_patch) carry their body in `input`; the model is given a
-  // function with `{input:string}`, so unwrap it here when relaying back as a custom_tool_call.
-  const freeformInput = (args: string): string => {
-    try { const o = JSON.parse(args); if (o && typeof o.input === "string") return o.input; } catch { /* raw */ }
-    return args;
-  };
+  // Freeform/custom tools (apply_patch, code-mode exec) carry their body in `input`; the
+  // model is given a function with `{input:string}`, so unwrap it here when relaying back
+  // as a custom_tool_call. Decorated apply_patch envelopes are repaired at this boundary.
+  const freeformInput = (
+    args: string,
+    toolName: string,
+    namespace?: string,
+    codeModeHelperName?: string,
+  ): string => codeModeHelperName
+    ? compileCodeModeHelperInput(args, codeModeHelperName)
+    : repairFreeformToolInput(args, toolName, namespace);
   // Best-effort unwrap of a PARTIAL freeform arg buffer for live input streaming
   // (`response.custom_tool_call_input.delta` — codex-rs uses it for UI preview only;
   // the completed custom_tool_call item stays authoritative). Compact `{"input":"...`
@@ -519,7 +536,7 @@ export function bridgeToResponsesSSE(
       // synthetic compaction item's payload on done.
       let compactionText = "";
       let compactionTextBytes = 0;
-      let currentToolCall: { itemId: string; outputIndex: number; callId: string; name: string; args: string; argsBytes: number; namespace?: string; freeform?: boolean; toolSearch?: boolean; inputEmitted?: string; providerMetadata?: OcxProviderOpaqueToolCallMetadata } | null = null;
+      let currentToolCall: { itemId: string; outputIndex: number; callId: string; name: string; args: string; argsBytes: number; namespace?: string; freeform?: boolean; toolSearch?: boolean; inputEmitted?: string; codeModeHelperName?: string; providerMetadata?: OcxProviderOpaqueToolCallMetadata } | null = null;
       // Open native web-search cell (between begin and end). Holds the output index allocated on
       // begin so the matching done reuses it; closed as `failed` if the stream terminates early.
       let currentWebSearch: { itemId: string; eventId: string; outputIndex: number } | null = null;
@@ -626,6 +643,7 @@ export function bridgeToResponsesSSE(
         const argsStr = coerceIntegerToolArguments(
           currentToolCall.args || "{}",
           options?.toolParameterSchemas?.get(currentToolCall.name),
+          currentToolCall.namespace === undefined ? currentToolCall.name : undefined,
         );
         // Finalize streamed function-call arguments so Codex commits the call (incl. MCP / computer_use).
         if (!currentToolCall.freeform && !currentToolCall.toolSearch) {
@@ -636,7 +654,8 @@ export function bridgeToResponsesSSE(
         if (currentToolCall.freeform) {
           emit("response.custom_tool_call_input.done", {
             item_id: currentToolCall.itemId, output_index: currentToolCall.outputIndex,
-            input: freeformInput(currentToolCall.args),
+            ...(currentToolCall.namespace ? { namespace: currentToolCall.namespace } : {}),
+            input: freeformInput(currentToolCall.args, currentToolCall.name, currentToolCall.namespace, currentToolCall.codeModeHelperName),
           });
         }
         // Freeform tools serialize as custom_tool_call without extra_content; remember the
@@ -652,7 +671,8 @@ export function bridgeToResponsesSSE(
           ? {
               type: "custom_tool_call", id: currentToolCall.itemId,
               call_id: currentToolCall.callId, name: currentToolCall.name,
-              input: freeformInput(currentToolCall.args), status: "completed",
+              ...(currentToolCall.namespace ? { namespace: currentToolCall.namespace } : {}),
+              input: freeformInput(currentToolCall.args, currentToolCall.name, currentToolCall.namespace, currentToolCall.codeModeHelperName), status: "completed",
             }
           : {
               type: "function_call", id: currentToolCall.itemId,
@@ -691,7 +711,8 @@ export function bridgeToResponsesSSE(
           ? {
               type: "custom_tool_call", id: currentToolCall.itemId,
               call_id: currentToolCall.callId, name: currentToolCall.name,
-              input: freeformInput(currentToolCall.args), status: "incomplete",
+              ...(currentToolCall.namespace ? { namespace: currentToolCall.namespace } : {}),
+              input: freeformInput(currentToolCall.args, currentToolCall.name, currentToolCall.namespace, currentToolCall.codeModeHelperName), status: "incomplete",
             }
           : {
               type: "function_call", id: currentToolCall.itemId,
@@ -1036,13 +1057,17 @@ export function bridgeToResponsesSSE(
                 rememberReasoningForCall(event.id, rawReasoningForNextToolCall, replayCacheScope);
               }
               if (currentToolCall) closeCurrentToolCall();
-              const mapped = toolNsMap?.get(event.name);
-              const realName = mapped?.name ?? event.name;
-              if (options?.declaredToolNames && !options.declaredToolNames.has(event.name)) {
+              const effectiveName = normalizeDeclaredToolName(event.name, options?.declaredToolNames);
+              const codeModeHelperName = effectiveName === "exec" && event.name !== effectiveName
+                ? event.name
+                : undefined;
+              const mapped = toolNsMap?.get(effectiveName);
+              const realName = mapped?.name ?? effectiveName;
+              if (options?.declaredToolNames && !options.declaredToolNames.has(effectiveName)) {
                 const failure = responseError(
                   502,
                   "upstream_error",
-                  `routed provider emitted undeclared client tool "${event.name}"; only request-declared tools may be called`,
+                  `routed provider emitted undeclared client tool "${effectiveName}"; only request-declared tools may be called`,
                 );
                 emit("response.failed", {
                   response: {
@@ -1064,10 +1089,10 @@ export function bridgeToResponsesSSE(
               const item = toolSearch
                 ? { type: "tool_search_call", id: itemId, call_id: event.id, execution: "client", arguments: {}, status: "in_progress" }
                 : freeform
-                ? { type: "custom_tool_call", id: itemId, call_id: event.id, name: realName, input: "", status: "in_progress" }
+                ? { type: "custom_tool_call", id: itemId, call_id: event.id, name: realName, ...(ns ? { namespace: ns } : {}), input: "", status: "in_progress" }
                 : { type: "function_call", id: itemId, call_id: event.id, name: realName, arguments: "", status: "in_progress", ...(ns ? { namespace: ns } : {}) };
               emit("response.output_item.added", { output_index: outputIndex, item });
-              currentToolCall = { itemId, outputIndex, callId: event.id, name: realName, args: "", argsBytes: 0, namespace: ns, freeform, toolSearch, providerMetadata: event.providerMetadata };
+              currentToolCall = { itemId, outputIndex, callId: event.id, name: realName, args: "", argsBytes: 0, namespace: ns, freeform, toolSearch, codeModeHelperName, providerMetadata: event.providerMetadata };
               budget?.openCall(event.id);
               break;
             }
@@ -1086,7 +1111,7 @@ export function bridgeToResponsesSSE(
                     delta: event.arguments,
                   });
                 }
-                if (currentToolCall.freeform) {
+                if (currentToolCall.freeform && !currentToolCall.codeModeHelperName) {
                   // Hold while the buffer is still an ambiguous prefix of the JSON wrapper,
                   // then stream only the unwrapped input suffix (never rewind on mode flips).
                   if (!FREEFORM_WRAP_PREFIX.startsWith(currentToolCall.args)) {
@@ -1289,7 +1314,9 @@ export function bridgeToResponsesSSE(
                   ...(event.usage ? { usage: responsesUsage(event.usage) } : {}),
                   error: failure.error,
                   last_error: failure.error,
-                  ...(event.retryable !== undefined ? { retryable: event.retryable } : {}),
+                  ...(isCyberPolicyCode(failure.error.code)
+                    ? { retryable: false }
+                    : event.retryable !== undefined ? { retryable: event.retryable } : {}),
                 },
               });
               reportTerminal("failed");
@@ -1313,11 +1340,17 @@ export function bridgeToResponsesSSE(
           if (currentToolCall) failCurrentToolCall();
           if (currentWebSearch) closeCurrentWebSearch("failed", []);
           releasePendingWebSources();
+          const failure = responseError(
+            500,
+            "proxy_error",
+            redactSecretString(err instanceof Error ? err.message : String(err)),
+          );
           emit("response.failed", {
             response: {
               ...responseSnapshot("failed", finishedItems),
-              error: responseError(500, "proxy_error", err instanceof Error ? err.message : String(err)),
-              last_error: responseError(500, "proxy_error", err instanceof Error ? err.message : String(err)),
+              error: failure,
+              last_error: failure,
+              ...(isCyberPolicyCode(failure.code) ? { retryable: false } : {}),
             },
           });
           reportTerminal("failed");
@@ -1370,6 +1403,8 @@ export function bridgeToResponsesSSE(
 
       const startStream = () => {
         emit("response.created", { response: responseSnapshot("in_progress", []) });
+        // Responses spec parity: clients expect an explicit in_progress frame after created.
+        emit("response.in_progress", { response: responseSnapshot("in_progress", []) });
         // The default ReadableStream strategy has HWM=1. Once one event's frames fill that
         // queue, pull stepping pauses; no custom FIFO or queuing strategy is layered on top.
         gated = true;
@@ -1561,16 +1596,21 @@ function buildResponseJSONWithBudget(
   let batchKiroRedactedBytes = 0;
   let currentToolCallId = "";
   let currentToolCallName = "";
+  let currentToolCallCodeModeHelperName: string | undefined;
   let currentToolCallArgs = "";
   let currentToolCallProviderMetadata: OcxProviderOpaqueToolCallMetadata | undefined;
   let currentToolCallArgsBytes = 0;
   // Web-search citations awaiting the next assistant message (attached as url_citation annotations).
   let pendingWebSources: { url: string; title?: string }[] = [];
 
-  const freeformInput = (args: string): string => {
-    try { const o = JSON.parse(args); if (o && typeof o.input === "string") return o.input; } catch { /* raw */ }
-    return args;
-  };
+  const freeformInput = (
+    args: string,
+    toolName: string,
+    namespace?: string,
+    codeModeHelperName?: string,
+  ): string => codeModeHelperName
+    ? compileCodeModeHelperInput(args, codeModeHelperName)
+    : repairFreeformToolInput(args, toolName, namespace);
   const parseArgsObj = (args: string): Record<string, unknown> => {
     try { const o = JSON.parse(args); return o && typeof o === "object" ? o : {}; } catch { return {}; }
   };
@@ -1656,6 +1696,7 @@ function buildResponseJSONWithBudget(
     const coercedArgs = coerceIntegerToolArguments(
       currentToolCallArgs,
       options?.toolParameterSchemas?.get(currentToolCallName),
+      ns === undefined ? realName : undefined,
     );
     // Freeform tools serialize as custom_tool_call without extra_content; remember the
     // signature server-side regardless so the replayed call can be re-signed (#1735).
@@ -1670,7 +1711,8 @@ function buildResponseJSONWithBudget(
       pushOutput({
         type: "custom_tool_call", id: `ctc_${uuid()}`,
         call_id: currentToolCallId, name: realName,
-        input: freeformInput(currentToolCallArgs), status,
+        ...(ns ? { namespace: ns } : {}),
+        input: freeformInput(currentToolCallArgs, realName, ns, currentToolCallCodeModeHelperName), status,
       });
     } else {
       pushOutput({
@@ -1684,6 +1726,7 @@ function buildResponseJSONWithBudget(
     budget?.closeCall(currentToolCallId);
     currentToolCallId = "";
     currentToolCallName = "";
+    currentToolCallCodeModeHelperName = undefined;
     currentToolCallProviderMetadata = undefined;
     currentToolCallArgs = "";
     currentToolCallArgsBytes = 0;
@@ -1777,7 +1820,7 @@ function buildResponseJSONWithBudget(
           ));
         }
         break;
-      case "tool_call_start":
+      case "tool_call_start": {
         if (currentText) flushText("commentary");
         if (currentSummaryReasoning) flushSummaryReasoning();
         if (currentRawReasoning) flushRawReasoning();
@@ -1785,10 +1828,11 @@ function buildResponseJSONWithBudget(
           rememberReasoningForCall(e.id, rawReasoningForNextToolCall, replayCacheScope);
         }
         flushToolCall();
-        if (options?.declaredToolNames && !options.declaredToolNames.has(e.name)) {
+        const effectiveName = normalizeDeclaredToolName(e.name, options?.declaredToolNames);
+        if (options?.declaredToolNames && !options.declaredToolNames.has(effectiveName)) {
           errorEvent = {
             type: "error",
-            message: `routed provider emitted undeclared client tool "${e.name}"; only request-declared tools may be called`,
+            message: `routed provider emitted undeclared client tool "${effectiveName}"; only request-declared tools may be called`,
             status: 502,
             errorType: "upstream_error",
           };
@@ -1796,11 +1840,15 @@ function buildResponseJSONWithBudget(
         }
         currentToolCallId = e.id;
         budget?.openCall(e.id);
-        currentToolCallName = e.name;
+        currentToolCallName = effectiveName;
+        currentToolCallCodeModeHelperName = effectiveName === "exec" && e.name !== effectiveName
+          ? e.name
+          : undefined;
         currentToolCallArgs = "";
         currentToolCallArgsBytes = 0;
         currentToolCallProviderMetadata = e.providerMetadata;
         break;
+      }
       case "tool_call_delta":
         {
           ({ value: currentToolCallArgs, bytes: currentToolCallArgsBytes } = appendBatchString(
@@ -1942,7 +1990,9 @@ function buildResponseJSONWithBudget(
     model: modelId, output,
     ...(endTurn !== undefined ? { end_turn: endTurn } : {}),
     ...(failure ? { error: failure.error, last_error: failure.error } : {}),
-    ...(errorEvent?.retryable !== undefined ? { retryable: errorEvent.retryable } : {}),
+    ...(failure && isCyberPolicyCode(failure.error.code)
+      ? { retryable: false }
+      : errorEvent?.retryable !== undefined ? { retryable: errorEvent.retryable } : {}),
     ...(incompleteEvent ? {
       incomplete_details: {
         reason: incompleteEvent.reason,
@@ -1971,12 +2021,15 @@ export function formatErrorResponse(
   const error = classifyError(status, type, message);
   if (isCyberPolicyCode(options?.code)) {
     error.code = CYBER_POLICY_ERROR_CODE;
-    error.type = "invalid_request_error";
+    error.type = cyberPolicyErrorType(type);
   }
   const finalStatus = error.code === CYBER_POLICY_ERROR_CODE ? 400 : status;
   const headers = new Headers({ "Content-Type": "application/json" });
   const retryAfter = options?.retryAfter?.trim();
-  if (retryAfter && retryAfter.length > 0 && retryAfter.length <= 128) {
+  if (error.code !== CYBER_POLICY_ERROR_CODE
+    && retryAfter
+    && retryAfter.length > 0
+    && retryAfter.length <= 128) {
     headers.set("Retry-After", retryAfter);
   }
   return new Response(JSON.stringify({ error }), {

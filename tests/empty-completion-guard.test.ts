@@ -3,8 +3,10 @@ import {
   EMPTY_COMPLETION_RETRY_ENV,
   EMPTY_COMPLETION_RETRY_FAILED_CODE,
   emptyCompletionRetryEnabled,
+  emptyCompletionNotice,
   guardEmptyCompletionEventStream,
   isContentEvent,
+  observeEmptyCompletion,
 } from "../src/server/responses/empty-completion-guard";
 import type { AdapterEvent } from "../src/types";
 
@@ -322,17 +324,148 @@ describe("empty-completion guard retry", () => {
     ]);
   });
 
-  test("a truncated first source (no terminal) releases held events and ends", async () => {
+  test("a pre-output EOF retries once and succeeds", async () => {
     let continuations = 0;
     const events = await collect(guardEmptyCompletionEventStream({
       firstEvents: eventsOf({ type: "thinking_delta", thinking: "..." }),
       continuation: () => {
         continuations += 1;
-        return eventsOf();
+        return eventsOf(
+          { type: "text_delta", text: "recovered" },
+          { type: "done" },
+        );
+      },
+    }));
+
+    expect(continuations).toBe(1);
+    expect(withoutHeartbeats(events)).toEqual([
+      { type: "thinking_delta", thinking: "..." },
+      { type: "text_delta", text: "recovered" },
+      { type: "done" },
+    ]);
+  });
+
+  test("a second pre-output EOF surfaces empty_completion_retry_failed", async () => {
+    let continuations = 0;
+    const events = await collect(guardEmptyCompletionEventStream({
+      firstEvents: eventsOf({ type: "thinking_delta", thinking: "first" }),
+      continuation: () => {
+        continuations += 1;
+        return eventsOf({ type: "thinking_delta", thinking: "second" });
+      },
+    }));
+
+    expect(continuations).toBe(1);
+    expect(withoutHeartbeats(events)).toEqual([
+      expect.objectContaining({
+        type: "error",
+        code: EMPTY_COMPLETION_RETRY_FAILED_CODE,
+      }),
+    ]);
+  });
+
+  test("a post-output EOF is not retried", async () => {
+    let continuations = 0;
+    const events = await collect(guardEmptyCompletionEventStream({
+      firstEvents: eventsOf({ type: "text_delta", text: "partial" }),
+      continuation: () => {
+        continuations += 1;
+        return eventsOf({ type: "text_delta", text: "duplicate" }, { type: "done" });
       },
     }));
 
     expect(continuations).toBe(0);
-    expect(withoutHeartbeats(events)).toEqual([{ type: "thinking_delta", thinking: "..." }]);
+    expect(events).toEqual([{ type: "text_delta", text: "partial" }]);
+  });
+});
+
+describe("#2472 an empty turn is observable even when the retry guard is off", () => {
+  /**
+   * The guard is opt-in, so by default a turn that completes with no output text and no tool
+   * call passes through untouched and the client records a silent success — the reported
+   * "empty result nobody can explain". This observer changes nothing about the stream; it only
+   * makes the occurrence visible so a user can correlate it and decide whether to enable the
+   * retry. Retrying by default would re-send a turn that may already have had billable side
+   * effects.
+   */
+  async function drain(events: AdapterEvent[]): Promise<{ out: AdapterEvent[]; empties: number }> {
+    let empties = 0;
+    const out: AdapterEvent[] = [];
+    for await (const event of observeEmptyCompletion(eventsOf(...events), () => { empties += 1; })) {
+      out.push(event);
+    }
+    return { out, empties };
+  }
+
+  test("a reasoning-only turn that completes is flagged", async () => {
+    const { out, empties } = await drain([
+      { type: "reasoning_delta", text: "thinking" } as AdapterEvent,
+      { type: "done" } as AdapterEvent,
+    ]);
+    expect(empties).toBe(1);
+    // Passthrough: the stream is untouched.
+    expect(out.map(e => e.type)).toEqual(["reasoning_delta", "done"]);
+  });
+
+  test("a turn that produced text is not flagged", async () => {
+    const { empties } = await drain([
+      { type: "text_delta", text: "hello" } as AdapterEvent,
+      { type: "done" } as AdapterEvent,
+    ]);
+    expect(empties).toBe(0);
+  });
+
+  test("a tool call counts as content", async () => {
+    const { empties } = await drain([
+      { type: "tool_call_start", id: "c1", name: "shell" } as AdapterEvent,
+      { type: "done" } as AdapterEvent,
+    ]);
+    expect(empties).toBe(0);
+  });
+
+  test("an empty text delta is not content", async () => {
+    // Some batch adapters always carry "", which would otherwise mask the failure.
+    const { empties } = await drain([
+      { type: "text_delta", text: "" } as AdapterEvent,
+      { type: "done" } as AdapterEvent,
+    ]);
+    expect(empties).toBe(1);
+  });
+
+  test("a stated failure is not flagged as a silent one", async () => {
+    // error/incomplete already render for the client; flagging them would be noise.
+    const viaError = await drain([{ type: "error", message: "boom" } as AdapterEvent]);
+    expect(viaError.empties).toBe(0);
+    const viaIncomplete = await drain([{ type: "incomplete", reason: "max_tokens" } as AdapterEvent]);
+    expect(viaIncomplete.empties).toBe(0);
+  });
+
+  test("a pre-output EOF is the same failure and is flagged", async () => {
+    const { empties } = await drain([]);
+    expect(empties).toBe(1);
+  });
+
+  test("the notice cannot be forged through the caller-supplied provider or model label", () => {
+    // Both labels come from the request. Interpolated raw, a model name carrying newlines or
+    // terminal escapes writes extra lines into whatever reads this warning, so a caller could
+    // fabricate log records it never produced.
+    const notice = emptyCompletionNotice(
+      "fixture",
+      "model\r\n[opencodex] forged: injected\u001b[31m",
+    );
+
+    expect(notice).not.toContain("\n");
+    expect(notice).not.toContain("\r");
+    expect(notice).not.toContain("\u001b");
+    expect(notice).toContain("completed with no output text and no tool call");
+    // The forged text may survive as inert characters; what must not survive is its ability to
+    // become a separate record, so the notice stays exactly one line.
+    expect(notice.split(/\r|\n|\u2028|\u2029/)).toHaveLength(1);
+  });
+
+  test("the notice still names an ordinary route and degrades to a stated placeholder", () => {
+    expect(emptyCompletionNotice("fixture", "gpt-5.4")).toContain("fixture/gpt-5.4");
+    // An unusable label must not silently vanish into an empty slot in the sentence.
+    expect(emptyCompletionNotice(undefined, "")).toContain("unknown/unknown");
   });
 });

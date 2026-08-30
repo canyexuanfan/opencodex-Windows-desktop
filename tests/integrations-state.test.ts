@@ -7,6 +7,7 @@ import { PARSE_FAILED, fileIO, loadTarget, parseConfig } from "../src/integratio
 import { serializeDocument } from "../src/integrations/serialize";
 import {
   canonicalContribution,
+  semanticContribution,
   fingerprint,
   writeRecord,
   type OwnershipRecord,
@@ -501,6 +502,46 @@ describe("classifier unit behavior", () => {
   test("fragment order does not change the contribution fingerprint", () => {
     const reversed = { ...contribution, fragments: [...contribution.fragments].reverse() };
     expect(canonicalContribution(reversed)).toBe(canonicalContribution(contribution));
+  });
+
+  test("nested JSON object key order does not change the contribution fingerprint (#2759)", () => {
+    const original = {
+      clientId: "zcode" as const,
+      fragments: [{
+        path: ["provider", "opencodex"],
+        value: {
+          enabled: true,
+          options: { apiKey: "loopback", baseURL: "http://127.0.0.1:10100/v1" },
+          models: {
+            routed: {
+              modalities: { input: ["text", "image"], output: ["text"] },
+              limit: { context: 350_000 },
+            },
+          },
+        },
+      }],
+    };
+    const reordered = {
+      clientId: "zcode" as const,
+      fragments: [{
+        path: ["provider", "opencodex"],
+        value: {
+          models: {
+            routed: {
+              limit: { context: 350_000 },
+              modalities: { output: ["text"], input: ["text", "image"] },
+            },
+          },
+          options: { baseURL: "http://127.0.0.1:10100/v1", apiKey: "loopback" },
+          enabled: true,
+        },
+      }],
+    };
+
+    expect(semanticContribution(reordered)).toBe(semanticContribution(original));
+    const reorderedArray = structuredClone(reordered);
+    reorderedArray.fragments[0]!.value.models.routed.modalities.input = ["image", "text"];
+    expect(semanticContribution(reorderedArray)).not.toBe(semanticContribution(original));
   });
 });
 

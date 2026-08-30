@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { capacityAggregationFromReport } from "../src/provider-workspace/report";
+import { accountQuotaFromReport, capacityAggregationFromReport } from "../src/provider-workspace/report";
 
 function selectorBlock(css: string, selector: string): string {
   const start = css.indexOf(`${selector} {`);
@@ -11,6 +11,68 @@ function selectorBlock(css: string, selector: string): string {
 
 test("legacy provider quota reports remain valid without aggregation metadata", () => {
   expect(capacityAggregationFromReport({ quota: { weeklyPercent: 42 } })).toBeNull();
+});
+
+test("provider quota reports preserve the complete USD credits contract", () => {
+  expect(accountQuotaFromReport({
+    updatedAt: 123,
+    quota: {
+      creditsUsd: {
+        used: 12.5,
+        limit: 50,
+        remaining: 37.5,
+        percent: 25,
+        expiresAt: 1_800_000_000,
+        unlimited: false,
+      },
+    },
+  })).toEqual({
+    creditsUsd: {
+      used: 12.5,
+      limit: 50,
+      remaining: 37.5,
+      percent: 25,
+      expiresAt: 1_800_000_000,
+      unlimited: false,
+    },
+    updatedAt: 123,
+  });
+});
+
+test("provider quota reports reject malformed required credits and drop malformed optional members", () => {
+  expect(accountQuotaFromReport({
+    updatedAt: 123,
+    quota: { creditsUsd: { used: Number.NaN, limit: 50, remaining: 37.5, percent: 25 } },
+  })).toBeNull();
+
+  expect(accountQuotaFromReport({
+    updatedAt: 123,
+    quota: {
+      creditsUsd: {
+        used: 12.5,
+        limit: 50,
+        remaining: 37.5,
+        percent: 25,
+        expiresAt: Number.NaN,
+        unlimited: "yes",
+      },
+    },
+  })).toEqual({
+    creditsUsd: { used: 12.5, limit: 50, remaining: 37.5, percent: 25 },
+    updatedAt: 123,
+  });
+
+  // Persisted reports predate the wire-side guard, so normalization is a second line of
+  // defence: an unrepresentable expiry must be dropped rather than handed to a formatter.
+  expect(accountQuotaFromReport({
+    updatedAt: 123,
+    quota: {
+      creditsUsd: { used: 12.5, limit: 50, remaining: 37.5, percent: 25, expiresAt: 1e20 },
+    },
+  })).toEqual({
+    creditsUsd: { used: 12.5, limit: 50, remaining: 37.5, percent: 25 },
+    updatedAt: 123,
+  });
 });
 
 test("capacity metadata preserves estimate, raw current quota, recovery percent, and incomplete coverage", () => {

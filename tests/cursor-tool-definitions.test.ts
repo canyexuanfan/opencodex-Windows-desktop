@@ -334,8 +334,11 @@ describe("Cursor tool definitions", () => {
     expect(note).toContain("current tool catalog as ground truth");
     expect(note).toContain("This turn does not expose neighboring-agent tool names `Read`, `Grep`, `Glob`, `Bash`, `LS`");
     expect(note).toContain("not an external MCP server tool");
-    expect(note).toContain("Prefer the Codex shell bridge over Cursor-native Shell/Read");
-    expect(note).toContain("continue with the listed catalog tool `exec_command`");
+    expect(note).toContain("NEVER attempt Cursor-native Shell, Read, Grep, List");
+    expect(note).toContain("`exec_command` is the ONLY shell surface");
+    expect(note).toContain("never as a fallback after probing a native tool");
+    expect(note).toContain("Tool-selection commentary is forbidden");
+    expect(note).toContain("FIRST visible action is the bridge call itself");
     expect(note).not.toContain("such as `shell_command` / `exec_command`");
     expect(note).not.toContain("Never tell the user");
     expect(note).not.toContain("silently call");
@@ -353,8 +356,8 @@ describe("Cursor tool definitions", () => {
     expect(note).toContain("`shell_command`");
     expect(note).toContain("`shell_command` and `exec_command` are aliases of the same bridge");
     expect(note).toContain("mcp_opencodex-responses_shell_command");
-    expect(note).toContain("Prefer the Codex shell bridge over Cursor-native Shell/Read");
-    expect(note).toContain("continue with the listed catalog tool `shell_command`");
+    expect(note).toContain("NEVER attempt Cursor-native Shell, Read, Grep, List");
+    expect(note).toContain("`shell_command` is the ONLY shell surface");
     expect(note).not.toContain("Never tell the user");
     expect(note).not.toContain("silently call");
   });
@@ -483,6 +486,10 @@ describe("Cursor code mode tool guidance", () => {
     expect(note).toContain("isolate global `ALL_TOOLS`");
     expect(note).toContain("not `tools.ALL_TOOLS`");
     expect(note).toContain("absence from the top-level catalog");
+    expect(note).toContain("`*** Begin Patch`");
+    expect(note).toContain("`*** End Patch`");
+    expect(note).toContain("no trailing `***`");
+    expect(note).toContain("OpenCodex does not rewrite JavaScript inside exec");
 
     // The flat-catalog shell-bridge guidance must NOT appear: naming a top-level
     // `exec_command` in code mode sends the model after a tool that does not exist.

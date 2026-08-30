@@ -6,6 +6,7 @@ import { COMPACT_PROMPT, compactionItemToText, decodeCompactionSummary, isCompac
 import { collectResponsesToolGroups } from "../responses/tool-groups";
 import { isHostedToolUnsupportedForModel } from "../responses/hosted-tool-policy";
 import { decodeServerSentEvents } from "../lib/sse-decoder";
+import { debugProviderDiagnostic } from "../lib/debug";
 import {
   CODEX_FORWARD_BASE_URL,
   destinationDecodesNativeCompactionBlob,
@@ -13,13 +14,19 @@ import {
   isOpenAiOperatedResponsesDestination,
 } from "../providers/openai-tiers";
 import { OCX_REASONING_PREFIX } from "../responses/reasoning-envelope";
-import { modelRecordValue } from "../reasoning-effort";
+import { configuredReasoningEfforts, mapReasoningEffort, modelRecordValue } from "../reasoning-effort";
 import type { TranslatorBudget } from "../lib/translator-budget";
 import { rewriteRoutedCustomToolsForUpstream } from "../responses/custom-tool-compat";
 import { rewriteRoutedToolSearchForUpstream } from "../responses/tool-search-compat";
 import { rewriteRoutedNamespaceToolsForUpstream } from "../responses/namespace-tool-compat";
 import { openaiResponsesUrl } from "./openai-responses-url";
-import { normalizeXaiResponsesWebSearch } from "./xai-web-search";
+import { injectXaiResponsesXSearch, normalizeXaiResponsesWebSearch } from "./xai-web-search";
+import { EMPTY_TOOL_OUTPUT_ANNOTATION, isWhitespaceOnlyTextPartArray } from "./empty-tool-output-annotation";
+import {
+  isXaiSchemaTarget,
+  normalizeXaiToolParameters,
+  XaiToolSchemaCompatibilityError,
+} from "./xai-tool-schema";
 import {
   createAdapterTierMetadata,
 } from "../providers/fastwire";
@@ -46,6 +53,15 @@ export const FORWARD_HEADERS = [
   "x-responsesapi-include-timing-metrics",
 ];
 
+/**
+ * Sanitize reasoning input by field policy, not by preserving each item's shape. Retaining a
+ * native `encrypted_content` guarantees only that blob value: `status` is always removed;
+ * proxy-owned `ocxr1:` envelopes are always removed; and native blobs are removed when the caller
+ * requests stripping after a route-identity change or opaque-blob recovery. On routed/non-OpenAI
+ * destinations, a present non-array `content` field is omitted. Otherwise non-empty array content
+ * is blanked unless raw reasoning preservation is enabled; removing an `ocxr1:` envelope selects
+ * the same blanking path when non-array omission is not active.
+ */
 export function sanitizeReasoningInputContent(
   body: unknown,
   opts?: {
@@ -77,12 +93,11 @@ export function sanitizeReasoningInputContent(
     // rather than the field it actually refused, which is why this reads as a blob failure. Drop the
     // key so the item matches the shape the upstream issued.
     //
-    // Gated to routed destinations. An OpenAI-operated backend binds the blob to the item's exact
-    // shape, so deleting a field there invalidates it (`The encrypted content ... could not be
-    // verified`); the two requirements are exactly opposed, and a live regression proved it. That
-    // gate is also why this drop may touch an item that keeps its blob: xAI demonstrably accepts its
-    // own blob without the null channel, and the destinations that bind blobs to item shape never
-    // reach this branch. This is independent of the output-only status removal below.
+    // Gated to routed destinations. An OpenAI-operated backend rejects a blob-bearing item when its
+    // null `content` channel is deleted (`The encrypted content ... could not be verified`); that
+    // live result establishes this channel constraint, not whole-item shape preservation. The gate
+    // is also why this drop may touch an item that keeps its blob: xAI demonstrably accepts its own
+    // blob without the null channel. This is independent of the output-only status removal below.
     const dropNullContentChannel = opts?.dropNullContentChannel === true
       && "content" in rec && !Array.isArray(rec.content);
     // `status` is output-only. Measured OpenAI reasoning items never contain it, and Grok accepts
@@ -304,8 +319,8 @@ function stripUnsupportedReasoningParams(body: unknown): unknown {
 }
 
 /**
- * GPT-5.6 replaced the legacy 24-hour retention field with `prompt_cache_options.ttl`, and the
- * ChatGPT backend 400s the whole request when the retired field is present (issue #2092).
+ * GPT-5.6 retired the legacy 24-hour retention field, and the ChatGPT backend 400s the whole
+ * request when that field is present (issue #2092).
  *
  * The retired field is NOT translated to the replacement: 5.6 carries a different TTL contract,
  * and implicit caching still applies when the caller sent no replacement options. Inventing a
@@ -322,6 +337,18 @@ function stripDeprecatedPromptCacheRetention(body: unknown, modelId: unknown): u
   if (modelId !== "gpt-5.6" && !modelId.startsWith("gpt-5.6-")) return body;
   if (!Object.hasOwn(body, "prompt_cache_retention")) return body;
   const { prompt_cache_retention: _retention, ...rest } = body;
+  return rest;
+}
+
+/**
+ * Public Responses clients can send `prompt_cache_options`, but the canonical ChatGPT Codex
+ * backend rejects the top-level field before inference (issue #2765). Custom forward gateways and
+ * API-key Responses providers own different wire contracts, so the caller applies this only after
+ * the canonical destination predicate succeeds.
+ */
+function stripCanonicalForwardPromptCacheOptions(body: unknown): unknown {
+  if (!isPlainObject(body) || !Object.hasOwn(body, "prompt_cache_options")) return body;
+  const { prompt_cache_options: _options, ...rest } = body;
   return rest;
 }
 
@@ -365,6 +392,27 @@ function stripDisabledReasoningSummaries(
     ...(isPlainObject(reasoning) && Object.keys(reasoning).length > 0
       ? { reasoning }
       : { reasoning: undefined }),
+  };
+}
+
+/**
+ * Hide a no-op Responses verbosity control from the wire as well as the catalog. This runs at
+ * final serialization so a stale catalog or direct caller cannot bypass the capability. Other
+ * `text` settings (notably structured-output `format`) remain untouched.
+ */
+function stripDisabledVerbosity(
+  body: unknown,
+  provider: OcxProviderConfig,
+  modelId: string,
+): unknown {
+  if (modelRecordValue(provider.modelSupportsVerbosity, modelId) !== false || !isPlainObject(body)) {
+    return body;
+  }
+  if (!isPlainObject(body.text) || !Object.hasOwn(body.text, "verbosity")) return body;
+  const { verbosity: _verbosity, ...rest } = body.text;
+  return {
+    ...body,
+    ...(Object.keys(rest).length > 0 ? { text: rest } : { text: undefined }),
   };
 }
 
@@ -502,8 +550,33 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
-function normalizeFunctionToolSchema(tool: unknown): unknown {
+/**
+ * Apply the routed provider's real effort ladder to an existing Responses reasoning field.
+ * Native forward requests keep the server-owned native clamp; unknown third-party ladders stay
+ * byte-equivalent instead of acquiring a policy from this adapter.
+ */
+function mapRoutedResponsesReasoningEffort(
+  body: unknown,
+  provider: OcxProviderConfig,
+  modelId: string,
+): unknown {
+  if (provider.authMode === "forward") return body;
+  if (configuredReasoningEfforts(provider, modelId) === undefined) return body;
+  if (!isPlainObject(body) || !isPlainObject(body.reasoning)) return body;
+  const requested = body.reasoning.effort;
+  if (typeof requested !== "string") return body;
+
+  const mapped = mapReasoningEffort(provider, modelId, requested);
+  if (!mapped || mapped === requested) return body;
+  return { ...body, reasoning: { ...body.reasoning, effort: mapped } };
+}
+
+function normalizeFunctionToolSchema(tool: unknown, xaiTarget: boolean): unknown | undefined {
   if (!isPlainObject(tool) || tool.type !== "function") return tool;
+  if (xaiTarget) {
+    const parameters = normalizeXaiToolParameters(isPlainObject(tool.parameters) ? tool.parameters : {});
+    return parameters === undefined ? undefined : { ...tool, parameters };
+  }
   if (isPlainObject(tool.parameters) && tool.parameters.type === "object") return tool;
   return {
     ...tool,
@@ -511,16 +584,69 @@ function normalizeFunctionToolSchema(tool: unknown): unknown {
   };
 }
 
-function normalizeToolSchemas(body: unknown): unknown {
+/**
+ * Re-point `tool_choice` after an incompatible function was dropped from the catalog. Names here
+ * are already wire names, because namespace lowering rewrote the declarations and the selector
+ * together before this runs. A selector left naming an omitted tool reaches Grok as a dangling
+ * reference it rejects, and silently relaxing it to `auto` is worse: the turn would quietly
+ * proceed without the tool the caller required. So an `allowed_tools` list drops the omitted
+ * entries while any remain, and a selection with nothing left to point at fails locally with the
+ * same 400 the caller gets for a tool catalog this proxy cannot lower.
+ */
+function reconcileToolChoiceForOmittedTools(
+  body: Record<string, unknown>,
+  omittedFunctionNames: ReadonlySet<string>,
+): Record<string, unknown> {
+  if (omittedFunctionNames.size === 0) return body;
+  const toolChoice = body.tool_choice;
+  if (!isPlainObject(toolChoice)) return body;
+
+  const refuse = (name: string): never => {
+    throw new XaiToolSchemaCompatibilityError(
+      `tool_choice requires function "${name}", but its parameter schema cannot be represented for this destination; `
+      + "relax tool_choice or simplify the tool's parameter schema",
+    );
+  };
+
+  if (toolChoice.type === "function" && typeof toolChoice.name === "string") {
+    return omittedFunctionNames.has(toolChoice.name) ? refuse(toolChoice.name) : body;
+  }
+
+  if (toolChoice.type === "allowed_tools" && Array.isArray(toolChoice.tools)) {
+    const omitted = toolChoice.tools.filter(tool =>
+      isPlainObject(tool)
+      && tool.type === "function"
+      && typeof tool.name === "string"
+      && omittedFunctionNames.has(tool.name));
+    if (omitted.length === 0) return body;
+    const kept = toolChoice.tools.filter(tool => !omitted.includes(tool));
+    if (kept.length === 0) {
+      const first = omitted[0];
+      return refuse(isPlainObject(first) && typeof first.name === "string" ? first.name : "unknown");
+    }
+    return { ...body, tool_choice: { ...toolChoice, tools: kept } };
+  }
+
+  return body;
+}
+
+function normalizeToolSchemas(body: unknown, xaiTarget: boolean): unknown {
   if (!isPlainObject(body)) return body;
 
+  const omittedFunctionNames = new Set<string>();
   const normalizeTools = (tools: unknown[]): unknown[] => {
     let changed = false;
-    const normalized = tools.map((tool) => {
-      const fixed = normalizeFunctionToolSchema(tool);
+    const normalized: unknown[] = [];
+    for (const tool of tools) {
+      const fixed = normalizeFunctionToolSchema(tool, xaiTarget);
+      if (fixed === undefined) {
+        changed = true;
+        if (isPlainObject(tool) && typeof tool.name === "string") omittedFunctionNames.add(tool.name);
+        continue;
+      }
       if (fixed !== tool) changed = true;
-      return fixed;
-    });
+      normalized.push(fixed);
+    }
     return changed ? normalized : tools;
   };
 
@@ -540,7 +666,14 @@ function normalizeToolSchemas(body: unknown): unknown {
     });
     if (inputChanged) normalizedBody = { ...normalizedBody, input };
   }
-  return normalizedBody;
+  if (omittedFunctionNames.size > 0) {
+    // A dropped tool is a capability the caller declared and will not get, and the only other
+    // trace of it is a turn that never makes the call. Name them so the cause is recoverable.
+    debugProviderDiagnostic("openai-responses", "tool-schema-omitted", {
+      omitted: [...omittedFunctionNames],
+    });
+  }
+  return reconcileToolChoiceForOmittedTools(normalizedBody, omittedFunctionNames);
 }
 
 function activateDeferredTool(tool: Record<string, unknown>): Record<string, unknown> {
@@ -708,6 +841,40 @@ function toolOutputText(output: unknown): string {
     if (part.type === "refusal" && typeof part.refusal === "string") return `[refusal] ${part.refusal}`;
     return "";
   }).filter(Boolean).join("\n");
+}
+
+/** True when a Responses tool output item is present but carries no usable content. */
+function isToolOutputEmpty(output: unknown): boolean {
+  if (typeof output === "string") return output.trim() === "";
+  if (Array.isArray(output)) {
+    // Mirror the Chat wire rule through the shared contract: only a pure
+    // text/refusal part array whose joined content trims empty is annotated.
+    // input_image, encrypted_content, input_file and any other non-text part is
+    // real output and must never be replaced.
+    return isWhitespaceOnlyTextPartArray(output);
+  }
+  // A missing or null `output` is not a present-but-empty result: it is an
+  // incomplete payload. Leave it untouched so the upstream contract fails
+  // closed, and the orphan repair can surface it honestly instead of claiming
+  // the tool ran with no output.
+  return false;
+}
+
+/**
+ * Rewrite present-but-empty tool outputs to an explicit annotation. Synthetic
+ * missing-result placeholders are non-empty and pass through untouched. No-op unless
+ * the provider opts in (`annotateEmptyToolOutputs`).
+ */
+function annotateEmptyResponsesToolOutputs(body: unknown, enabled: boolean): unknown {
+  if (!enabled || !isPlainObject(body) || !Array.isArray(body.input)) return body;
+  let changed = false;
+  const input = body.input.map(item => {
+    if (!isPlainObject(item) || (item.type !== "function_call_output" && item.type !== "custom_tool_call_output")) return item;
+    if (!isToolOutputEmpty(item.output)) return item;
+    changed = true;
+    return { ...item, output: EMPTY_TOOL_OUTPUT_ANNOTATION };
+  });
+  return changed ? { ...body, input } : body;
 }
 
 /**
@@ -1073,6 +1240,150 @@ function stripUnsupportedForwardParams(body: unknown): unknown {
   if (!hasMot && !hasMeta) return body;
   const { max_output_tokens: _mot, metadata: _meta, ...rest } = body;
   return rest;
+}
+
+/** Return the lossless text represented by one system message, or null when it is multimodal. */
+function canonicalForwardSystemText(item: Record<string, unknown>): string | null {
+  const content = item.content;
+  if (content === undefined) return "";
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+  let text = "";
+  for (const block of content) {
+    if (!isPlainObject(block)) return null;
+    if (block.type !== "input_text" && block.type !== "text") return null;
+    if (typeof block.text !== "string") return null;
+    text += block.text;
+  }
+  return text;
+}
+
+/** Only message items may carry privileged system instructions. */
+function isCanonicalForwardSystemMessage(item: unknown): item is Record<string, unknown> {
+  return isPlainObject(item)
+    && (item.type === undefined || item.type === "message")
+    && item.role === "system";
+}
+
+/**
+ * The public Responses API accepts input system messages and `truncation`, but the canonical
+ * ChatGPT Codex forward endpoint rejects both. Fold only fully textual system messages into the
+ * existing top-level instructions and remove the unsupported flag at this destination boundary.
+ *
+ * The fold is atomic: if any system message contains a non-text block, keep every message in
+ * place so the proxy never silently drops multimodal content. The backend may still reject that
+ * unsupported shape, but it will not receive a partially rewritten prompt.
+ */
+function normalizeCanonicalForwardPromptEnvelope(body: unknown): unknown {
+  if (!isPlainObject(body)) return body;
+  const stripTruncation = Object.hasOwn(body, "truncation");
+  const input = Array.isArray(body.input) ? body.input : undefined;
+  if (!input) {
+    if (!stripTruncation) return body;
+    const { truncation: _truncation, ...rest } = body;
+    return rest;
+  }
+
+  const foldedText: string[] = [];
+  let sawSystemMessage = false;
+  let canFoldAllSystemMessages = true;
+  for (const item of input) {
+    if (!isCanonicalForwardSystemMessage(item)) continue;
+    sawSystemMessage = true;
+    const text = canonicalForwardSystemText(item);
+    if (text === null) {
+      canFoldAllSystemMessages = false;
+      break;
+    }
+    foldedText.push(text);
+  }
+  if (!stripTruncation && (!sawSystemMessage || !canFoldAllSystemMessages)) return body;
+
+  const next: Record<string, unknown> = { ...body };
+  if (stripTruncation) delete next.truncation;
+  if (sawSystemMessage && canFoldAllSystemMessages) {
+    next.input = input.filter(item => !isCanonicalForwardSystemMessage(item));
+    const folded = foldedText.join("\n\n");
+    if (folded !== "") {
+      const existing = typeof body.instructions === "string" ? body.instructions : "";
+      next.instructions = existing !== "" ? `${existing}\n\n${folded}` : folded;
+    }
+  }
+  return next;
+}
+
+const POSIT_CACHE_MARKER_MAX_DEPTH = 64;
+const POSIT_CACHE_MARKER_MAX_NODES = 100_000;
+
+type PromptCacheMarkerRewrite = {
+  value: unknown;
+  changed: boolean;
+  complete: boolean;
+};
+
+/**
+ * Remove Posit/Anthropic-style prompt-cache markers without trusting request nesting. The walk
+ * aborts atomically when its depth or node budget is exceeded, so a hostile extension object can
+ * neither overflow the stack nor receive a partially rewritten subtree.
+ */
+function stripPromptCacheBreakpoints(
+  value: unknown,
+  state: { nodes: number },
+  depth = 0,
+): PromptCacheMarkerRewrite {
+  state.nodes += 1;
+  if (depth > POSIT_CACHE_MARKER_MAX_DEPTH || state.nodes > POSIT_CACHE_MARKER_MAX_NODES) {
+    return { value, changed: false, complete: false };
+  }
+  if (Array.isArray(value)) {
+    let changed = false;
+    const next: unknown[] = [];
+    for (const entry of value) {
+      const rewritten = stripPromptCacheBreakpoints(entry, state, depth + 1);
+      if (!rewritten.complete) return { value, changed: false, complete: false };
+      changed ||= rewritten.changed;
+      next.push(rewritten.value);
+    }
+    return { value: changed ? next : value, changed, complete: true };
+  }
+  if (!isPlainObject(value)) return { value, changed: false, complete: true };
+
+  let changed = Object.hasOwn(value, "prompt_cache_breakpoint");
+  const next: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "prompt_cache_breakpoint") continue;
+    const rewritten = stripPromptCacheBreakpoints(entry, state, depth + 1);
+    if (!rewritten.complete) return { value, changed: false, complete: false };
+    changed ||= rewritten.changed;
+    next[key] = rewritten.value;
+  }
+  return { value: changed ? next : value, changed, complete: true };
+}
+
+/**
+ * Posit Assistant can replay client-only cache markers and stored-item references on a
+ * `store: false` continuation. The canonical ChatGPT Codex backend rejects both. Remove the
+ * markers recursively and drop only `item_reference` rows that cannot name persisted state;
+ * ordinary item ids are handled later by stripItemIdsWhenUnstored and tool call_id pairs remain.
+ */
+function normalizeCanonicalForwardContinuationEnvelope(body: unknown): unknown {
+  if (!isPlainObject(body) || !Array.isArray(body.input)) return body;
+  let input: unknown[] = body.input;
+  let changed = false;
+  if (body.store === false) {
+    const withoutReferences = input.filter(item => !isPlainObject(item) || item.type !== "item_reference");
+    if (withoutReferences.length !== input.length) {
+      input = withoutReferences;
+      changed = true;
+    }
+  }
+
+  const markerRewrite = stripPromptCacheBreakpoints(input, { nodes: 0 });
+  if (markerRewrite.complete && markerRewrite.changed) {
+    input = markerRewrite.value as unknown[];
+    changed = true;
+  }
+  return changed ? { ...body, input } : body;
 }
 
 const IMAGE_GEN_NAMESPACE = "image_gen";
@@ -1555,6 +1866,57 @@ export function stripOpenAiOnlyWebSearchFields(body: unknown): unknown {
   return changed ? next : body;
 }
 
+/**
+ * OpenCode Zen / Go Muse Spark Responses gateway refuses `search_content_types`
+ * on a plain `web_search` tool (400) but accepts it on `web_search_preview`; a
+ * plain `web_search` is also accepted. Probed directly against the gateway on
+ * 2026-08-26: `web_search` + `search_content_types` -> 400, `web_search_preview`
+ * + `search_content_types` -> 200, plain `web_search` -> 200. Luna accepts every
+ * shape, so this is Muse-only. Drop only the field the gateway refuses while
+ * keeping the tool type and every other accepted option intact.
+ */
+function stripMuseSparkUnsupportedWebSearchFields(body: unknown, modelId: unknown): unknown {
+  if (!isPlainObject(body)) return body;
+  if (typeof modelId !== "string" || modelId.trim().toLowerCase() !== "muse-spark-1.2-contributor") return body;
+
+  const rewriteTools = (tools: unknown[]): { tools: unknown[]; changed: boolean } => {
+    let changed = false;
+    const rewritten = tools.map(tool => {
+      if (!isPlainObject(tool) || tool.type !== "web_search") return tool;
+      if (!Object.hasOwn(tool, "search_content_types")) return tool;
+      const { search_content_types: _dropped, ...rest } = tool;
+      changed = true;
+      return rest;
+    });
+    return { tools: changed ? rewritten : tools, changed };
+  };
+
+  let next: Record<string, unknown> = body;
+  let changed = false;
+  if (Array.isArray(body.tools)) {
+    const rewritten = rewriteTools(body.tools);
+    if (rewritten.changed) {
+      next = { ...next, tools: rewritten.tools };
+      changed = true;
+    }
+  }
+  if (Array.isArray(next.input)) {
+    let inputChanged = false;
+    const input = next.input.map(item => {
+      if (!isPlainObject(item) || item.type !== "additional_tools" || !Array.isArray(item.tools)) return item;
+      const rewritten = rewriteTools(item.tools);
+      if (!rewritten.changed) return item;
+      inputChanged = true;
+      return { ...item, tools: rewritten.tools };
+    });
+    if (inputChanged) {
+      next = { ...next, input };
+      changed = true;
+    }
+  }
+  return changed ? next : body;
+}
+
 /** Replace every `input_image` part under a routed-compaction body with a short marker. */
 function stripInputImagesDeep(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stripInputImagesDeep);
@@ -1684,13 +2046,15 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
 
       const forward = provider.authMode === "forward";
       let convertedRoutedCustomToolNames: Set<string> | undefined;
+      let routedCustomToolRepairNames: Set<string> | undefined;
       let convertedRoutedToolSearchNames: Set<string> | undefined;
-      let convertedRoutedNamespaceToolAliases: Map<string, { namespace: string; name: string }> | undefined;
+      let convertedRoutedNamespaceToolAliases: Map<string, { namespace: string; name: string; kind: "function" | "custom" }> | undefined;
       const unexpandedMiss = !!parsed.previousResponseId && parsed._previousResponseInputExpanded !== true;
       let outBody = stripPreviousResponseId(
         parsed._rawBody,
         forward || parsed._previousResponseInputExpanded === true,
       );
+      outBody = mapRoutedResponsesReasoningEffort(outBody, provider, parsed.modelId);
       // stripPreviousResponseId() intentionally returns its input on a no-op. Detach before the
       // tier write so a force-fast/default decision can never mutate parsed._rawBody.
       outBody = applyTierDecisionToResponsesBody(outBody, parsed.options?.tierDecision);
@@ -1701,6 +2065,9 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       // pair from its own storage either, so it needs the same repair the forward
       // backend gets — dropping previous_response_id is not much use if the body that
       // reaches the wire is unparseable.
+      if (provider.annotateEmptyToolOutputs === true) {
+        outBody = annotateEmptyResponsesToolOutputs(outBody, true);
+      }
       if (forward || stateless) {
         outBody = repairOrphanedInputItems(outBody, unexpandedMiss, stateless && !forward);
       }
@@ -1713,6 +2080,9 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         // third-party forward gateway may still accept it, so this must not be widened.
         if (isCanonicalOpenAiForwardProvider(provider)) {
           outBody = stripDeprecatedPromptCacheRetention(outBody, parsed.modelId);
+          outBody = stripCanonicalForwardPromptCacheOptions(outBody);
+          outBody = normalizeCanonicalForwardPromptEnvelope(outBody);
+          outBody = normalizeCanonicalForwardContinuationEnvelope(outBody);
         }
       } else {
         outBody = preferConfiguredHostedTools(
@@ -1741,6 +2111,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         );
         outBody = rewritten.body;
         convertedRoutedCustomToolNames = rewritten.names;
+        routedCustomToolRepairNames = rewritten.repairNames;
       }
       if (!isCanonicalOpenAiForwardProvider(provider)) {
         // Run after custom-tool lowering so the search compatibility layer can choose a
@@ -1759,11 +2130,13 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         // Preserve xAI's cached-only fail-closed semantics and image-search mapping before the
         // generic capability fallback removes the private OpenAI fields.
         outBody = normalizeXaiResponsesWebSearch(outBody, provider);
+        outBody = injectXaiResponsesXSearch(outBody, provider, parsed._replayPrefixLen);
         // xAI and explicitly classified compatible gateways reject these OpenAI web_search
         // extensions. Keep them for OpenAI API-key traffic and unclassified gateways.
         if (provider.supportsOpenAiWebSearchToolFields === false) {
           outBody = stripOpenAiOnlyWebSearchFields(outBody);
         }
+        outBody = stripMuseSparkUnsupportedWebSearchFields(outBody, parsed.modelId);
         // Last, so promoted namespace children are also cleared of Codex-private fields.
         outBody = stripCanonicalOnlyToolFields(outBody, provider.supportsOpenAiWebSearchToolFields === false);
       }
@@ -1776,17 +2149,37 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         outBody = buildRoutedCompactionBody(outBody);
       }
       const threadServingIdentityChanged = parsed._stripReasoningEncryptedContent === true;
-      const sanitizedBody = normalizeToolSchemas(stripSparkCompatibility(stripUnsupportedReasoningParams(stripItemIdsWhenUnstored(stripInvalidItemIds(stripUnsupportedHostedTools(sanitizeReasoningInputContent(scrubOcxCompactionItems(
-        outBody,
-        destinationDecodesNativeCompactionBlob(provider),
-        threadServingIdentityChanged,
-      ), {
-        preserveRawReasoningContent: provider.preserveResponsesReasoningContent === true,
-        dropNullContentChannel: !isOpenAiOperatedResponsesDestination(provider),
-        stripEncryptedContent: threadServingIdentityChanged,
-      })))))));
-      const finalBody = stripDisabledReasoningSummaries(
-        normalizeConfiguredReasoningSummaryDelivery(sanitizedBody, provider, parsed.modelId),
+      const sanitizedBody = normalizeToolSchemas(
+        stripSparkCompatibility(
+          stripUnsupportedReasoningParams(
+            stripItemIdsWhenUnstored(
+              stripInvalidItemIds(
+                stripUnsupportedHostedTools(
+                  sanitizeReasoningInputContent(
+                    scrubOcxCompactionItems(
+                      outBody,
+                      destinationDecodesNativeCompactionBlob(provider),
+                      threadServingIdentityChanged,
+                    ),
+                    {
+                      preserveRawReasoningContent: provider.preserveResponsesReasoningContent === true,
+                      dropNullContentChannel: !isOpenAiOperatedResponsesDestination(provider),
+                      stripEncryptedContent: threadServingIdentityChanged,
+                    },
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+        isXaiSchemaTarget(provider),
+      );
+      const finalBody = stripDisabledVerbosity(
+        stripDisabledReasoningSummaries(
+          normalizeConfiguredReasoningSummaryDelivery(sanitizedBody, provider, parsed.modelId),
+          provider,
+          parsed.modelId,
+        ),
         provider,
         parsed.modelId,
       );
@@ -1811,6 +2204,7 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
         body,
         releaseBodyObservation,
         ...(convertedRoutedCustomToolNames ? { convertedRoutedCustomToolNames } : {}),
+        ...(routedCustomToolRepairNames ? { routedCustomToolRepairNames } : {}),
         ...(convertedRoutedToolSearchNames ? { convertedRoutedToolSearchNames } : {}),
         ...(convertedRoutedNamespaceToolAliases ? { convertedRoutedNamespaceToolAliases } : {}),
         ...(tierLog ? { tierLog } : {}),

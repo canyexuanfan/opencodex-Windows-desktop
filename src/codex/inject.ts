@@ -19,6 +19,7 @@ import {
   CodexWriteConflictError,
   DEFAULT_INJECT_LOCK_TIMEOUT_MS,
   recomputeInjectWitness,
+  recordCodexNativeTransactionProvenance,
   restoreCodexPreImages,
 } from "./inject-coordination";
 import { readIntegrationRecord } from "./integration-record";
@@ -953,6 +954,7 @@ export async function injectCodexConfig(
     const coordinated = await withCodexWriteLock(
       {
         timeoutMs: options.lockTimeoutMs ?? DEFAULT_INJECT_LOCK_TIMEOUT_MS,
+        ...(eligibility.kind === "adopt" ? { adoption: { direction: "apply" as const } } : {}),
         admitted: { authoritySnapshotId: witness.comparisonId },
         readAdmissionUnderLock: () => ({
           authoritySnapshotId: recomputeInjectWitness({
@@ -1019,6 +1021,7 @@ export async function injectCodexConfig(
         }
         return {
           kind: "applied" as const,
+          preImages,
           /*
            * The receipt the terminal update matches on. The transition commits
            * when the callback returns, so this pair is what the post-job
@@ -1036,6 +1039,10 @@ export async function injectCodexConfig(
     if (coordinated.status !== "acquired") {
       return codexInjectLockOutcome(coordinated);
     }
+    recordCodexNativeTransactionProvenance(
+      coordinated.value.preImages,
+      coordinated.value.receipt.currentTxId,
+    );
     transitionReceipt = coordinated.value.receipt;
   }
   // Legacy mode still forward-tags history so re-tagged threads stay listable. Design B needs
@@ -1092,8 +1099,8 @@ export async function injectCodexConfig(
         : legacyMode
           ? `  Codex resume history: ${history.rows} thread(s) made visible for opencodex; originals backed up for restore.\n`
           : migratedRows > 0
-            ? `  Codex resume history: ${migratedRows} legacy opencodex-tagged thread(s) migrated back to openai (one-time).\n`
-            : `  Codex resume history: untouched (threads keep their native openai tag).\n`;
+            ? `  Codex resume history: restored original provider metadata for ${migratedRows} manifest-backed thread(s) (one-time).\n`
+            : `  Codex resume history: no backed-up metadata pending; untracked routed history left unchanged.\n`;
   // A user-owned root openai_base_url means we did NOT install routing — say so honestly
   // instead of claiming the proxy route is active (catalog/fast_mode were still written).
   if (keptUserBaseUrl) {
@@ -1332,18 +1339,33 @@ export interface CodexNativeRestoreResult {
   };
 }
 
-function failedHistoryRestore(reason?: CodexHistoryFailureReason, detail?: string): CodexRestoreHistoryResult {
+function failedHistoryRestore(
+  reason?: CodexHistoryFailureReason,
+  detail?: string,
+  progress: { rows?: number; files?: number } = {},
+): CodexRestoreHistoryResult {
+  const rows = progress.rows ?? 0;
+  const files = progress.files ?? 0;
+  const changed = rows > 0 || files > 0;
   return {
     state: "failed",
-    changed: false,
+    changed,
     ...(reason ? { reason } : {}),
-    rows: 0,
-    files: 0,
+    rows,
+    files,
     ejectedRows: 0,
     message: reason === "permission"
-      ? "Codex resume history could NOT be restored because permission was denied."
+      ? changed
+        ? "Codex resume history changed but did NOT converge because permission was denied while finalizing the backup manifest; the manifest was retained for review and safe retry."
+        : "Codex resume history could NOT be restored because permission was denied."
       : reason === "busy"
-        ? "Codex resume history could NOT be restored — the Codex app appears to be holding the history database."
+        ? changed
+          ? "Codex resume history changed but did NOT converge because backup-manifest finalization remained busy; the manifest was retained for review and safe retry."
+          : detail ?? "Codex resume history could NOT be restored — the Codex app appears to be holding the history database."
+        : reason === "integrity"
+          ? changed
+            ? "Codex resume history changed but did NOT converge because the backup or target changed; the manifest was retained for review and safe retry."
+            : "Codex resume history could NOT be restored because the backup or restore target failed integrity checks; unverified provider metadata was left unchanged."
         : detail
           ? `Codex resume history could NOT be restored: ${detail}`
           : "Codex resume history could NOT be restored; the reason was not recorded. Run 'ocx doctor'.",
@@ -1365,9 +1387,18 @@ export function failedHistoryRestoreFromOutcome(
   outcome: Extract<CodexHistoryJobOutcome, { kind: "blocked" | "failed" }>,
 ): CodexRestoreHistoryResult {
   if (outcome.kind === "blocked" && outcome.reason === "busy") return failedHistoryRestore("busy");
-  if (outcome.kind === "failed" && outcome.historyFailureReason === "busy") return failedHistoryRestore("busy");
+  if (outcome.kind === "failed" && outcome.historyFailureReason === "busy") {
+    return failedHistoryRestore(
+      "busy",
+      describeHistoryJobFailure(outcome, "restore"),
+      { rows: outcome.rows, files: outcome.files },
+    );
+  }
   if (outcome.kind === "failed" && outcome.historyFailureReason === "permission") {
-    return failedHistoryRestore("permission");
+    return failedHistoryRestore("permission", undefined, { rows: outcome.rows, files: outcome.files });
+  }
+  if (outcome.kind === "failed" && outcome.historyFailureReason === "integrity") {
+    return failedHistoryRestore("integrity", undefined, { rows: outcome.rows, files: outcome.files });
   }
   return failedHistoryRestore(undefined, describeHistoryJobFailure(outcome, "restore"));
 }
@@ -1523,13 +1554,14 @@ export async function restoreNativeCodexAsync(
   let config: CodexRestoreConfigResult;
   let transitionReceipt: { nativeGeneration: number; currentTxId: string } | undefined;
 
-  if (eligibility.kind === "coordinated") {
+  if (eligibility.kind === "coordinated" || eligibility.kind === "adopt") {
     // The restore has no candidate bytes to witness; freshness comes from the
     // filesystem reads and the desired-state re-read performed under the lock.
     const witness = { authoritySnapshotId: "codex-native-restore" };
     const coordinated = await withCodexWriteLock(
       {
         timeoutMs: DEFAULT_INJECT_LOCK_TIMEOUT_MS,
+        ...(eligibility.kind === "adopt" ? { adoption: { direction: "remove" as const } } : {}),
         admitted: witness,
         readAdmissionUnderLock: () => witness,
       },
@@ -1565,6 +1597,7 @@ export async function restoreNativeCodexAsync(
         }
         return {
           config: restored,
+          preImages,
           receipt: {
             nativeGeneration: ctx.expectation.nativeAfter,
             currentTxId: ctx.expectation.txId,
@@ -1583,6 +1616,10 @@ export async function restoreNativeCodexAsync(
           : `Codex configuration was not restored: ${coordinated.message}`,
       };
     } else {
+      recordCodexNativeTransactionProvenance(
+        coordinated.value.preImages,
+        coordinated.value.receipt.currentTxId,
+      );
       config = coordinated.value.config;
       transitionReceipt = coordinated.value.receipt;
     }
@@ -1607,10 +1644,10 @@ export async function restoreNativeCodexAsync(
   }
   const history: CodexRestoreHistoryResult = outcome.kind === "converged"
     ? {
-        state: "ok", changed: outcome.rows > 0, rows: outcome.rows, files: outcome.files, ejectedRows: 0,
+        state: "ok", changed: outcome.rows > 0 || outcome.files > 0, rows: outcome.rows, files: outcome.files, ejectedRows: 0,
         message: outcome.rows > 0
-          ? `Resume history restored from opencodex backup (${outcome.rows} thread(s)).`
-          : "Codex resume history was already native.",
+          ? `Resume history metadata restored from opencodex backup (${outcome.rows} thread(s)); original providers preserved.`
+          : "No backed-up resume-history metadata was pending; untracked routed history was left unchanged.",
       }
     : outcome.kind === "skipped"
       ? { state: "skipped", changed: false, rows: 0, files: 0, ejectedRows: 0, message: "Codex resume history was skipped." }
@@ -1672,16 +1709,16 @@ export function restoreNativeCodex(options: { skipHistory?: boolean; revalidateD
   const history: CodexRestoreHistoryResult = options.skipHistory
     ? { state: "skipped", changed: false, rows: 0, files: 0, ejectedRows: 0, message: "History restoration runs asynchronously." }
     : rawHistory.failed
-      ? failedHistoryRestore(rawHistory.failureReason)
+      ? failedHistoryRestore(rawHistory.failureReason, undefined, rawHistory)
       : {
           state: "ok",
-          changed: rawHistory.rows > 0 || (rawHistory.ejectedRows ?? 0) > 0,
+          changed: rawHistory.rows > 0 || rawHistory.files > 0 || (rawHistory.ejectedRows ?? 0) > 0,
           rows: rawHistory.rows,
           files: rawHistory.files,
           ejectedRows: rawHistory.ejectedRows ?? 0,
           message: rawHistory.rows > 0
-            ? `Resume history restored from opencodex backup (${rawHistory.rows} thread(s)).`
-            : "Codex resume history was already native.",
+            ? `Resume history metadata restored from opencodex backup (${rawHistory.rows} thread(s)); original providers preserved.`
+            : "No backed-up resume-history metadata was pending; untracked routed history was left unchanged.",
         };
   const message = catalog.removed > 0
     ? `${config.message} Catalog restored to ${catalog.kept} native model(s) (dropped ${catalog.removed} proxy-routed).`
@@ -1711,10 +1748,14 @@ export function formatApplyHistoryFailure(outcome: CodexHistoryJobOutcome, legac
   const busy =
     (outcome.kind === "blocked" && outcome.reason === "busy") ||
     (outcome.kind === "failed" && outcome.historyFailureReason === "busy");
-  const headline = legacyMode
-    ? "Codex resume history sync SKIPPED"
-    : busy
-      ? "Codex resume history migration deferred"
+  const partiallyChanged = outcome.kind === "failed"
+    && ((outcome.rows ?? 0) > 0 || (outcome.files ?? 0) > 0);
+  const headline = partiallyChanged
+    ? "Codex resume history changed but did not converge"
+    : legacyMode
+      ? "Codex resume history sync SKIPPED"
+      : busy
+      ? "Codex resume history metadata restore deferred"
       : "Codex resume history NOT changed";
   return `  ⚠️ ${headline}: ${describeHistoryJobFailure(outcome, "apply", legacyMode)}\n`;
 }

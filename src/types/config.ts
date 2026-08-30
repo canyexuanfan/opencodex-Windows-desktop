@@ -239,14 +239,48 @@ export interface OcxClientIntegrationsConfig {
   "claude-desktop"?: boolean;
 }
 
+export interface OcxConfigRebaseProvenance {
+  version: 1;
+  deletedTopLevelKeys: string[];
+}
+
 export interface OcxConfig {
   port: number;
   /** Opt in to one identical-turn retry when a Responses completion has no text or tool call. */
   emptyCompletionRetry?: boolean;
+  /**
+   * Whether a login may open a browser on the machine running the proxy.
+   *
+   * Absent and `true` both mean "open", which is what every existing install
+   * already does. Only an explicit `false` declines — for an operator who wants
+   * to paste the authorization URL into a different browser profile, or who is
+   * driving the dashboard from a different machine than the proxy.
+   *
+   * Deliberately a boolean and not an "auto" mode: inferring headlessness from
+   * SSH_CONNECTION or a missing DISPLAY breaks a working login silently when
+   * the guess is wrong.
+   */
+  oauthOpenBrowser?: boolean;
   /** Maximum usage-log bytes read for one management snapshot. */
   managementUsageMaxReadBytes?: number;
   providers: Record<string, OcxProviderConfig>;
   defaultProvider: string;
+  /** Persisted state for newly discovered provider models (#2464). Absent keeps legacy "on" behavior. */
+  modelDiscovery?: {
+    newModelPolicy?: "on" | "off";
+    knownModels?: Record<string, {
+      ids: string[];
+      removed: string[];
+      updatedAt: string;
+      /** Consecutive successful discoveries in which an active id was absent. */
+      missing?: Record<string, number>;
+    }>;
+    recentArrivals?: Record<string, Array<{ id: string; at: string }>>;
+  };
+  /** Enable the shipped model alias patterns for providers without an override. */
+  defaultModelAliases?: boolean;
+  /** Explicit top-level deletion intent used by stale whole-config rebases. */
+  configRebaseProvenance?: OcxConfigRebaseProvenance | Record<string, unknown>;
   /** OpenAI provider-contract migration marker (v2 = single `openai` provider with account mode). */
   openaiProviderTierVersion?: 1 | 2;
   /** One-time migration marker for Antigravity's static-catalog defaults. */
@@ -401,17 +435,26 @@ export interface OcxConfig {
   * Shadow call intercept: redirect Codex's hard-coded helper calls (title generation,
   * commit messages, skill orchestration) to a user-chosen model. Default intercepted
   * source models: gpt-5.4-mini (older clients) and gpt-5.6-luna (Codex 0.145.0+).
-  * Opt-in; disabled by default. Matching maintenance/helper requests are forced to low.
-   * All requests for configured shadow source models are intercepted unconditionally.
+  * Opt-in; disabled by default. Matching requests preserve their configured reasoning effort.
+  * All requests for configured shadow source models are intercepted regardless of request kind,
+  * except when the replacement intersects the same provider+model source set.
+  */
+ shadowCallIntercept?: {
+   /** When true, requests for known shadow/helper source models are rewritten to the configured model. */
+   enabled?: boolean;
+   /** Replacement model id (e.g. "gpt-5.5"). */
+   model?: string;
+   /** Optional override of intercepted source-model prefixes (default: gpt-5.4-mini, gpt-5.6-luna). */
+   sourceModels?: string[];
+ };
+  /**
+   * Optional map of blocked model IDs to their replacement model IDs.
+   * When configured, incoming requests targeting a blocked model (including
+   * account-namespaced and concrete routes) are redirected to the replacement
+   * model at the shared routing layer with routeReason "blocked-model-redirect".
+   * Unset or omitted by default.
    */
-  shadowCallIntercept?: {
-    /** When true, requests for known shadow/helper source models are rewritten to the configured model. */
-    enabled?: boolean;
-    /** Replacement model id (e.g. "gpt-5.5"). */
-    model?: string;
-    /** Optional override of intercepted source-model prefixes (default: gpt-5.4-mini, gpt-5.6-luna). */
-    sourceModels?: string[];
-  };
+  blockedModelRedirects?: Record<string, string>;
   /**
    * 3-state multi-agent surface override:
    * - "v1": force ALL models to v1 surface (override upstream pins)
@@ -470,6 +513,13 @@ export interface OcxConfig {
    * those are unset — Bun's fetch honors them for all outbound calls; localhost is excluded.
    */
   proxy?: string;
+  /**
+   * Hosts that bypass `proxy` for OpenCodex's own outbound provider calls, merged into
+   * NO_PROXY at startup. Accepts a comma-separated string (NO_PROXY syntax) or an array.
+   * Loopback is always excluded regardless of this setting, and an inherited NO_PROXY is
+   * preserved — this ADDS entries, it never replaces the environment.
+   */
+  noProxy?: string | string[];
   /**
    * Upstream stall timeout (seconds). After this many seconds of no upstream data, emits
    * response.incomplete. Default 300. Min 1.
@@ -541,6 +591,15 @@ export interface OcxConfig {
    * selector map remains visible for compatibility with hand-written configurations.
    */
   codexAccountPickerEnabled?: boolean;
+  /**
+   * Show the GPT-5.3-Codex-Spark weekly window on Codex quota surfaces. Default false.
+   *
+   * Spark is a single-model window that reads 0% for most operators, and on a multi-account
+   * pool it doubles the bar count for information almost nobody acts on. Hidden by default and
+   * revealed by an explicit `true`; a malformed value reads as hidden rather than rejecting the
+   * whole config.
+   */
+  showCodexSparkQuota?: boolean;
   /** Active pool account id for next session. undefined = main (passthrough as-is). */
   activeCodexAccountId?: string;
   /** Auto-switch threshold (0-100). Default 80. 0 = disabled. */
@@ -569,6 +628,24 @@ export interface OcxConfig {
     strategy?: OcxAccountPoolRotationStrategy;
     /** Successful new-session binds retained on one round-robin selection. Default 1; range 1..100. */
     stickyLimit?: number;
+    /** Usage window for quota-based scoring. Default "five-hour" (today's behaviour). */
+    quotaWindow?: OcxAccountPoolQuotaWindow;
+  };
+  /**
+   * Generic OAuth multi-account 429 failover (#2568). Presence-driven by default.
+   *
+   * Rotates to another logged-in account of the SAME provider when one is rate-limited, for
+   * OAuth providers that have no pool of their own — xAI, Cursor, Kimi, GitHub Copilot,
+   * Antigravity, Nous. The Codex pool and the Anthropic pool own their own rotation and are
+   * excluded; this setting changes neither.
+   *
+   * With the key absent, rotation activates when a provider has 2 or more eligible stored
+   * accounts — the same consent rule API-key pools already apply to a 2+ key pool (#2568d). A
+   * single account is a strict no-op. Set `false` to keep strict single-account behaviour;
+   * `providers.<name>.oauthAccountFailover` overrides this per provider.
+   */
+  oauthAccountFailover?: {
+    enabled?: boolean;
   };
   /** Virtual `combo/<id>` models spanning concrete provider/model targets (issue #133). */
   combos?: Record<string, OcxComboConfig>;
@@ -587,19 +664,21 @@ export interface OcxConfig {
 
 export type OcxAccountPoolRotationStrategy = "quota" | "round-robin" | "fill-first";
 
-export type OcxComboStrategy = "failover" | "round-robin";
+export type OcxAccountPoolQuotaWindow = "five-hour" | "weekly" | "max-utilization";
+
+export type OcxComboStrategy = "failover" | "round-robin" | "random" | "least-used" | "reset-window";
 export type OcxComboDefaultEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 export interface OcxComboTarget {
   provider: string;
   model: string;
-  /** Relative SWRR batch weight. Default 1; valid range 1..10000. */
+  /** Relative target weight for round-robin batches and random selection. Default 1; valid range 1..10000. */
   weight?: number;
 }
 
 export interface OcxComboConfig {
   targets: OcxComboTarget[];
-  /** Ordered failover (default) or deterministic smooth weighted round-robin. */
+  /** Ordered failover (default), round-robin, weighted random, least-used, or quota reset-window selection. */
   strategy?: OcxComboStrategy;
   /** Successful requests retained on one RR selection batch. Default 1; range 1..100. */
   stickyLimit?: number;

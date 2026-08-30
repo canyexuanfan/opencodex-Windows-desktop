@@ -5,6 +5,7 @@ import { catalogModelSlug, invalidateCodexModelsCache, nativeModelRows, uniqueCa
 import {
   DEFAULT_SUBAGENT_MODELS,
   codexAutoStartEnabled,
+  deleteConfigTopLevelKey,
   hasOwnProvider,
   isValidProviderName,
   multiAgentGuidanceEnabled,
@@ -64,6 +65,7 @@ import { isPlainRecord, parseDebugLogQuery, tokPerSecondResult, unavailableCostR
 import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, CostResult, MetricSource } from "./shared";
 import type { ManagementContext } from "./context";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
+import { shadowCallTargetError } from "./shadow-call-validation";
 
 
 /** Management wire shape: omit default imageInput "auto" (persist/response sparse). */
@@ -168,7 +170,6 @@ export async function handleComboRoutes(ctx: ManagementContext): Promise<Respons
     const nextCombos = { ...(config.combos ?? {}) };
     if (renameFrom) delete nextCombos[renameFrom];
     nextCombos[id] = stored;
-    config.combos = nextCombos;
     let shouldSyncClaudeAgentDefs = false;
     const migratedModels = new Map<string, string>();
     if (oldPublicModel && oldPublicModel !== newPublicModel && previous?.nativeAlias !== true) {
@@ -182,6 +183,15 @@ export async function handleComboRoutes(ctx: ManagementContext): Promise<Respons
         previous?.nativeAlias === true ? comboModelId(id) : newPublicModel,
       );
     }
+    const currentShadowTarget = config.shadowCallIntercept?.model;
+    const migratedShadowTarget = currentShadowTarget
+      ? migratedModels.get(currentShadowTarget)
+      : undefined;
+    if (migratedShadowTarget) {
+      const targetError = shadowCallTargetError({ ...config, combos: nextCombos }, migratedShadowTarget);
+      if (targetError) return jsonResponse({ error: targetError }, 400);
+    }
+    config.combos = nextCombos;
     if (migratedModels.size > 0) {
       const migrateReference = (model: string): string => migratedModels.get(model) ?? model;
       const migrateAgentReference = (model: string): string => {
@@ -246,7 +256,7 @@ export async function handleComboRoutes(ctx: ManagementContext): Promise<Respons
     }
     const { clearComboSelectionState, clearComboTargetCooldowns } = await import("../../combos");
     delete config.combos![id];
-    if (Object.keys(config.combos!).length === 0) delete config.combos;
+    if (Object.keys(config.combos!).length === 0) deleteConfigTopLevelKey(config, "combos");
     saveConfigPreservingClaudeCode(config);
     reconcileLiveStateStores();
     clearComboSelectionState(id);

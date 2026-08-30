@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   type ComboItem,
+  type ProviderQuotaStates,
+  comboQuotaState,
   comboModelId,
   comboPublicModelId,
   draftEquals,
@@ -13,6 +15,7 @@ import { useT } from "../i18n/shared";
 import { Notice } from "../ui";
 import type { ModelOption, ProviderOption } from "./combo-workspace-types";
 import { ComboCapabilities, EffortSelect, StrategySeg, TargetEditor } from "./combo-workspace-controls";
+import { COMBO_STRATEGY_HINT_KEYS, COMBO_TARGETS_HINT_KEYS } from "../combo-workspace-data";
 import { clampedNumberInput } from "./combo-workspace-utils";
 import { handleRovingTabKey } from "../roving-tabs";
 
@@ -34,6 +37,7 @@ export function DetailPanel({
   otherIds,
   otherAliases,
   providerMap,
+  providerQuotaStates,
   providers,
   models,
   onBack,
@@ -49,6 +53,7 @@ export function DetailPanel({
   /** Aliases of all OTHER combos — alias uniqueness validates against these. */
   otherAliases: string[];
   providerMap: Readonly<Record<string, { disabled?: boolean }>>;
+  providerQuotaStates: ProviderQuotaStates;
   providers: ProviderOption[];
   models: ModelOption[];
   onBack?: () => void;
@@ -72,6 +77,7 @@ export function DetailPanel({
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const dirty = !draftEquals(draft, baseline);
+  const allTargetsExhausted = comboQuotaState(draft.targets, providerQuotaStates, providerMap) === "exhausted";
   const baselineSyncKey = `${baseline.id}:${baseline.alias ?? ""}:${baseline.nativeAlias}:${baseline.displayName ?? ""}:${baseline.strategy}:${baseline.stickyLimit}:${baseline.defaultEffort}:${baseline.imageInput ?? "auto"}:${baseline.targets.map((t) => `${t.provider}/${t.model}:${t.weight ?? 1}`).join(",")}`;
   const effortMap = useMemo(() => {
     const map = new Map<string, string[] | undefined>();
@@ -177,13 +183,18 @@ export function DetailPanel({
               <IconTrash width={14} height={14} /> {t("common.remove")}
             </button>
           )}
-          <button id={isCreate ? "cwi-edit-create" : "cwi-edit-save"} type="button" className="btn btn-primary btn-sm" disabled={(!isCreate && !dirty) || busy} onClick={() => { void save(); }}>
+          <button id={isCreate ? "cwi-edit-create" : "cwi-edit-save"} type="button" className="btn btn-primary btn-sm" disabled={(!isCreate && !dirty) || busy || allTargetsExhausted} onClick={() => { void save(); }}>
             {busy ? t("common.saving") : t(isCreate ? "cws.create" : "common.save")}
           </button>
         </div>
       </div>
 
       {msg && <Notice tone={msg.ok ? "ok" : "err"}>{msg.text}</Notice>}
+      {allTargetsExhausted && (
+        <div className="cwi-quota-banner" role="status" aria-live="polite">
+          {t("cws.quota.allExhausted")}
+        </div>
+      )}
 
       {/*
         Pills, not an underline row. Combos is a tab of the Models page now, so an
@@ -298,7 +309,7 @@ export function DetailPanel({
                 onChange={(strategy) => updateDraft((d) => ({ ...d, strategy }))}
               />
               <p className="muted" style={{ fontSize: 12, margin: "8px 0 0" }}>
-                {draft.strategy === "failover" ? t("cws.strategy.failoverHint") : t("cws.strategy.roundRobinHint")}
+                {t(COMBO_STRATEGY_HINT_KEYS[draft.strategy])}
               </p>
             </div>
             <div className="cwi-field">
@@ -340,10 +351,11 @@ export function DetailPanel({
                 strategy={draft.strategy}
                 providers={providers}
                 models={models}
+                providerQuotaStates={providerQuotaStates}
                 onChange={(targets) => updateDraft((d) => ({ ...d, targets }))}
               />
               <p className="muted" style={{ fontSize: 12, margin: "8px 0 0" }}>
-                {draft.strategy === "failover" ? t("cws.targets.failoverHint") : t("cws.targets.roundRobinHint")}
+                {t(COMBO_TARGETS_HINT_KEYS[draft.strategy])}
               </p>
             </div>
             <ComboCapabilities

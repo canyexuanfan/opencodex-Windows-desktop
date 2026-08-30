@@ -17,7 +17,8 @@ import {
 import { readCodexCatalogPath } from "./catalog/parsing";
 
 export const STALE_CODEX_APP_SERVER_HINT =
-  "If Codex still shows an older model list, restart its long-lived app-server process after sync (ocx sync --restart-codex).";
+  "If Codex still shows an older model list, restart its long-lived app-server process after sync (ocx sync --restart-codex). "
+  + "On Windows the desktop app itself may also need a full restart (ocx sync --restart-desktop-app).";
 
 /** Attach the shared dashboard hint only after a catalog or models_cache write. */
 export function attachStaleAppServerHint<T extends {
@@ -43,9 +44,14 @@ const CODEX_TARGET_TRIPLE_BODY = "[a-z0-9_]+-[a-z0-9_]+-[a-z0-9_]+(?:-[a-z0-9_]+
  * `"C:\Program Files\...\codex.exe" app-server` still reach GetOwner.
  * Also admits official target-triple basenames such as
  * `codex-x86_64-pc-windows-msvc.exe`.
+ *
+ * The optional `.opencodex-real` sits where `backupPathFor` actually puts it — after
+ * the stem and BEFORE the extension — and deliberately not before the triple. Written
+ * the other way it admits `codex.opencodex-real-x86_64-pc-windows-msvc.exe`, a name
+ * nothing produces, and pays GetOwner for it.
  */
 export const WINDOWS_CODEX_BASENAME_CANDIDATE_RE = new RegExp(
-  `(^|[/\\\\\\s'"=])codex(-${CODEX_TARGET_TRIPLE_BODY})?([.]exe|[.]cmd)?['"]?(\\s|$)`,
+  `(^|[/\\\\\\s'"=])codex(-${CODEX_TARGET_TRIPLE_BODY})?([.]opencodex-real)?([.]exe|[.]cmd|[.]ps1)?['"]?(\\s|$)`,
   "i",
 );
 
@@ -55,6 +61,38 @@ export const WINDOWS_CODEX_CODE_MODE_HOST_CANDIDATE_RE = /codex-code-mode-host/i
 const CODEX_TARGET_TRIPLE_BASENAME_RE = new RegExp(
   `^codex-${CODEX_TARGET_TRIPLE_BODY}(?:\\.exe|\\.cmd)?$`,
 );
+
+/**
+ * Launcher basenames a Codex app-server can be started through, including the
+ * `.opencodex-real` backups the autostart shim creates.
+ *
+ * When the shim installs, `backupPathFor` (`src/codex/shim.ts`) renames the original
+ * launcher by inserting `.opencodex-real` before its extension, so a shimmed host runs
+ * `~/.local/bin/codex.opencodex-real app-server`. Reported by a contributor (#2884) with
+ * `ps` output from an affected host: `--restart-codex` matched nothing and left
+ * app-servers alive holding stale in-memory catalogs.
+ *
+ * An EXACT set, kept separate from the target-triple pattern above rather than folded
+ * into it by stripping the suffix first. That shortcut is unsafe: normalising
+ * `codex-report-generator-worker.opencodex-real` yields a syntactically valid triple
+ * and would make an unrelated process a kill target. A triple binary cannot be a shim
+ * target anyway — Unix discovery accepts only a PATH entry named `codex`, and Windows
+ * refuses a real `codex.exe` outright — so the combination is unreachable, not merely
+ * unlisted.
+ *
+ * `.ps1` and `.cmd` are here because `findWindowsCodexTargets` shims both, and the
+ * extensionless form because Unix discovery and the Git-Bash launcher use it. There is
+ * deliberately no `.opencodex-real.exe`: Windows installation REFUSES to rename a native
+ * `codex.exe`, so that backup cannot exist. Matching it looked like free breadth until a
+ * review round put it plainly — this set decides what receives SIGTERM, and a name no
+ * installation can produce only widens what a coincidence can hit.
+ */
+const CODEX_LAUNCHER_BASENAMES = new Set([
+  "codex", "codex.exe", "codex.cmd",
+  "codex.opencodex-real",
+  "codex.opencodex-real.cmd",
+  "codex.opencodex-real.ps1",
+]);
 
 /** True when a Windows CommandLine is worth paying GetOwner for (current-user scoped later). */
 export function isWindowsCodexCandidateCommandLine(commandLine: string): boolean {
@@ -157,7 +195,7 @@ function tokenBasename(token: string): string {
 
 function isCodexExecutableToken(token: string): boolean {
   const base = tokenBasename(token);
-  return base === "codex" || base === "codex.exe" || base === "codex.cmd"
+  return CODEX_LAUNCHER_BASENAMES.has(base)
     || CODEX_TARGET_TRIPLE_BASENAME_RE.test(base);
 }
 
@@ -259,11 +297,32 @@ export function isCodexAppServerCommandLine(commandLine: string, executable?: st
   }
   if (tokens.length === 0) return false;
   if (isCodeModeHostProcess(tokens)) return true;
+  // An npm-installed Codex runs as a PAIR: `node /usr/local/bin/codex app-server` and the
+  // vendored native binary that wrapper spawns. Only the child used to match, so
+  // `--restart-codex` signalled the child while its supervisor kept holding the socket -
+  // which is what "PID(s) still running after SIGTERM" was reporting on Linux.
+  //
+  // The codex-shaped token must be IMMEDIATELY next. Skipping interpreter flags to reach
+  // it looks tempting and is wrong: interpreter options take values, so a generic skip
+  // reads the value of `node --require codex app-server worker.js` as the entrypoint.
+  // Supporting flags needs a real Node/Bun/Deno entrypoint parser, not a loop over
+  // hyphens; the observed wrappers put the path first, so this stays narrow on purpose.
+  //
+  // Dropping only the interpreter and re-running the ordinary scan is what preserves the
+  // subcommand discipline below: `node <codex> exec 'hi'` stays unmatched exactly like
+  // `codex exec 'hi'` does.
+  if (isInterpreterToken(tokens[0]!) && tokens.length > 1 && isCodexExecutableToken(tokens[1]!)) {
+    tokens = tokens.slice(1);
+  }
   if (!isCodexExecutableToken(tokens[0]!)) return false;
 
   let i = 1;
   while (i < tokens.length) {
     const token = tokens[i]!;
+    // `--` ends option parsing, so what follows is a prompt for the interactive TUI, not
+    // a subcommand. `codex -- app-server` starts a session whose first prompt word is
+    // "app-server"; treating it as a match sends SIGTERM to somebody's live session.
+    if (token === "--") return false;
     if (token.startsWith("-")) {
       i = advancePastCodexGlobalOption(tokens, i);
       continue;
@@ -400,9 +459,9 @@ function windowsSnapshotPowerShellCommand(): string {
   // Newlines keep -Command as a real script (space-joined statements need ';').
   // Double-quoted format string so `t expands to a real tab.
   // Codex candidates only: basename token codex / codex.exe / codex.cmd /
-  // official target-triple binaries (optional closing quote after the
-  // basename), or code-mode-host — not incidental substrings like a repo
-  // path with "opencodex".
+  // codex.ps1, their .opencodex-real shim backups, official target-triple
+  // binaries (optional closing quote after the basename), or code-mode-host —
+  // not incidental substrings like a repo path with "opencodex".
   const basenameMatch = powerShellSingleQuotedIgnoreCaseMatch(WINDOWS_CODEX_BASENAME_CANDIDATE_RE.source);
   const codeModeMatch = powerShellSingleQuotedIgnoreCaseMatch(WINDOWS_CODEX_CODE_MODE_HOST_CANDIDATE_RE.source);
   return [
@@ -505,6 +564,7 @@ export function formatStaleCodexAppServerWarning(
     `WARNING: ${processes.length} Codex app-server process(es) still running (PID${processes.length === 1 ? "" : "s"}: ${pids}). `
     + "Disk catalog/cache were updated, but Codex may keep showing the old model list until those processes restart. "
     + "Re-run with `ocx sync --restart-codex` (or `ocx sync-cache --restart-codex`) to send SIGTERM only to matching app-server processes. "
+    + "On Windows the desktop app itself may also need a full restart (`ocx sync --restart-desktop-app`). "
     + "Active turns may be interrupted."
   );
 }
@@ -738,6 +798,28 @@ const CATALOG_STATE_TTL_MS = 5_000;
  */
 const CATALOG_STATE_UNKNOWN_TTL_MS = 250;
 
+/**
+ * How long a real observation may still be SERVED after it expires, while a refresh
+ * runs behind it (#2499).
+ *
+ * The probe is advisory and, on Windows, slow: `Invoke-CimMethod GetOwner` costs
+ * ~0.4s per candidate process, so a cold probe routinely outlives the 5s TTL and
+ * every turn that misses the cache pays for it on the request path. Serving the
+ * previous reading immediately keeps that cost off the turn without pretending it is
+ * fresh -- the refresh it triggers is what makes the next reading current.
+ *
+ * Measured from expiry rather than from when the reading was taken, so a `fresh`
+ * entry stays servable for its own TTL plus this bound. Anchoring it to expiry keeps
+ * the stale window independent of the TTL -- a cap on total age would quietly turn
+ * this path off if the TTL were ever raised past it.
+ *
+ * Bounded rather than unlimited: if the refresh keeps failing, an observation this
+ * old stops being evidence about the machine and it is better to wait for a real one.
+ * `unknown` is never served this way -- it is a failure to observe, not an
+ * observation, and it already has its own short window for exactly that reason.
+ */
+export const CATALOG_STATE_MAX_STALE_MS = 60_000;
+
 export function catalogStateTtlMs(state: CodexAppServerCatalogState): number {
   return state === "unknown" ? CATALOG_STATE_UNKNOWN_TTL_MS : CATALOG_STATE_TTL_MS;
 }
@@ -833,6 +915,14 @@ export function collectCodexAppServerCatalogState(
  * - 선택한 방식: retain the synchronous API and use async PowerShell plus an identity-scoped in-flight refresh, short cache, and invalidation generation only for Windows requests.
  * - 다른 대안 대신 이 방식을 선택한 이유: it fixes unrelated `/healthz` starvation without widening the process-matching or restart contract.
  * - 장점, 단점 및 영향: concurrent turns share one CIM walk, invalidated pre-write results cannot repopulate the cache, and the event loop stays responsive; a cold v2 turn can still await the bounded advisory probe.
+ *
+ * [Decision Log · #2499]
+ * - 목적과 의도: a cold probe outlives its own 5s TTL on Windows (~435ms per candidate process for `Invoke-CimMethod GetOwner`), so the cache expires before it can serve and the miss lands on a turn.
+ * - 기존 구현 및 제약 조건: the reading is advisory, and only `fresh` authorizes positive guidance (`src/server/responses/collaboration.ts`); `unknown` is a failure to observe rather than an observation.
+ * - 검토한 주요 대안: drop the per-process GetOwner fan-out (issue suggestion 1), or widen the TTL past the probe duration (suggestion 3).
+ * - 선택한 방식: serve an expired reading immediately when its generation still matches, bounded by `CATALOG_STATE_MAX_STALE_MS`, never for `unknown`, and refresh behind it; a failed refresh no longer evicts the reading it was refreshing.
+ * - 다른 대안 대신 이 방식을 선택한 이유: the fan-out change alters what "could not verify the owner" means for the current-user scoping contract and needs its own ground-truth comparison; a wider TTL still pays the probe on every human-paced turn.
+ * - 장점, 단점 및 영향: after the first probe the request path never waits; a server that stopped between readings can be described as `fresh` for up to the stale bound; a catalog write still invalidates immediately through the generation, and the cold path is unchanged.
  */
 export async function collectCodexAppServerCatalogStateForRequest(
   io: CodexAppServerProcessIo = {},
@@ -851,16 +941,30 @@ export async function collectCodexAppServerCatalogStateForRequest(
     catalogMtimeMs: io.catalogMtimeMs,
     now: io.now,
   };
-  if (requestCatalogStateCache
+  const cached = requestCatalogStateCache
     && requestCatalogStateCache.generation === generation
     && sameRequestCatalogStateIdentity(requestCatalogStateCache.identity, identity)
-    && now - requestCatalogStateCache.atMs < catalogStateTtlMs(requestCatalogStateCache.status.state)) {
-    return requestCatalogStateCache.status;
+    ? requestCatalogStateCache
+    : null;
+  if (cached && now - cached.atMs < catalogStateTtlMs(cached.status.state)) {
+    return cached.status;
   }
+  // An expired real reading is still worth handing back while the refresh runs. It
+  // cannot have been invalidated by an ocx catalog write: every such write calls
+  // `resetCodexAppServerCatalogStateCache`, which advances the generation and drops
+  // this entry, so a generation match means no write has landed since it was taken.
+  // What it can miss is an app-server that started or stopped meanwhile -- and a
+  // server started after the reading is newer than the catalog, which is the `fresh`
+  // this entry already says.
+  const servableStale = cached
+    && cached.status.state !== "unknown"
+    && now - cached.atMs < catalogStateTtlMs(cached.status.state) + CATALOG_STATE_MAX_STALE_MS
+    ? cached.status
+    : null;
   if (requestCatalogStateFlight
     && requestCatalogStateFlight.generation === generation
     && sameRequestCatalogStateIdentity(requestCatalogStateFlight.identity, identity)) {
-    return requestCatalogStateFlight.promise;
+    return servableStale ?? requestCatalogStateFlight.promise;
   }
 
   const refresh = async (): Promise<CodexAppServerCatalogStatus> => {
@@ -918,7 +1022,18 @@ export async function collectCodexAppServerCatalogStateForRequest(
     if (requestCatalogStateGeneration !== generation) {
       return { state: "unknown" as const, processes: [], catalogMtimeMs: null };
     }
-    if (requestCatalogStateFlight === flight) {
+    // A refresh that failed must not evict a real reading. Before this function
+    // served stale entries, caching `unknown` cost at most the 250ms that state
+    // is allowed to live. Now that an expired observation is what callers are
+    // handed, overwriting one with `unknown` would take the answer AWAY from
+    // them on a transient failure -- `unknown` is not servable, so the next
+    // caller waits for a probe instead of getting the reading it would have had.
+    // Keep the observation and let its own age retire it.
+    const wouldEvictAnObservation = status.state === "unknown"
+      && requestCatalogStateCache?.generation === generation
+      && requestCatalogStateCache.status.state !== "unknown"
+      && sameRequestCatalogStateIdentity(requestCatalogStateCache.identity, identity);
+    if (requestCatalogStateFlight === flight && !wouldEvictAnObservation) {
       requestCatalogStateCache = {
         generation,
         identity,
@@ -932,7 +1047,9 @@ export async function collectCodexAppServerCatalogStateForRequest(
   });
   flight = { generation, identity, promise };
   requestCatalogStateFlight = flight;
-  return flight.promise;
+  // `promise` already absorbs its own failures, so leaving it unawaited here cannot
+  // surface as an unhandled rejection; the next caller picks up whatever it stored.
+  return servableStale ?? flight.promise;
 }
 
 /**

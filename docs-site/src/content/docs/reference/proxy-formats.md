@@ -54,6 +54,11 @@ non-empty `model`. `input` may be a string or an array of Responses items.
 
 Unknown item types are accepted as loose typed items for forward compatibility. Translated adapters
 handle only the item types they recognize, and may reject a feature their provider cannot represent.
+On the canonical ChatGPT Codex forward route, text-only `system` input messages are folded into
+top-level `instructions`, and `truncation` is removed because that destination rejects both public
+Responses shapes. Other Responses destinations preserve them.
+The same canonical boundary removes nested client-only `prompt_cache_breakpoint` markers and drops
+`item_reference` entries only on `store: false` continuations; tool call/result pairing is unchanged.
 
 ### JSON and SSE output
 
@@ -71,6 +76,22 @@ with a synthetic `response.failed` event followed by `data: [DONE]`. On the Resp
 bridge, the same condition emits a 502 `websocket_protocol_error` and cancels the upstream reader.
 A complete Responses terminal frame is authoritative: oversized or malformed trailing bytes after
 that terminal are dropped rather than replacing the completed turn with a transport failure.
+
+:::note
+For native passthrough, a Responses terminal event is authoritative. A premature `data: [DONE]` is
+held until that event. On the ordinary native path, a clean HTTP 200 EOF without a parsed terminal
+emits one `response.incomplete` with `incomplete_details.reason: "adapter_eof"`, followed by one
+`data: [DONE]`; syntactically valid delimiter-less terminal JSON is accepted exactly once, while
+malformed or truncated JSON remains incomplete. For providers opted into model-scoped terminal
+repair, unframed terminal-like suffixes and a premature `data: [DONE]` at EOF fail closed with
+`missing_terminal_event` when no complete lifecycle candidate can be promoted; a complete candidate
+is promoted to `response.completed`. High-confidence `cyber_policy`
+terminal shapes normalize to `response.failed` with `error.code: "cyber_policy"` for semantic
+logging/accounting (status 400), while an already-started streamed HTTP response remains 200. This
+committed-request boundary does not retry or replay and does not resolve
+[#2423](https://github.com/lidge-jun/opencodex/issues/2423) or
+[#2486](https://github.com/lidge-jun/opencodex/issues/2486).
+:::
 
 For canonical ChatGPT forward streaming, stable Bun 1.4.0 or newer may transparently use
 Codex's upstream WebSocket transport. Bundled Bun 1.3.14, prereleases, and unverifiable runtime
@@ -93,8 +114,23 @@ report those details:
 ```
 
 When available, `input_tokens_details` can also include `cache_write_tokens`. The always-present
-detail objects are a compatibility guarantee for strict Responses clients; zero can mean “not
-reported,” not necessarily “the provider performed no such work.”
+detail objects are a compatibility guarantee for strict Responses clients; zero can mean "not
+reported," not necessarily "the provider performed no such work."
+
+### Correlating a response with its request log
+
+Every admitted HTTP Responses reply carries an `x-opencodex-request-id` header holding a
+proxy-generated id of the form `ocx-<32 hex>`. It is the key that ties a response to its row in
+the request log and in usage reporting.
+
+The proxy always generates this value and overwrites any id supplied by the caller or returned by
+the upstream, so it is unique to this proxy and safe to trust as a correlation key. The header is
+named in `Access-Control-Expose-Headers`, which is what lets browser JavaScript read it
+cross-origin — a custom `x-` header is otherwise invisible to `response.headers.get()` even when
+it is on the wire.
+
+Responses rejected at authentication or origin admission never reach this wrapper and carry no id,
+so a missing header means the request was refused before it was logged.
 
 ### WebSocket upgrade on the same path
 

@@ -8,11 +8,12 @@
  * redirect: "manual" because Bun forwards custom headers across redirects.
  * Never throws; every error string passes redactSecretString.
  */
-import { fetchWithResetRetry } from "../lib/upstream-retry";
-import { signalWithTimeout } from "../lib/abort";
+import { applyUpstreamRecoveryInit, fetchWithResetRetry } from "../lib/upstream-retry";
+import { cancelBodyOnAbort, signalWithTimeout } from "../lib/abort";
+import { readBoundedResponseBytes } from "../lib/bounded-body";
 import { sidecarEnter } from "../lib/sidecar-tracker";
 import { redactSecretString } from "../lib/redact";
-import type { WebSearchSource } from "./parse";
+import { MAX_SIDECAR_RESPONSE_BYTES, type WebSearchSource } from "./parse";
 import type { SidecarOutcome, SidecarSettings } from "./executor";
 
 const EXA_SEARCH_URL = "https://api.exa.ai/search";
@@ -38,23 +39,53 @@ export async function runExaWebSearch(
   const t0 = Date.now();
   try {
     const res = await fetchWithResetRetry(
-      () => fetch(EXA_SEARCH_URL, {
+      recovery => fetch(EXA_SEARCH_URL, applyUpstreamRecoveryInit({
         method: "POST",
         headers: { "Content-Type": "application/json", "x-api-key": apiKey },
         body: JSON.stringify({ query, numResults: EXA_NUM_RESULTS, contents: { text: { maxCharacters: EXA_SNIPPET_CHARS } } }),
         signal: linkedSignal.signal,
         redirect: "manual",
-      }),
+      }, recovery)),
       { abortSignal: linkedSignal.signal, label: "exa-web-search-sidecar" },
     );
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      // Scrub BEFORE truncating: slicing first can cut the literal key at the
-      // boundary, leaving an unscrubbable key prefix in the surviving text.
-      return { text: "", sources: [], error: `exa sidecar HTTP ${res.status}: ${scrub(t).slice(0, 200)}` };
+    const detachBodyGuard = cancelBodyOnAbort(res.body, linkedSignal.signal);
+    try {
+      let bounded: Awaited<ReturnType<typeof readBoundedResponseBytes>> | null = null;
+      try {
+        bounded = await readBoundedResponseBytes(res, {
+          maxBytes: MAX_SIDECAR_RESPONSE_BYTES,
+          signal: linkedSignal.signal,
+        });
+      } catch {
+        const reason = linkedSignal.signal.reason;
+        if (linkedSignal.signal.aborted && reason instanceof Error && reason.name === "TimeoutError") {
+          throw reason;
+        }
+        // Preserve the previous status-only/shapeless fallback for body read
+        // failures; fetch/header failures are still classified by the outer catch.
+      }
+      if (bounded?.oversized) {
+        const prefix = res.ok ? "exa sidecar response" : `exa sidecar HTTP ${res.status} response`;
+        return { text: "", sources: [], error: `${prefix} exceeded byte bound` };
+      }
+      // Response.text()/json() replace malformed UTF-8, so preserve that
+      // behavior while moving the byte bound ahead of decoding and parsing.
+      const text = bounded ? new TextDecoder().decode(bounded.bytes) : "";
+      if (!res.ok) {
+        // Scrub BEFORE truncating: slicing first can cut the literal key at the
+        // boundary, leaving an unscrubbable key prefix in the surviving text.
+        return { text: "", sources: [], error: `exa sidecar HTTP ${res.status}: ${scrub(text).slice(0, 200)}` };
+      }
+      let payload: unknown = null;
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        // The mapper owns the stable malformed/empty JSON outcome.
+      }
+      return mapExaSearchResponse(payload);
+    } finally {
+      detachBodyGuard();
     }
-    const payload = await res.json().catch(() => null);
-    return mapExaSearchResponse(payload);
   } catch (e) {
     const kind = e instanceof Error && e.name === "TimeoutError" ? "timeout" : "connect_error";
     console.warn(`[web-search] exa sidecar ${kind} (${Date.now() - t0}ms)`);

@@ -4,7 +4,9 @@ import { ConversationStateStructureSchema } from "../src/adapters/cursor/gen/age
 import {
   clearCursorCheckpointsForTests,
   commitCursorCheckpoint,
+  CURSOR_CHECKPOINT_TTL_MS,
   getCursorCheckpoint,
+  installCursorCheckpointClockForTests,
 } from "../src/adapters/cursor/checkpoint-store";
 import {
   applyCursorToolBudget,
@@ -16,6 +18,7 @@ import {
 } from "../src/adapters/cursor/request-builder";
 import { cursorCheckpointModelAffinityId } from "../src/adapters/cursor/discovery";
 import { cursorMcpToolsEncodedSize } from "../src/adapters/cursor/tool-definitions";
+import { encodeCursorCallId, resetCursorCallIdProvenanceForTests } from "../src/adapters/cursor/call-id";
 import { parseRequest } from "../src/responses/parser";
 import type { OcxParsedRequest } from "../src/types";
 
@@ -74,6 +77,60 @@ describe("Cursor request builder", () => {
     });
 
     expect(continuation.conversationId).toBe(initial.conversationId);
+  });
+
+  test("uses a Cursor-only Desktop owner without widening Responses replay scope", () => {
+    const a = createCursorRequest({
+      ...base,
+      _cursorClientThreadId: "app:desktop-owner-a",
+    });
+    const same = createCursorRequest({
+      ...base,
+      _cursorClientThreadId: "app:desktop-owner-a",
+    });
+    const b = createCursorRequest({
+      ...base,
+      _cursorClientThreadId: "app:desktop-owner-b",
+    });
+    expect(same.conversationId).toBe(a.conversationId);
+    expect(b.conversationId).not.toBe(a.conversationId);
+  });
+
+  test("uses a Cursor-only Desktop owner for ref-less checkpoint admission", () => {
+    clearCursorCheckpointsForTests();
+    const firstTurn = {
+      ...base,
+      _cursorClientThreadId: "app:desktop-checkpoint-owner",
+      _cursorIdentityScope: "acct-desktop",
+      context: { messages: [{ role: "user" as const, content: "desktop prefix", timestamp: 1 }] },
+    };
+    const built = createCursorRequest(firstTurn);
+    const checkpointBytes = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      pendingToolCalls: ["desktop-owned-state"],
+    }));
+    expect(commitCursorCheckpoint({
+      conversationId: built.conversationId,
+      identityScope: "acct-desktop",
+      modelId: cursorCheckpointModelAffinityId(built.modelId),
+      checkpointBytes,
+      coveredMessageCount: 1,
+      prefixDigest: cursorCoveredPrefixDigest(firstTurn, 1),
+      systemDigest: cursorInstructionDigest(firstTurn),
+    })).toBeDefined();
+
+    const followUp = createCursorRequest({
+      ...firstTurn,
+      context: {
+        messages: [
+          ...firstTurn.context.messages,
+          { role: "assistant" as const, content: [{ type: "text" as const, text: "reply" }], timestamp: 2 },
+          { role: "user" as const, content: "continue", timestamp: 3 },
+        ],
+      },
+    });
+    expect(followUp.continuationMode).toBe("checkpoint");
+    expect(followUp.checkpointBytes).toEqual(checkpointBytes);
+    clearCursorCheckpointsForTests();
   });
 
   test("prefix digests do not collide across delimiter boundaries", () => {
@@ -184,7 +241,7 @@ describe("Cursor request builder", () => {
     expect(helper.conversationId).not.toBe(main.conversationId);
   });
 
-  test("isolated helper turns keep their own cache and never reuse the parent checkpoint", () => {
+  test("isolated helper turns never reuse parent or sibling checkpoints", () => {
     clearCursorCheckpointsForTests();
     const parentBytes = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
       pendingToolCalls: ["parent-fixture"],
@@ -254,8 +311,9 @@ describe("Cursor request builder", () => {
       },
     });
     expect(second.conversationId).not.toBe("cursor_parent_real");
-    expect(second.continuationMode).toBe("checkpoint");
-    expect(second.checkpointBytes?.byteLength).toBe(helperBytes.byteLength);
+    expect(second.continuationMode).toBe("full-replay");
+    expect(second.checkpointInvalidationReason).toBe("missing_ref");
+    expect(second.checkpointBytes).toBeUndefined();
     expect(getCursorCheckpoint(parentRef)?.ref).toBe(parentRef);
     clearCursorCheckpointsForTests();
   });
@@ -299,6 +357,26 @@ describe("Cursor request builder", () => {
       { role: "user", content: "hello" },
       { role: "assistant", content: "hi" },
       { role: "tool", content: "[tool_result]\ncall_id: call_1\nname: tool\nis_error: false\noutput:\ntool out" },
+    ]);
+  });
+
+  test("preserves call/result identity for local escapes and opaque escape lookalikes", () => {
+    resetCursorCallIdProvenanceForTests();
+    const local = encodeCursorCallId("ocxc1_");
+    const opaque = "ocxc1e_b2N4YzFlXw";
+    const request = createCursorRequest({
+      ...base,
+      context: {
+        messages: [
+          { role: "toolResult", toolCallId: local, toolName: "first", content: "one", isError: false, timestamp: 1 },
+          { role: "toolResult", toolCallId: opaque, toolName: "second", content: "two", isError: false, timestamp: 2 },
+        ],
+      },
+    });
+
+    expect(request.messages.map(message => message.content)).toEqual([
+      "[tool_result]\ncall_id: ocxc1_\nname: first\nis_error: false\noutput:\none",
+      `[tool_result]\ncall_id: ${opaque}\nname: second\nis_error: false\noutput:\ntwo`,
     ]);
   });
 
@@ -1201,11 +1279,12 @@ describe("Cursor request builder", () => {
     clearCursorCheckpointsForTests();
   });
 
-  test("reuses a unique covered prefix when chat omits the continuation ref", () => {
+  test("reuses a unique covered prefix when a stable client thread omits the continuation ref", () => {
     clearCursorCheckpointsForTests();
     const firstTurn = {
       ...base,
       modelId: "cursor/gpt-5.6-sol",
+      _clientThreadId: "thread-prefix-owner",
       _cursorIdentityScope: "acct-1",
       context: { messages: [{ role: "user" as const, content: "unique sol prompt 7f3c", timestamp: 1 }] },
     };
@@ -1235,5 +1314,188 @@ describe("Cursor request builder", () => {
     expect(followUp.continuationMode).toBe("checkpoint");
     expect(followUp.checkpointBytes?.byteLength).toBe(checkpointBytes.byteLength);
     clearCursorCheckpointsForTests();
+  });
+
+  test("does not reuse a unique covered prefix without a stable conversation owner", () => {
+    clearCursorCheckpointsForTests();
+    const firstTurn = {
+      ...base,
+      modelId: "cursor/gpt-5.6-sol",
+      _cursorIdentityScope: "acct-1",
+      context: { messages: [{ role: "user" as const, content: "unowned shared prefix", timestamp: 1 }] },
+    };
+    const built = createCursorRequest(firstTurn);
+    const checkpointBytes = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      pendingToolCalls: ["private-state"],
+    }));
+    expect(commitCursorCheckpoint({
+      conversationId: built.conversationId,
+      identityScope: "acct-1",
+      modelId: cursorCheckpointModelAffinityId(built.modelId),
+      checkpointBytes,
+      coveredMessageCount: 1,
+      prefixDigest: cursorCoveredPrefixDigest(firstTurn, 1),
+      systemDigest: cursorInstructionDigest(firstTurn),
+    })).toBeDefined();
+
+    const unrelated = createCursorRequest({
+      ...firstTurn,
+      context: {
+        messages: [
+          ...firstTurn.context.messages,
+          { role: "assistant" as const, content: [{ type: "text" as const, text: "reply" }], timestamp: 2 },
+          { role: "user" as const, content: "continue", timestamp: 3 },
+        ],
+      },
+    });
+    expect(unrelated.conversationId).not.toBe(built.conversationId);
+    expect(unrelated.continuationMode).toBe("full-replay");
+    expect(unrelated.checkpointInvalidationReason).toBe("missing_ref");
+    expect(unrelated.checkpointBytes).toBeUndefined();
+    clearCursorCheckpointsForTests();
+  });
+
+  test("does not reuse a unique covered prefix from a different stable client thread", () => {
+    clearCursorCheckpointsForTests();
+    const firstTurn = {
+      ...base,
+      modelId: "cursor/gpt-5.6-sol",
+      _clientThreadId: "thread-prefix-a",
+      _cursorIdentityScope: "acct-1",
+      context: { messages: [{ role: "user" as const, content: "stable shared prefix", timestamp: 1 }] },
+    };
+    const built = createCursorRequest(firstTurn);
+    const checkpointBytes = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      pendingToolCalls: ["thread-a-state"],
+    }));
+    expect(commitCursorCheckpoint({
+      conversationId: built.conversationId,
+      identityScope: "acct-1",
+      modelId: cursorCheckpointModelAffinityId(built.modelId),
+      checkpointBytes,
+      coveredMessageCount: 1,
+      prefixDigest: cursorCoveredPrefixDigest(firstTurn, 1),
+      systemDigest: cursorInstructionDigest(firstTurn),
+    })).toBeDefined();
+
+    const unrelated = createCursorRequest({
+      ...firstTurn,
+      _clientThreadId: "thread-prefix-b",
+      context: {
+        messages: [
+          ...firstTurn.context.messages,
+          { role: "assistant" as const, content: [{ type: "text" as const, text: "reply" }], timestamp: 2 },
+          { role: "user" as const, content: "continue", timestamp: 3 },
+        ],
+      },
+    });
+    expect(unrelated.conversationId).not.toBe(built.conversationId);
+    expect(unrelated.continuationMode).toBe("full-replay");
+    expect(unrelated.checkpointInvalidationReason).toBe("missing_ref");
+    expect(unrelated.checkpointBytes).toBeUndefined();
+    clearCursorCheckpointsForTests();
+  });
+
+  test("selects the owned snapshot when different conversations share a prefix", () => {
+    clearCursorCheckpointsForTests();
+    const common = {
+      ...base,
+      modelId: "cursor/gpt-5.6-sol",
+      _cursorIdentityScope: "acct-1",
+      context: { messages: [{ role: "user" as const, content: "owned shared prefix", timestamp: 1 }] },
+    };
+    const parsedA = { ...common, _clientThreadId: "thread-owned-a" };
+    const parsedB = { ...common, _clientThreadId: "thread-owned-b" };
+    const builtA = createCursorRequest(parsedA);
+    const builtB = createCursorRequest(parsedB);
+    const bytesA = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      pendingToolCalls: ["owned-a"],
+    }));
+    const bytesB = toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+      pendingToolCalls: ["owned-b"],
+    }));
+    for (const [parsed, built, checkpointBytes] of [
+      [parsedA, builtA, bytesA],
+      [parsedB, builtB, bytesB],
+    ] as const) {
+      expect(commitCursorCheckpoint({
+        conversationId: built.conversationId,
+        identityScope: "acct-1",
+        modelId: cursorCheckpointModelAffinityId(built.modelId),
+        checkpointBytes,
+        coveredMessageCount: 1,
+        prefixDigest: cursorCoveredPrefixDigest(parsed, 1),
+        systemDigest: cursorInstructionDigest(parsed),
+      })).toBeDefined();
+    }
+
+    const history = {
+      messages: [
+        ...common.context.messages,
+        { role: "assistant" as const, content: [{ type: "text" as const, text: "reply" }], timestamp: 2 },
+        { role: "user" as const, content: "continue", timestamp: 3 },
+      ],
+    };
+    const followA = createCursorRequest({ ...parsedA, context: history });
+    const followB = createCursorRequest({ ...parsedB, context: history });
+    expect(followA.continuationMode).toBe("checkpoint");
+    expect(followA.checkpointBytes).toEqual(bytesA);
+    expect(followB.continuationMode).toBe("checkpoint");
+    expect(followB.checkpointBytes).toEqual(bytesB);
+    clearCursorCheckpointsForTests();
+  });
+
+  test("does not refresh an unrelated same-prefix checkpoint", () => {
+    clearCursorCheckpointsForTests();
+    let now = 1_000;
+    installCursorCheckpointClockForTests({
+      now: () => now,
+      schedule: (() => 0 as unknown as ReturnType<typeof setTimeout>),
+      clear: () => {},
+    });
+    try {
+      const common = {
+        ...base,
+        modelId: "cursor/gpt-5.6-sol",
+        _cursorIdentityScope: "acct-1",
+        context: { messages: [{ role: "user" as const, content: "ttl shared prefix", timestamp: 1 }] },
+      };
+      const parsedA = { ...common, _clientThreadId: "thread-ttl-a" };
+      const parsedB = { ...common, _clientThreadId: "thread-ttl-b" };
+      const builtA = createCursorRequest(parsedA);
+      const builtB = createCursorRequest(parsedB);
+      const commit = (parsed: typeof parsedA, conversationId: string, marker: string) => commitCursorCheckpoint({
+        conversationId,
+        identityScope: "acct-1",
+        modelId: cursorCheckpointModelAffinityId(builtA.modelId),
+        checkpointBytes: toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+          pendingToolCalls: [marker],
+        })),
+        coveredMessageCount: 1,
+        prefixDigest: cursorCoveredPrefixDigest(parsed, 1),
+        systemDigest: cursorInstructionDigest(parsed),
+      });
+      expect(commit(parsedA, builtA.conversationId, "ttl-a")).toBeDefined();
+      const refB = commit(parsedB, builtB.conversationId, "ttl-b");
+      expect(refB).toBeDefined();
+
+      now += CURSOR_CHECKPOINT_TTL_MS - 1;
+      const followA = createCursorRequest({
+        ...parsedA,
+        context: {
+          messages: [
+            ...common.context.messages,
+            { role: "assistant" as const, content: [{ type: "text" as const, text: "reply" }], timestamp: 2 },
+            { role: "user" as const, content: "continue", timestamp: 3 },
+          ],
+        },
+      });
+      expect(followA.continuationMode).toBe("checkpoint");
+
+      now += 2;
+      expect(getCursorCheckpoint(refB)).toBeUndefined();
+    } finally {
+      clearCursorCheckpointsForTests();
+    }
   });
 });

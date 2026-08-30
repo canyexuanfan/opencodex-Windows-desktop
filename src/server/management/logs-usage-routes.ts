@@ -32,8 +32,6 @@ import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
 import { clearThreadAccountMap } from "../../codex/routing";
 import { primeCodexPoolQuotas } from "../../codex/auth-api";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../../providers/context-cap";
-import { resolveCodexHomeDir } from "../../codex/home";
-import { scanStorage } from "../../storage/scanner";
 import { executeArchivedCleanup, listTrashEntries, pickWireCleanupTestHooks, previewArchivedCleanup, type CleanupMode, type RestoreErrorCode } from "../../storage/cleanup";
 import { runArchivedCleanupJob } from "../../storage/cleanup-job";
 import { getRestoreTrashTestStreamResponse, runRestoreTrashEntryJob } from "../../storage/restore-job";
@@ -55,7 +53,7 @@ import {
   type PersistedUsageEntry,
 } from "../../usage/log";
 import { getUsageDebugLogEntries } from "../../usage/debug";
-import { parseRange, parseUsageSurface, rangeWindow, summarizeUsage, type UsageRange, type UsageSummary, type UsageSurface } from "../../usage/summary";
+import { USAGE_RANGES, USAGE_SURFACES, parseRange, parseUsageSurface, projectUsageSummary, rangeWindow, summarizeUsage, type UsageRange, type UsageSummary, type UsageSurface } from "../../usage/summary";
 import { stripCodexRuntimeProviderFields } from "../../codex/auth-context";
 import { getProviderRegistryEntry } from "../../providers/registry";
 import { getDebugLogEntries } from "../../lib/debug-log-buffer";
@@ -197,6 +195,17 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
   if (url.pathname === "/api/usage" && req.method === "GET") {
     const range = parseRange(url.searchParams.get("range"));
     const surface = parseUsageSurface(url.searchParams.get("surface"));
+    // Applied to the OUTGOING payload only. A filtered summary must never reach
+    // the cache or the warm loop below: the key is `range:surface`, so a
+    // filtered entry stored under it would be served to the next unfiltered
+    // caller, dashboard included.
+    const filter = {
+      provider: url.searchParams.get("provider"),
+      model: url.searchParams.get("model"),
+    };
+    const project = <T extends UsageSummary>(summary: T, entries?: PersistedUsageEntry[]) =>
+      projectUsageSummary(summary, filter, entries);
+    const filterRequested = Boolean(filter.provider ?? filter.model);
     const now = Date.now();
     try {
       const cacheKey = `${range}:${surface}`;
@@ -206,6 +215,12 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
       const observedSize = observed?.size ?? 0;
       const cached = getUsageSummaryCacheEntry(cacheKey);
       if (cached
+        // A filtered response is re-summarised from entries, which a cached
+        // summary does not carry. Serving it from cache would mean projecting
+        // over collapsed breakdown rows again — the exact defect the
+        // re-summarisation replaced. The unfiltered cache stays warm either
+        // way; only the filtered caller pays for the read.
+        && !filterRequested
         && cached.identityKey === identityKey
         && cached.maxReadBytes === effectiveReadLimit
         && cached.overlayVersion === userCostOverlayVersion()
@@ -214,7 +229,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         && observedSize >= cached.lastSeenSize) {
         return jsonResponse(refreshedUsageSummary(cached.summary, range, now));
       }
-      if (cached) discardUsageSummaryCacheEntry(cacheKey);
+      if (cached && !filterRequested) discardUsageSummaryCacheEntry(cacheKey);
       // Capture the overlay version BEFORE reading/computing: the cache entry
       // must be stamped with the version the summary was priced under. Reading
       // it again at stamp time could cache an old-price summary as current,
@@ -238,14 +253,18 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         // summary may mix old and new prices. Serve it uncached: the next
         // request recomputes against the settled overlay instead of caching a
         // mixed-price entry under either version.
-        return jsonResponse(summary);
+        return jsonResponse(project(summary, snapshot.entries));
       }
       const freshUntil = now + 60_000;
       const snapshotIdentity = `${usageLogIdentityKey(snapshot.revision)}\0${effectiveReadLimit}`;
       const revisionKey = `${usageLogRevisionKey(snapshot.revision)}\0${effectiveReadLimit}`;
       const lastSeenSize = snapshot.revision?.size ?? 0;
-      const ranges: UsageRange[] = ["7d", "30d", "all"];
-      const surfaces: UsageSurface[] = ["all", "codex", "claude", "grok"];
+      // Derived from the canonical constants rather than re-listed: a subset
+      // literal type-checks perfectly happily, so a range added to the union
+      // and forgotten here would never be warmed and never invalidated
+      // alongside its siblings.
+      const ranges: readonly UsageRange[] = USAGE_RANGES;
+      const surfaces: readonly UsageSurface[] = USAGE_SURFACES;
       for (const nextRange of ranges) {
         for (const nextSurface of surfaces) {
           const nextSummary = nextRange === range && nextSurface === surface ? summary : {
@@ -279,7 +298,7 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         effectiveReadLimit,
         now,
       );
-      return jsonResponse(summary);
+      return jsonResponse(project(summary, snapshot.entries));
     } catch {
       return jsonResponse({
         range,
@@ -318,20 +337,6 @@ export async function handleLogsUsageRoutes(ctx: ManagementContext): Promise<Res
         snapshotWindowStart: null,
         snapshotWindowEnd: null,
         error: "read_failed",
-      });
-    }
-  }
-
-  if (url.pathname === "/api/storage" && req.method === "GET") {
-    try {
-      return jsonResponse(scanStorage());
-    } catch {
-      return jsonResponse({
-        codexHome: resolveCodexHomeDir(),
-        generatedAt: Date.now(),
-        total: { bytes: 0, fileCount: 0 },
-        buckets: [],
-        error: "scan_failed",
       });
     }
   }

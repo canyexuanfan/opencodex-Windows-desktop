@@ -15,7 +15,18 @@ import { EXPORT_CLIENTS, type ExportModel, type ManagedContribution } from "../c
 import { isLoopbackHostname } from "../codex/inject";
 import type { OcxConfig } from "../types";
 import { PARSE_FAILED, defaultIntegrationIO, loadTarget, parseConfig, type IntegrationIO } from "./config-io";
-import { fingerprint, canonicalContribution, fragmentPathsOf, type OwnershipRecord } from "./ownership";
+import {
+  fingerprint,
+  canonicalContribution,
+  fragmentPathsOf,
+  semanticContribution,
+  type OwnershipRecord,
+} from "./ownership";
+import {
+  protectedContributionFingerprint,
+  refreshablePathsOf,
+  semanticProtectedContributionFingerprint,
+} from "./ownership-policy";
 import { createdContainerPaths, mergeContribution, removeFragments } from "./merge";
 import { INTEGRATION_CLIENTS, isLoopbackOnly, type IntegrationClientId } from "./registry";
 import { classifyIntegration, exportContextOf } from "./state";
@@ -353,12 +364,22 @@ function applyOrRefreshIntegration(input: IntegrationWriteInput, allowAbsent: bo
     opId, clientId, kind: classified.state === "stale" ? "refresh" : "apply", at, configPath,
     snapshot, resultFingerprint: fingerprint(text), resultAbsent: false, priorRecord: record,
   };
+  const refreshablePaths = refreshablePathsOf(contribution);
   return commit({
     io, store, clientId, configPath, before, nextText: text, state: "current",
     priorRecord: record,
     record: {
       clientId, configPath, fileFingerprint: fingerprint(text),
       blockFingerprint: fingerprint(canonicalContribution(contribution)),
+      semanticBlockFingerprint: fingerprint(semanticContribution(contribution)),
+      ...(refreshablePaths.length > 0 ? {
+        protectedBlockFingerprint: protectedContributionFingerprint(contribution, refreshablePaths),
+        semanticProtectedBlockFingerprint: semanticProtectedContributionFingerprint(
+          contribution,
+          refreshablePaths,
+        ),
+        refreshablePaths,
+      } : {}),
       fragmentPaths: fragmentPathsOf(contribution), createdContainers: created,
       appliedAt: at, opId,
     },
@@ -550,7 +571,10 @@ export function restoreIntegration(input: IntegrationRestoreInput): WriteOutcome
     ? (restoredText === null ? "absent" : "conflict")
     : !recordDescribesBytes
       ? "conflict"
-      : restoredRecord.blockFingerprint === fingerprint(canonicalContribution(fresh))
+      : (
+        restoredRecord.semanticBlockFingerprint === fingerprint(semanticContribution(fresh))
+        || restoredRecord.blockFingerprint === fingerprint(canonicalContribution(fresh))
+      )
         ? "current"
         : "stale";
 

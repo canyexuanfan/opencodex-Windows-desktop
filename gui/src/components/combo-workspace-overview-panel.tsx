@@ -1,31 +1,40 @@
-import type { ComboItem } from "../combo-workspace-data";
+import type { ComboItem, ProviderQuotaStates } from "../combo-workspace-data";
 import { buildComboAttention, groupCombos } from "../combo-workspace-data";
 import { IconAlert, IconChevron, IconPlus } from "../icons";
 import { useT, type TFn } from "../i18n/shared";
 
 function attentionCopy(
-  reason: "empty-targets" | "few-targets" | "catalog-omitted",
+  reason: "empty-targets" | "few-targets" | "catalog-omitted" | "all-targets-exhausted",
   t: TFn,
 ): string {
   if (reason === "empty-targets") return t("cws.attention.empty");
   if (reason === "catalog-omitted") return t("cws.attention.catalogOmitted");
+  if (reason === "all-targets-exhausted") return t("cws.attention.allTargetsExhausted");
   return t("cws.attention.few");
 }
 
 export function OverviewPanel({
   combos,
   cataloguedComboIds,
+  providerMap,
+  providerQuotaStates,
   onSelect,
   onAdd,
 }: {
   combos: ComboItem[];
   cataloguedComboIds?: ReadonlySet<string>;
+  providerMap: Readonly<Record<string, { disabled?: boolean }>>;
+  providerQuotaStates: ProviderQuotaStates;
   onSelect: (id: string) => void;
   onAdd: () => void;
 }) {
   const t = useT();
   const sections = groupCombos(combos);
-  const attention = buildComboAttention(combos, { cataloguedComboIds });
+  const attention = buildComboAttention(combos, {
+    cataloguedComboIds,
+    providers: providerMap,
+    providerQuotaStates,
+  });
 
   return (
     <div className="combos-workspace-overview">
@@ -40,6 +49,7 @@ export function OverviewPanel({
         <div className="cwi-count-pill"><strong>{combos.length}</strong><span>{t("cws.count.total")}</span></div>
         <div className="cwi-count-pill"><strong>{sections.failover.length}</strong><span>{t("cws.count.failover")}</span></div>
         <div className="cwi-count-pill"><strong>{sections.roundRobin.length}</strong><span>{t("cws.count.roundRobin")}</span></div>
+        <div className="cwi-count-pill"><strong>{sections.other.length}</strong><span>{t("cws.count.other")}</span></div>
       </div>
 
       <section className="pwi-section" aria-label={t("cws.howTitle")}>

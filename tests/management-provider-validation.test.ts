@@ -30,6 +30,7 @@ import {
 } from "../src/server";
 import { handleManagementAPI } from "../src/server/management-api";
 import { providerManagementConfigError } from "../src/server/auth-cors";
+import { providerEmptyToolOutputConfigError } from "../src/config/provider-validation";
 import { providerServiceTierConfigError, withProviderServiceTierDTO } from "../src/server/management/provider-capability-config";
 import { clearModelCache, markProviderDiscoveryFailed } from "../src/codex/model-cache";
 import type { OcxConfig } from "../src/types";
@@ -324,6 +325,106 @@ describe("provider management validation", () => {
       .toEqual(["deepseek-v4-flash", "other-model"]);
   });
 
+  test("provider management validates annotateEmptyToolOutputs as boolean", () => {
+    const provider = {
+      adapter: "openai-chat",
+      baseUrl: "https://relay.example/v1",
+      annotateEmptyToolOutputs: true,
+    };
+    expect(providerEmptyToolOutputConfigError("relay", provider)).toBeNull();
+    for (const annotateEmptyToolOutputs of ["yes", 42, {}, []]) {
+      expect(providerEmptyToolOutputConfigError("relay", {
+        ...provider,
+        annotateEmptyToolOutputs,
+      })).toContain("annotateEmptyToolOutputs");
+    }
+  });
+
+  test("provider POST rejects a non-boolean annotateEmptyToolOutputs at the management boundary", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    // The canonical seed path only engages for the real forward seed, so the plain fixture
+    // provider would never reach the comparison this test exists to cover.
+    saveConfig({ ...config("127.0.0.1"), providers: poolProviders() });
+
+    const server = startServer(0);
+    try {
+      const response = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "relay",
+          provider: {
+            adapter: "openai-chat",
+            baseUrl: "https://relay.example/v1",
+            annotateEmptyToolOutputs: "yes",
+          },
+        }),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: expect.stringContaining("annotateEmptyToolOutputs"),
+      });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("provider PATCH sets, clears, and rejects annotateEmptyToolOutputs", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig(config("127.0.0.1"));
+
+    const server = startServer(0);
+    try {
+      const create = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "relay",
+          provider: { adapter: "openai-chat", baseUrl: "https://relay.example/v1" },
+        }),
+      });
+      expect(create.status).toBe(200);
+
+      const reject = await fetch(new URL("/api/providers?name=relay", server.url), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ annotateEmptyToolOutputs: "yes" }),
+      });
+      expect(reject.status).toBe(400);
+      expect(await reject.json()).toMatchObject({ error: "annotateEmptyToolOutputs must be a boolean or null" });
+
+      const enable = await fetch(new URL("/api/providers?name=relay", server.url), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ annotateEmptyToolOutputs: true }),
+      });
+      expect(enable.status).toBe(200);
+      expect(loadConfig().providers.relay?.annotateEmptyToolOutputs).toBe(true);
+
+      const disable = await fetch(new URL("/api/providers?name=relay", server.url), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ annotateEmptyToolOutputs: false }),
+      });
+      expect(disable.status).toBe(200);
+      expect(loadConfig().providers.relay?.annotateEmptyToolOutputs).toBe(false);
+
+      const clear = await fetch(new URL("/api/providers?name=relay", server.url), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ annotateEmptyToolOutputs: null }),
+      });
+      expect(clear.status).toBe(200);
+      expect(loadConfig().providers.relay).not.toHaveProperty("annotateEmptyToolOutputs");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   test("provider management rejects modelCosts rows with extra fields", () => {
     const error = providerManagementConfigError("blsc", {
       adapter: "openai-chat",
@@ -474,6 +575,18 @@ describe("provider management validation", () => {
     expect(secretNameError).toContain("retryOn429.attempts is invalid");
     expect(secretNameError).not.toContain("sk-super-secret-9876");
     expect(secretNameError).toContain("[REDACTED]");
+  });
+
+  test("provider management redacts provider names from auto-compaction validation errors", () => {
+    const secretName = "sk-super-secret-9876";
+    const error = providerManagementConfigError(secretName, {
+      adapter: "openai-chat",
+      baseUrl: "https://api.example.test/v1",
+      modelAutoCompactTokenLimits: { model: 0 },
+    })!;
+    expect(error).toContain("modelAutoCompactTokenLimits");
+    expect(error).not.toContain(secretName);
+    expect(error).toContain("[REDACTED]");
   });
 
   test("provider request pacing PATCH persists provider and model limits without catalog churn", async () => {
@@ -642,6 +755,160 @@ describe("provider management validation", () => {
     }
   });
 
+  test("provider POST overwrite preserves the account-failover opt-out when the payload omits it (#2568d)", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig(config("127.0.0.1"));
+
+    const server = startServer(0);
+    try {
+      const create = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "custom-failover",
+          provider: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.example.test/v1",
+            oauthAccountFailover: { enabled: false },
+          },
+        }),
+      });
+      expect(create.status).toBe(200);
+
+      // Losing this one is worse than losing a cosmetic field: activation is presence-driven,
+      // so dropping the opt-out does not fall back to a neutral default — it ENABLES rotation
+      // across the operator's second subscription account, as a side effect of an edit that had
+      // nothing to do with failover.
+      const overwrite = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "custom-failover",
+          provider: { adapter: "openai-chat", baseUrl: "https://api.example.test/v1" },
+        }),
+      });
+      expect(overwrite.status).toBe(200);
+      expect(loadConfig().providers["custom-failover"]?.oauthAccountFailover).toEqual({ enabled: false });
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  // #1409: the add/edit form's payload type has no member for contextWindow or
+  test("canonical OpenAI can set, clear, and persist annotateEmptyToolOutputs via PATCH", async () => {
+    // The canonical seed comparison rejects any provider that diverges from the built-in
+    // transport seed, so a user-owned overlay must be stripped from the comparison candidate
+    // the same way contextWindow and modelAutoCompactTokenLimits already are. Without that,
+    // validation accepted this field and the seed check then refused the very same request.
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig(config("127.0.0.1"));
+
+    const server = startServer(0);
+    try {
+      const setFalse = await fetch(new URL("/api/providers?name=openai", server.url), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ annotateEmptyToolOutputs: false }),
+      });
+      expect(setFalse.status).toBe(200);
+      expect(loadConfig().providers.openai?.annotateEmptyToolOutputs).toBe(false);
+
+      const setTrue = await fetch(new URL("/api/providers?name=openai", server.url), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ annotateEmptyToolOutputs: true }),
+      });
+      expect(setTrue.status).toBe(200);
+      expect(loadConfig().providers.openai?.annotateEmptyToolOutputs).toBe(true);
+
+      // null clears the overlay and returns the provider to registry-default behavior.
+      const clear = await fetch(new URL("/api/providers?name=openai", server.url), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ annotateEmptyToolOutputs: null }),
+      });
+      expect(clear.status).toBe(200);
+      expect(loadConfig().providers.openai?.annotateEmptyToolOutputs).toBeUndefined();
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  // #1409: the add/edit form's payload type has no member for contextWindow or
+  test("provider POST overwrite preserves an explicit annotateEmptyToolOutputs: false", async () => {
+    if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
+    mkdirSync(TEST_DIR, { recursive: true });
+    process.env.OPENCODEX_HOME = TEST_DIR;
+    saveConfig(config("127.0.0.1"));
+
+    const server = startServer(0);
+    try {
+      const create = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "deepseek",
+          provider: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.deepseek.com/v1",
+            apiKey: "sk-deepseek-test",
+            annotateEmptyToolOutputs: false,
+          },
+        }),
+      });
+      expect(create.status).toBe(200);
+      expect(loadConfig().providers.deepseek?.annotateEmptyToolOutputs).toBe(false);
+
+      // DeepSeek carries a registry default of `true`. An overwrite that says nothing about
+      // annotation must not resurrect it: the operator turned the annotation OFF on purpose,
+      // and enrichment cannot tell "client omitted" from "registry supplied" once it has run.
+      const overwrite = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "deepseek",
+          provider: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.deepseek.com/v1",
+            apiKey: "sk-deepseek-rotated",
+          },
+        }),
+      });
+      expect(overwrite.status).toBe(200);
+      expect(loadConfig().providers.deepseek?.annotateEmptyToolOutputs).toBe(false);
+
+      // The stored value is only half the contract — assert the RUNTIME resolution too, since
+      // router.ts backfills the registry default beneath user entries at resolve time.
+      const { routedProviderConfig } = await import("../src/router");
+      const stored = loadConfig().providers.deepseek;
+      expect(stored).toBeDefined();
+      expect(routedProviderConfig("deepseek", stored!).annotateEmptyToolOutputs).toBe(false);
+
+      // An explicit `true` must still win, and a fresh row must still receive the default.
+      const reenable = await fetch(new URL("/api/providers", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "deepseek",
+          provider: {
+            adapter: "openai-chat",
+            baseUrl: "https://api.deepseek.com/v1",
+            apiKey: "sk-deepseek-rotated",
+            annotateEmptyToolOutputs: true,
+          },
+        }),
+      });
+      expect(reenable.status).toBe(200);
+      expect(loadConfig().providers.deepseek?.annotateEmptyToolOutputs).toBe(true);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
   // #1409: the add/edit form's payload type has no member for contextWindow or
   // modelContextWindows, so an overwrite arrives without them. Registry enrichment then fills
   // the absent fields from the seed and the stored row loses the user's values — for
@@ -670,13 +937,18 @@ describe("provider management validation", () => {
       freshHome();
       const server = startServer(0);
       try {
-        expect((await seedProvider(server.url, { modelContextWindows: { "deepseek-v4-flash": 900000 } })).status).toBe(200);
+        expect((await seedProvider(server.url, {
+          modelContextWindows: { "deepseek-v4-flash": 900000 },
+          modelAutoCompactTokenLimits: { "deepseek-v4-flash": 120000 },
+        })).status).toBe(200);
         expect((await seedProvider(server.url, {})).status).toBe(200);
 
         // The user's key survives, and the registry seed is NOT persisted into user config:
         // router.ts fills registry values beneath user entries at resolve time, so writing
         // them here would be a side effect of an unrelated save.
         expect(loadConfig().providers["opencode-go"]?.modelContextWindows).toEqual({ "deepseek-v4-flash": 900000 });
+        expect(loadConfig().providers["opencode-go"]?.modelAutoCompactTokenLimits)
+          .toEqual({ "deepseek-v4-flash": 120000 });
       } finally {
         await server.stop(true);
       }
@@ -686,11 +958,19 @@ describe("provider management validation", () => {
       freshHome();
       const server = startServer(0);
       try {
-        expect((await seedProvider(server.url, { modelContextWindows: { "deepseek-v4-flash": 900000 } })).status).toBe(200);
-        expect((await seedProvider(server.url, { modelContextWindows: { "kimi-k3": 300000 } })).status).toBe(200);
+        expect((await seedProvider(server.url, {
+          modelContextWindows: { "deepseek-v4-flash": 900000 },
+          modelAutoCompactTokenLimits: { "deepseek-v4-flash": 120000 },
+        })).status).toBe(200);
+        expect((await seedProvider(server.url, {
+          modelContextWindows: { "kimi-k3": 300000 },
+          modelAutoCompactTokenLimits: { "kimi-k3": 90000 },
+        })).status).toBe(200);
 
         expect(loadConfig().providers["opencode-go"]?.modelContextWindows)
           .toEqual({ "deepseek-v4-flash": 900000, "kimi-k3": 300000 });
+        expect(loadConfig().providers["opencode-go"]?.modelAutoCompactTokenLimits)
+          .toEqual({ "deepseek-v4-flash": 120000, "kimi-k3": 90000 });
       } finally {
         await server.stop(true);
       }
@@ -841,6 +1121,9 @@ describe("provider management validation", () => {
         ["map-shape", { ...canonicalDirect, modelContextWindows: [] }],
         ["map-value", { ...canonicalDirect, modelContextWindows: { "gpt-5.6-sol": "wide" } }],
         ["map-key", { ...canonicalDirect, modelContextWindows: { "  ": 500_000 } }],
+        ["soft-map-shape", { ...canonicalDirect, modelAutoCompactTokenLimits: [] }],
+        ["soft-map-value", { ...canonicalDirect, modelAutoCompactTokenLimits: { "gpt-5.6-sol": 1e100 } }],
+        ["soft-map-key", { ...canonicalDirect, modelAutoCompactTokenLimits: { "team/gpt-5.6-sol": 120_000 } }],
       ] as const) {
         const response = await fetch(new URL("/api/providers", server.url), {
           method: "POST",
@@ -855,6 +1138,7 @@ describe("provider management validation", () => {
       // the proxy advertises.
       for (const [, provider] of [
         ["per-model", { ...canonicalDirect, modelContextWindows: { "gpt-5.6-sol": 500_000 } }],
+        ["soft-per-model", { ...canonicalDirect, modelAutoCompactTokenLimits: { "gpt-5.6-sol": 120_000 } }],
         ["provider-wide", { ...canonicalDirect, contextWindow: 500_000 }],
       ] as const) {
         const response = await fetch(new URL("/api/providers", server.url), {
@@ -864,6 +1148,19 @@ describe("provider management validation", () => {
         });
         expect(response.status).toBe(200);
       }
+
+      // POST enriches the canonical row with registry-owned capabilities. A later budget-only
+      // PATCH must validate the overlay against a fresh seed instead of rejecting those fields.
+      const patchedBudget = await fetch(new URL("/api/providers?name=openai", server.url), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ modelAutoCompactTokenLimits: { "gpt-5.6-terra": 90_000 } }),
+      });
+      expect(patchedBudget.status).toBe(200);
+      expect(loadConfig().providers.openai.modelAutoCompactTokenLimits).toEqual({
+        "gpt-5.6-sol": 120_000,
+        "gpt-5.6-terra": 90_000,
+      });
 
       const acceptedCustom = await fetch(new URL("/api/providers", server.url), {
         method: "POST",
@@ -997,9 +1294,16 @@ describe("provider management validation", () => {
       expect(legacy.status).toBe(400);
 
       const dto = await fetch(new URL("/api/config", server.url)).then(response => response.json()) as {
-        providers: Record<string, { codexAccountMode?: string }>;
+        providers: Record<string, {
+          codexAccountMode?: string;
+          modelAutoCompactTokenLimits?: Record<string, number>;
+        }>;
       };
       expect(dto.providers.openai.codexAccountMode).toBe("direct");
+      expect(dto.providers.openai.modelAutoCompactTokenLimits).toEqual({
+        "gpt-5.6-sol": 120_000,
+        "gpt-5.6-terra": 90_000,
+      });
       expect(dto.providers["openai-multi"]).toBeUndefined();
       expect(dto.providers["custom-max-input"]).not.toHaveProperty("modelMaxInputTokens");
 
@@ -2735,6 +3039,7 @@ describe("provider management validation", () => {
           models: ["wide", "narrow"],
           contextWindow: 256_000,
           modelContextWindows: { narrow: 64_000 },
+          modelAutoCompactTokenLimits: { narrow: 32_000 },
           modelSupportsServiceTier: { narrow: false },
         },
       },
@@ -2758,27 +3063,32 @@ describe("provider management validation", () => {
       name: string;
       contextWindow?: number;
       modelContextWindows?: Record<string, number>;
+      modelAutoCompactTokenLimits?: Record<string, number>;
     }>;
     expect(rows.find(row => row.name === "relay")).toMatchObject({
       contextWindow: 256_000,
       modelContextWindows: { narrow: 64_000 },
+      modelAutoCompactTokenLimits: { narrow: 32_000 },
       modelSupportsServiceTier: { narrow: false },
     });
 
     const updated = await request("PATCH", {
       contextWindow: 350_000,
       modelContextWindows: { wide: 350_000 },
+      modelAutoCompactTokenLimits: { wide: 100_000 },
       modelSupportsServiceTier: { wide: true },
     });
     expect(updated?.status).toBe(200);
     expect(liveConfig.providers.relay).toMatchObject({
       contextWindow: 350_000,
       modelContextWindows: { wide: 350_000, narrow: 64_000 },
+      modelAutoCompactTokenLimits: { wide: 100_000, narrow: 32_000 },
       modelSupportsServiceTier: { wide: true, narrow: false },
     });
     expect(loadConfig().providers.relay).toMatchObject({
       contextWindow: 350_000,
       modelContextWindows: { wide: 350_000, narrow: 64_000 },
+      modelAutoCompactTokenLimits: { wide: 100_000, narrow: 32_000 },
       modelSupportsServiceTier: { wide: true, narrow: false },
     });
 
@@ -2792,6 +3102,9 @@ describe("provider management validation", () => {
       { modelContextWindows: { wide: 1e100 } },
       { modelContextWindows: { "": 100_000 } },
       { modelContextWindows: { wide: -1 } },
+      { modelAutoCompactTokenLimits: { wide: 1e100 } },
+      { modelAutoCompactTokenLimits: { "": 100_000 } },
+      { modelAutoCompactTokenLimits: { constructor: 100_000 } },
       { modelSupportsServiceTier: { wide: "yes" } },
       { modelSupportsServiceTier: { "": true } },
     ]) {
@@ -2800,11 +3113,16 @@ describe("provider management validation", () => {
     expect(liveConfig.providers.relay).toMatchObject({
       contextWindow: 350_000,
       modelContextWindows: { wide: 350_000, narrow: 64_000 },
+      modelAutoCompactTokenLimits: { wide: 100_000, narrow: 32_000 },
       modelSupportsServiceTier: { wide: true, narrow: false },
     });
 
     expect((await request("PATCH", { modelContextWindows: { wide: null } }))?.status).toBe(200);
     expect(liveConfig.providers.relay.modelContextWindows).toEqual({ narrow: 64_000 });
+
+    expect((await request("PATCH", { modelAutoCompactTokenLimits: { wide: null } }))?.status).toBe(200);
+    expect(liveConfig.providers.relay.modelAutoCompactTokenLimits).toEqual({ narrow: 32_000 });
+    expect(loadConfig().providers.relay.modelAutoCompactTokenLimits).toEqual({ narrow: 32_000 });
 
     expect((await request("PATCH", { modelSupportsServiceTier: { wide: null } }))?.status).toBe(200);
     expect(liveConfig.providers.relay.modelSupportsServiceTier).toEqual({ narrow: false });
@@ -2812,12 +3130,15 @@ describe("provider management validation", () => {
     const cleared = await request("PATCH", {
       contextWindow: null,
       modelContextWindows: null,
+      modelAutoCompactTokenLimits: null,
       modelSupportsServiceTier: null,
     });
     expect(cleared?.status).toBe(200);
     expect(liveConfig.providers.relay.contextWindow).toBeUndefined();
     expect(liveConfig.providers.relay.modelContextWindows).toBeUndefined();
+    expect(liveConfig.providers.relay.modelAutoCompactTokenLimits).toBeUndefined();
     expect(liveConfig.providers.relay.modelSupportsServiceTier).toBeUndefined();
+    expect(loadConfig().providers.relay.modelAutoCompactTokenLimits).toBeUndefined();
   });
 
   test("provider PATCH manages custom headers with merge and clear semantics", async () => {
@@ -2999,7 +3320,7 @@ describe("provider management validation", () => {
       "x-opencode-client": "desktop",
     });
   });
-  test("concurrent provider PATCHes merge different headers", async () => {
+  test("concurrent provider PATCHes serialize mixed fields and per-model soft budgets", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });
     mkdirSync(TEST_DIR, { recursive: true });
     process.env.OPENCODEX_HOME = TEST_DIR;
@@ -3034,6 +3355,19 @@ describe("provider management validation", () => {
     expect(first?.status).toBe(200);
     expect(second?.status).toBe(200);
     expect(liveConfig.providers.hdr.headers).toEqual({ "X-A": "a", "X-B": "b" });
+
+    const [third, fourth] = await Promise.all([
+      patch("hdr", {
+        headers: { "X-C": "c" },
+        modelAutoCompactTokenLimits: { m1: 80_000 },
+      }),
+      patch("hdr", { modelAutoCompactTokenLimits: { m2: 64_000 } }),
+    ]);
+    expect(third?.status).toBe(200);
+    expect(fourth?.status).toBe(200);
+    expect(liveConfig.providers.hdr.headers).toEqual({ "X-A": "a", "X-B": "b", "X-C": "c" });
+    expect(liveConfig.providers.hdr.modelAutoCompactTokenLimits).toEqual({ m1: 80_000, m2: 64_000 });
+    expect(loadConfig().providers.hdr.modelAutoCompactTokenLimits).toEqual({ m1: 80_000, m2: 64_000 });
   });
   test("provider context-cap API persists toggles and annotates model rows", async () => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true });

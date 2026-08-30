@@ -22,8 +22,38 @@ export function fingerprint(text: string): string {
 }
 
 /**
- * Canonical bytes of a contribution. Fragments are sorted by path so two builds
- * of the same contribution hash identically regardless of emission order.
+ * Canonicalize JSON object members recursively for semantic comparisons.
+ * Arrays stay ordered because their position can carry configuration meaning.
+ */
+function semanticJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(semanticJsonValue);
+  if (value === null || typeof value !== "object") return value;
+
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.keys(record)
+      .sort()
+      .map(key => [key, semanticJsonValue(record[key])]),
+  );
+}
+
+/**
+ * Stable semantic bytes of a contribution. Third-party clients may
+ * re-serialize JSON object members in a different order; that formatting-only
+ * rewrite must not look like a protected-value edit.
+ */
+export function semanticContribution(contribution: ManagedContribution): string {
+  const sorted = [...contribution.fragments].sort((a, b) => {
+    const left = a.path.join("\u0000");
+    const right = b.path.join("\u0000");
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
+  return JSON.stringify(sorted.map(fragment => [fragment.path, semanticJsonValue(fragment.value)]));
+}
+
+/**
+ * Legacy-compatible bytes used by existing persisted fingerprints. Fragment
+ * paths are stable, while nested object insertion order remains exact.
  */
 export function canonicalContribution(contribution: ManagedContribution): string {
   const sorted = [...contribution.fragments].sort((a, b) => {
@@ -41,6 +71,20 @@ export interface OwnershipRecord {
   fileFingerprint: string;
   /** Hash of our contribution — detects catalog/port drift. */
   blockFingerprint: string;
+  /** Key-order-independent companion for JSON clients that normalize objects. */
+  semanticBlockFingerprint?: string;
+  /**
+   * Hash of the fields the client must not rewrite. Present only when a
+   * client has explicitly declared runtime-derived paths below.
+   */
+  protectedBlockFingerprint?: string;
+  /** Key-order-independent companion to `protectedBlockFingerprint`. */
+  semanticProtectedBlockFingerprint?: string;
+  /**
+   * Exact document paths a client may derive after apply. These are recorded
+   * per operation so later catalog changes cannot widen an older grant.
+   */
+  refreshablePaths?: readonly (readonly string[])[];
   /** The exact paths we own. Removal touches these and nothing else. */
   fragmentPaths: readonly (readonly string[])[];
   /**

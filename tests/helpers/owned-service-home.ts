@@ -1,9 +1,44 @@
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 
 export interface OwnedServiceHome {
-  /** Add this to child-process environments so Linux never reaches the host bus. */
+  /** Add this only to child-process environments that also receive `preloadPath`. */
   readonly env: Record<string, string>;
+  /** Explicit Bun preload path; passed as argv so spaces are not shell-parsed. */
+  readonly preloadPath?: string;
+}
+
+const WINDOWS_SERVICE_PROBE_PRELOAD = resolve(import.meta.dir, "owned-service-home-preload.ts");
+const WINDOWS_SERVICE_PROBE_FLAG = "OCX_TEST_SERVICE_HOME_PROBE";
+
+/**
+ * Insert a test preload into a Bun command without relying on BUN_OPTIONS.
+ *
+ * `bun run` consumes its flags after the `run` subcommand; direct `bun
+ * --eval`/file invocations consume them before the entrypoint. Keeping the
+ * path as a separate argv element is what makes a checkout directory with
+ * spaces safe on Bun 1.4 and on Windows child_process/Bun.spawn alike.
+ */
+export function withOwnedServiceHomePreload(
+  args: readonly string[],
+  preloadPath = WINDOWS_SERVICE_PROBE_PRELOAD,
+): string[] {
+  if (process.platform !== "win32") return [...args];
+  const preloadArgs = ["--preload", preloadPath];
+  if (args[0] === "run" || args[0] === "test") {
+    return [args[0], ...preloadArgs, ...args.slice(1)];
+  }
+  return [...preloadArgs, ...args];
+}
+
+function windowsServiceProbeEnv(): Record<string, string> {
+  // The production Windows probe deliberately resolves schtasks.exe/sc.exe from
+  // System32, so PATH fixtures cannot isolate it. The flag is inert unless the
+  // caller also passes `preloadPath` through withOwnedServiceHomePreload; this
+  // keeps it out of the parent test environment and unrelated nested children.
+  return {
+    [WINDOWS_SERVICE_PROBE_FLAG]: "1",
+  };
 }
 
 /**
@@ -38,6 +73,9 @@ export function claimOwnedServiceHome(
     ].join("\n"));
   }
 
+  if (process.platform === "win32") {
+    return { env: windowsServiceProbeEnv(), preloadPath: WINDOWS_SERVICE_PROBE_PRELOAD };
+  }
   if (process.platform !== "linux") return { env: {} };
 
   const unitDir = join(home, ".config", "systemd", "user");

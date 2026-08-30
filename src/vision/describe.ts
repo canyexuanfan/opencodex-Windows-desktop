@@ -4,7 +4,7 @@ import { FORWARD_HEADERS } from "../adapters/openai-responses";
 import { signalWithTimeout, cancelBodyOnAbort } from "../lib/abort";
 import { redactSecretString } from "../lib/redact";
 import { sidecarEnter } from "../lib/sidecar-tracker";
-import { fetchWithResetRetry } from "../lib/upstream-retry";
+import { applyUpstreamRecoveryInit, fetchWithResetRetry } from "../lib/upstream-retry";
 import { parseSidecarSSE } from "../web-search/parse";
 import type { SidecarOutcomeRecorder } from "../web-search/executor";
 
@@ -90,7 +90,9 @@ export async function describeImage(
   const t0 = Date.now();
   try {
     const res = await fetchWithResetRetry(
-      () => fetch(`${forwardProvider.baseUrl}/responses`, {
+      // The replay needs `keepalive: false` to abandon the half-closed pooled socket; Bun has
+      // ignored a bare `Connection: close` (oven-sh/bun#20492).
+      recovery => fetch(`${forwardProvider.baseUrl}/responses`, applyUpstreamRecoveryInit({
         method: "POST",
         headers,
         body: JSON.stringify(body),
@@ -99,29 +101,34 @@ export async function describeImage(
         // across origins but forwards nonstandard headers such as `chatgpt-account-id`,
         // `session_id`, and `x-codex-turn-metadata` to the redirect target.
         redirect: "manual",
-      }),
+      }, recovery)),
       { abortSignal: linkedSignal.signal, label: "vision-sidecar" },
     );
-    recordOutcome?.(res.status);
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      console.warn(`[vision] sidecar HTTP ${res.status} (${Date.now() - t0}ms)`);
-      return { text: "", error: `vision sidecar HTTP ${res.status}: ${redactSecretString(t.slice(0, 200))}` };
-    }
     const detachBodyGuard = cancelBodyOnAbort(res.body, linkedSignal.signal);
-    let parsed;
     try {
-      parsed = await parseSidecarSSE(res);
+      if (!res.ok) {
+        recordOutcome?.(res.status);
+        const t = await res.text().catch(() => "");
+        console.warn(`[vision] sidecar HTTP ${res.status} (${Date.now() - t0}ms)`);
+        return { text: "", error: `vision sidecar HTTP ${res.status}: ${redactSecretString(t.slice(0, 200))}` };
+      }
+      const parsed = await parseSidecarSSE(res);
+      if (linkedSignal.signal.aborted) throw linkedSignal.signal.reason;
+      recordOutcome?.(res.status);
+      // The backend can return HTTP 200 then stream a `response.failed`/`error` event with no text;
+      // surface that as a describe error instead of an empty (silently-blank) description.
+      if (!parsed.text.trim() && parsed.error) return { text: "", error: parsed.error };
+      return { text: parsed.text };
     } finally {
       detachBodyGuard();
     }
-    // The backend can return HTTP 200 then stream a `response.failed`/`error` event with no text;
-    // surface that as a describe error instead of an empty (silently-blank) description.
-    if (!parsed.text.trim() && parsed.error) return { text: "", error: parsed.error };
-    return { text: parsed.text };
   } catch (e) {
-    recordOutcome?.(e instanceof Error && e.name === "TimeoutError" ? "timeout" : "connect_error");
     const kind = e instanceof Error && e.name === "TimeoutError" ? "timeout" : "connect_error";
+    const callerAborted = abortSignal?.aborted === true
+      && linkedSignal.signal.aborted
+      && linkedSignal.signal.reason === abortSignal.reason
+      && e === linkedSignal.signal.reason;
+    recordOutcome?.(callerAborted ? "connect_neutral" : kind);
     console.warn(`[vision] sidecar ${kind} (${Date.now() - t0}ms)`);
     return { text: "", error: e instanceof Error ? e.message : String(e) };
   } finally {

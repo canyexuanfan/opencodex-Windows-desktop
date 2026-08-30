@@ -89,6 +89,71 @@ describe("Cursor desktop executor hooks", () => {
     expect(reply.message.value.result.case).toBe("failure");
   });
 
+  // BUG-R7: a command that never reads stdin broke the pipe mid-write.
+  //
+  // The test above already used such a command (echo reads nothing), and it passed on
+  // macOS because the small payload usually lands in the pipe buffer before the child
+  // exits. On Linux the child won the race, the write failed with EPIPE, and because
+  // that arrives as an asynchronous 'error' EVENT rather than a throw, the try/catch
+  // around the write never saw it - the rejection escaped as an unhandled stream error
+  // and killed the shard. Shard 1 of 4 has been red on dev since.
+  //
+  // This forces the race on every platform: a payload far larger than any pipe buffer
+  // cannot be written before a non-reading child exits, so the EPIPE path is taken
+  // rather than raced for. saveAsFilename is the only caller-shaped field big enough
+  // to carry it.
+  test("a command that never reads stdin still yields a failure, not a stream error", async () => {
+    const deps = desktopDepsFromConfig({ recordScreenCommand: "echo not-json" });
+    const reply = decode((await handleCursorNativeExec(execMessage({
+      case: "recordScreenArgs",
+      value: create(RecordScreenArgsSchema, {
+        mode: 1,
+        toolCallId: "rs-epipe",
+        // 2 MiB: well past the 64 KiB pipe buffer on both platforms.
+        saveAsFilename: "y".repeat(2 * 1024 * 1024),
+      }),
+    }), deps))[0]);
+    // The contract is unchanged: the child's exit code and stdout decide the outcome,
+    // and a broken input pipe is not itself a contract failure.
+    expect(reply.message.case).toBe("recordScreenResult");
+    expect(reply.message.value.result.case).toBe("failure");
+  });
+
+  // BUG-R7: a command that never reads stdin broke the pipe mid-write.
+  //
+  // The bad-output test above already uses such a command (echo reads nothing) and
+  // passes on macOS, where a write after the child exits is simply discarded. On Linux
+  // the same write fails with EPIPE, and because that arrives as an asynchronous
+  // 'error' EVENT rather than a throw, the try/catch around the write never saw it: the
+  // rejection escaped as an unhandled stream error and killed the shard. Test shard 1
+  // of 4 has been red on dev since.
+  //
+  // This cannot be reproduced on macOS - measured: a 4 MiB write to a pipe whose child
+  // has already exited yields neither an async error nor a throw there. So the platform
+  // race is what this drives, as closely as a portable test can: a command that exits
+  // BEFORE reading anything, plus a payload far past any pipe buffer. On Linux that is
+  // the EPIPE path. On macOS the write is discarded instead, so here it proves the
+  // weaker but still useful property - a non-reading child never turns into a rejection.
+  //
+  // Both platforms must agree on the OUTCOME, which is the contract that matters: the
+  // child's exit code and stdout decide the result, and a broken input pipe does not.
+  test("a command that exits before reading stdin yields a failure, not a rejection", async () => {
+    // `exit 0` never reads and never prints, so stdout is empty: invalid JSON, which is
+    // a failure by the same rule as `echo not-json`.
+    const deps = desktopDepsFromConfig({ recordScreenCommand: "exit 0" });
+    const reply = decode((await handleCursorNativeExec(execMessage({
+      case: "recordScreenArgs",
+      value: create(RecordScreenArgsSchema, {
+        mode: 1,
+        toolCallId: "rs-epipe",
+        // 4 MiB, well past the 64 KiB pipe buffer, so the write cannot complete first.
+        saveAsFilename: "y".repeat(4 * 1024 * 1024),
+      }),
+    }), deps))[0]);
+    expect(reply.message.case).toBe("recordScreenResult");
+    expect(reply.message.value.result.case).toBe("failure");
+  });
+
   test("a throwing recordScreen dep is contained as RecordScreenFailure (dispatcher boundary)", async () => {
     const reply = decode((await handleCursorNativeExec(execMessage({
       case: "recordScreenArgs",

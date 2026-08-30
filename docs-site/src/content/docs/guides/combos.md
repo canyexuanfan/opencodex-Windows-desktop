@@ -170,6 +170,25 @@ Weights are relative, not percentages. Weights `2,1` and `200,100` express the s
 small values that communicate intent.
 :::
 
+### Random: weighted draw per request
+
+`random` draws one eligible target per request, with odds proportional to `weight`. Every request
+is an independent draw, so traffic spreads across targets without the deterministic pattern or
+stickiness of round-robin. `stickyLimit` does not affect this strategy.
+
+### Least-used: favor the target with fewest successes
+
+`least-used` routes each request to the eligible target with the fewest successful requests
+recorded by this opencodex process. Counts start at zero on restart, and ties keep configuration
+order. Weights and `stickyLimit` do not affect this strategy.
+
+### Reset-window: follow the soonest quota reset
+
+`reset-window` routes each request to the eligible target whose cached provider quota snapshot
+shows the soonest upcoming window reset (five-hour, weekly, monthly, or custom). This spends the
+provider that refreshes first. Targets without fresh quota data, and ties, keep configuration
+order. Weights and `stickyLimit` do not affect this strategy.
+
 ## What happens when a target fails
 
 Combo failures are divided into **hop** failures and **terminal** failures.
@@ -177,6 +196,7 @@ Combo failures are divided into **hop** failures and **terminal** failures.
 | Result | Behavior |
 | --- | --- |
 | HTTP 401, 403, 404, 408, 429, or any 5xx | Cool the target and hop to the next eligible target. |
+| HTTP 410 with an explicit model end-of-life, retired, deprecated, sunset, decommissioned, or no-longer-available signal | Cool that target and hop. Unrelated 410 responses remain terminal. |
 | Classified authentication, subscription, quota, rate-limit, overload, or upstream-server error | Cool the target and hop, even when the status alone is not sufficient. |
 | Client cancellation (499), `origin_rejected`, cyber-policy refusal, context overflow, or invalid request | Stop and return the error; another target would not make the request valid. |
 | Any other unclassified error | Stop and return the error. |
@@ -193,6 +213,15 @@ cooldown expires. If no eligible target remains, the proxy returns HTTP 503 with
 Failover is intentionally bounded. It helps with target-specific availability, authentication,
 quota, and overload failures; it does not hide caller errors or policy refusals.
 :::
+
+For streaming requests, the upstream HTTP status is not the final decision. OpenCodex buffers a
+bounded pre-output prefix of the selected child's Responses SSE. If the stream reports a retryable
+`response.failed` terminal before any text, reasoning, tool call, or other output event, the child
+is recorded as failed and the combo may try its next eligible target. Once any output event begins,
+the target is committed: a later stream failure is returned to the client and is never replayed on
+another provider, which prevents duplicate text and tool execution. If the pre-output buffer reaches
+its safety cap without a terminal or output boundary, OpenCodex also commits the current target
+instead of growing memory without a bound.
 
 ## Default reasoning effort
 
@@ -258,6 +287,11 @@ task workflow.
 Open the local dashboard and choose **Models → Combos**. The workspace creates, edits, renames, and removes
 combos, and its target picker excludes disabled models and nested combos.
 
+Each target also shows a live quota badge: **Available**, **Out of quota**, or **Quota unknown**. Save and
+Create are disabled only when every enabled target has fresh, complete evidence that its quota is exhausted.
+Missing, stale, malformed, or incomplete aggregate evidence stays unknown and never locks a control. Polling
+continues while the workspace is visible, so recovery automatically restores the action.
+
 ### CLI
 
 The primary commands are:
@@ -308,9 +342,9 @@ Combos are stored in the top-level `combos` object, keyed by combo id:
 | Field | Required | Default | Rules |
 | --- | --- | --- | --- |
 | `targets` | Yes | — | Non-empty ordered array of configured `{ provider, model, weight? }` targets. Duplicate provider/model pairs are rejected. |
-| `targets[].weight` | No | `1` | Integer from 1 to 10,000. Used by round-robin; ignored by failover. |
-| `strategy` | No | `"failover"` | `"failover"` or `"round-robin"`. |
-| `stickyLimit` | No | `1` | Integer from 1 to 100 successful requests per round-robin selection. |
+| `targets[].weight` | No | `1` | Integer from 1 to 10,000. Used by round-robin and random; ignored by failover, least-used, and reset-window. |
+| `strategy` | No | `"failover"` | `"failover"`, `"round-robin"`, `"random"`, `"least-used"`, or `"reset-window"`. |
+| `stickyLimit` | No | `1` | Integer from 1 to 100 successful requests per round-robin selection. Applies only to round-robin. |
 | `defaultEffort` | No | `null` | `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`; applied only when the caller omits effort and the target advertises support. |
 | `imageInput` | No | `"auto"` | `"auto"` or `"disabled"`. `"auto"` publishes image support only when every target supports images; `"disabled"` forces text-only (drops image from published modalities and rejects image-bearing requests before dispatch). |
 | `alias` | No | none | Optional trimmed public model id; use the alias rules above. An empty value is stored as no alias. |

@@ -9,12 +9,44 @@ const COMMAND_CODE_MODEL_EFFORTS = {
     efforts: ["high", "max"],
     profileUrl: "https://commandcode.ai/models/deepseek-v4-flash",
   },
-  // Ox Alpha (stealth preview, added in Command Code v1.31.0): free 1M-context
-  // reasoning model on every plan. The profile does not publish an effort ladder,
-  // so mirror the OpenRouter contract (reasoning mandatory; max/high/low).
-  "stealth/ox-alpha": {
-    efforts: ["low", "high", "max"],
-    profileUrl: "https://commandcode.ai/models/ox-alpha",
+  /*
+   * Three live routes that reached the catalog without an effort ladder (#2647).
+   * Without a row here the model advertises no efforts at all, so a client that
+   * sends one gets it stripped or rejected rather than honored.
+   *
+   * PROVENANCE, stated plainly: these three ladders are the reporter's
+   * (darwintree, #2647), recorded as reported and NOT independently verified.
+   * All three profileUrls return HTTP 200, but commandcode.ai renders these
+   * pages client-side and ships the ladder inside a serialized React payload
+   * whose `reasoningEfforts` array is EMPTY in the delivered HTML. There is no
+   * fetchable statement of these ladders to check them against.
+   *
+   * Do not assume the refresh path launders this. It does not:
+   * `parsedProfileEfforts` below matches prose of the form
+   * "Reasoning efforts ... are supported;", and `grep -c -i 'reasoning efforts'`
+   * against the live pages returns 0 — for these three AND for the older rows
+   * (deepseek-v4-pro, GLM-5.3, muse-spark-1.2 all measured 0 on 2026-08-27).
+   * So `refreshCommandCodeReasoningEfforts` returns undefined and the caller
+   * keeps whatever is written here, indefinitely. The self-correction mechanism
+   * is currently dead for EVERY row in this table, which is a pre-existing
+   * defect worth its own fix (teach the parser to read the embedded payload),
+   * not something these three rows introduced.
+   *
+   * The practical consequence: a wrong ladder here stays wrong until a human
+   * changes it. It degrades safely — an effort the upstream rejects surfaces as
+   * an error rather than silent corruption — but it does not self-heal.
+   */
+  "deepseek/deepseek-v4-flash-vision-exp": {
+    efforts: ["high", "max"],
+    profileUrl: "https://commandcode.ai/models/deepseek-v4-flash-vision-exp",
+  },
+  "gpt-5.6-luna": {
+    efforts: ["low", "medium", "high", "xhigh", "max"],
+    profileUrl: "https://commandcode.ai/models/gpt-5-6-luna",
+  },
+  "google/gemini-3.7-flash": {
+    efforts: ["low", "medium", "high"],
+    profileUrl: "https://commandcode.ai/models/gemini-3-7-flash",
   },
   // Keys must match the EXACT upstream /provider/v1/models ids (GLM ships as
   // `zai-org/GLM-5.3`, not `zai-org/glm-5.3`). The table doubles as the router's
@@ -40,6 +72,30 @@ const COMMAND_CODE_MODEL_EFFORTS = {
   "zai-org/GLM-5.3": {
     efforts: ["low", "high", "max"],
     profileUrl: "https://commandcode.ai/models/glm-5-3",
+  },
+  /*
+   * GLM-5.3-Flash (#2883). Reported as advertising NO efforts at all: the live
+   * route is `z-ai/glm-5.3-flash`, which shares neither vendor prefix nor model
+   * id with `zai-org/GLM-5.3` above, so `modelRecordValue` cannot bridge them
+   * (exact / colon-family / case-folded only — by design; a substring match here
+   * would merge two genuinely different models across two vendor namespaces).
+   *
+   * PROVENANCE: unlike the #2647 rows above, this ladder is MEASURED, not
+   * reported. commandcode.ai renders the profile client-side, but the delivered
+   * HTML ships a serialized React payload whose string table can be read
+   * directly: in the 2026-08-29 fetch of /models/glm-5-3-flash (HTTP 200,
+   * 228749 bytes) the indices resolve as 224=low, 225=medium, 226=high,
+   * 227=xhigh, 569=max, and this model's array is [224,226,569].
+   *
+   * The index map was cross-validated against every row in this table that the
+   * same page carries: deepseek-v4-pro and -flash [226,569], gpt-5.6-luna
+   * [224,225,226,227,569], gemini-3.7-flash [224,225,226], GLM-5.2 [226,569],
+   * GLM-5.3 [224,226,569] — six for six against the values already committed
+   * here. No authenticated upstream generate probe was performed.
+   */
+  "z-ai/glm-5.3-flash": {
+    efforts: ["low", "high", "max"],
+    profileUrl: "https://commandcode.ai/models/glm-5-3-flash",
   },
   // Muse Spark: CLI currently prints "has no adjustable reasoning effort" and
   // blocks --effort locally, but the upstream /alpha/generate endpoint accepts

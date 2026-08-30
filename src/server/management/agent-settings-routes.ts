@@ -5,6 +5,7 @@ import { catalogModelSlug, invalidateCodexModelsCache, nativeContextLimits, nati
 import {
   DEFAULT_SUBAGENT_MODELS,
   codexAutoStartEnabled,
+  deleteConfigTopLevelKey,
   hasOwnProvider,
   isValidProviderName,
   loadConfig,
@@ -60,6 +61,7 @@ import {
   webSearchCandidateRows,
   webSearchModelIsRejected,
   webSearchModelRejection,
+  type WebSearchBackend,
 } from "./web-search-sidecar-options";
 import { drainAndShutdown } from "../lifecycle";
 import { filterRequestLogs, getRequestLogEntries, type RequestLogEntry } from "../request-log";
@@ -94,7 +96,7 @@ function mirrorDesiredEnabledOntoSnapshot(config: OcxConfig, client: "claude-des
   const integrations = { ...(config.clientIntegrations ?? {}) };
   if (enabled) delete integrations[client];
   else integrations[client] = false;
-  if (Object.keys(integrations).length === 0) delete config.clientIntegrations;
+  if (Object.keys(integrations).length === 0) deleteConfigTopLevelKey(config, "clientIntegrations");
   else config.clientIntegrations = integrations;
 }
 
@@ -148,7 +150,7 @@ function runGrokApplyFlight(): Promise<unknown> {
   flight.promise = (grokApplyTestHooks?.run ?? (async () => {
     const [{ syncGrokConfig }, { readRuntimePort }] = await Promise.all([
       import("../../grok/sync"),
-      import("../../config"),
+      import("../../config/process-state"),
     ]);
     const currentConfig = loadConfig();
     const runtime = readRuntimePort(process.pid);
@@ -305,9 +307,18 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       return jsonResponse({ error: "body.multiAgentModeHintText must be a non-empty string or null" }, 400);
     }
     const mode = wantsMode ? body.multiAgentMode as "v1" | "default" | "v2" : undefined;
-    const modeFlag = mode === "v2" ? true : mode === "v1" ? false : undefined;
+    const effectiveMode = mode ?? config.multiAgentMode ?? "default";
+    const effectiveKeepNative = wantsKeepNative
+      ? body.keepNativeChatGptOnV1 === true
+      : config.keepNativeChatGptOnV1 === true;
+    const hybridPinActive = effectiveMode === "v2" && effectiveKeepNative;
+    const modeFlag = mode === "v2" ? !hybridPinActive : mode === "v1" ? false : undefined;
     if (wantsFlag && modeFlag !== undefined && body.enabled !== modeFlag) {
-      return jsonResponse({ error: `body.enabled conflicts with multiAgentMode '${mode}'` }, 400);
+      return jsonResponse({
+        error: hybridPinActive
+          ? "body.enabled=true conflicts with keepNativeChatGptOnV1: Codex's global multi_agent_v2 override outranks catalog pins"
+          : `body.enabled conflicts with multiAgentMode '${mode}'`,
+      }, 400);
     }
     const {
       isMultiAgentV2Enabled, hasAgentsMaxThreads, getLogicalMaxThreads, transitionMultiAgentV2,
@@ -325,7 +336,14 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       }, 502);
     }
     const warnings: string[] = [];
-    const requestedFlag = wantsFlag ? body.enabled as boolean : modeFlag;
+    if (wantsFlag && body.enabled === true && hybridPinActive) {
+      return jsonResponse({
+        error: "body.enabled=true conflicts with keepNativeChatGptOnV1: Codex's global multi_agent_v2 override outranks catalog pins",
+      }, 400);
+    }
+    const requestedFlag = wantsFlag
+      ? body.enabled as boolean
+      : modeFlag ?? (wantsKeepNative && hybridPinActive ? false : undefined);
     if (requestedFlag !== undefined || wantsThreads) {
     const targetFlag = requestedFlag ?? isMultiAgentV2Enabled();
     let toggle = deps.toggleCodexMultiAgentV2;
@@ -340,16 +358,15 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       if (result.changed && result.threadLimit !== null) warnings.push(`Thread limit ${result.threadLimit} preserved for ${targetFlag ? "v2" : "v1"}.`);
     }
     if (wantsMode) {
-      if (mode === "default") delete config.multiAgentMode;
+      if (mode === "default") deleteConfigTopLevelKey(config, "multiAgentMode");
       else config.multiAgentMode = mode;
       saveConfigPreservingClaudeCode(config);
       warnings.push(`Multi-agent mode set to '${mode}'. Applies to new sessions.`);
     }
     if (wantsKeepNative) {
       if (body.keepNativeChatGptOnV1 === true) config.keepNativeChatGptOnV1 = true;
-      else delete config.keepNativeChatGptOnV1;
+      else deleteConfigTopLevelKey(config, "keepNativeChatGptOnV1");
       saveConfigPreservingClaudeCode(config);
-      const effectiveMode = mode ?? config.multiAgentMode ?? "default";
       warnings.push(body.keepNativeChatGptOnV1 === true
         ? (effectiveMode === "v2"
           ? "ChatGPT-native models stay on v1 while other models use v2. Applies to new sessions."
@@ -558,13 +575,13 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
 
     config.multiAgentGuidanceEnabled = nextEnabled;
     if (nextSyncCodexSubagentDefaults) config.syncCodexSubagentDefaults = true;
-    else delete config.syncCodexSubagentDefaults;
+    else deleteConfigTopLevelKey(config, "syncCodexSubagentDefaults");
     if (nextModel) config.injectionModel = nextModel;
-    else delete config.injectionModel;
+    else deleteConfigTopLevelKey(config, "injectionModel");
     if (nextEffort) config.injectionEffort = nextEffort;
-    else delete config.injectionEffort;
+    else deleteConfigTopLevelKey(config, "injectionEffort");
     if (nextPrompt) config.injectionPrompt = nextPrompt;
-    else delete config.injectionPrompt;
+    else deleteConfigTopLevelKey(config, "injectionPrompt");
 
     saveConfigPreservingClaudeCode(config);
     return jsonResponse({
@@ -595,7 +612,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     for (const key of ["effortCap", "subagentEffortCap"] as const) {
       if (!(key in body)) continue;
       const value = body[key];
-      if (value === null || value === "") { delete config[key]; continue; }
+      if (value === null || value === "") { deleteConfigTopLevelKey(config, key); continue; }
       if (typeof value !== "string" || !isCodexReasoningEffort(value)) {
         return jsonResponse({ error: `unknown reasoning effort "${String(value)}"` }, 400);
       }
@@ -714,9 +731,9 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       }
     }
     if (nextModels !== undefined) config.subagentModelFallback = nextModels;
-    else delete config.subagentModelFallback;
+    else deleteConfigTopLevelKey(config, "subagentModelFallback");
     if (nextPollMs !== undefined) config.subagentModelFallbackPollMs = nextPollMs;
-    else delete config.subagentModelFallbackPollMs;
+    else deleteConfigTopLevelKey(config, "subagentModelFallbackPollMs");
     saveConfigPreservingClaudeCode(config);
     return jsonResponse({
       ok: true,
@@ -757,7 +774,7 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
     // cannot grow config.json without bound.
     const excluded = [...new Set(raw as string[])].sort();
     if (excluded.length > 2000) return jsonResponse({ error: "excluded list is too large" }, 400);
-    if (excluded.length === 0) delete config.grokExcludedModels;
+    if (excluded.length === 0) deleteConfigTopLevelKey(config, "grokExcludedModels");
     else config.grokExcludedModels = excluded;
     saveConfigPreservingClaudeCode(config);
     return jsonResponse({ ok: true, excluded });
@@ -908,6 +925,11 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
         nativeContextLimits(latest),
       );
       if (!result.written) return jsonResponse({ error: result.reason ?? "Claude Desktop apply failed", saved: true, path: result.path }, 500);
+      const { claudeDesktopPolicyWarning, probeClaudeDesktopPolicy } = await import("../../claude/desktop-policy");
+      const policyState = (deps.probeClaudeDesktopPolicy ?? probeClaudeDesktopPolicy)({
+        platform: deps.platform ?? process.platform,
+      });
+      const policyWarning = claudeDesktopPolicyWarning(policyState);
       // Persist applied fingerprint + timestamp so GUI can show saved-vs-applied state.
       if (result.fingerprint) {
         // The Desktop write already landed, so a failed bookkeeping save is not
@@ -924,11 +946,22 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
             saved: false,
             path: result.path,
             fingerprint: result.fingerprint,
-            warning: `Claude Desktop was applied, but the applied marker was not saved (${marked.reason}).`,
+            warning: [
+              `Claude Desktop was applied, but the applied marker was not saved (${marked.reason}).`,
+              policyWarning,
+            ].filter(Boolean).join(" "),
           });
         }
       }
-      return jsonResponse({ ok: true, saved: true, applied: true, path: result.path, fingerprint: result.fingerprint });
+      return jsonResponse({
+        ok: true,
+        saved: true,
+        applied: true,
+        path: result.path,
+        fingerprint: result.fingerprint,
+        policyState,
+        ...(policyWarning ? { warning: policyWarning } : {}),
+      });
     } catch (error) {
       rethrowManagementBodyTooLarge(error);
       return jsonResponse({ error: error instanceof Error ? error.message : String(error) }, 400);
@@ -950,7 +983,24 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       // a stale apply the operator should refresh.
       const stale = desiredEnabled && observed.kind === "gateway_drifted";
       const { getDesktopHealth } = await import("../../claude/desktop-health");
-      const health = getDesktopHealth();
+      const { claudeDesktopPolicyHealth, probeClaudeDesktopPolicy } = await import("../../claude/desktop-policy");
+      const policyState = (deps.probeClaudeDesktopPolicy ?? probeClaudeDesktopPolicy)({
+        platform: deps.platform ?? process.platform,
+      });
+      const policy = claudeDesktopPolicyHealth(policyState);
+      const health = {
+        ...getDesktopHealth(),
+        ok: policy.ok,
+        status: policy.status,
+        policy,
+      };
+      const policyConflict = desiredEnabled && !policy.ok;
+      const baseDrift = desiredEnabled ? !applied || stale : applied || observed.kind === "unsafe";
+      const driftReason = policyConflict
+        ? policy.state === "present" ? "managed_policy_present" : "managed_policy_unknown"
+        : desiredEnabled
+          ? !applied ? "desired_on_not_current" : stale ? "profile_drift" : null
+          : applied ? "desired_off_gateway_selected" : null;
       return jsonResponse({
         desiredEnabled,
         installed: observed.kind !== "not_installed",
@@ -965,8 +1015,8 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
         // undeterminable (no/unreadable metadata or no appliedId); a readable
         // appliedId with no owned entry is a KNOWN false. Predates the inspector.
         activeProfile: observed.ownedProfileActive,
-        drift: desiredEnabled ? !applied || stale : applied || observed.kind === "unsafe",
-        driftReason: desiredEnabled ? (!applied ? "desired_on_not_current" : stale ? "profile_drift" : null) : (applied ? "desired_off_gateway_selected" : null),
+        drift: baseDrift || policyConflict,
+        driftReason,
         health,
       });
     } catch (error) {
@@ -1118,13 +1168,18 @@ export async function handleAgentSettingsRoutes(ctx: ManagementContext): Promise
       if (field === "webSearchSidecar"
         && (section.model !== undefined || section.backend !== undefined)) {
         const stored = config.claudeCode?.webSearchSidecar;
-        const effectiveBackend = section.backend === "anthropic"
-          ? "anthropic"
-          : section.backend === "openai"
-            ? "openai"
-            : section.backend === null
-              ? config.webSearchSidecar?.backend ?? "openai"
-              : stored?.backend ?? config.webSearchSidecar?.backend ?? "openai";
+        // Validate against the SUBMITTED backend across the whole union, not
+        // just openai/anthropic (#2457). allowedBackends above already refused
+        // unknown literals; Array.includes does not narrow, hence the cast.
+        // null keeps its own meaning here — drop the override and inherit the
+        // global backend — which is deliberately NOT the sidecar-settings rule.
+        const submittedBackend = section.backend;
+        const effectiveBackend = typeof submittedBackend === "string"
+          && allowedBackends.includes(submittedBackend)
+          ? submittedBackend as WebSearchBackend
+          : submittedBackend === null
+            ? config.webSearchSidecar?.backend ?? "openai"
+            : stored?.backend ?? config.webSearchSidecar?.backend ?? "openai";
         const effectiveModel = section.model === ""
           ? config.webSearchSidecar?.model
           : typeof section.model === "string"

@@ -63,10 +63,15 @@ ocx restore back
 ocx eject back
 ```
 
-### `ocx recover-history --legacy-openai`
+### `ocx recover-history --legacy-openai --yes`
 
 Explicit recovery for older development builds that remapped Codex App history before reversible
 backup support existed. Close Codex first if its history database is locked.
+
+This is a broad, destructive relabel: every user-message thread currently tagged `opencodex` is
+changed to `openai`, `exec` is normalized to `cli`, and the event marker is set. That includes
+legitimate dedicated-provider history. Back up the state and run it only when that full scope is
+intended.
 
 ### `ocx uninstall` · `ocx remove`
 
@@ -226,6 +231,19 @@ interrupted package update removed either file, it logs one `installation is inc
 stops instead of retrying the same missing executable every five seconds. Reinstall opencodex, then
 run `ocx service repair` to refresh the task with the restored package paths.
 
+On Linux, the systemd unit invokes the first regular, executable `ocx` file found on `PATH` at
+install time rather than the Bun and CLI paths inside the installed package tree. Version managers such as
+**mise** and **asdf** install into a versioned directory and delete the old one on upgrade, which
+used to leave the unit pointing at files that no longer existed — systemd then restart-looped while
+still reporting the service as installed. A shim path survives the upgrade, so the unit keeps
+resolving. Source checkouts without an `ocx` launcher keep the previous direct Bun + CLI form. A
+trusted `OPENCODEX_BUN_PATH` selected before Bun starts is preserved through the shim; package-local
+bundled Bun paths are deliberately rediscovered after upgrades instead of being pinned in the unit.
+
+Units installed before this change still carry the old versioned paths and cannot migrate
+themselves — once the old executable is deleted, no opencodex code runs to fix it. Run
+`ocx service repair` once after upgrading; subsequent version changes need no action.
+
 | Subcommand | Action |
 | --- | --- |
 | none | Install and start when absent; otherwise refresh and restart the existing service without re-registering it. |
@@ -354,6 +372,19 @@ backs up the stable new launcher and restores the shim before dispatch. A launch
 changing is left untouched and retried later. Repair failures warn without failing the requested
 command; manual fallback: `ocx codex-shim install`. Set `codexShimAutoRestore` to `false`, or set
 `OPENCODEX_CODEX_SHIM_AUTO_RESTORE=0` for a process-level opt-out.
+
+That restore needs the original launcher OpenCodex saved next to the shim. A version manager —
+mise, asdf, volta — rewrites its whole install tree on upgrade, which destroys the shim *and* that
+backup, so there is nothing left to restore from. **A version-manager install tree is not a
+supported shim target.** OpenCodex reports the condition and stops rather than wrapping the newly
+installed binary as a replacement original: doing so would record a history that never happened, and
+the next upgrade would overwrite it again, so the repair would silently undo itself on the version
+manager's schedule.
+
+If your `codex` is owned by a version manager, route through Codex configuration instead of the
+launcher: `ocx start` writes `openai_base_url`, and `ocx service install` provides autostart. Run
+`ocx status` to confirm — it reports the active routing, and warns when a running proxy is not the
+one Codex is pointed at.
 
 | Subcommand | Action |
 | --- | --- |

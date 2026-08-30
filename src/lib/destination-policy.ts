@@ -68,6 +68,83 @@ function classifyIpv4(hostname: string): DestinationAssessment {
   return { kind: "public", detail: "public IP" };
 }
 
+/**
+ * Expand an IPv6 literal into its eight hextets, or null when it is not one this can parse.
+ * `firstIpv6Hextet` below only needs the leading group; prefix matching needs the whole address,
+ * and `::` compression plus the RFC 4291 trailing dotted-quad form both have to be handled.
+ */
+function ipv6Hextets(hostname: string): number[] | null {
+  let text = hostname;
+  const dotted = text.match(/(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (dotted?.index !== undefined) {
+    const octets = dotted[1].split(".").map(Number);
+    if (octets.some(octet => !Number.isInteger(octet) || octet < 0 || octet > 255)) return null;
+    text = text.slice(0, dotted.index)
+      + ((octets[0]! << 8) | octets[1]!).toString(16)
+      + ":"
+      + ((octets[2]! << 8) | octets[3]!).toString(16);
+  }
+  const halves = text.split("::");
+  if (halves.length > 2) return null;
+  const parseGroups = (part: string): number[] | null => {
+    if (!part) return [];
+    const out: number[] = [];
+    for (const piece of part.split(":")) {
+      if (!/^[0-9a-f]{1,4}$/i.test(piece)) return null;
+      out.push(Number.parseInt(piece, 16));
+    }
+    return out;
+  };
+  const head = parseGroups(halves[0] ?? "");
+  const tail = halves.length === 2 ? parseGroups(halves[1] ?? "") : [];
+  if (!head || !tail) return null;
+  if (halves.length === 1) return head.length === 8 ? head : null;
+  const fill = 8 - head.length - tail.length;
+  if (fill < 1) return null;
+  return [...head, ...Array<number>(fill).fill(0), ...tail];
+}
+
+/** RFC 6052 §2.1 well-known NAT64 prefix, 64:ff9b::/96, as its six leading hextets. */
+const NAT64_WELL_KNOWN_PREFIX = [0x64, 0xff9b, 0, 0, 0, 0] as const;
+
+/**
+ * `0:0:0:0:ffff:0::/96` — the explicit-zero spelling of a mapped IPv4 that some DNS resolvers
+ * return, e.g. `::ffff:0:c612:1b` for `198.18.0.27`.
+ *
+ * This is deliberately NOT taught to `classifyIpv6`. Under RFC 4291 the mapped prefix is
+ * `::ffff:0:0/96`, so `::ffff:0:c612:1b` is a reserved address whose tail merely LOOKS like an
+ * IPv4 — it is not equivalent to `198.18.0.27`. Treating the two as equal in the general
+ * classifier would admit `::ffff:0:5db8:d822` (tail `93.184.216.34`) as a public destination,
+ * which is the merge blocker a maintainer raised on #2812.
+ *
+ * The reported symptom is narrower than that equivalence: on a fake-IP resolver the answer
+ * assesses as `non-global address`, so the `allowBenchmarkAddresses` exception — which exists
+ * precisely for Clash/Surge/Mihomo fake-IP — could never be reached for this spelling. The fix
+ * therefore lives inside that opt-in, and only for a tail that is itself in `198.18.0.0/15`.
+ */
+const EXPLICIT_ZERO_MAPPED_PREFIX = [0, 0, 0, 0, 0xffff, 0] as const;
+
+/**
+ * True when this DNS answer may pass the `allowBenchmarkAddresses` opt-in.
+ *
+ * Ordinary benchmark answers (IPv4 `198.18/19`, canonical `::ffff:198.18.0.27`, and the NAT64
+ * form) already carry `detail: "benchmark address"` and pass through the first branch. The
+ * second branch adds ONLY the explicit-zero spelling, and only when its embedded quad is itself
+ * a benchmark address — so a public, loopback, private, or metadata-looking tail is refused.
+ */
+function isBenchmarkDnsAnswer(address: string, assessment: DestinationAssessment | null): boolean {
+  if (assessment?.kind === "private" && assessment.detail === "benchmark address") return true;
+  if (isIP(address) !== 6) return false;
+  if (assessment?.kind !== "private" || assessment.detail !== "non-global address") return false;
+  const hextets = ipv6Hextets(normalizeHostname(address));
+  if (!hextets) return false;
+  if (!EXPLICIT_ZERO_MAPPED_PREFIX.every((group, index) => hextets[index] === group)) return false;
+  const hi = hextets[6]!;
+  const lo = hextets[7]!;
+  const embedded = classifyIpv4(`${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`);
+  return embedded.kind === "private" && embedded.detail === "benchmark address";
+}
+
 function firstIpv6Hextet(hostname: string): number | null {
   const head = hostname.split(":")[0];
   if (!head) return 0;
@@ -88,6 +165,20 @@ function classifyIpv6(hostname: string): DestinationAssessment {
     const lo = Number.parseInt(hexMapped[2], 16);
     const ipv4 = `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
     return classifyIpv4(ipv4);
+  }
+  // NAT64 (RFC 6052): on an IPv6-only/DNS64 network every IPv4-only peer is synthesized into
+  // 64:ff9b::<ipv4>, whose leading hextet (0x64) is below the 2000::/3 global-unicast window and
+  // so fell through to "non-global address". That rejected ordinary public destinations for any
+  // user behind NAT64 — two tests already worked around it with `allowPrivateNetwork: true`.
+  // Classify the EMBEDDED IPv4 instead, exactly as the ::ffff: forms above do, so a wrapped
+  // 127.0.0.1 or 10/8 stays blocked rather than becoming an SSRF bypass. Only the well-known
+  // prefix is decoded; RFC 8215's 64:ff9b:1::/48 is reserved for local-use translation and keeps
+  // its non-global treatment.
+  const hextets = ipv6Hextets(hostname);
+  if (hextets && NAT64_WELL_KNOWN_PREFIX.every((group, index) => hextets[index] === group)) {
+    const hi = hextets[6]!;
+    const lo = hextets[7]!;
+    return classifyIpv4(`${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`);
   }
   if (hostname === "::1") return { kind: "loopback", detail: "loopback address" };
   if (hostname === "::") return { kind: "unspecified", detail: "unspecified address" };
@@ -250,11 +341,7 @@ export async function providerDestinationResolvedError(
     const assessment = ipKind === 4 ? classifyIpv4(address) : ipKind === 6 ? classifyIpv6(normalizeHostname(address)) : null;
     if (!assessment || assessment.kind === "public") continue;
     // Clash fake-IP only: 198.18/19 benchmark detail. Mixed dangerous sets still reject.
-    if (
-      options?.allowBenchmarkAddresses
-      && assessment.kind === "private"
-      && assessment.detail === "benchmark address"
-    ) {
+    if (options?.allowBenchmarkAddresses && isBenchmarkDnsAnswer(address, assessment)) {
       continue;
     }
     if (assessment.kind === "metadata") return `baseUrl hostname ${hostname} resolves to a blocked metadata endpoint (${address})`;
@@ -353,7 +440,7 @@ export async function resolvePublicAddresses(
       // fake-IP DNS, not a LAN provider. Accept it without allowPrivateNetwork and
       // do not mark the destination private, so the caller's HTTP(S)_PROXY path
       // still applies (credit #1748).
-      if (benchmarkAllowed && assessment?.kind === "private" && assessment.detail === "benchmark address") {
+      if (benchmarkAllowed && isBenchmarkDnsAnswer(address, assessment)) {
         validatedAddresses.push({ address, family: ipKind === 4 || ipKind === 6 ? ipKind : (family || 4) });
         continue;
       }
@@ -377,4 +464,3 @@ export async function resolvePublicAddresses(
 export async function assertUrlResolvesPublic(url: string): Promise<void> {
   await resolvePublicAddresses(url);
 }
-

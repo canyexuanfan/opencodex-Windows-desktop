@@ -2,14 +2,16 @@
  * Claude Code outbound: internal /v1/responses output -> Anthropic Messages API shapes.
  *
  * Wire contract pinned in devlog/260711_claude_inbound/003_evidence.md (all Tier 2):
- *  - SSE order: message_start -> (content_block_start -> deltas -> content_block_stop)*
- *    -> message_delta -> message_stop; any number of `ping`.
+ *  - Transport-only `ping` events may appear at any point, including before
+ *    message_start. Semantic framing stays message_start ->
+ *    (content_block_start -> deltas -> content_block_stop)* -> message_delta -> message_stop.
  *  - thinking blocks get thinking_delta(s) then ONE synthetic signature_delta just
  *    before content_block_stop (CCR precedent: Claude Code does not verify signatures).
  *  - message_delta.usage is cumulative; message_start embeds a full message snapshot.
  *  - errors: {type:"error", error:{type,message}}; may arrive mid-stream after HTTP 200.
  */
 import { createHash } from "node:crypto";
+import { httpStatusFromTerminalError } from "../lib/errors";
 import { isTransientUpstreamStatus } from "../lib/upstream-retry";
 import {
   isTranslatorBudgetExceededError,
@@ -267,12 +269,12 @@ export function responsesSseToAnthropicSse(
         emit("message_start", { type: "message_start", message: messageSnapshot(model) });
         emit("ping", { type: "ping" });
       };
-      // Once a semantic Anthropic message has started, keepalive pings protect remote
-      // deployments behind LB/NAT idle timeouts. Transport-only Responses prelude frames
-      // must not manufacture a message before a possible initial error.
+      // Keepalive pings protect remote deployments behind LB/NAT idle timeouts even
+      // before semantic output. They are transport-only and must not manufacture a
+      // message before a possible initial error.
       if (pingIntervalMs > 0) {
         pingTimer = setInterval(() => {
-          if (terminated || !started) return;
+          if (terminated || (controller.desiredSize ?? 0) <= 0) return;
           try {
             emit("ping", { type: "ping" });
           } catch { /* controller torn down; the read loop is ending anyway */ }
@@ -352,7 +354,8 @@ export function responsesSseToAnthropicSse(
         const type = upstreamDerived && isTransientUpstreamStatus(status) ? "overloaded_error" : undefined;
         if (!started) {
           // An initial upstream failure is an Anthropic error stream, not a partial message.
-          // Do not manufacture message_start/ping before the terminal error.
+          // Do not manufacture message_start before the terminal error. Earlier transport-only
+          // pings remain valid and do not turn the failure into a partial message.
           emit("error", anthropicErrorBody(status, message, type, code));
           return;
         }
@@ -366,7 +369,7 @@ export function responsesSseToAnthropicSse(
             // Transport prelude only. Start Anthropic framing on semantic output or completion.
             break;
           case "response.heartbeat":
-            if (started) emit("ping", { type: "ping" });
+            if ((controller.desiredSize ?? 0) > 0) emit("ping", { type: "ping" });
             break;
           case "response.output_text.delta": {
             if (typeof data.delta !== "string" || data.delta.length === 0) break;
@@ -553,9 +556,19 @@ export function responsesSseToAnthropicSse(
             }
             const status = code === "translation_buffer_limit"
               ? 413
-              : typeof error.status === "number" ? error.status : 500;
-            // status-absent response.failed (relaySseWithFailedTail synthetic tail) defaults
-            // to 500, which is in the transient set — the mid-stream reset shape maps to
+              : typeof error.status === "number"
+                ? error.status
+                // Internal response.failed envelopes carry the classified {type, code, message}
+                // but no numeric status. Derive it with the same mapping /api/logs uses so a
+                // classified 429/401/400 reaches Claude Code as its real Anthropic error type
+                // instead of being masked as retryable overload.
+                : httpStatusFromTerminalError({
+                  type: typeof error.type === "string" ? error.type : undefined,
+                  code: typeof error.code === "string" ? error.code : null,
+                  message,
+                });
+            // Unclassified status-absent response.failed (relaySseWithFailedTail synthetic
+            // tail) still lands on a transient 5xx here — the mid-stream reset shape maps to
             // overloaded_error by design.
             fail(
               status,

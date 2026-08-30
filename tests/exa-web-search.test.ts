@@ -3,6 +3,7 @@ import { mapExaSearchResponse, runExaWebSearch } from "../src/web-search/exa-exe
 import { planWebSearch } from "../src/web-search";
 import { parseRequest } from "../src/responses/parser";
 import { runWithWebSearch, type WebSearchLoopDeps } from "../src/web-search/loop";
+import { MAX_SIDECAR_RESPONSE_BYTES } from "../src/web-search/parse";
 import { createTestTranslatorBudget } from "./helpers/translator-budget";
 import type { AdapterEvent, ProviderAdapter } from "../src/adapters/base";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
@@ -13,6 +14,19 @@ function config(overrides: Partial<OcxConfig> = {}): OcxConfig {
 }
 function parsedWithWebSearch() {
   return parseRequest({ model: "routed/model", input: "search", stream: true, tools: [{ type: "web_search" }] });
+}
+
+function oversizedResponse(status: number, onCancel: () => void, prefix = ""): Response {
+  const bytes = new Uint8Array(MAX_SIDECAR_RESPONSE_BYTES + 1);
+  bytes.set(new TextEncoder().encode(prefix).subarray(0, bytes.byteLength));
+  return new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(bytes);
+    },
+    cancel() {
+      onCancel();
+    },
+  }), { status });
 }
 
 describe("mapExaSearchResponse (002 probe shape)", () => {
@@ -77,6 +91,141 @@ describe("runExaWebSearch key hygiene (canary)", () => {
     }
   });
 
+  test("an oversized successful response is rejected and its stream is cancelled", async () => {
+    let cancelled = false;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => oversizedResponse(200, () => { cancelled = true; })) as typeof fetch;
+    try {
+      const out = await runExaWebSearch("q", "key-1", { model: "m", reasoning: "low", timeoutMs: 5000, describeImages: false });
+      expect(out).toEqual({ text: "", sources: [], error: "exa sidecar response exceeded byte bound" });
+      expect(cancelled).toBe(true);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test("a valid successful response at the exact byte bound is accepted", async () => {
+    const prefix = '{"results":[{"url":"https://e.com","text":"';
+    const suffix = '"}]}';
+    const filler = "x".repeat(MAX_SIDECAR_RESPONSE_BYTES - new TextEncoder().encode(prefix + suffix).byteLength);
+    const body = new TextEncoder().encode(prefix + filler + suffix);
+    expect(body.byteLength).toBe(MAX_SIDECAR_RESPONSE_BYTES);
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(body, { status: 200 })) as typeof fetch;
+    try {
+      const out = await runExaWebSearch("q", "key-1", { model: "m", reasoning: "low", timeoutMs: 5000, describeImages: false });
+      expect(out.error).toBeUndefined();
+      expect(out.sources).toEqual([{ url: "https://e.com" }]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test("an oversized error response is rejected without retaining its body", async () => {
+    let cancelled = false;
+    const key = "exa-canary-oversized-9876543210";
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => oversizedResponse(401, () => { cancelled = true; }, key)) as typeof fetch;
+    try {
+      const out = await runExaWebSearch("q", key, { model: "m", reasoning: "low", timeoutMs: 5000, describeImages: false });
+      expect(out).toEqual({ text: "", sources: [], error: "exa sidecar HTTP 401 response exceeded byte bound" });
+      expect(cancelled).toBe(true);
+      expect(JSON.stringify(out)).not.toContain("exa-canary");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test("malformed JSON keeps the stable shapeless outcome", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("not-json", { status: 200 })) as typeof fetch;
+    try {
+      const out = await runExaWebSearch("q", "key-1", { model: "m", reasoning: "low", timeoutMs: 5000, describeImages: false });
+      expect(out.error).toBe("exa sidecar returned a non-JSON or shapeless body");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test("malformed UTF-8 preserves response replacement decoding", async () => {
+    const encoder = new TextEncoder();
+    const prefix = encoder.encode('{"results":[{"url":"https://e.com","title":"');
+    const suffix = encoder.encode('"}]}');
+    const body = new Uint8Array(prefix.byteLength + 1 + suffix.byteLength);
+    body.set(prefix);
+    body[prefix.byteLength] = 0xff;
+    body.set(suffix, prefix.byteLength + 1);
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(body, { status: 200 })) as typeof fetch;
+    try {
+      const out = await runExaWebSearch("q", "key-1", { model: "m", reasoning: "low", timeoutMs: 5000, describeImages: false });
+      expect(out.sources).toEqual([{ url: "https://e.com", title: "�" }]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test("a body read rejection preserves the HTTP status-only fallback", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("body-reset"));
+      },
+    }), { status: 502 })) as typeof fetch;
+    try {
+      const out = await runExaWebSearch("q", "key-1", { model: "m", reasoning: "low", timeoutMs: 5000, describeImages: false });
+      expect(out.error).toBe("exa sidecar HTTP 502: ");
+      expect(out.error).not.toContain("body-reset");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test("an already-aborted response body is cancelled before reader attachment", async () => {
+    const parent = new AbortController();
+    let cancelled = false;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      const response = new Response(new ReadableStream<Uint8Array>({
+        pull() {
+          // Stay pending until cancellation owns the body.
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }), { status: 200 });
+      parent.abort(new DOMException("parent stopped", "AbortError"));
+      return response;
+    }) as typeof fetch;
+    try {
+      const out = await runExaWebSearch("q", "key-1", { model: "m", reasoning: "low", timeoutMs: 5000, describeImages: false }, parent.signal);
+      expect(out.error).toBe("exa sidecar returned a non-JSON or shapeless body");
+      expect(cancelled).toBe(true);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test("a response body timeout keeps the timeout outcome", async () => {
+    let cancelled = false;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
+      pull() {
+        // Stay pending until the linked deadline expires.
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }), { status: 200 })) as typeof fetch;
+    try {
+      const out = await runExaWebSearch("q", "key-1", { model: "m", reasoning: "low", timeoutMs: 5, describeImages: false });
+      expect(out.error).toBe("Timeout elapsed");
+      expect(cancelled).toBe(true);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   test("request carries x-api-key, manual redirect, pinned url; empty key fails closed with no fetch", async () => {
     const captured: Array<{ url: string; init: RequestInit }> = [];
     const realFetch = globalThis.fetch;
@@ -93,7 +242,8 @@ describe("runExaWebSearch key hygiene (canary)", () => {
       expect(captured).toHaveLength(1);
       expect(captured[0]!.url).toBe("https://api.exa.ai/search");
       expect(captured[0]!.init.redirect).toBe("manual");
-      expect((captured[0]!.init.headers as Record<string, string>)["x-api-key"]).toBe("key-1");
+      // Representation-independent: the init may carry a plain record or a Headers instance.
+      expect(new Headers(captured[0]!.init.headers).get("x-api-key")).toBe("key-1");
     } finally {
       globalThis.fetch = realFetch;
     }

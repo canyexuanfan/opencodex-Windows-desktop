@@ -8,7 +8,7 @@
  * Privacy: logs never include host paths, digests of file contents, or secrets.
  */
 import { resolveCodexHomeDir } from "../codex/home";
-import { loadConfig, saveConfigPreservingClaudeCode } from "../config";
+import { loadConfig, mutatePersistedConfig, saveConfigPreservingClaudeCode } from "../config";
 import type { StorageCleanupPolicy } from "../types";
 import {
   computePreviewDigest,
@@ -38,6 +38,7 @@ export function setStorageCleanupPolicyLiveSink(
 
 export type PolicySchedule = StorageCleanupPolicy["schedule"];
 export type PolicyRunReason = "startup" | "schedule" | "manual";
+export type PolicyMetadataPersistenceError = "missing" | "invalid" | "conflict" | "write_failed";
 
 export type PolicySkipReason =
   | "disabled"
@@ -54,6 +55,7 @@ export interface PolicyRunResult {
   freedBytes?: number;
   removed?: number;
   trashDir?: string;
+  metadataPersistenceError?: PolicyMetadataPersistenceError;
   policy: StorageCleanupPolicy;
 }
 
@@ -399,6 +401,21 @@ export type PolicyRunMetadataPatch = {
   lastRun?: StorageCleanupPolicy["lastRun"];
 };
 
+/** Apply only run-owned fields while preserving the supplied policy settings. */
+function applyPolicyRunMetadata(
+  policy: StorageCleanupPolicy,
+  patch: PolicyRunMetadataPatch,
+): StorageCleanupPolicy {
+  let next =
+    patch.nextRun === "defer_busy"
+      ? deferBusy(policy, patch.now)
+      : advanceNextRun(policy, patch.now);
+  if (patch.lastRun) {
+    next = { ...next, lastRun: patch.lastRun };
+  }
+  return next;
+}
+
 /**
  * Reload the latest persisted policy and write only run-owned metadata
  * (`lastRun` / `nextRun`). Preserves concurrent edits to enabled, trigger,
@@ -410,15 +427,55 @@ export function commitPolicyRunMetadata(
   patch: PolicyRunMetadataPatch,
 ): StorageCleanupPolicy {
   const latest = normalizeStorageCleanupPolicy(load());
-  let next =
-    patch.nextRun === "defer_busy"
-      ? deferBusy(latest, patch.now)
-      : advanceNextRun(latest, patch.now);
-  if (patch.lastRun) {
-    next = { ...next, lastRun: patch.lastRun };
-  }
+  const next = applyPolicyRunMetadata(latest, patch);
   save(next);
   return next;
+}
+
+type PolicyRunMetadataCommit = {
+  policy: StorageCleanupPolicy;
+  persistenceError?: PolicyMetadataPersistenceError;
+};
+
+/** Attach the durable metadata outcome without replacing cleanup status or metrics. */
+function withMetadataCommit(
+  result: Omit<PolicyRunResult, "policy" | "metadataPersistenceError">,
+  committed: PolicyRunMetadataCommit,
+): PolicyRunResult {
+  return {
+    ...result,
+    policy: committed.policy,
+    ...(committed.persistenceError ? { metadataPersistenceError: committed.persistenceError } : {}),
+  };
+}
+
+/** Recompute run-owned metadata from the latest config inside the mutation lock. */
+function commitPolicyRunMetadataToConfig(
+  patch: PolicyRunMetadataPatch,
+  fallbackPolicy: StorageCleanupPolicy,
+): PolicyRunMetadataCommit {
+  const unavailable = (reason: PolicyMetadataPersistenceError): PolicyRunMetadataCommit => {
+    console.warn(`[storage-policy] metadata_persist_failed reason=${reason}`);
+    return {
+      policy: applyPolicyRunMetadata(fallbackPolicy, patch),
+      persistenceError: reason,
+    };
+  };
+  try {
+    const outcome = mutatePersistedConfig(config => {
+      const next = applyPolicyRunMetadata(
+        normalizeStorageCleanupPolicy(config.storageCleanupPolicy),
+        patch,
+      );
+      config.storageCleanupPolicy = next;
+      return { changed: true, value: next };
+    });
+    if (outcome.status === "unavailable") return unavailable(outcome.reason);
+    livePolicySink?.(outcome.value);
+    return { policy: outcome.value };
+  } catch {
+    return unavailable("write_failed");
+  }
 }
 
 function logPolicyEvent(message: string): void {
@@ -434,8 +491,14 @@ export function runStorageCleanupPolicy(deps: PolicyRunDeps): PolicyRunResult {
   const load = deps.loadPolicy ?? readStorageCleanupPolicyFromConfig;
   const save = deps.savePolicy ?? writeStorageCleanupPolicyToConfig;
   const execute = deps.execute ?? executeArchivedCleanup;
-
   const policy = normalizeStorageCleanupPolicy(load());
+  // Injected stores retain the existing load/save contract. The production path
+  // recomputes metadata from the latest persisted policy inside the config lock.
+  const commitMetadata = deps.loadPolicy !== undefined || deps.savePolicy !== undefined
+    ? (patch: PolicyRunMetadataPatch): PolicyRunMetadataCommit => ({
+        policy: commitPolicyRunMetadata(load, save, patch),
+      })
+    : (patch: PolicyRunMetadataPatch) => commitPolicyRunMetadataToConfig(patch, policy);
 
   if (typeof deps.holdAfterLoadMs === "number" && Number.isFinite(deps.holdAfterLoadMs) && deps.holdAfterLoadMs > 0) {
     Bun.sleepSync(Math.floor(deps.holdAfterLoadMs));
@@ -451,15 +514,15 @@ export function runStorageCleanupPolicy(deps: PolicyRunDeps): PolicyRunResult {
 
   const selection = selectPolicyPreview(policy, deps.codexHome);
   if (selection.archivedBytes <= policy.trigger.archivedBytesOver) {
-    const saved = commitPolicyRunMetadata(load, save, { now, nextRun: "advance" });
+    const committed = commitMetadata({ now, nextRun: "advance" });
     logPolicyEvent("skip under_threshold");
-    return { ok: true, skipped: "under_threshold", policy: saved };
+    return withMetadataCommit({ ok: true, skipped: "under_threshold" }, committed);
   }
 
   if (selection.count === 0) {
-    const saved = commitPolicyRunMetadata(load, save, { now, nextRun: "advance" });
+    const committed = commitMetadata({ now, nextRun: "advance" });
     logPolicyEvent("skip nothing_selected");
-    return { ok: true, skipped: "nothing_selected", policy: saved };
+    return withMetadataCommit({ ok: true, skipped: "nothing_selected" }, committed);
   }
 
   const result = execute({
@@ -473,25 +536,28 @@ export function runStorageCleanupPolicy(deps: PolicyRunDeps): PolicyRunResult {
   });
 
   if (!result.ok && result.error === "codex_busy") {
-    const saved = commitPolicyRunMetadata(load, save, { now, nextRun: "defer_busy" });
+    const committed = commitMetadata({ now, nextRun: "defer_busy" });
     logPolicyEvent("defer codex_busy");
-    return { ok: false, deferred: "codex_busy", error: "codex_busy", policy: saved };
+    return withMetadataCommit({
+      ok: false,
+      deferred: "codex_busy",
+      error: "codex_busy",
+    }, committed);
   }
 
   if (!result.ok) {
     // Non-busy failure: still advance schedule so we do not tight-loop.
-    const saved = commitPolicyRunMetadata(load, save, { now, nextRun: "advance" });
+    const committed = commitMetadata({ now, nextRun: "advance" });
     logPolicyEvent(`fail ${result.error ?? "cleanup_failed"}`);
-    return {
+    return withMetadataCommit({
       ok: false,
       error: result.error,
       mode: result.mode,
       ...(result.trashDir ? { trashDir: result.trashDir } : {}),
-      policy: saved,
-    };
+    }, committed);
   }
 
-  const saved = commitPolicyRunMetadata(load, save, {
+  const committed = commitMetadata({
     now,
     nextRun: "advance",
     lastRun: {
@@ -503,14 +569,13 @@ export function runStorageCleanupPolicy(deps: PolicyRunDeps): PolicyRunResult {
   logPolicyEvent(
     `ok mode=${result.mode} removed=${result.count} freedBytes=${result.bytes}`,
   );
-  return {
+  return withMetadataCommit({
     ok: true,
     mode: result.mode,
     freedBytes: result.bytes,
     removed: result.count,
     ...(result.trashDir ? { trashDir: result.trashDir } : {}),
-    policy: saved,
-  };
+  }, committed);
 }
 
 /** Startup / schedule tick entry — swallows unexpected errors. */

@@ -24,6 +24,7 @@ import { clearAccountNeedsReauth, markAccountNeedsReauth } from "../src/codex/ac
 import { clearAccountQuota, updateAccountQuota } from "../src/codex/quota";
 import {
   canAcquireCodexQuotaProbeLease,
+  canAcquireCodexQuotaScopeProbeLease,
   clearCodexUpstreamHealthForAccount,
   CODEX_QUOTA_PROBE_INTERVAL_MS,
   recordCodexUpstreamOutcome,
@@ -215,6 +216,107 @@ describe("subagent model fallback chain", () => {
     });
   });
 
+  test("fixed account candidates preserve selectors and enforce per-model entitlements", () => {
+    updateAccountQuota("account-a", 10, undefined, 20);
+    const config = cfg({ codexAccountNamespaces: { team: "account-a" } });
+    const throwingPreview = () => {
+      throw new Error("fixed account must not call Pool preview");
+    };
+
+    expect(isSubagentModelUnavailable(
+      "team/gpt-5.5",
+      config,
+      "pool-a",
+      Date.now(),
+      { modelEligibleAccountIds: new Set(["account-a"]) },
+      throwingPreview,
+      () => undefined,
+    )).toBe(false);
+    expect(isSubagentModelUnavailable(
+      "team/gpt-daybreak-blue-latest",
+      config,
+      "pool-a",
+      Date.now(),
+      undefined,
+      throwingPreview,
+      () => new Set(["account-b"]),
+    )).toBe(true);
+    expect(isSubagentModelUnavailable(
+      "team/gpt-daybreak-blue-latest",
+      config,
+      "pool-a",
+      Date.now(),
+      undefined,
+      throwingPreview,
+      () => new Set(["account-a"]),
+    )).toBe(false);
+  });
+
+  test("unqualified gated candidates pass their entitlement set into Pool preview", () => {
+    const now = 1_800_000_000_000;
+    const config = cfg({
+      autoSwitchThreshold: 0,
+      codexAccountNamespaces: { team: "account-a" },
+      subagentModelFallback: ["gpt-daybreak-blue-latest", "xai/grok-4.5"],
+    });
+    updateAccountQuota("account-a", 10, undefined, 20);
+    updateAccountQuota("account-b", 10, undefined, 20);
+    noteSubagentModelFailure("team/gpt-5.6-sol", "429", config, "account-a", now);
+
+    const previews: Array<{ modelId: string | undefined; eligible: string[] | undefined }> = [];
+    const selected = selectAvailableSubagentModel(
+      "team/gpt-5.6-sol",
+      config,
+      [],
+      "account-a",
+      now,
+      false,
+      undefined,
+      [],
+      (modelId, _previewNow, eligibleAccountIds) => {
+        previews.push({
+          modelId,
+          eligible: eligibleAccountIds ? [...eligibleAccountIds] : undefined,
+        });
+        return eligibleAccountIds?.has("account-b") ? "account-b" : "account-a";
+      },
+      modelId => modelId === "gpt-daybreak-blue-latest"
+        ? new Set(["account-b"])
+        : undefined,
+    );
+
+    expect(selected).toEqual({
+      model: "gpt-daybreak-blue-latest",
+      rewritten: true,
+      skipped: ["team/gpt-5.6-sol"],
+    });
+    expect(previews).toEqual([{
+      modelId: "gpt-daybreak-blue-latest",
+      eligible: ["account-b"],
+    }]);
+  });
+
+  test("a null candidate account preview does not fall back to the active Pool account", () => {
+    updateAccountQuota("pool-a", 10, undefined, 20);
+    const config = cfg({ subagentModelFallback: ["kimi/k3"] });
+
+    expect(selectAvailableSubagentModel(
+      "gpt-5.6-sol",
+      config,
+      [],
+      "pool-a",
+      Date.now(),
+      false,
+      undefined,
+      [],
+      () => null,
+    )).toEqual({
+      model: "kimi/k3",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol"],
+    });
+  });
+
   test("case-distinct account selector fallbacks remain independent", () => {
     updateAccountQuota("pool-a", 95, undefined, 20);
     const config = cfg({
@@ -295,6 +397,76 @@ describe("subagent model fallback chain", () => {
       rewritten: true,
       skipped: ["gpt-5.6-sol"],
     });
+  });
+
+  test("Pool fallback skips a reset-derived cooldown in the model's quota scope", () => {
+    const now = 1_800_000_000_000;
+    updateAccountQuota("pool-a", 10, undefined, 20);
+    const config = cfg({ subagentModelFallback: ["kimi/k3"] });
+    recordCodexUpstreamOutcome(config, "pool-a", 429, {
+      modelId: "gpt-5.6-sol",
+      now,
+      resetAt: Math.floor((now + 60 * 60_000) / 1_000),
+    });
+
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", config, [], "pool-a", now + 1)).toEqual({
+      model: "kimi/k3",
+      rewritten: true,
+      skipped: ["gpt-5.6-sol"],
+    });
+  });
+
+  test("Pool fallback admits a due reset-derived probe in the model's quota scope", () => {
+    const now = 1_800_000_000_000;
+    const probeAt = now + CODEX_QUOTA_PROBE_INTERVAL_MS + 1;
+    updateAccountQuota("pool-a", 10, undefined, 20);
+    const config = cfg({ subagentModelFallback: ["kimi/k3"] });
+    recordCodexUpstreamOutcome(config, "pool-a", 429, {
+      modelId: "gpt-5.6-sol",
+      now,
+      resetAt: Math.floor((now + 60 * 60_000) / 1_000),
+    });
+
+    expect(canAcquireCodexQuotaScopeProbeLease("pool-a", "shared", probeAt)).toBe(true);
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", config, [], "pool-a", probeAt)).toEqual({
+      model: "gpt-5.6-sol",
+      rewritten: false,
+      skipped: [],
+    });
+  });
+
+  test("Pool fallback ignores a reset-derived cooldown for an unrelated quota scope", () => {
+    const now = 1_800_000_000_000;
+    updateAccountQuota("pool-a", 10, undefined, 20);
+    const config = cfg({ subagentModelFallback: ["kimi/k3"] });
+    recordCodexUpstreamOutcome(config, "pool-a", 429, {
+      modelId: "gpt-5.3-codex-spark",
+      now,
+      resetAt: Math.floor((now + 60 * 60_000) / 1_000),
+    });
+
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", config, [], "pool-a", now + 1)).toEqual({
+      model: "gpt-5.6-sol",
+      rewritten: false,
+      skipped: [],
+    });
+  });
+
+  test("Pool fallback preserves account-wide cooldown probe pacing", () => {
+    const now = 1_800_000_000_000;
+    const probeAt = now + CODEX_QUOTA_PROBE_INTERVAL_MS + 1;
+    updateAccountQuota("pool-a", 10, undefined, 20);
+    const config = cfg({ subagentModelFallback: ["kimi/k3"] });
+    recordCodexUpstreamOutcome(config, "pool-a", 429, {
+      now,
+      resetAt: Math.floor((now + 60 * 60_000) / 1_000),
+    });
+
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", config, [], "pool-a", now + 1).model)
+      .toBe("kimi/k3");
+    expect(canAcquireCodexQuotaProbeLease("pool-a", probeAt)).toBe(true);
+    expect(selectAvailableSubagentModel("gpt-5.6-sol", config, [], "pool-a", probeAt).model)
+      .toBe("gpt-5.6-sol");
   });
 
   test("account selector fallbacks still reject invalid or disabled native models", () => {

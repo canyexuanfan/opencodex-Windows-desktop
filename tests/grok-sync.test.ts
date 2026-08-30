@@ -1,14 +1,20 @@
-import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { injectGrokConfig } from "../src/grok/inject";
+import { injectGrokConfig, type GrokInjectModel } from "../src/grok/inject";
 import { syncGrokConfig } from "../src/grok/sync";
-import { nativeOpenAiContextWindow, visibleNativeSlugs } from "../src/codex/catalog";
+import { nativeOpenAiContextWindow, nativeOpenAiSlugs, visibleNativeSlugs } from "../src/codex/catalog";
 import type { CatalogModel } from "../src/codex/catalog";
+import {
+  resetCodexModelEntitlementCacheForTests,
+  seedCodexModelEntitlementsForTests,
+} from "../src/codex/model-entitlements";
 import type { OcxConfig } from "../src/types";
 
 const baseConfig = { port: 10100, defaultProvider: "openai", providers: {} } as unknown as OcxConfig;
+
+afterEach(() => resetCodexModelEntitlementCacheForTests());
 
 function tempGrokHome(): { root: string; grokHome: string } {
   const root = mkdtempSync(join(tmpdir(), "ocx-grok-sync-"));
@@ -40,10 +46,146 @@ describe("syncGrokConfig", () => {
     }
   });
 
+  test("classifies provider-hidden models from the unfiltered catalog without emitting them", async () => {
+    const { root, grokHome } = tempGrokHome();
+    try {
+      const config = {
+        ...baseConfig,
+        providers: { stub: { selectedModels: ["visible"] } },
+      } as unknown as OcxConfig;
+      const catalog = [
+        { id: "visible", provider: "stub" } as CatalogModel,
+        { id: "hidden", provider: "stub" } as CatalogModel,
+      ];
+      writeFileSync(join(grokHome, "config.toml"), [
+        "[model.ocx-stub-hidden]",
+        'model = "stub/hidden"',
+        'base_url = "http://127.0.0.1:10100/v1"',
+        'api_backend = "responses"',
+        'api_key = "opencodex-loopback"',
+        'extra_headers = { "x-opencodex-grok" = "1" }',
+        "",
+      ].join("\n"));
+
+      const result = await syncGrokConfig(10190, config, { grokHome }, {
+        fetchAllModels: async () => catalog,
+        injectGrokConfig,
+      });
+      expect(result).toMatchObject({ ok: true, changed: true });
+      const content = readFileSync(join(grokHome, "config.toml"), "utf8");
+      expect(content).toContain('model = "stub/visible"');
+      expect(content).not.toContain("[model.ocx-stub-hidden]");
+      expect(content).not.toContain('model = "stub/hidden"');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("removes owned orphans from a disabled provider even without fetched ids", async () => {
+    const { root, grokHome } = tempGrokHome();
+    try {
+      const config = {
+        ...baseConfig,
+        providers: {
+          "disabled-provider": {
+            adapter: "openai-responses",
+            baseUrl: "https://example.invalid/v1",
+            disabled: true,
+          },
+        },
+      } as unknown as OcxConfig;
+      writeFileSync(join(grokHome, "config.toml"), [
+        "[model.ocx-disabled-provider-legacy]",
+        'model = "disabled-provider/legacy"',
+        'base_url = "http://127.0.0.1:10100/v1"',
+        'api_backend = "responses"',
+        'api_key = "opencodex-loopback"',
+        'extra_headers = { "x-opencodex-grok" = "1" }',
+        "",
+      ].join("\n"));
+
+      const result = await syncGrokConfig(10190, config, { grokHome }, {
+        fetchAllModels: async () => [],
+        injectGrokConfig,
+      });
+      expect(result).toMatchObject({ ok: true, changed: true });
+      const content = readFileSync(join(grokHome, "config.toml"), "utf8");
+      expect(content).not.toContain("[model.ocx-disabled-provider-legacy]");
+      expect(content).not.toContain('model = "disabled-provider/legacy"');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("does not reinterpret a slash-shaped combo alias as a disabled provider model", async () => {
+    const { root, grokHome } = tempGrokHome();
+    try {
+      const config = {
+        ...baseConfig,
+        providers: {
+          "disabled-provider": {
+            adapter: "openai-responses",
+            baseUrl: "https://example.invalid/v1",
+            disabled: true,
+          },
+        },
+        combos: {
+          fallback: {
+            alias: "disabled-provider/legacy",
+            targets: [{ provider: "other", model: "m1" }],
+          },
+        },
+      } as unknown as OcxConfig;
+      const manual = [
+        "[model.ocx-disabled-provider-legacy]",
+        'model = "disabled-provider/legacy"',
+        'base_url = "http://127.0.0.1:10100/v1"',
+        'api_backend = "responses"',
+        'api_key = "opencodex-loopback"',
+        'extra_headers = { "x-opencodex-grok" = "1" }',
+        "",
+      ].join("\n");
+      writeFileSync(join(grokHome, "config.toml"), manual);
+
+      const result = await syncGrokConfig(10190, config, { grokHome }, {
+        fetchAllModels: async () => [],
+        injectGrokConfig,
+      });
+      expect(result).toMatchObject({ ok: true, changed: true });
+      expect(readFileSync(join(grokHome, "config.toml"), "utf8")).toContain(manual);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps disabled native ids in the orphan-classification catalog", async () => {
+    const hiddenNative = nativeOpenAiSlugs()[0]!;
+    let emitted: GrokInjectModel[] | undefined;
+    let catalogModelIds: ReadonlySet<string> | undefined;
+    const result = await syncGrokConfig(
+      10190,
+      { ...baseConfig, disabledModels: [hiddenNative] } as OcxConfig,
+      {},
+      {
+        fetchAllModels: async () => [],
+        injectGrokConfig: ((port: number, models: GrokInjectModel[], opts: Parameters<typeof injectGrokConfig>[2]) => {
+          void port;
+          emitted = models;
+          catalogModelIds = opts.catalogModelIds;
+          return { ok: true, changed: false, message: "captured" };
+        }) as typeof injectGrokConfig,
+      },
+    );
+    expect(result.ok).toBe(true);
+    expect(emitted?.some(model => model.id === hiddenNative)).toBe(false);
+    expect(catalogModelIds?.has(hiddenNative)).toBe(true);
+  });
+
   // Native slugs used to be injected as a bare { id }, so no `context_window` line was written
   // and Grok fell back to its own 200k default — understating gpt-5.6-sol, which is 372k. The
   // window comes from the same accessor the dashboard uses, so the two surfaces agree.
   test("native slugs carry their real context window, not Grok's 200k default", async () => {
+    seedCodexModelEntitlementsForTests("main", ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
     const { root, grokHome } = tempGrokHome();
     try {
       const result = await syncGrokConfig(10190, baseConfig, { grokHome }, {

@@ -17,6 +17,44 @@ existing task. Explicit `ocx service install` remains the operator-owned registr
 - 다른 대안 대신 이 방식을 선택한 이유: Saved state can be stale and unconditional repair breaks first install, while a boolean cannot represent the exact uncertainty that must fail closed.
 - 장점, 단점 및 영향: Existing services avoid UAC and registration churn, invalid input performs no status I/O, and uncertain Windows hosts require one explicit status/installation decision instead of risking a destructive guess.
 
+## Windows startup ownership listing reuse
+
+One proxy startup asks service-home ownership twice before listen: once before cache invalidation and
+again immediately before native-main lifecycle preparation. The second targeted Task Scheduler query
+is a deliberate race check and remains mandatory. On a localized host, however, the same nonzero
+targeted answer can require a full task listing with a 20-second ceiling; running that identical
+enumeration twice made a measured 12.3-second fallback cost roughly 25 seconds before listen.
+
+[Decision Log]
+- 목적과 의도: Preserve the race-sensitive Windows ownership recheck while paying for an unchanged locale-neutral full task listing only once during synchronous startup.
+- 기존 구현 및 제약 조건: Localized `schtasks /query /tn ... /xml` failures need a full listing to prove absence, the listing may legitimately take more than two seconds, and `unknown` must never become `absent` merely to reduce latency.
+- 검토한 주요 대안: Delete the second ownership check; lower the listing timeout; keep a process-wide or TTL cache; reuse an earlier absence regardless of the fresh targeted result; or scope a memo to the two pre-listen checks and key it to the complete targeted result.
+- 선택한 방식: Create one cache inside `startServer`, run every targeted query, and reuse its listing result only when status, timeout/spawn flags, stdout, and stderr are byte-identical. Runtime ownership retries do not receive the startup cache.
+- 다른 대안 대신 이 방식을 선택한 이유: Removing or weakening revalidation widens the install race, while a global/TTL cache can outlive startup and stale absence can authorize the wrong home. Exact targeted-result identity lets the ordinary no-task locale fallback coalesce without hiding changed evidence.
+- 장점, 단점 및 영향: The reported stable zh-CN absence path performs two cheap targeted queries and one full listing. A task that appears is detected by the second targeted query; changed or failed evidence triggers a fresh fail-closed decision, so unusual churn may still pay for two listings rather than guess.
+
+## Linux stable service launcher
+
+Systemd installation resolves the first absolute `ocx` PATH candidate that is both a regular file
+and executable, keeps that path lexical so a version-manager shim remains an indirection, and
+records the same single resolution in the unit and service state. Unit construction never performs
+PATH discovery itself: callers provide either the resolved launcher or an explicit direct Bun/CLI
+fallback, keeping diagnostics and tests independent of the host PATH.
+
+Launcher mode omits the package-local Bun provenance pair because an upgrade may delete that
+versioned tree. The only runtime path carried through the launcher is a pre-Bun, proof-bound
+`OPENCODEX_BUN_PATH` whose durable runtime source is `override`; bundled and process fallbacks are
+rediscovered by the current launcher. The API-auth token remains file-backed and is loaded only by
+the service shell at start.
+
+[Decision Log]
+- 목적과 의도: Keep systemd services upgrade-stable without losing an explicitly trusted Bun override or accepting a non-executable PATH placeholder.
+- 기존 구현 및 제약 조건: Version managers replace package trees but retain lexical shims; Bun dotenv makes ambient override values untrustworthy unless the Node launcher already stamped matching runtime provenance.
+- 검토한 주요 대안: Bake the package Bun and CLI forever; resolve the shim target; accept the first existing PATH entry; drop every runtime override in launcher mode; or preserve only a proof-bound override.
+- 선택한 방식: Require a regular executable lexical launcher, resolve it once during installation, preserve only `durableBunRuntime().source === "override"`, and keep token loading in the existing file-backed shell preamble.
+- 다른 대안 대신 이 방식을 선택한 이유: Resolving or pinning package paths recreates upgrade restart loops, existence-only selection can name a directory or non-executable file, and dropping a trusted override silently changes an operator's runtime.
+- 장점, 단점 및 영향: Mise/asdf-style upgrades keep working and explicit Bun selection survives; source installs still use the direct pair, while a removed or non-executable launcher requires `ocx service repair`.
+
 ## Provider diagnostic outbound safety
 
 Provider connection tests and live model discovery share the GET-only provider outbound wrapper.
@@ -39,6 +77,40 @@ executor contract. Main-request migration must not treat that branch as fixed-tr
 provider, lets the selected adapter speak the upstream protocol, then bridges adapter events back to
 Responses-compatible streaming output.
 
+### Fetch-helper import boundary
+
+`src/server/responses/fetch-helpers.ts` is a transport leaf shared by Responses, compact, and native
+Chat. Its runtime imports are limited to the Codex WebSocket transport, provider request pacing, and
+the upstream HTTP-version helper. Server, provider, and WebSocket data types remain type-only edges.
+It must not import routing, combos, OAuth, adapters, sidecars, response parsing, logging, or relay
+modules merely because those imports existed in the pre-split `responses.ts` monolith.
+
+### Semantic progress ownership
+
+The Responses proxy does not treat transcript growth as repository progress. It can observe request
+boundaries, response items, tool names and payloads, adapter events, retained bytes, and elapsed
+silence. It cannot observe the client's workspace or prove whether a successful tool result changed
+repository state. Consequently, the active-turn and session-lane gates are concurrency admission
+limits, the translator budget is a live retained-byte limit, the response-state caps are cache
+retention limits, and the stall watchdog is a silence limit. None is a cumulative continuation or
+semantic no-progress budget.
+
+[Decision Log]
+- 목적과 의도: Keep long but progressing client-driven tool continuations valid while locating repository-semantic loop detection at the layer that owns the workspace and continuation policy.
+- 기존 구현 및 제약 조건: Issue #2600 recorded 18 persisted Cursor continuations whose transcript and tool counters grew while the worktree did not. Every proxy-local liveness and capacity bound was therefore satisfied, but the proxy had no workspace delta to compare.
+- 검토한 주요 대안: Stop after a fixed continuation count; classify read-like tool names as no progress; compare assistant prose; emit a new proxy-only terminal code after a time budget; or leave semantic progress to the client while preserving transport cancellation for objective proxy failures.
+- 선택한 방식: Do not add a proxy semantic cutoff without a client-supplied progress contract. Keep objective transport, byte, concurrency, and silence bounds typed and cancellable; require the workspace-owning client to bound repeated continuations using repository state plus its own side-effect ledger.
+- 다른 대안 대신 이 방식을 선택한 이유: Calls and prose are not a repository oracle, and tool names do not prove side effects. A proxy cutoff would either miss the reported loop because items kept changing or terminate legitimate slow work. Retrying after the cutoff could also replay side-effecting work.
+- 장점, 단점 및 영향: OpenCodex does not manufacture a root cause or silently terminate healthy long turns. The combined route still needs a client-side semantic boundary; if a future client sends an explicit privacy-safe progress marker, the proxy may enforce that contract without inferring workspace state.
+
+[Decision Log]
+- 목적과 의도: Keep transport helpers reusable without making every consumer evaluate the full routed Responses and sidecar graph at module load.
+- 기존 구현 및 제약 조건: The original `responses.ts` split copied the monolith import header into `fetch-helpers.ts`; seven helper exports therefore retained 39 distinct runtime import specifiers and reached 326 modules even though the implementations used only three runtime dependencies.
+- 검토한 주요 대안: Leave the imports because current modules have limited top-level side effects; move the helpers again; prune the copied imports and lock the direct runtime boundary.
+- 선택한 방식: Preserve the file and all public exports, remove unused runtime edges, and enforce an explicit three-specifier allowlist with a source-level regression that also proves type-only imports are ignored.
+- 다른 대안 대신 이 방식을 선택한 이유: Relying on unrelated modules to remain side-effect-free makes startup ownership accidental, while another move adds churn without changing the responsibility boundary.
+- 장점, 단점 및 영향: Ordinary native Chat and compact consumers no longer load unrelated routing, combo, OAuth, web-search, vision, and relay modules through this leaf. The allowlist is intentionally strict, so a future helper that needs a new runtime dependency must make that ownership decision explicit in code, tests, and this document.
+
 [Decision Log]
 - 목적과 의도: Prevent routed models from turning invented or neighboring-agent tool names into client-executable Responses calls.
 - 기존 구현 및 제약 조건: The request catalog already controlled custom-tool restoration and the non-OpenAI prompt nudge, but an undeclared upstream name still fell through as an ordinary `function_call`; Codex then reduced the mismatch to a bare `aborted` result.
@@ -47,6 +119,14 @@ Responses-compatible streaming output.
 - 보완된 경계: Key-auth Responses passthrough restores a routed custom call only when the adapter actually lowered that name after request normalization and the caller's `tool_choice` still authorizes it. Native `apply_patch` stays in its upstream function-call form unless the destination explicitly denies Responses custom tools; tools replaced by hosted-provider policy also stay in their upstream function-call form.
 - 다른 대안 대신 이 방식을 선택한 이유: Model guidance is not an enforcement boundary, while automatic translation would invent executable caller intent and arguments after generation.
 - 장점, 단점 및 영향: Streaming and non-streaming routed responses now fail closed with an actionable provider-contract error; providers that emit aliases they never advertised must correct their adapter mapping instead of relying on client abort behavior.
+
+[Decision Log]
+- 목적과 의도: Accept a routed model's decorated outer `apply_patch` delimiter lines without changing the executable meaning of any provider-returned program.
+- 기존 구현 및 제약 조건: Routed custom tools arrive through a public function wrapper and are restored at the response boundary, but arbitrary `exec` JavaScript is caller-executable source whose strings, comments, templates, and helper arguments cannot be safely rewritten with text patterns.
+- 검토한 주요 대안: Regex-rewrite nested helper calls in `exec`; wrap a raw `exec` patch body as a helper call; reject every decorated patch; or normalize only the outer lines of a complete top-level `apply_patch` custom-tool payload.
+- 선택한 방식: After unwrapping the request-authorized custom-tool function shape, normalize only exact decorated Begin/End lines when the entire `apply_patch` input is one structurally recognizable patch with a file operation. Keep `exec` and all other freeform bodies byte-identical.
+- 다른 대안 대신 이 방식을 선택한 이유: A top-level `apply_patch` call already carries explicit executable intent, so its unambiguous outer-line spelling can be repaired without inventing a call or parsing JavaScript. Every broader rewrite could reinterpret ordinary data as code.
+- 장점, 단점 및 영향: Decorated top-level patches regain compatibility while strings, comments, generated source, raw `exec` text, incomplete envelopes, and patch-file content remain untouched. Nested malformed helper source must be corrected by the provider instead of being guessed at the response boundary.
 
 [Decision Log]
 - 목적과 의도: Keep Codex client-side deferred tool discovery usable through third-party Responses-compatible gateways that implement public function tools but reject the private `tool_search` declaration.
@@ -81,6 +161,28 @@ Codex-private tool fields are removed at the same boundary from one table
 (`CANONICAL_ONLY_TOOL_FIELDS`) rather than one bespoke pass each: `external_web_access` on either
 web-search variant, and `defer_loading` on any declaration, which `activateDeferredTool` clears only
 for tools a `tool_search_output` already loaded. A new private bit is a row there.
+
+After that namespace boundary has produced public function tools, the Grok CLI Responses transport
+applies the same root-schema policy as its Chat transport. A root `oneOf`/`anyOf` is flattened only
+when the shared xAI normalizer can preserve its meaning; an unsafe function is omitted instead of
+letting one incompatible declaration reject the entire request before inference. This is scoped to
+`cli-chat-proxy.grok.com`: public `api.x.ai` keeps native root unions, as do unrelated Responses
+gateways. Both top-level `tools` and Responses Lite `additional_tools` pass through this policy.
+
+Only the ROOT rejects a union, so exclusivity is preserved by moving it down rather than widening
+it: a root `oneOf` whose branches differ in one property becomes that property's `oneOf`, or its
+`anyOf` when the branches are provably disjoint and the two keywords describe the same set. That
+property is also promoted into `required`, because absent it matched every branch — which the root
+`oneOf` rejects. Branches that are wholly identical validate nothing and have no faithful
+flattening, so they omit the tool. The walk carries depth, node, and variant budgets, since nested
+unions are combinatorial and a `$ref` diamond amplifies the same way without ever cycling;
+exceeding a budget omits that one function rather than expanding until memory is gone.
+
+Omitting a function makes `tool_choice` the loose end. A selector naming a dropped tool would reach
+Grok as a dangling reference, and relaxing it to `auto` is worse — the turn would quietly run
+without the tool the caller required. So an `allowed_tools` list drops the omitted entries while any
+remain, and a selection with nothing left to point at fails locally with the same 400 a tool catalog
+this proxy cannot lower already returns.
 
 The same noncanonical boundary strips ChatGPT's private `external_web_access` bit from routed
 `web_search` declarations. The public tool remains enabled and all other options remain intact;
@@ -258,6 +360,32 @@ The inspector records a structured `response.failed` status before invoking the
 terminal observer. Native Responses, Chat Completions, Claude Messages, and WebSocket
 request logs must therefore finalize through the context-aware terminal mapper; recognized
 `cyber_policy` terminals stay `400 / cyber_policy` rather than collapsing to a generic 502.
+
+The client-facing boundary treats the first Responses terminal as authoritative in both relay
+shapes. High-confidence policy errors carried as `response.incomplete`, `response.failed`, or a
+top-level `error` are normalized to one `response.failed / cyber_policy` event without changing the
+refusal outcome; later bytes cannot create a second terminal. A clean HTTP 200 EOF with no terminal
+instead emits one `response.incomplete` with `adapter_eof`, followed by one `[DONE]`. Delimiter-less
+EOF candidates follow the owning repair policy: the native boundary accepts a structurally valid
+terminal tail, while an opted-in terminal repair keeps its unframed suffix tainted and emits
+`missing_terminal_event`. Pull/tee and eager relays therefore agree on terminal, sentinel, and
+request-log accounting without promoting a truncated repair candidate.
+
+[Decision Log]
+- 목적과 의도: Turn upstream terminal variants and bare EOF into one deterministic Responses
+  outcome instead of a retryable disconnect or duplicate terminal.
+- 기존 구현 및 제약 조건: Policy refusals can arrive in several SSE envelopes, while a clean EOF,
+  an unterminated final frame, and a read error exercise different pull/tee and eager cleanup paths.
+- 검토한 주요 대안: Forward every byte unchanged; classify only request logs; synthesize a failure
+  after every EOF or read error; normalize the bounded terminal at the client output boundary.
+- 선택한 방식: Rewrite only high-confidence policy terminal shapes, preserve their bounded metadata,
+  flush native terminal candidates before transport-error classification, keep repair-owned
+  delimiter-less candidates tainted, and synthesize `adapter_eof` only when no real terminal exists.
+- 다른 대안 대신 이 방식을 선택한 이유: Log-only classification leaves Codex retry behavior
+  unchanged, while unconditional synthesis can create two contradictory outcomes for one turn.
+- 장점, 단점 및 영향: Both native relay shapes expose exactly one terminal and one sentinel with
+  matching accounting. Ordinary upstream errors remain fail-closed, and policy refusals remain
+  refusals rather than becoming successful model output.
 
 ## Standalone Search and exact account selectors
 
@@ -467,14 +595,16 @@ configurable via `stallTimeoutSec`, checked on the 2 s heartbeat tick) closes th
 `response.incomplete` / `upstream_stall_timeout` and cancels the upstream request if no real
 adapter events arrive. Adapter-yielded `{ type: "heartbeat" }` events DO reset the watchdog.
 
-Top-level `emptyCompletionRetry: true` opts Responses turns into one identical replay when a
-successful upstream completion contains neither output text nor a tool call. The default is off
-because the replay may be billable; `OCX_EMPTY_COMPLETION_RETRY=0` is a disable-only emergency
-override. Streaming and buffered HTTP adapters plus `runTurn` transports share the same guard,
-while combo attempts and routed compaction stay excluded. Pre-content reasoning is retained under
-named event-count and byte caps and emits liveness heartbeats while held. A second empty result or
-retry failure becomes typed 502 `empty_completion_retry_failed`; usage is merged across sends, and
-the Logs attempt records recovery kind `empty-completion`.
+Top-level `emptyCompletionRetry: true` opts Responses turns into one identical replay when an
+upstream turn produces neither output text nor a tool call, including a stream that ends before a
+terminal event. A terminal-less stream is replayed only before actionable output; post-output EOF
+remains incomplete so text or tool calls cannot be duplicated. The default is off because the replay
+may be billable; `OCX_EMPTY_COMPLETION_RETRY=0` is a disable-only emergency override. Streaming and
+buffered HTTP adapters plus `runTurn` transports share the same guard, while combo attempts and
+routed compaction stay excluded. Pre-content reasoning is retained under named event-count and byte
+caps and emits liveness heartbeats while held. A second empty result or retry failure becomes typed
+502 `empty_completion_retry_failed`; usage is merged across sends, and the Logs attempt records
+recovery kind `empty-completion`.
 
 The web-search loop requests `stream: true` for every routed-model iteration, but buffers the events
 needed to decide whether to intercept a synthetic search call. Text explicitly phased as
@@ -618,6 +748,15 @@ switch therefore costs one extra upstream round trip and one turn of degraded re
 wedging the thread; unrelated 4xx responses and requests whose outbound body carries no blob never
 enter this recovery.
 
+After a self-identified opaque-blob rejection, the proxy also keeps a five-minute rejection memo.
+The memo key is the resolved conversation identity plus the durable serving identity: provider,
+destination, adapter, model, and credential. It is recorded only when the blobless recovery resend
+succeeds. A missing durable destination or credential prevents memo creation and lookup. On a later
+request with the same key, pre-flight sanitation removes opaque reasoning `encrypted_content` and
+degrades compaction blobs before the first upstream send. This skips the rejected first send and
+the recovery round trip. A different serving identity does not match the memo. Route changes still
+follow the normal pre-flight stripping rule. Memo expiry returns to the fail-soft recovery path.
+
 A combo target rotation between turns legitimately changes that serving identity, so the following
 turn drops blobs minted by the prior target. This is correct because the new target cannot decode
 them, but it is intentionally unobvious to the client: `pickComboTarget` keys selection state only by
@@ -699,9 +838,13 @@ pre-compaction checkpoint is not persisted for later carry-forward.
 After a successful no-tool turn, the Cursor adapter keeps the returned ConversationStateStructure in
 a process-local store and reuses that snapshot on the next validated linear continuation instead of
 rebuilding rootPromptMessagesJson and conversationTurns. Tool-result turns reuse the last completed
-checkpoint plus only the uncovered suffix. Chat Completions hops that omit previous_response_id and thread headers reuse a snapshot only when
-the covered message prefix and system/developer digest match exactly one stored snapshot. Isolated
-helper/shadow turns never join the parent conversation. An explicit missing checkpointRef full-replays. Compaction, account or model mismatch, missing refs, decode failures, and
+checkpoint plus only the uncovered suffix. A request without checkpointRef may use the prefix index
+only when a remembered Cursor conversation or stable client thread owns the resolved conversation id.
+The stable owner may be the Codex parent-thread header or the existing bounded process-local HMAC of
+the complete Desktop session-id/thread-id pair. The request must also have a covered message prefix
+and system/developer digest that match exactly one snapshot for that same
+conversation. Headerless requests without a stable owner full-replay. Isolated helper/shadow turns
+never join the parent or sibling conversation. An explicit missing checkpointRef full-replays. Compaction, account or model mismatch, missing refs, decode failures, and
 invalid_argument recovery keep the existing full-replay path. previous_response_id may select a
 branch's opaque checkpointRef; it is never a Cursor conversation ownership key. Cursor Connect still
 does not expose authoritative cache_read_tokens.
@@ -711,7 +854,7 @@ does not expose authoritative cache_read_tokens.
 - 목적과 의도: Reuse Cursor's returned ConversationStateStructure on validated linear continuations so OpenCodex does not rebuild the full root history every turn.
 - 기존 구현 및 제약 조건: Stable conversation ids already exist (#366), but every turn still reconstructed rootPromptMessagesJson and conversationTurns. Cursor Connect still reports only usedTokens/maxTokens, so cache_read_tokens cannot be treated as authoritative (#275).
 - 검토한 주요 대안: Keep full replay; copy Pi's live MCP bridge immediately; store raw protobuf in Responses JSON; key checkpoints only by conversation id.
-- 선택한 방식: Keep an opaque process-local checkpointRef on OcxProviderContinuationState.cursor, bind the snapshot to conversation/account/model affinity, pin referenced blobs for the checkpoint lifetime, and fall back to the existing full-replay path for isolation, compaction, restart, missing refs, and invalid_argument recovery. Tool-result turns reuse the last completed checkpoint plus an uncovered suffix. previous_response_id is a branch anchor, never a Cursor conversation ownership key.
+- 선택한 방식: Keep an opaque process-local checkpointRef on OcxProviderContinuationState.cursor, bind the snapshot to conversation/account/model affinity, and require a remembered provider conversation or stable client thread before a ref-less prefix lookup. Reuse the bounded process-local Desktop session/thread HMAC when the canonical parent-thread header is absent. Pin referenced blobs for the checkpoint lifetime, and fall back to the existing full-replay path for unowned headerless requests, isolation, compaction, restart, missing refs, and invalid_argument recovery. Tool-result turns reuse the last completed checkpoint plus an uncovered suffix. previous_response_id is a branch anchor, never a Cursor conversation ownership key.
 - 다른 대안 대신 이 방식을 선택한 이유: It removes avoidable replay cost without claiming cache-hit rates, without changing OAuth, and without collapsing helper/compaction isolation or tool-call replay safety.
 - 장점, 단점 및 영향: Validated no-tool follow-ups stop growing local rootBytes with history; a process restart or missing blob lease falls back to full replay; large-context 429 / premature-completion acceptance for #1527 is still unproven; a stateful live MCP bridge remains out of scope.
 ```
@@ -857,6 +1000,39 @@ Grounded in the open-sourced official client (xai-org/grok-build); unit + eviden
   `fetchWithHeaderTimeout` takes an executor so provider fetch wrappers stay inside the
   timeout race.
 
+## Kiro client parallel-tool hint
+
+Kiro's wire remains serialized even when an OpenAI Responses client sends
+`parallel_tool_calls: true`. That request field is permissive: it allows parallel calls but does not
+require the routed transport to expose a matching flag. The Kiro catalog therefore continues to
+advertise `supports_parallel_tool_calls: false`, and the adapter emits no parallel-control field,
+while accepting the client hint and translating the ordinary tool catalog normally.
+
+[Decision Log]
+- 목적과 의도: Keep current Codex clients usable with Kiro without claiming or inventing parallel execution on the CodeWhisperer wire.
+- 기존 구현 및 제약 조건: Codex can send `parallel_tool_calls: true` even for catalog rows that advertise false; Kiro has no verified parallel-control request field and serializes tool execution.
+- 검토한 주요 대안: Reject the client hint, rewrite it to false before routing, or accept it as permission while leaving the Kiro wire unchanged.
+- 선택한 방식: Accept either request value, preserve the parsed client intent internally, and omit all parallel-control fields from the Kiro payload.
+- 다른 대안 대신 이 방식을 선택한 이유: Rejection interprets permission as a requirement and blocks valid turns, while rewriting shared request state hides caller intent and can affect later policy or diagnostics.
+- 장점, 단점 및 영향: Codex tool turns reach Kiro again and the adapter contract stays honest; Kiro still cannot produce true parallel tool batches through this transport.
+
+## Kiro Responses text controls
+
+Kiro refuses structured output and tolerates every other Responses `text` member. `text.format`
+of type `json_schema` or `json_object` is a contract the CodeWhisperer wire cannot honour, so the
+adapter rejects it rather than returning prose to a caller expecting JSON. `text.verbosity` and
+`text.format: {"type":"text"}` are preferences, not contracts; they are accepted and dropped,
+because `buildKiroPayload` composes `conversationState` from parsed fields and never forwards the
+raw body.
+
+[Decision Log]
+- 목적과 의도: Stop rejecting valid Kiro turns whose only offence is carrying a Responses text control the wire ignores.
+- 기존 구현 및 제약 조건: The guard tested `_rawBody.text !== undefined`, so `text.verbosity`, `text.format:{"type":"text"}`, and even `text:{}` produced HTTP 400 with sendCount 0 while identical turns without `text` succeeded; `_structuredOutput` already distinguishes real structured output, and the catalog's `support_verbosity: false` helps neither a client holding a cached catalog nor the default text format, which no capability flag governs.
+- 검토한 주요 대안: Keep the presence check, add an openai-responses-style stripper before serialization, or narrow the guard to `_structuredOutput` alone.
+- 선택한 방식: Narrow the condition to `_structuredOutput`; no stripper is needed because the Kiro payload never spreads the raw body.
+- 다른 대안 대신 이 방식을 선택한 이유: The presence check reads a preference as a requirement — the same error `db040e70f` removed for parallel-tool hints — and a stripper would add a serialization stage to defend against a body Kiro already ignores by construction.
+- 장점, 단점 및 영향: Kiro-routed Codex turns stop failing intermittently and structured output stays honestly refused; a future `text` member Kiro genuinely cannot ignore would need its own condition.
+
 ## Kiro reasoning round-trip (`redactedContent`)
 
 Kiro never returns plaintext reasoning for its **GPT-5.6 family** (`gpt-5.6-sol`, `-terra`,
@@ -954,6 +1130,21 @@ the shared Ark hostname is too broad because the two endpoint families reject op
 - 장점, 단점 및 영향: Coding Plan regains its accepted continuation shape without changing generic providers; any future Ark endpoint family must provide evidence before inheriting the pay-as-you-go quirk.
 
 ## Chat structured-output compatibility
+
+First-party Kimi and Moonshot Chat destinations normalize a `$ref` with sibling keywords because
+their wire rejects that valid JSON Schema 2020-12 shape. Inlining preserves conjunction semantics:
+`required` members are unioned, lower numeric bounds take the maximum, upper numeric bounds take the
+minimum, and overlapping `properties` recurse with the same rules. The walk remains depth-, node-,
+and expansion-bounded. Unresolvable or cyclic references keep the existing bare-`$ref` fallback,
+and unrelated OpenAI-compatible providers retain the caller's schema unchanged.
+
+[Decision Log]
+- 목적과 의도: Make Moonshot's compatibility rewrite remove rejected sibling `$ref` shapes without silently weakening a tool schema.
+- 기존 구현 및 제약 조건: The target and sibling both apply under JSON Schema 2020-12, but a shallow shared-property merge let sibling bounds replace stricter target bounds; Moonshot still requires the local bounded rewrite.
+- 검토한 주요 대안: Keep shallow sibling precedence; emit `allOf`; intersect only top-level bounds; recursively compose the supported set-valued and ordered assertions.
+- 선택한 방식: Reuse the existing bound and required intersection rules recursively for overlapping object properties inside the first-party destination gate.
+- 다른 대안 대신 이 방식을 선택한 이유: Shallow precedence weakens constraints, while a new `allOf` wire shape needs separate provider evidence; recursive composition fixes the demonstrated loss without broadening normalization to custom providers.
+- 장점, 단점 및 영향: Looser siblings cannot relax nested constraints and tighter siblings still narrow them; non-ordered conflicting keywords retain the existing sibling precedence and are not treated as a complete JSON Schema algebra.
 
 The `openai-chat` adapter translates Responses `text.format` and Chat Completions
 `response_format` through one internal format, then emits `response_format` on the upstream chat
@@ -1107,6 +1298,39 @@ combo whose remaining eligible targets use other providers.
 - 선택한 방식: Use the narrow request-scoped deferral while retaining target cooldown and all explicit Retry-After/default account cooldown behavior.
 - 다른 대안 대신 이 방식을 선택한 이유: Reset timestamps identify quota windows rather than a literal account-wide retry instruction, but widening the exception would risk hot retries and provider abuse.
 - 장점, 단점 및 영향: Same-account model fallback works without weakening explicit upstream backoff; the account health map intentionally does not remember that one deferred reset-derived failure, while the combo target map does.
+```
+
+## Combo streaming commit boundary
+
+An HTTP 200 does not by itself commit a streaming combo child. The combo parent runs the child's
+downstream Responses SSE through `src/server/responses/combo-stream-preflight.ts`, which owns one
+reader and buffers only until one of these boundaries:
+
+- a non-control Responses event begins client-visible output or a tool/action item, after which the
+  target is committed and cross-target replay is forbidden;
+- a `response.failed` terminal arrives first, in which case the terminal is converted back through
+  the ordinary bounded combo-failure classifier and may advance to the next declared target;
+- a completed/incomplete terminal or the aggregate preflight byte or retained-chunk cap is reached,
+  in which case the current target is committed conservatively.
+
+The buffered bytes are replayed unchanged before the reader continues. Native passthrough and eager
+relay identity markers are restored on the wrapped response so Windows/Bun stream paths and deferred
+logging retain their existing owners. A failed child keeps its physical attempt receipt and usage,
+while the successful child remains the logical request result.
+
+HTTP 410 remains terminal by default. It advances and cools only the exact combo target when the
+structured code or message explicitly identifies a model lifecycle event (end-of-life, retired,
+deprecated, sunset, decommissioned, or no longer available). An unrelated application-level 410 is
+not retried.
+
+```text
+[Decision Log]
+- 목적과 의도: Recover a failover combo from a provider-local SSE or model-lifecycle failure only while replay is provably free of duplicate client output and tool calls.
+- 기존 구현 및 제약 조건: The parent committed every HTTP-200 child before reading its SSE body, while terminal stream errors were classified only later by logging; generic 410 responses stopped the chain.
+- 검토한 주요 대안: Retry every failed stream, buffer the complete turn, inspect only HTTP status, or preflight a bounded prefix until an explicit output/terminal boundary.
+- 선택한 방식: Put the one-reader bounded preflight in a dedicated module, commit on any non-control event, and treat only explicit model-lifecycle 410 evidence as target-local.
+- 다른 대안 대신 이 방식을 선택한 이유: Replaying after output can duplicate text or tools, full-turn buffering destroys streaming and grows memory, and making every 410 retryable hides caller/application errors.
+- 장점, 단점 및 영향: Zero-output provider failures can reach a healthy target with ordered receipts and cooldown; ambiguous or oversized pre-output streams keep the current fail-closed behavior instead of consuming unbounded memory.
 ```
 
 ## Transport inventory

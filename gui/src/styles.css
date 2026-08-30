@@ -22,6 +22,7 @@
 @import "./styles-usage-workspace.css";
 @import "./styles-claudecode-workspace.css";
 @import "./styles-apikeys-workspace.css";
+@import "./styles-codex-set.css";
 @import "./styles-compatibility-matrix.css";
 
 :root {
@@ -329,9 +330,11 @@ input[type="checkbox"]:hover:not(:disabled), input[type="radio"]:hover:not(:disa
 
 /* GitHub row: the label keeps the full-width link affordance, the two circular
    satellites (star, update) sit at the trailing edge without shrinking the label's
-   hover target. The update orb only exists when an update is available, so the row
+   hover target. That edge is the sidebar's 10px content inset, not the rail wall, so
+   the orbs stack under the lang chevron and the proxy orbs instead of hanging 10px
+   further out than both. The update orb only exists when an update is available, so the row
    is one or two circles wide — never a placeholder. */
-.sidebar-github-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.sidebar-github-row { display: flex; align-items: center; gap: 4px; min-width: 0; padding-right: 10px; }
 .sidebar-github-link { flex: 1 1 auto; min-width: 0; }
 .sidebar-github-actions {
   display: flex; align-items: center; gap: 4px;
@@ -410,8 +413,12 @@ input[type="checkbox"]:hover:not(:disabled), input[type="radio"]:hover:not(:disa
    row with a quiet label. The stop control used to be a full-width button; pairing it
    with restart as icons keeps the foot from growing a fifth stacked row and puts the
    destructive action next to the recovery action it is most often confused with. */
-.sidebar-action-row { display: flex; align-items: center; gap: 4px; min-width: 0; padding: 8px 10px; }
-.sidebar-action-label { flex: 1 1 auto; min-width: 0; color: var(--muted); font-size: var(--text-control); }
+.sidebar-action-row { display: flex; align-items: center; gap: 4px; min-width: 0; padding-right: 10px; }
+/* Left padding matches .sidebar-link, plus the 16px icon + 9px gap gutter the
+   iconless label has to clear to sit in the same text column as its neighbours.
+   Owning the block padding here (rather than on the row) keeps the row the same
+   height as the other three, which the 28px orbs would otherwise inflate. */
+.sidebar-action-label { flex: 1 1 auto; min-width: 0; padding: 8px 10px 8px calc(10px + 16px + 9px); color: var(--muted); font-size: var(--text-control); }
 .sidebar-action-orbs { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
 .sidebar-orb--danger { color: var(--red); }
 .sidebar-orb--danger:hover:not(:disabled) { background: var(--red-soft); color: var(--red); border-color: var(--red); }
@@ -778,6 +785,16 @@ a.btn, a.btn:hover { text-decoration: none; }
 }
 /* Refresh icon spins while a sync is in flight (the `.spin` keyframes already exist). */
 .spin-icon { animation: spin 0.9s linear infinite; }
+/* The width cap needs two classes to beat `.notice { max-width: var(--prose-measure) }`,
+   which every toast also carries and which is declared LATER in this file. At equal
+   specificity source order won, so the toast resolved to 70ch (542px) rather than its
+   design width — visible as a toast wider than intended at desktop sizes. */
+.action-toast.notice {
+  /* Both halves of the original cap have to be restated here, not just the design width:
+     dropping the viewport term let the toast run to the screen edge at narrow widths
+     (measured left=0 at 430px, losing the 24px inset the right side keeps). */
+  max-width: min(480px, calc(100vw - 48px));
+}
 /* Toast dismiss affordance: quiet ghost button inside the notice row. */
 .action-toast-dismiss {
   flex: none;
@@ -1700,6 +1717,19 @@ dialog.modal-overlay::backdrop {
   gap: 10px;
   min-width: 0;
 }
+/* Spark visibility switch: a labelled toggle, not a bare knob. An unlabelled switch sitting
+   between two labelled buttons is a guessing game, and this one changes what every card in the
+   page renders. The label carries the meaning; the toggle carries the state. */
+.codex-auth-spark-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.codex-auth-spark-toggle__label {
+  font-size: 12px;
+  color: var(--muted);
+}
 /* Account actions (pause / copy doctor / pause-exhausted): clearer hover than plain
    btn-ghost on card surface — same raised-hover + faint border as icon/list cues. */
 .codex-auth-action-btn:hover:not(:disabled) {
@@ -1758,7 +1788,8 @@ dialog.modal-overlay::backdrop {
 .account-pool-strategy-card > strong { display: block; margin: 0; }
 .account-pool-strategy-card > .card-sub,
 .account-pool-strategy-controls > .card-sub,
-.account-pool-strategy-controls .field .card-sub {
+.account-pool-strategy-controls .field .card-sub,
+.anthropic-pool-card__field .card-sub {
   /* Already inside the padded card — don't double-indent like account-card subs. */
   margin: 0;
   padding: 0;
@@ -1781,6 +1812,31 @@ dialog.modal-overlay::backdrop {
   white-space: nowrap;
   min-width: 0;
 }
+
+/*
+ * Claude account-pool card — the same inset `.account-pool-strategy-card` above already
+ * fixes, on the card that still had it. `.card` has no padding, so each child brings its
+ * own 16px: `.card-row`, `.card-sub` and `.setting-row` do, the warning box and the
+ * threshold field do not, so those two rendered flush against the card border.
+ *
+ * The warning takes margin, not padding: it is a bordered box, so its own padding insets
+ * the text and leaves the border itself on the card edge. The field takes padding — the
+ * `.input` inside is full-width, so the field owns the inset for the whole group.
+ */
+.anthropic-pool-card { margin-top: 12px; }
+.anthropic-pool-card__notice {
+  margin: 10px 16px 0;
+  padding: 10px 16px;
+  border: 1px solid var(--border, #c9a227);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warn, #c9a227) 12%, transparent);
+}
+.anthropic-pool-card__field {
+  display: block;
+  margin-top: 12px;
+  padding: 0 16px;
+}
+.anthropic-pool-card__field--quota-window { padding-bottom: var(--space-4); }
 .api-active-keys-skeleton {
   min-height: 96px;
   border: 1px solid var(--border-soft);
@@ -1982,7 +2038,12 @@ table.logs-table {
 
 .logs-table-wrap {
   overflow-y: auto;
-  max-height: calc(100vh - 260px);
+  /* `dvh`, not `vh`: static `vh` resolves against the LARGE viewport, so on mobile the
+     cap is computed for a viewport taller than the one the user can see and the last rows
+     sit under the browser chrome. The rest of the shell already moved to `100dvh`
+     (see .app, .sidebar, .main-inner--combos, and the mobile drawer), so this was the
+     outlier rather than the convention. */
+  max-height: calc(100dvh - 260px);
 }
 
 .logs-table thead {

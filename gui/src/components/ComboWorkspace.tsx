@@ -18,6 +18,7 @@ export type { ModelOption, ProviderOption, ComboWorkspaceProps } from "./combo-w
 
 export default function ComboWorkspace({
   combos,
+  providerQuotaStates,
   providers,
   models,
   cataloguedComboIds,
@@ -128,6 +129,7 @@ export default function ComboWorkspace({
               {([
                 ["failover", sections.failover, "cws.group.failover"],
                 ["round-robin", sections.roundRobin, "cws.group.roundRobin"],
+                ["other", sections.other, "cws.group.other"],
               ] as const).map(([key, items, labelKey]) => (
                 items.length > 0 ? (
                   <div key={key} className="combos-workspace-rail-group">
@@ -172,6 +174,7 @@ export default function ComboWorkspace({
             otherIds={otherComboIds}
             otherAliases={otherComboAliases}
             providerMap={providerMap}
+            providerQuotaStates={providerQuotaStates}
             providers={providers}
             models={models}
             onBack={() => trySelect(null)}
@@ -199,6 +202,7 @@ export default function ComboWorkspace({
             otherIds={[]}
             otherAliases={[]}
             providerMap={providerMap}
+            providerQuotaStates={providerQuotaStates}
             providers={providers}
             models={models}
             onSaved={(item) => {
@@ -214,6 +218,8 @@ export default function ComboWorkspace({
           <OverviewPanel
             combos={combos}
             cataloguedComboIds={cataloguedComboIds}
+            providerMap={providerMap}
+            providerQuotaStates={providerQuotaStates}
             onSelect={(id) => trySelect(id)}
             onAdd={onAdd}
           />
@@ -225,6 +231,7 @@ export default function ComboWorkspace({
           existingIds={combos.map((c) => c.id)}
           existingAliases={existingComboAliases}
           providerMap={providerMap}
+          providerQuotaStates={providerQuotaStates}
           providers={providers}
           models={models}
           onClose={onCloseAdd}

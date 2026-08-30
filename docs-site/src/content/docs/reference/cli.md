@@ -14,6 +14,10 @@ opencodex state.
 
 ## Command families
 
+### `ocx alias`
+
+`ocx alias list [--json]` shows effective user and built-in aliases. Use `ocx alias set <provider>[/<native-model-id>] <alias>` and `ocx alias rm <provider>[/<native-model-id>]` to edit them. Native model ids may contain additional slashes because the selector splits only at the first slash. Enable shipped defaults with `ocx alias defaults on|off [--provider <name>]`.
+
 - [Lifecycle](/reference/cli/lifecycle/) — setup, proxy and service lifecycle, health, diagnostics,
   catalog sync, the dashboard, and updates.
 - [Providers, accounts, and models](/reference/cli/providers-accounts/) — provider configuration,
@@ -42,9 +46,54 @@ and unavailable required services exit nonzero. `ocx health` specifically exits 
 proxy is healthy and 1 otherwise, so it can be used as a service probe. Scripts should test the exit
 code instead of scraping human-readable output.
 
+The specific codes are set in one place, so every management command agrees:
+
+| Code | Cause |
+|---|---|
+| 0 | success |
+| 2 | usage error — bad, missing, or unknown arguments; nothing was sent |
+| 4 | HTTP 404 — the named account, provider, key, or route does not exist |
+| 5 | HTTP 409 — conflict; a lock is held or state changed underneath |
+| 1 | everything else, including transport failure and other HTTP errors |
+
+Exit 0 means no error was reported. Preview verbs (for example `ocx storage cleanup` without `--yes`) also exit 0 without mutating. A command never prints an error and exits 0.
+
 Destructive removal, import, credit-consumption, and update operations that advertise confirmation
 require `--yes` in non-interactive use. The flag is an explicit opt-in; omitting it must not silently
 confirm the action.
+
+`ocx storage cleanup` goes further: without `--yes` it runs the preview and prints what *would* be
+freed, then exits 0 having changed nothing. There is no interactive confirmation for any of these —
+a prompt an automated caller can answer is not a safety boundary, so the flag is the boundary.
+
+## Driving the CLI from an agent
+
+`ocx capabilities --json` is the machine-readable index of every command, the management routes it
+drives, its flags, and whether it mutates state. Start there rather than parsing help text:
+
+```bash
+ocx capabilities --json
+ocx capabilities --mutating-only --json
+ocx capabilities --route /api/logs
+```
+
+An unmatched `--route` exits 4 rather than reporting empty success. The repository ships a fuller
+operating guide at `skills/ocx/`, whose surface map is generated from the same table.
+
+## Recent behavior changes
+
+These are corrections to commands that previously misreported their own results:
+
+- `doctor` and `sync-cache` now exit non-zero on failure. They previously printed a failure and
+  exited 0, so a script could not tell success from failure.
+- Client errors from `account` map HTTP 404 to exit 4 and HTTP 409 to exit 5, instead of collapsing
+  everything into 1.
+- `--json` is honored in any argument position, including `ocx restore back --json`, which
+  previously accepted the flag and ignored it.
+- `ocx logs --model` now actually filters. It was accepted and silently ignored, so the output
+  looked filtered while showing every row.
+- `ocx storage` gained `cleanup`, `trash`, and `policy` subcommands. A bare `ocx storage` still
+  prints the storage report, as it did when it was an alias of `ocx observe storage`.
 
 ## Version and internal dispatch targets
 

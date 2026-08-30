@@ -24,7 +24,12 @@ function buildBody(rawBody: Record<string, unknown>): Record<string, unknown> {
 }
 
 describe("xAI Responses web-search compatibility", () => {
-  test("lowers Codex live-search fields to xAI's documented tool schema", () => {
+  // Probed 2026-08-22, one field per request, against BOTH xAI destinations (api.x.ai and
+  // cli-chat-proxy.grok.com), which behave identically: external_web_access 400s on every value
+  // including `true`, search_context_size 400s, and user_location / search_content_types /
+  // filters / enable_image_search are all accepted. Only the two refused fields are removed;
+  // deleting the accepted ones was a silent capability loss.
+  test("removes only the fields xAI refuses and keeps the accepted ones", () => {
     const body = buildBody({
       model: "grok-4.6",
       input: "latest xAI news",
@@ -42,13 +47,13 @@ describe("xAI Responses web-search compatibility", () => {
     expect(body.tools).toEqual([{
       type: "web_search",
       filters: { allowed_domains: ["x.ai"] },
+      user_location: { type: "approximate", country: "KR" },
+      search_content_types: ["text", "image"],
       enable_image_search: true,
     }]);
     expect(body.tool_choice).toEqual({ type: "web_search" });
     expect(JSON.stringify(body)).not.toContain("external_web_access");
     expect(JSON.stringify(body)).not.toContain("search_context_size");
-    expect(JSON.stringify(body)).not.toContain("search_content_types");
-    expect(JSON.stringify(body)).not.toContain("user_location");
   });
 
   test("omits cached-only search instead of silently widening it to xAI live search", () => {
@@ -126,6 +131,50 @@ describe("xAI Responses web-search compatibility", () => {
       type: "allowed_tools",
       mode: "required",
       tools: [{ type: "web_search" }],
+    });
+  });
+
+  test("normalizes the Grok CLI proxy identically to the public API", () => {
+    // Re-probed 2026-08-27 against cli-chat-proxy.grok.com: `web_search_preview` -> 422
+    // "unknown variant", `external_web_access` -> 400 on every value including true,
+    // `search_context_size` -> 400, while `user_location` and `search_content_types` -> 200.
+    // The two hosts are one dialect, so one gate covers both.
+    const cliProvider = { baseUrl: "https://cli-chat-proxy.grok.com/v1" };
+
+    // A legacy `web_search_preview` reached the proxy verbatim and 422'd the whole turn.
+    expect(normalizeXaiResponsesWebSearch({
+      model: "grok-4.6",
+      tools: [{ type: "web_search_preview", external_web_access: true }],
+    }, cliProvider)).toEqual({
+      model: "grok-4.6",
+      tools: [{ type: "web_search" }],
+    });
+
+    // A cached/index-only declaration must NOT survive as live search. The downstream capability
+    // strip only deletes the flag, so leaving the CLI proxy unnormalized turned "no network" into
+    // an ordinary live web_search — the exact widening this normalizer exists to refuse.
+    expect(normalizeXaiResponsesWebSearch({
+      model: "grok-4.6",
+      tools: [{ type: "web_search", external_web_access: false }],
+    }, cliProvider)).toEqual({ model: "grok-4.6" });
+
+    // Fields xAI accepts are still preserved on this host.
+    expect(normalizeXaiResponsesWebSearch({
+      model: "grok-4.6",
+      tools: [{
+        type: "web_search",
+        external_web_access: true,
+        search_context_size: "medium",
+        user_location: { type: "approximate", country: "US" },
+        search_content_types: ["text"],
+      }],
+    }, cliProvider)).toEqual({
+      model: "grok-4.6",
+      tools: [{
+        type: "web_search",
+        user_location: { type: "approximate", country: "US" },
+        search_content_types: ["text"],
+      }],
     });
   });
 

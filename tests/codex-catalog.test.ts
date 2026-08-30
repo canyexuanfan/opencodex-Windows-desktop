@@ -3,10 +3,13 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyNativeVisibility, augmentRoutedModelsWithMetadata, augmentRoutedModelsWithRegistryOpenAiApiRows, buildCatalogEntries, buildComboCatalogOmission, catalogModelSlug, clampCatalogModelsToCodexSupport, clampEntryToCodexSupportedEfforts, clampedDefaultEffort, CODEX_ACCOUNT_BOUND_CATALOG_KIND, CODEX_NATIVE_ALIAS_CATALOG_KIND, comboCatalogOmissionReason, deriveComboCatalogModel, exactComboCatalogSlugs, filterCatalogVisibleModels, filterSupportedNativeSlugs, gatherRoutedModels as gatherRoutedModelsDirect, isDatedVariantId, isMediaGenerationModelId, loadBundledCodexCatalog, materializeBundledCodexCatalog, mergeCatalogEntriesForSync, NATIVE_DAYBREAK_BLUE_MODEL, NATIVE_OPENAI_MODELS, nativeDefaultReasoningEffort, nativeInputModalities, nativeOpenAiCapabilitySourceSlug, nativeOpenAiContextWindow, nativeReasoningEfforts, normalizeRoutedCatalogEntry, resetCatalogRuntimeStateForTests, resetOpenAiApiCatalogWarningStateForTests, resolveComboCatalogMember, shouldExposeRoutedModel, upstreamNativeEntry } from "../src/codex/catalog";
+import { applyProviderConfigHints } from "../src/codex/catalog/provider-fetch";
 import {
   CODEX_CUSTOM_MODEL_CATALOG_KIND,
   CODEX_PROVIDER_MODEL_CATALOG_KIND,
+  ensureStrictCatalogFields,
   findNativeTemplate,
+  findSupportedNativeTemplate,
 } from "../src/codex/catalog/parsing";
 import { withStubbedProviderFetch } from "./helpers/catalog-provider-fetch";
 import {
@@ -18,6 +21,7 @@ import {
   cursorModelReasoningEfforts,
 } from "../src/adapters/cursor/discovery";
 import { getModelMetadata, resolveMetadataProvider } from "../src/generated/model-metadata";
+import { resetCodexModelEntitlementCacheForTests, seedCodexModelEntitlementsForTests } from "../src/codex/model-entitlements";
 import {
   clearModelCache,
   getProviderDiscoveryStatus,
@@ -29,7 +33,8 @@ import {
 import type { OcxConfig } from "../src/types";
 import { COMBO_NAMESPACE } from "../src/combos";
 import type { NormalizedComboConfig } from "../src/combos/types";
-import { enrichProviderFromRegistry } from "../src/providers/derive";
+import { enrichProviderFromRegistry, providerConfigSeed } from "../src/providers/derive";
+import { PROVIDER_REGISTRY } from "../src/providers/registry";
 import { enrichProviderFromCatalog } from "../src/oauth/key-providers";
 import { handleManagementAPI } from "../src/server/management-api";
 import { OAUTH_PROVIDERS } from "../src/oauth";
@@ -57,6 +62,7 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
   clearModelCache();
   resetOpenAiApiCatalogWarningStateForTests();
+  resetCodexModelEntitlementCacheForTests();
 });
 
 function normalizedCombo(
@@ -199,9 +205,22 @@ describe("combo catalog capability intersection", () => {
       owned_by: "combo",
       contextWindow: 128_000,
       maxInputTokens: 100_000,
+      autoCompactTokenLimit: 100_000,
       inputModalities: ["text"],
       reasoningEfforts: ["low", "medium"],
       defaultReasoningEffort: "medium",
+    });
+  });
+
+  test("never advertises combo max-input or compaction above its smallest final window", () => {
+    const derived = deriveComboCatalogModel("bounded", normalizedCombo(), [
+      { provider: "a", id: "m1", contextWindow: 700_000, maxInputTokens: 922_000 },
+      { provider: "b", id: "m2", contextWindow: 800_000, maxInputTokens: 900_000 },
+    ]);
+    expect(derived).toMatchObject({
+      contextWindow: 700_000,
+      maxInputTokens: 700_000,
+      autoCompactTokenLimit: 630_000,
     });
   });
 
@@ -975,8 +994,8 @@ describe("combo catalog capability intersection", () => {
       port: 10100,
       defaultProvider: "a",
       providers: {
-        a: { adapter: "openai-chat", baseUrl: "https://a.example/v1", liveModels: false, models: ["m1"], modelContextWindows: { m1: 200_000 } },
-        b: { adapter: "openai-chat", baseUrl: "https://b.example/v1", liveModels: false, models: ["m2"], modelContextWindows: { m2: 128_000 } },
+        a: { adapter: "openai-chat", baseUrl: "https://a.example/v1", liveModels: false, models: ["m1"], modelContextWindows: { m1: 200_000 }, modelAutoCompactTokenLimits: { m1: 150_000 } },
+        b: { adapter: "openai-chat", baseUrl: "https://b.example/v1", liveModels: false, models: ["m2"], modelContextWindows: { m2: 128_000 }, modelAutoCompactTokenLimits: { m2: 80_000 } },
       },
       combos: {
         mixed: { targets: [{ provider: "a", model: "m1" }, { provider: "b", model: "m2" }] },
@@ -993,6 +1012,14 @@ describe("combo catalog capability intersection", () => {
       expect(first.map(model => `${model.provider}/${model.id}`)).toEqual([
         "a/m1", "b/m2", "combo/mixed",
       ]);
+      expect(first.find(model => model.provider === "combo" && model.id === "mixed"))
+        .toMatchObject({ contextWindow: 128_000, maxInputTokens: 128_000, autoCompactTokenLimit: 80_000 });
+      expect(buildCatalogEntries(nativeTemplate(), [], first)
+        .find(entry => entry.slug === "combo/mixed")).toMatchObject({
+        context_window: 128_000,
+        max_context_window: 128_000,
+        auto_compact_token_limit: 80_000,
+      });
       expect(filterCatalogVisibleModels(first, config).some(model => model.id === "mixed")).toBe(false);
       expect(warn).toHaveBeenCalledTimes(1);
       expect(String(warn.mock.calls[0]?.[0])).toContain("[REDACTED]");
@@ -1237,7 +1264,9 @@ describe("combo catalog capability intersection", () => {
     // The "openai" provider uses forward-auth (Codex login passthrough) — fetchProviderModels
     // returns [] for it, so native slugs only surface through nativeOpenAiSlugs(). Before the
     // fix, memberByKey never contained openai/<slug>, so combos with a native-openai target were
-    // silently dropped from the catalog.
+    // silently dropped from the catalog. Sol is account-gated now, so the combo's native member
+    // needs a confirmed roster to be visible at all.
+    seedCodexModelEntitlementsForTests("main", ["gpt-5.6-sol"]);
     globalThis.fetch = (() => { throw new Error("forward providers must not fetch /models"); }) as typeof fetch;
     const config: OcxConfig = {
       port: 10100,
@@ -1890,6 +1919,54 @@ describe("configured CatalogModel displayName -> catalog display_name", () => {
       globalThis.fetch = originalFetch;
       clearModelCache("custom-provider");
     }
+  });
+
+  test("a custom row clamps its soft budget to the provider max-input ceiling", async () => {
+    const models = await gatherRoutedModels({
+      port: 10100,
+      defaultProvider: "custom-budget",
+      providers: {
+        "custom-budget": {
+          baseUrl: "https://custom-budget.example.test/v1",
+          adapter: "openai-chat",
+          liveModels: false,
+          models: [],
+          modelMaxInputTokens: { renamed: 60_000, contextless: 60_000 },
+          modelAutoCompactTokenLimits: { renamed: 80_000, contextless: 10_000 },
+        },
+      },
+      customModels: [{
+        id: "custom-budget-row",
+        provider: "custom-budget",
+        modelId: "renamed",
+        contextWindow: 321_000,
+      }, {
+        id: "custom-budget-contextless",
+        provider: "custom-budget",
+        modelId: "contextless",
+      }],
+    });
+    const model = models.find(row => row.provider === "custom-budget" && row.id === "renamed");
+    expect(model).toMatchObject({
+      contextWindow: 321_000,
+      maxInputTokens: 60_000,
+      autoCompactTokenLimit: 60_000,
+    });
+    expect(buildCatalogEntries(nativeTemplate(), [], models)
+      .find(entry => entry.slug === "custom-budget/renamed")).toMatchObject({
+      context_window: 321_000,
+      max_context_window: 321_000,
+      auto_compact_token_limit: 60_000,
+    });
+    const contextless = models.find(row => row.provider === "custom-budget" && row.id === "contextless");
+    expect(contextless).toMatchObject({ maxInputTokens: 60_000 });
+    expect(contextless).not.toHaveProperty("autoCompactTokenLimit");
+    expect(buildCatalogEntries(nativeTemplate(), [], models)
+      .find(entry => entry.slug === "custom-budget/contextless")).toMatchObject({
+      context_window: 128_000,
+      max_context_window: 128_000,
+      auto_compact_token_limit: 60_000,
+    });
   });
 
   test("a customModel reasoning ladder overrides the inherited provider ladder end-to-end", async () => {
@@ -2657,6 +2734,20 @@ describe("Codex catalog routed normalization", () => {
     expect(terra?.multi_agent_version).toBe("v2");
     expect(luna?.multi_agent_version).toBe("v1");
 
+    const codex0151Contract = {
+      shell_type: "unified_exec",
+      node_repl_disabled: false,
+      node_repl_auto_review_required: false,
+      include_plugin_usage_instructions: true,
+      include_apps_usage_instructions: true,
+    };
+    for (const slug of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      expect(upstreamNativeEntry(slug)).toMatchObject(codex0151Contract);
+    }
+    for (const entry of [sol, terra, luna]) {
+      expect(entry).toMatchObject(codex0151Contract);
+    }
+
     // ocx adaptations: client-version gate stripped; ws preference gated off by default.
     for (const e of [sol, terra, luna]) {
       expect(e).not.toHaveProperty("minimal_client_version");
@@ -3087,6 +3178,38 @@ describe("Codex catalog routed normalization", () => {
     }
   });
 
+  test("bare and account-qualified native rows inherit one lowering-only soft budget", () => {
+    const entries = buildCatalogEntries(
+      nativeTemplate(),
+      NATIVE_OPENAI_MODELS,
+      [],
+      undefined,
+      false,
+      "default",
+      new Set(),
+      ["team"],
+      new Set(),
+      new Set(),
+      { modelAutoCompactTokenLimits: { "gpt-5.6-sol": 120_000 } },
+    );
+    const bare = entries.find(entry => entry.slug === "gpt-5.6-sol");
+    const account = entries.find(entry => entry.slug === "team/gpt-5.6-sol");
+
+    expect(bare).toMatchObject({
+      context_window: 272_000,
+      max_context_window: 272_000,
+      auto_compact_token_limit: 120_000,
+    });
+    expect(account).toMatchObject({
+      context_window: 272_000,
+      max_context_window: 272_000,
+      auto_compact_token_limit: 120_000,
+      opencodex_catalog_kind: CODEX_ACCOUNT_BOUND_CATALOG_KIND,
+    });
+    expect(account?.context_window).toBe(bare?.context_window);
+    expect(account?.max_context_window).toBe(bare?.max_context_window);
+  });
+
   test("routed entries drop stale native max context with the template window (#992)", () => {
     const template = {
       ...nativeTemplate(),
@@ -3131,7 +3254,14 @@ describe("Codex catalog routed normalization", () => {
     ]);
 
     const routed = rows.find(row => row.slug === "deepseek/deepseek-v4-flash");
-    expect(routed?.tool_mode).toBe("code_mode_only");
+    expect(routed).toMatchObject({
+      tool_mode: "code_mode_only",
+      shell_type: "unified_exec",
+      node_repl_disabled: false,
+      node_repl_auto_review_required: false,
+      include_plugin_usage_instructions: false,
+      include_apps_usage_instructions: true,
+    });
   });
 
   test("buildCatalogEntries preserves native tool mode on account-qualified rows", () => {
@@ -3625,13 +3755,33 @@ describe("Codex catalog routed normalization", () => {
         "kimi/kimi-k2.7-code-highspeed",
         "xai/grok-4.20-0309-non-reasoning",
         "xai/grok-4.20-0309-reasoning",
+        "xai/grok-4.20-multi-agent-0309",
         "xai/grok-4.3",
         "xai/grok-4.5",
         "xai/grok-build-0.1",
         "xai/grok-composer-2.5-fast",
       ]);
       expect(models.find(model => model.provider === "kimi" && model.id === "k3[1m]")?.contextWindow).toBe(1_048_576);
-      expect(models.some(model => model.id === "grok-4.20-multi-agent-0309")).toBe(false);
+      expect(models.find(model => model.provider === "xai" && model.id === "grok-4.20-multi-agent-0309"))
+        .toMatchObject({
+          contextWindow: 1_000_000,
+          inputModalities: ["text", "image"],
+          reasoningEfforts: ["low", "medium", "high", "xhigh"],
+        });
+      const catalogEntries = buildCatalogEntries(null, [], models);
+      const multiAgentCatalog = catalogEntries.find(entry => entry.slug === "xai/grok-4.20-multi-agent-0309");
+      expect((multiAgentCatalog?.supported_reasoning_levels as { effort: string }[]).map(level => level.effort))
+        .toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+      expect(models.find(model => model.provider === "xai" && model.id === "grok-4.20-multi-agent-0309")?.supportsReasoningSummaries)
+        .toBeUndefined();
+      expect(getModelMetadata("xai", "grok-4.20-multi-agent-0309")).toMatchObject({
+        contextWindow: 1_000_000,
+        maxTokens: 30_000,
+        input: ["text", "image"],
+        reasoning: true,
+        cost: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 0 },
+      });
+      expect(getModelMetadata("xai", "grok-4.20-multi-agent-0309")).not.toHaveProperty("supportsReasoningSummaries");
       expect(models.some(model => model.id === "configured-ghost")).toBe(false);
       expect(warning.mock.calls.flat().join(" ")).not.toContain("omitted configured model ids");
     } finally {
@@ -4183,6 +4333,21 @@ describe("Codex catalog routed normalization", () => {
     expect(models.filter(m => `${m.provider}/${m.id}` === "opencode-go/glm-5.2")).toHaveLength(1);
   });
 
+  test("opencode-go live rows inherit same-model reasoning ladders from registry metadata (#2410)", () => {
+    const provider = providerConfigSeed(PROVIDER_REGISTRY.find(entry => entry.id === "opencode-go")!);
+
+    const models = ["gpt-5.6-luna", "qwen3.8-max"].map(id => applyProviderConfigHints(
+      "opencode-go",
+      provider,
+      { provider: "opencode-go", id },
+    ));
+
+    expect(models.find(model => model.id === "gpt-5.6-luna")?.reasoningEfforts)
+      .toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(models.find(model => model.id === "qwen3.8-max")?.reasoningEfforts)
+      .toEqual(["low", "medium", "xhigh"]);
+  });
+
   test("opencode-go catalog sync appends jawcode rows with provider context-cap metadata", () => {
     const models = augmentRoutedModelsWithMetadata(
       [],
@@ -4284,6 +4449,63 @@ describe("Codex catalog routed normalization", () => {
     expect(routed?.input_modalities).toEqual(["text"]);
     expect(routed?.supports_reasoning_summaries).toBe(false);
     expect(routed?.default_reasoning_summary).toBe("none");
+  });
+
+  test("xAI and Kiro routed rows disable verbosity without changing other providers", async () => {
+    const models = await gatherRoutedModels({
+      providers: {
+        xai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          authMode: "oauth",
+          liveModels: false,
+          models: ["grok-4.6"],
+        },
+        kiro: {
+          adapter: "kiro",
+          baseUrl: "https://runtime.us-east-1.kiro.dev",
+          authMode: "oauth",
+          liveModels: false,
+          models: ["gpt-5.6-sol"],
+        },
+        plain: {
+          adapter: "openai-responses",
+          baseUrl: "https://plain.example.test/v1",
+          authMode: "key",
+          liveModels: false,
+          models: ["plain-model"],
+        },
+      },
+    });
+    const entries = buildCatalogEntries(null, [], models);
+
+    expect(models.find(model => model.provider === "xai" && model.id === "grok-4.6")?.supportsVerbosity).toBe(false);
+    expect(entries.find(entry => entry.slug === "xai/grok-4.6")?.support_verbosity).toBe(false);
+    expect(models.find(model => model.provider === "kiro" && model.id === "gpt-5.6-sol")?.supportsVerbosity).toBe(false);
+    expect(entries.find(entry => entry.slug === "kiro/gpt-5.6-sol")?.support_verbosity).toBe(false);
+    expect(models.find(model => model.provider === "plain" && model.id === "plain-model")?.supportsVerbosity).toBeUndefined();
+    expect(entries.find(entry => entry.slug === "plain/plain-model")?.support_verbosity).toBe(true);
+  });
+
+  test("a live-discovered xAI id inherits the provider-wide verbosity opt-out", async () => {
+    // modelSupportsVerbosity only enumerates the ids present when the registry row was written.
+    // A model that arrives later from live discovery used to fall through and re-advertise a
+    // control xAI accepts and ignores.
+    const models = await gatherRoutedModels({
+      providers: {
+        xai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          authMode: "oauth",
+          liveModels: false,
+          models: ["grok-9.9-not-in-the-registry"],
+        },
+      },
+    });
+    const entries = buildCatalogEntries(null, [], models);
+
+    expect(models.find(model => model.provider === "xai")?.supportsVerbosity).toBe(false);
+    expect(entries.find(entry => entry.slug === "xai/grok-9.9-not-in-the-registry")?.support_verbosity).toBe(false);
   });
 
   test("a routed model never inherits the native template's context window (#992)", () => {
@@ -4568,6 +4790,10 @@ describe("Codex catalog routed normalization", () => {
       "glm-5.2[1m]": true,
       "glm-5.3": true,
       "glm-5.3[1m]": true,
+      // glm-5.3-flash joined ZAI_GLM_53_MODELS, which is what modelSupportsReasoningSummaries
+      // is derived from. It belongs in the family for reasoning metadata even though it is
+      // excluded from the vision-sidecar list - the two answer different questions.
+      "glm-5.3-flash": true,
     });
   });
 
@@ -4595,6 +4821,23 @@ describe("Codex catalog routed normalization", () => {
     };
     enrichProviderFromCatalog("deepseek", submitted);
     expect(submitted.modelSupportsReasoningSummaries).toEqual({ "deepseek-v4-flash": false });
+
+    const xai: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.x.ai/v1",
+      authMode: "key",
+    };
+    enrichProviderFromCatalog("xai", xai);
+    expect(xai.modelSupportsVerbosity).toBeUndefined();
+
+    const submittedVerbosity: OcxConfig["providers"][string] = {
+      adapter: "openai-chat",
+      baseUrl: "https://api.x.ai/v1",
+      authMode: "key",
+      modelSupportsVerbosity: { "grok-4.6": true },
+    };
+    enrichProviderFromCatalog("xai", submittedVerbosity);
+    expect(submittedVerbosity.modelSupportsVerbosity).toEqual({ "grok-4.6": true });
   });
 
   test("explicit per-model overrides survive registry backfill", () => {
@@ -4655,6 +4898,7 @@ describe("Codex catalog routed normalization", () => {
           apiKey: "sk-test",
           models: ["static-model"],
           modelContextWindows: { "static-model": 321_000 },
+          modelAutoCompactTokenLimits: { "static-model": 80_000 },
           modelInputModalities: { "static-model": ["text", "image"] },
         },
       },
@@ -4664,8 +4908,66 @@ describe("Codex catalog routed normalization", () => {
 
     expect(routed?.context_window).toBe(321_000);
     expect(routed?.max_context_window).toBe(321_000);
-    expect(routed?.auto_compact_token_limit).toBe(288_900);
+    expect(routed?.auto_compact_token_limit).toBe(80_000);
     expect(routed?.input_modalities).toEqual(["text", "image"]);
+  });
+
+  test("an unknown window ignores the configured soft budget instead of treating 128k as policy evidence", async () => {
+    globalThis.fetch = (async () => new Response("{}", { status: 503 })) as typeof fetch;
+    const models = await gatherRoutedModels({
+      port: 10100,
+      defaultProvider: "unknown-soft",
+      providers: {
+        "unknown-soft": {
+          adapter: "openai-chat",
+          baseUrl: "https://unknown-soft.test/v1",
+          liveModels: false,
+          models: ["model"],
+          modelAutoCompactTokenLimits: { model: 10_000 },
+        },
+      },
+    });
+    const model = models.find(row => row.provider === "unknown-soft" && row.id === "model");
+    expect(model).not.toHaveProperty("autoCompactTokenLimit");
+
+    const emitted = buildCatalogEntries(nativeTemplate(), [], models)
+      .find(entry => entry.slug === "unknown-soft/model");
+    expect(emitted).toMatchObject({
+      context_window: 128_000,
+      max_context_window: 128_000,
+      auto_compact_token_limit: 115_200,
+    });
+  });
+
+  test("a max-input-only Combo member ignores the configured soft budget", async () => {
+    const models = await gatherRoutedModels({
+      port: 10100,
+      defaultProvider: "max-only",
+      providers: {
+        "max-only": {
+          adapter: "openai-chat",
+          baseUrl: "https://max-only.test/v1",
+          liveModels: false,
+          models: [],
+          modelMaxInputTokens: { model: 80_000 },
+          modelAutoCompactTokenLimits: { model: 10_000 },
+        },
+      },
+      combos: {
+        "max-only-combo": {
+          strategy: "failover",
+          targets: [{ provider: "max-only", model: "model", weight: 1 }],
+        },
+      },
+    });
+
+    expect(models.find(row => row.provider === "max-only" && row.id === "model")).toBeUndefined();
+    expect(models.find(row => row.provider === "combo" && row.id === "max-only-combo"))
+      .toMatchObject({
+        contextWindow: 80_000,
+        maxInputTokens: 80_000,
+        autoCompactTokenLimit: 72_000,
+      });
   });
 
   // #1073's exact reproduction: a provider whose /models returns nothing but ids. Two cases,
@@ -4874,6 +5176,7 @@ describe("Codex catalog routed normalization", () => {
           apiKey: "sk-test",
           contextWindow: 128_000,
           modelContextWindows: { "wide-model": 100_000 },
+          modelMaxInputTokens: { "wide-model": 200_000 },
           modelInputModalities: { "wide-model": ["text"] },
         },
       },
@@ -4881,6 +5184,7 @@ describe("Codex catalog routed normalization", () => {
 
     expect(models.find(m => m.id === "wide-model")).toMatchObject({
       contextWindow: 100_000,
+      maxInputTokens: 100_000,
       inputModalities: ["text"],
     });
     expect(models.find(m => m.id === "small-model")?.contextWindow).toBe(64_000);
@@ -5195,11 +5499,12 @@ describe("OpenAI API trusted catalog augmentation", () => {
 
   test("user values only lower trusted context and max-input baselines", () => {
     const lowered = augmentRoutedModelsWithRegistryOpenAiApiRows([], openAiApiCatalogConfig({
-      modelContextWindows: { "gpt-5.6-sol": 350_000, "gpt-5.6-terra": 2_000_000 },
-      modelMaxInputTokens: { "gpt-5.6-sol": 300_000, "gpt-5.6-terra": 945_000 },
+      modelContextWindows: { "gpt-5.6-sol": 350_000, "gpt-5.6-terra": 2_000_000, "gpt-5.6-luna": 350_000 },
+      modelMaxInputTokens: { "gpt-5.6-sol": 300_000, "gpt-5.6-terra": 945_000, "gpt-5.6-luna": 900_000 },
     }));
     expect(lowered.find(row => row.id === "gpt-5.6-sol")).toMatchObject({ contextWindow: 350_000, maxInputTokens: 300_000 });
     expect(lowered.find(row => row.id === "gpt-5.6-terra")).toMatchObject({ contextWindow: 1_050_000, maxInputTokens: 922_000 });
+    expect(lowered.find(row => row.id === "gpt-5.6-luna")).toMatchObject({ contextWindow: 350_000, maxInputTokens: 350_000 });
   });
 
   test("routed auto-compaction is bounded by max-input after effective context caps", () => {
@@ -5319,6 +5624,13 @@ describe("shouldExposeRoutedModel — Gemini image-capable exemption", () => {
 
   test("still filters compatibility-excluded slugs", () => {
     expect(shouldExposeRoutedModel({ provider: "opencode-go", id: "hy3-preview" })).toBe(false);
+    // Issue #2330: uncallable or stale OpenCode Go models
+    expect(shouldExposeRoutedModel({ provider: "opencode-go", id: "mimo-v2-omni" })).toBe(false);
+    expect(shouldExposeRoutedModel({ provider: "opencode-go", id: "mimo-v2-pro" })).toBe(false);
+    // Control / live models are exposed
+    expect(shouldExposeRoutedModel({ provider: "opencode-free", id: "deepseek-v4-flash-free" })).toBe(true);
+    expect(shouldExposeRoutedModel({ provider: "opencode-go", id: "grok-4.6" })).toBe(true);
+    expect(shouldExposeRoutedModel({ provider: "opencode-go", id: "glm-5.2" })).toBe(true);
   });
 });
 
@@ -5419,4 +5731,321 @@ describe("Codex reasoning-effort capability clamp", () => {
     expect(models).toEqual(before);
   });
 });
+
+describe("auto_review_model configuration (#1225)", () => {
+  test("applyAutoReviewModelOverride sets auto_review_model_override across all entries", () => {
+    const { applyAutoReviewModelOverride } = require("../src/codex/catalog/sync");
+    const entries = [
+      { slug: "gpt-5.5", auto_review_model_override: null },
+      { slug: "opencode-go/deepseek-v4-flash", auto_review_model_override: null },
+    ];
+
+    applyAutoReviewModelOverride(entries, "  opencode-go/deepseek-v4-flash  ");
+    expect(entries[0].auto_review_model_override).toBe("opencode-go/deepseek-v4-flash");
+    expect(entries[1].auto_review_model_override).toBe("opencode-go/deepseek-v4-flash");
+  });
+
+  test("applyAutoReviewModelOverride clears routed state when autoReviewModel is null or empty", () => {
+    const { applyAutoReviewModelOverride } = require("../src/codex/catalog/sync");
+    const entries = [
+      { slug: "gpt-5.5", auto_review_model_override: "existing-model" },
+      { slug: "opencode-go/glm-5.2", auto_review_model_override: "old-model" },
+    ];
+
+    applyAutoReviewModelOverride(entries, null);
+    expect(entries[0].auto_review_model_override).toBe("existing-model");
+    expect(entries[1].auto_review_model_override).toBeNull();
+    applyAutoReviewModelOverride(entries, "   ");
+    expect(entries[0].auto_review_model_override).toBe("existing-model");
+    expect(entries[1].auto_review_model_override).toBeNull();
+  });
+
+  test("applyAutoReviewModelOverride rejects invalid format with control chars or inner spaces", () => {
+    const { applyAutoReviewModelOverride, isValidAutoReviewModel } = require("../src/codex/catalog/sync");
+    const entries = [
+      { slug: "gpt-5.5", auto_review_model_override: "native-preserved" },
+    ];
+
+    expect(isValidAutoReviewModel("valid/model-slug_1")).toBe(true);
+    expect(isValidAutoReviewModel("invalid slug with spaces")).toBe(false);
+    expect(isValidAutoReviewModel("invalid\x00slug")).toBe(false);
+    applyAutoReviewModelOverride(entries, "invalid slug with spaces");
+    expect(entries[0].auto_review_model_override).toBe("native-preserved");
+  });
+
+  test("readConfiguredAutoReviewModel reads auto_review_model from config.toml", () => {
+    const { readConfiguredAutoReviewModel } = require("../src/codex/catalog/parsing");
+    expect(typeof readConfiguredAutoReviewModel).toBe("function");
+  });
+
+  test("writeRetainedCatalogSync stamps auto_review_model_override into persisted catalog", () => {
+    const { applyAutoReviewModelOverride } = require("../src/codex/catalog/sync");
+    const { readConfiguredAutoReviewModel } = require("../src/codex/catalog/parsing");
+
+    // Simulate a config-driven write path: entries are regenerated from a template,
+    // then the override is stamped before serialization.
+    const entries = [
+      { slug: "gpt-5.5", auto_review_model_override: null },
+      { slug: "opencode-go/deepseek-v4-flash", auto_review_model_override: "old-model" },
+    ];
+    const configuredValue = "  opencode-go/deepseek-v4-flash  ";
+    const trimmedValue = configuredValue.trim();
+
+    expect(typeof readConfiguredAutoReviewModel).toBe("function");
+
+    // Absent value: no override is written.
+    applyAutoReviewModelOverride(entries, null);
+    expect(entries[0].auto_review_model_override).toBeNull();
+    expect(entries[1].auto_review_model_override).toBeNull();
+
+    // Present value: trimmed override replaces every entry (including native rows).
+    applyAutoReviewModelOverride(entries, configuredValue);
+    expect(entries[0].auto_review_model_override).toBe(trimmedValue);
+    expect(entries[1].auto_review_model_override).toBe(trimmedValue);
+  });
+});
 import { ManagementRequest as Request } from "./helpers/management-auth";
+
+describe("#2465 model preset management routes", () => {
+  const originalFetchForPresets = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = originalFetchForPresets; clearModelCache(); });
+
+  function presetConfig(selected?: string[], marker?: Record<string, unknown>) {
+    return {
+      port: 10100,
+      defaultProvider: "openrouter",
+      providers: {
+        openrouter: {
+          adapter: "openai-chat",
+          baseUrl: "https://openrouter.ai/api/v1",
+          apiKey: "k",
+          liveModels: false,
+          models: [
+            "anthropic/claude-opus-5",
+            "openai/gpt-5.6-sol",
+            "meta-llama/llama-2-7b",
+            "some-vendor/ancient-v1",
+          ],
+          ...(selected ? { selectedModels: selected } : {}),
+          ...(marker ? { modelPreset: marker } : {}),
+        },
+      },
+    } as unknown as Parameters<typeof handleManagementAPI>[2];
+  }
+
+  async function call(config: Parameters<typeof handleManagementAPI>[2], method: string, body?: unknown) {
+    const url = new URL("http://127.0.0.1/api/model-presets");
+    const init: RequestInit = body === undefined
+      ? { method }
+      : { method, body: JSON.stringify(body), headers: { "content-type": "application/json" } };
+    const response = await handleManagementAPI(new Request(url, init), url, config);
+    return { status: response!.status, body: await response!.json() as Record<string, unknown> };
+  }
+
+  test("GET previews the preset against the current catalog without applying it", async () => {
+    clearModelCache();
+    const config = presetConfig();
+    const { body } = await call(config, "GET");
+    const view = (body.providers as Record<string, Record<string, unknown>>).openrouter;
+    expect(view.mode).toBe("all");
+    expect(view.presetIds).toEqual(["anthropic/claude-opus-5", "openai/gpt-5.6-sol"]);
+    expect(view.totalCount).toBe(4);
+    // Preview must not mutate: the provider is still unfiltered.
+    expect(config.providers.openrouter.selectedModels).toBeUndefined();
+  });
+
+  test("PUT preset materializes concrete ids and records the version", async () => {
+    clearModelCache();
+    const config = presetConfig();
+    const { body } = await call(config, "PUT", { provider: "openrouter", mode: "preset" });
+    expect(body.mode).toBe("preset");
+    expect(config.providers.openrouter.selectedModels).toEqual([
+      "anthropic/claude-opus-5",
+      "openai/gpt-5.6-sol",
+    ]);
+    // Concrete ids, not patterns: the visibility hot path and older binaries stay compatible.
+    expect(config.providers.openrouter.modelPreset?.mode).toBe("preset");
+    expect(config.providers.openrouter.modelPreset?.appliedVersion).toBeGreaterThan(0);
+  });
+
+  test("PUT all clears both the allowlist and the marker", async () => {
+    clearModelCache();
+    const config = presetConfig(["anthropic/claude-opus-5"], { mode: "preset", appliedVersion: 1 });
+    await call(config, "PUT", { provider: "openrouter", mode: "all" });
+    expect(config.providers.openrouter.selectedModels).toBeUndefined();
+    expect(config.providers.openrouter.modelPreset).toBeUndefined();
+  });
+
+  test("a preset matching nothing never writes an empty allowlist", async () => {
+    clearModelCache();
+    // Empty means ALL, so a zero-match preset must keep the previous selection rather than
+    // silently un-curating the provider.
+    const config = presetConfig(["some-vendor/ancient-v1"]);
+    config.providers.openrouter.models = ["some-vendor/ancient-v1"];
+    const { body } = await call(config, "PUT", { provider: "openrouter", mode: "preset" });
+    expect(body.fallback).toBe("preset-empty");
+    expect(config.providers.openrouter.selectedModels).toEqual(["some-vendor/ancient-v1"]);
+    expect(config.providers.openrouter.modelPreset?.mode).toBe("all");
+    expect(config.providers.openrouter.modelPreset?.fallback).toBe("preset-empty");
+  });
+
+  test("an unknown provider and an invalid mode are rejected", async () => {
+    clearModelCache();
+    const config = presetConfig();
+    expect((await call(config, "PUT", { provider: "nope", mode: "preset" })).status).toBe(404);
+    expect((await call(config, "PUT", { provider: "openrouter", mode: "sideways" })).status).toBe(400);
+  });
+
+  test("a provider with no shipped preset cannot be switched into preset mode", async () => {
+    clearModelCache();
+    const config = presetConfig();
+    (config.providers as Record<string, unknown>).groq = {
+      adapter: "openai-chat", baseUrl: "https://api.groq.com/openai/v1", apiKey: "k", liveModels: false, models: ["x"],
+    };
+    const { status } = await call(config, "PUT", { provider: "groq", mode: "preset" });
+    expect(status).toBe(400);
+  });
+});
+
+/**
+ * #2813: a Reserve-shaped row injected by the Codex client carries `base_instructions`,
+ * so the permissive selector would let it become the template every routed model clones
+ * from. Template selection has to be strict — but catalog VALIDITY must stay permissive,
+ * or a catalog holding only a newly launched native model gets replaced by stale data.
+ * Plan review rejected restricting the shared function for exactly that reason.
+ */
+describe("routed template selection is strict, catalog validity is not", () => {
+  const unknownBareRow = (): Record<string, unknown> => ({
+    slug: "gpt-reserve",
+    display_name: "Luna Reserve",
+    description: "Reserve fallback",
+    visibility: "list",
+    base_instructions: "You are Codex.",
+    available_in_plans: ["reserve"],
+    supported_in_api: false,
+  });
+
+  test("the strict selector skips an unknown row ordered before a known one", () => {
+    // The unknown row is FIRST, so a first-match implementation would pick it.
+    const catalog = { models: [unknownBareRow(), nativeTemplate()] } as never;
+
+    expect(findSupportedNativeTemplate(catalog)?.slug).toBe("gpt-5.5");
+  });
+
+  test("the strict selector returns null rather than inheriting from an unknown row", () => {
+    const catalog = { models: [unknownBareRow()] } as never;
+
+    expect(findSupportedNativeTemplate(catalog)).toBeNull();
+  });
+
+  // The regression guard for the rejected fix: if this ever goes red, catalog validity
+  // has been narrowed and a new upstream model can invalidate a healthy catalog.
+  test("the permissive selector still accepts an unknown row, so validity stays forward-compatible", () => {
+    const catalog = { models: [unknownBareRow()] } as never;
+
+    expect(findNativeTemplate(catalog)?.slug).toBe("gpt-reserve");
+  });
+});
+
+/**
+ * Each eligibility field is asserted through `ensureStrictCatalogFields` DIRECTLY.
+ * Review found the build path cannot prove them: `deriveEntry` already neutralizes
+ * `upgrade` and `availability_nux` on its own, so a build-path assertion stays green
+ * after the corresponding sanitizer line is deleted.
+ */
+describe("routed rows never carry native eligibility metadata", () => {
+  const contaminated = (): Record<string, unknown> => ({
+    slug: "anthropic/claude-sonnet-5",
+    display_name: "claude-sonnet-5",
+    supported_in_api: false,
+    available_in_plans: ["reserve", "plus"],
+    minimal_client_version: "999.0.0",
+    availability_nux: { message: "reserve only" },
+    upgrade: { message: "subscribe" },
+  });
+
+  test("supported_in_api is forced true", () => {
+    const entry = ensureStrictCatalogFields(contaminated() as never, { isRouted: true });
+
+    expect(entry.supported_in_api).toBe(true);
+  });
+
+  test("available_in_plans is stripped", () => {
+    expect(ensureStrictCatalogFields(contaminated() as never, { isRouted: true }))
+      .not.toHaveProperty("available_in_plans");
+  });
+
+  test("minimal_client_version is stripped", () => {
+    expect(ensureStrictCatalogFields(contaminated() as never, { isRouted: true }))
+      .not.toHaveProperty("minimal_client_version");
+  });
+
+  test("availability_nux is stripped", () => {
+    expect(ensureStrictCatalogFields(contaminated() as never, { isRouted: true }))
+      .not.toHaveProperty("availability_nux");
+  });
+
+  test("upgrade is stripped", () => {
+    expect(ensureStrictCatalogFields(contaminated() as never, { isRouted: true }))
+      .not.toHaveProperty("upgrade");
+  });
+
+  // Routed-only. Native rows legitimately carry availability_nux and plan eligibility;
+  // sanitizing them here would corrupt the native picker.
+  test("a native row keeps its own eligibility metadata", () => {
+    const native = ensureStrictCatalogFields(contaminated() as never, {});
+
+    expect(native.available_in_plans).toEqual(["reserve", "plus"]);
+    expect(native.availability_nux).toEqual({ message: "reserve only" });
+    expect(native.supported_in_api).toBe(false);
+  });
+
+  // Review blocker 3: preserved degraded/foreign rows never pass through
+  // normalizeRoutedCatalogEntry, so sanitizing only there would leave rows already on
+  // disk contaminated. Both paths end in ensureStrictCatalogFields, which is why it owns
+  // the sanitation.
+  test("the routed normalizer inherits the same guarantees", () => {
+    const entry = normalizeRoutedCatalogEntry(contaminated() as never);
+
+    expect(entry.supported_in_api).toBe(true);
+    expect(entry).not.toHaveProperty("available_in_plans");
+    expect(entry).not.toHaveProperty("minimal_client_version");
+    expect(entry).not.toHaveProperty("availability_nux");
+    expect(entry).not.toHaveProperty("upgrade");
+  });
+});
+
+describe("Codex 0.151 catalog contract fields", () => {
+  test("legacy shell types canonicalize while disabled remains disabled", () => {
+    const normalizedLegacy = ["default", "local", "shell_command"].map(shell_type =>
+      ensureStrictCatalogFields({ slug: "test", shell_type }).shell_type);
+
+    expect(normalizedLegacy).toEqual(["unified_exec", "unified_exec", "unified_exec"]);
+    expect(ensureStrictCatalogFields({ slug: "test", shell_type: "disabled" }).shell_type)
+      .toBe("disabled");
+  });
+
+  test("missing booleans receive serde defaults", () => {
+    expect(ensureStrictCatalogFields({ slug: "test" })).toMatchObject({
+      node_repl_disabled: false,
+      node_repl_auto_review_required: false,
+      include_plugin_usage_instructions: false,
+      include_apps_usage_instructions: true,
+    });
+  });
+
+  test("explicit per-model booleans are never overwritten by defaults", () => {
+    expect(ensureStrictCatalogFields({
+      slug: "test",
+      node_repl_disabled: true,
+      node_repl_auto_review_required: true,
+      include_plugin_usage_instructions: true,
+      include_apps_usage_instructions: false,
+    })).toMatchObject({
+      node_repl_disabled: true,
+      node_repl_auto_review_required: true,
+      include_plugin_usage_instructions: true,
+      include_apps_usage_instructions: false,
+    });
+  });
+});

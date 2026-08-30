@@ -253,3 +253,132 @@ describe("resolvePublicAddresses — caller-specific diagnostics", () => {
     )).rejects.toThrow("benchmark address (198.19.7.9)");
   });
 });
+
+describe("providerDestinationConfigError — NAT64 well-known prefix (RFC 6052)", () => {
+  // On an IPv6-only/DNS64 network every IPv4-only peer is synthesized into 64:ff9b::<ipv4>.
+  // 0x64 sits below the 2000::/3 global-unicast window, so the wrapper alone read as
+  // "non-global address" and rejected ordinary public destinations for anyone behind NAT64.
+  test("a wrapped public IPv4 is accepted", () => {
+    for (const host of ["64:ff9b::d25:c62c", "64:ff9b::0fe0:7748", "64:ff9b::13.37.198.44"]) {
+      expect(providerDestinationConfigError("p", provider(`https://[${host}]/v1`))).toBeNull();
+    }
+  });
+
+  // The embedded address is what gets classified, so the decode cannot become an SSRF bypass.
+  test("a wrapped private, loopback, or link-local IPv4 stays blocked", () => {
+    const cases: [string, string][] = [
+      ["64:ff9b::7f00:1", "loopback"],
+      ["64:ff9b::a00:1", "private-network"],
+      ["64:ff9b::c0a8:1", "private-network"],
+      ["64:ff9b::ac10:1", "private-network"],
+      // 169.254.169.254 is the cloud metadata IP, so the wrapped form lands on the stronger
+      // metadata blocklist rather than the generic link-local rule.
+      ["64:ff9b::a9fe:a9fe", "blocked metadata endpoint"],
+      ["64:ff9b::127.0.0.1", "loopback"],
+    ];
+    for (const [host, detail] of cases) {
+      expect(providerDestinationConfigError("p", provider(`https://[${host}]/v1`))).toContain(detail);
+    }
+  });
+
+  // RFC 8215 reserves 64:ff9b:1::/48 for local-use translation, which is not the well-known
+  // prefix and keeps its non-global treatment.
+  test("the RFC 8215 local-use prefix is not decoded", () => {
+    expect(providerDestinationConfigError("p", provider("https://[64:ff9b:1::d25:c62c]/v1")))
+      .toContain("non-global");
+  });
+
+  test("unrelated IPv6 classification is unchanged", () => {
+    expect(providerDestinationConfigError("p", provider("https://[2606:4700::6812:1250]/v1"))).toBeNull();
+    expect(providerDestinationConfigError("p", provider("https://[::1]/v1"))).toContain("loopback");
+    expect(providerDestinationConfigError("p", provider("https://[fd00::1]/v1"))).toContain("private-network");
+    expect(providerDestinationConfigError("p", provider("https://[fe80::1]/v1"))).toContain("link-local");
+    expect(providerDestinationConfigError("p", provider("https://[2001:db8::1]/v1"))).toContain("documentation");
+  });
+});
+
+/**
+ * Issue #2810: a fake-IP resolver answers `::ffff:0:c612:1b` — the explicit-zero spelling of
+ * `198.18.0.27`. That assesses as `non-global address`, never `benchmark address`, so the
+ * `allowBenchmarkAddresses` opt-in could not reach it and Clash/Surge users behind fake-IP were
+ * refused.
+ *
+ * The fix is deliberately NOT an equivalence in `classifyIpv6`. Under RFC 4291 the mapped prefix
+ * is `::ffff:0:0/96`, so `::ffff:0:<hi>:<lo>` is a RESERVED address whose tail merely looks like
+ * an IPv4. Declaring them equal would admit `::ffff:0:5db8:d822` (tail `93.184.216.34`) as a
+ * public destination — the blocker a maintainer raised on #2812. Both directions are pinned here.
+ */
+describe("#2810 explicit-zero mapped benchmark answers under the fake-IP opt-in", () => {
+  const OPT_IN = { context: "p", allowBenchmarkAddresses: true } as const;
+
+  test("the reported answer is accepted and stays non-private", async () => {
+    lookupMock.mockResolvedValueOnce([{ address: "::ffff:0:c612:1b", family: 6 }]);
+    const resolved = await resolvePublicAddresses("https://api.example.com/v1", OPT_IN);
+    expect(resolved.addresses).toEqual([{ address: "::ffff:0:c612:1b", family: 6 }]);
+    expect(resolved.privateNetwork).toBe(false);
+  });
+
+  test("both benchmark range boundaries are accepted", async () => {
+    // 198.18.0.0 and 198.19.255.255
+    for (const address of ["::ffff:0:c612:0", "::ffff:0:c613:ffff"]) {
+      lookupMock.mockResolvedValueOnce([{ address, family: 6 }]);
+      const resolved = await resolvePublicAddresses("https://api.example.com/v1", OPT_IN);
+      expect(resolved.addresses).toEqual([{ address, family: 6 }]);
+    }
+  });
+
+  test("THE BLOCKER: a public-looking tail is still refused", async () => {
+    // ::ffff:0:5db8:d822 has the tail 93.184.216.34. If the classifier treated the explicit-zero
+    // form as a mapped IPv4, this reserved address would be admitted as a public destination.
+    lookupMock.mockResolvedValueOnce([{ address: "::ffff:0:5db8:d822", family: 6 }]);
+    await expect(resolvePublicAddresses("https://api.example.com/v1", OPT_IN)).rejects.toThrow("non-global");
+  });
+
+  test("loopback-, metadata-, and out-of-range tails are refused", async () => {
+    const refused = [
+      "::ffff:0:7f00:1",      // 127.0.0.1
+      "::ffff:0:a9fe:a9fe",   // 169.254.169.254
+      "::ffff:0:c611:ffff",   // 198.17.255.255, just below the range
+      "::ffff:0:c614:0",      // 198.20.0.0, just above the range
+      "::ffff:0:a00:5",       // 10.0.0.5
+    ];
+    for (const address of refused) {
+      lookupMock.mockResolvedValueOnce([{ address, family: 6 }]);
+      await expect(resolvePublicAddresses("https://api.example.com/v1", OPT_IN)).rejects.toThrow("non-global");
+    }
+  });
+
+  test("without the opt-in the reported answer is refused", async () => {
+    lookupMock.mockResolvedValueOnce([{ address: "::ffff:0:c612:1b", family: 6 }]);
+    await expect(resolvePublicAddresses("https://api.example.com/v1", "p")).rejects.toThrow("non-global");
+  });
+
+  test("a literal URL is still refused, opt-in or not", () => {
+    // The opt-in is a DNS-answer exception. A user-configured literal never reaches it.
+    expect(providerDestinationConfigError("p", provider("https://[::ffff:0:c612:1b]/v1")))
+      .toContain("non-global");
+    expect(providerDestinationConfigError("p", provider("https://[::ffff:0:5db8:d822]/v1")))
+      .toContain("non-global");
+  });
+
+  test("a prefix that is one hextet off is not decoded", async () => {
+    lookupMock.mockResolvedValueOnce([{ address: "::ffff:1:c612:1b", family: 6 }]);
+    await expect(resolvePublicAddresses("https://api.example.com/v1", OPT_IN)).rejects.toThrow("non-global");
+  });
+
+  test("one accepted answer cannot smuggle a private companion answer", async () => {
+    lookupMock.mockResolvedValueOnce([
+      { address: "::ffff:0:c612:1b", family: 6 },
+      { address: "10.0.0.5", family: 4 },
+    ]);
+    await expect(resolvePublicAddresses("https://api.example.com/v1", OPT_IN)).rejects.toThrow();
+  });
+
+  test("the canonical spelling and ordinary IPv4 benchmark answers still work", async () => {
+    for (const address of ["::ffff:198.18.0.27", "198.18.0.27"]) {
+      lookupMock.mockResolvedValueOnce([{ address, family: address.includes(":") ? 6 : 4 }]);
+      const resolved = await resolvePublicAddresses("https://api.example.com/v1", OPT_IN);
+      expect(resolved.privateNetwork).toBe(false);
+    }
+  });
+});

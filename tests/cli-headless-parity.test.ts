@@ -9,6 +9,8 @@ import { handleConfigCommand } from "../src/cli/config-command";
 import { handleClientIntegrationCommand, handleGrokCommand } from "../src/cli/integrations";
 import { handleModelsRuntimeCommand } from "../src/cli/models-runtime";
 import { handleProviderRuntimeCommand } from "../src/cli/provider-runtime";
+import { providerQuotaLine } from "../src/cli/account-extended";
+import { formatAccountTable } from "../src/cli/account";
 
 type Recorded = { path: string; method: string; body: unknown };
 const servers: Array<ReturnType<typeof Bun.serve>> = [];
@@ -235,6 +237,11 @@ describe("headless GUI parity CLI", () => {
       ["/api/combos", "ocx combo"],
       ["/api/client-config", "ocx export"],
       ["/api/client-integrations", "ocx integration client"],
+      // #2463: both read and write reach the CLI. `ocx alias list` reads /api/aliases,
+      // `ocx alias defaults` writes /api/default-aliases, and the per-provider writes sit
+      // under /api/providers/:name/alias, already covered by the /api/providers prefix.
+      ["/api/aliases", "ocx alias"],
+      ["/api/default-aliases", "ocx alias defaults"],
       // GUI-only for now: the overview card switches for Claude Code and Grok.
       // Their effect is already reachable from the CLI by other names —
       // `ocx grok apply` regenerates the fence and `ocx stop` strips it, and
@@ -251,6 +258,10 @@ describe("headless GUI parity CLI", () => {
       ["/api/logs", "ocx observe"],
       ["/api/lab", "ocx lab"],
       ["/api/config", "ocx config"],
+      // The prompt composer is a GUI-first surface: it reads Codex's own layer
+      // inventory and writes one config key. There is no headless equivalent
+      // today, and claiming one would be worse than saying so here.
+      ["/api/codex-prompt", "(none — GUI prompt-layer surface; keys live in config.toml)"],
       ["/api/settings", "ocx system"],
       // Routing Intelligence (RI-04..RI-10): profiles + dry-run are mirrored by
       // `ocx route policy`. Analytics is GUI-first for now; the same request
@@ -420,6 +431,20 @@ describe("headless GUI parity CLI", () => {
         ],
       },
     });
+  });
+
+  test("combo set rejects --sticky outside round-robin instead of dropping it", async () => {
+    const runtime = fakeRuntime();
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const code = await handleComboCommand([
+        "set", "demo", "--targets", "a/m1", "--strategy", "random", "--sticky", "5",
+      ], runtime.deps);
+      expect(code).toBe(2);
+      expect(runtime.requests).toEqual([]);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   test("combo set forwards the explicit native-alias compatibility contract", async () => {
@@ -689,5 +714,92 @@ describe("headless GUI parity CLI", () => {
       else process.env.OPENCODEX_HOME = previous;
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe("#2565 ocx provider quota renders bars, not a count", () => {
+  /**
+   * `quota()` rendered the response through `summaryLines()`, a depth-1 flattener that emits
+   * "N item(s)" for a non-scalar array. Every fetched report was discarded and the default
+   * invocation printed only `generatedAt` and `reports: 5 item(s)`.
+   */
+  const report = (provider: string, quota: Record<string, unknown>) => ({ provider, quota });
+
+  test("one line per report, using the same formatter as ocx account refresh", () => {
+    const line = providerQuotaLine("anthropic", report("anthropic", {
+      fiveHourPercent: 9,
+      fiveHourResetAt: 1_787_690_999_802,
+      weeklyPercent: 45,
+    }) as never);
+    expect(line).toContain("anthropic");
+    expect(line).toContain("5h 9%");
+    expect(line).toContain("weekly 45%");
+    expect(line).toContain("resets ");
+  });
+
+  test("custom windows keep their upstream labels", () => {
+    const line = providerQuotaLine("cursor", report("cursor", {
+      monthlyPercent: 0.69,
+      customWindows: [
+        { label: "First-party models", percent: 0.77 },
+        { label: "API usage", percent: 0.19 },
+      ],
+    }) as never);
+    expect(line).toContain("monthly 0.69%");
+    expect(line).toContain("First-party models 0.77%");
+    expect(line).toContain("API usage 0.19%");
+  });
+
+  test("a report with no windows still names its provider", () => {
+    expect(providerQuotaLine("plain", report("plain", {}) as never)).toBe("plain");
+  });
+});
+
+describe("#2566 per-account quota in ocx account list", () => {
+  const row = (over: Record<string, unknown> = {}) => ({
+    provider: "anthropic",
+    type: "oauth" as const,
+    id: "acc-1",
+    label: "a@example.test",
+    active: false,
+    ...over,
+  });
+
+  test("the QUOTA column only exists when it is asked for", () => {
+    // The server probes the upstream once per stored credential for quota=1, so the default
+    // listing must stay a cheap local read.
+    expect(formatAccountTable([row()] as never)).not.toContain("QUOTA");
+    expect(formatAccountTable([row()] as never, true)).toContain("QUOTA");
+  });
+
+  test("both DTO spellings of the sub-day window render as 5h", () => {
+    // The per-account provider probe reports fiveHourPercent; the Codex pool reports the same
+    // idea as shortPercent.
+    expect(formatAccountTable([row({ quota: { fiveHourPercent: 7, weeklyPercent: 62 } })] as never, true))
+      .toContain("5h 7% wk 62%");
+    expect(formatAccountTable([row({ quota: { shortPercent: 3, weeklyPercent: 10 } })] as never, true))
+      .toContain("5h 3% wk 10%");
+  });
+
+  test("a provider without per-account quota is blank, not zero", () => {
+    // Blank means "not probed"; 0% would claim the account is fully drained.
+    expect(formatAccountTable([row({ provider: "xai" })] as never, true)).toContain("-");
+  });
+
+  test("a Kiro account's monthly allowance renders instead of a bare dash", () => {
+    // Kiro bills a monthly window and reports no shorter one. Without the monthly arm a
+    // healthy account rendered "-", which is the same output as "never probed".
+    expect(formatAccountTable([row({ provider: "kiro", quota: { monthlyPercent: 15 } })] as never, true))
+      .toContain("mo 15%");
+  });
+
+  test("a fractional monthly percentage is rounded for the column", () => {
+    // The column is a glance surface; the exact figure stays in --json.
+    expect(formatAccountTable([row({ provider: "kiro", quota: { monthlyPercent: 14.782 } })] as never, true))
+      .toContain("mo 15%");
+  });
+
+  test("an account whose probe failed says so instead of reading as empty", () => {
+    expect(formatAccountTable([row({ quotaUnavailable: true })] as never, true)).toContain("unavailable");
   });
 });

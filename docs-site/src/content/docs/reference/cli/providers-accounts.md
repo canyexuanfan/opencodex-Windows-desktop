@@ -140,19 +140,49 @@ and the plan/label column falls back across plan, masked email, label, and maske
 }
 ```
 
-### `ocx account list [provider] [--json] [--all]`
+### `ocx account list [provider] [--json] [--all] [--quota [--refresh]]`
 
 Without a provider, lists the Codex pool, OAuth accounts, and configured API-key pools. Empty
 providers are skipped unless `--all` is present. With a provider, lists only that credential family.
 Human output uses `PROVIDER TYPE ID PLAN/LABEL PRIORITY STATUS`; a manually chosen Codex row is marked
 `selected`. `PRIORITY` is the signed Codex selection order (`0` when unset) and shows `-` for rows
-where ordering does not apply, such as OAuth accounts and API keys. When a stored Kiro account exists, the output notes that Kiro has one login slot and
-that signing in again replaces the current account. An empty result is still success. `--json`
+where ordering does not apply, such as OAuth accounts and API keys. By default, with two or more eligible stored Kiro accounts, a 429 rotates automatically to
+another account and prefers the one with the most known remaining allowance; rotation is
+presence-driven and can be turned off with `oauthAccountFailover.enabled: false`; `ocx account login kiro`
+adds accounts to the pool one at a time. An empty result is still success. `--json`
 returns:
 
 ```text
 { accounts: AccountRow[], notes: string[] }
 ```
+
+`--quota` adds a `QUOTA` column with each account's own usage, for providers that support a
+per-account probe (Anthropic and Kiro today). It is opt-in because the proxy probes the upstream
+once per stored credential; the default listing stays a local read. `--refresh` bypasses the
+cached result. An account with no per-account quota shows `-`, and one whose probe failed shows
+`unavailable` — blank would read as "no usage" rather than "not measured". `--json` carries the
+full breakdown per account, not just the summarized windows:
+
+```text
+$ ocx account list anthropic --quota
+PROVIDER   TYPE   ID        PLAN/LABEL         PRIORITY  STATUS  QUOTA
+anthropic  oauth  1278f8da  a***r@examp***.com  -                5h 7% wk 62%
+anthropic  oauth  e112f28b  k***1@examp***.net  -        active  5h 9% wk 45%
+```
+
+Kiro bills a monthly allowance and reports no shorter window, so its accounts render a `mo`
+figure instead:
+
+```text
+$ ocx account list kiro --quota
+PROVIDER  TYPE   ID        PLAN/LABEL         PRIORITY  STATUS  QUOTA
+kiro      oauth  3f0a91c2  a***r@examp***.com  -        active  mo 15%
+kiro      oauth  8b24de70  k***1@examp***.net  -                mo 88%
+```
+
+With two or more Kiro accounts logged in, a 429 rotates to another account automatically and
+prefers the one with the most remaining allowance. Accounts are added one at a time —
+`ocx account login kiro` hands off to the Kiro CLI and appends the new account to the pool.
 
 ### `ocx account current <provider> [--json]`
 

@@ -36,8 +36,8 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
   },
   {
     name: "recover-history",
-    usage: "ocx recover-history --legacy-openai",
-    summary: "Explicitly recover pre-backup syncResumeHistory rows.",
+    usage: "ocx recover-history --legacy-openai --yes",
+    summary: "Force all user-message opencodex rows to OpenAI for legacy recovery.",
   },
   {
     name: "uninstall",
@@ -88,20 +88,22 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
   { name: "ensure", usage: "ocx ensure", summary: "Ensure the proxy is running and Codex config/cache are current." },
   {
     name: "sync",
-    usage: "ocx sync [--restart-codex]",
+    usage: "ocx sync [--restart-codex] [--restart-desktop-app]",
     summary: "Fetch provider models and inject them into Codex config.",
     details: [
       "After writing the catalog, warns if long-lived Codex app-server processes are still running.",
       "--restart-codex sends SIGTERM only to matching app-server / code-mode-host processes (may interrupt active turns).",
+      "--restart-desktop-app (Windows only, opt-in) fully restarts the Codex desktop app so its model picker re-reads the catalog. Never implied by --restart-codex: it ends live conversations.",
     ],
   },
   {
     name: "sync-cache",
-    usage: "ocx sync-cache [--restart-codex]",
+    usage: "ocx sync-cache [--restart-codex] [--restart-desktop-app]",
     summary: "Refresh Codex's model cache from the active catalog.",
     details: [
       "Warns when Codex app-server processes still hold an in-memory model list.",
       "--restart-codex sends SIGTERM only to matching app-server / code-mode-host processes (may interrupt active turns).",
+      "--restart-desktop-app (Windows only, opt-in) fully restarts the Codex desktop app so its model picker re-reads the catalog. Never implied by --restart-codex: it ends live conversations.",
     ],
   },
   { name: "status", usage: "ocx status", summary: "Check proxy server status." },
@@ -163,9 +165,14 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     ],
   },
   {
+    name: "alias",
+    usage: "ocx alias <list|set|rm|defaults> ...",
+    summary: "Manage short provider and model names.",
+  },
+  {
     name: "models",
     aliases: ["model"],
-    usage: "ocx models <list|live|add|edit|remove|enable|disable|provider|selected|context|shadow> ...",
+    usage: "ocx models <list|live|add|edit|remove|enable|disable|provider|selected|preset|context|shadow> ...",
     summary: "List models and manage custom (manually registered) models.",
     details: [
       "List available models from static config with no subcommand (liveModels may add more at runtime).",
@@ -187,7 +194,7 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
   {
     name: "combo",
     usage: "ocx combo <list|show|set|remove> ...",
-    summary: "Manage combo failover and round-robin virtual models.",
+    summary: "Manage combo virtual models and routing strategies.",
     details: ["Alias hierarchy: ocx route combo ...", "Use --targets provider/model[:weight],provider/model[:weight]."],
   },
   {
@@ -205,13 +212,29 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     usage: "ocx observe <logs|usage|storage|memory|debug|claude-inbound|injection> ...",
     summary: "Inspect proxy requests, usage, storage, memory, and debug data.",
   },
+  {
+    name: "inspect",
+    usage: "ocx inspect <config|catalog|routing-analytics|pacing|key-providers|codex-prompt|client-config|star|windows-tray> ...",
+    summary: "Read effective config, catalog, analytics, pacing, and the generated client-config snippet.",
+    details: [
+      "`inspect star` reads the repository star status only. Starring uses your GitHub identity and is available from the dashboard alone.",
+    ],
+  },
   { name: "logs", usage: "ocx logs [filters] [--follow] [--json|--jsonl]", summary: "Alias of ocx observe logs." },
   {
     name: "usage",
-    usage: "ocx usage [--range <7d|30d|all>] [--surface <all|codex|claude|grok>] [--json]",
+    usage: "ocx usage [--range <today|1d|7d|30d|all>] [--surface <all|codex|claude|grok>] [--provider <name>] [--model <id>] [--json]",
     summary: "Alias of ocx observe usage.",
   },
-  { name: "storage", usage: "ocx storage [--json]", summary: "Alias of ocx observe storage." },
+  {
+    name: "storage",
+    usage: "ocx storage <report|cleanup|trash|policy> ...",
+    summary: "Storage report, archived-session cleanup, trash restore, and the cleanup policy.",
+    details: [
+      "A bare `ocx storage` prints the report, as it did when this was an alias of `observe storage`.",
+      "`cleanup` previews by default and only deletes under --yes; `trash restore` and `policy run` also require --yes.",
+    ],
+  },
   { name: "memory", usage: "ocx memory [--json]", summary: "Alias of ocx observe memory." },
   {
     name: "access",
@@ -235,7 +258,14 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     usage: "ocx grok <status|exclude|include|set|clear|apply> ...",
     summary: "Manage and apply the Grok Build model fence.",
   },
-  { name: "integration", usage: "ocx integration <claude|grok|client> ...", summary: "Manage supported client integrations." },
+  {
+    name: "integration",
+    usage: "ocx integration <claude|grok|client|native> ...",
+    summary: "Manage supported client integrations, and the native client toggles.",
+    details: [
+      "`native` shows or flips the native Claude/Claude Desktop/Codex/Grok toggles; the other subcommands manage the reversible file integrations.",
+    ],
+  },
   {
     name: "system",
     usage: "ocx system <status|settings|startup|diagnostics|sync|update> ...",
@@ -261,6 +291,7 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
       "Claude Desktop profile:",
       "  ocx claude desktop [apply]                         Save and apply the four-family profile",
       "  ocx claude desktop show [--json]                   Show routes, families, and defaults",
+      "  ocx claude desktop status [--json]                 Show applied state, drift, and health",
       "  ocx claude desktop move <route> <family> [--default]",
       "  ocx claude desktop default <family> <route|none>",
       "  ocx claude desktop export <path|->                 Export versioned JSON (`-` = stdout)",
@@ -341,6 +372,15 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
     usage: "ocx health [--json]",
     summary: "Check proxy health. Exits 0 if healthy, 1 otherwise.",
     details: ["Use --json for structured output: {ok, pid, port}."],
+  },
+  {
+    name: "capabilities",
+    usage: "ocx capabilities [--json] [--mutating-only] [--route <path>]",
+    summary: "List the declared CLI capabilities and the management routes they drive.",
+    details: [
+      "The machine-readable surface index: start here when driving ocx programmatically instead of parsing help text.",
+      "--route <path> answers the inverse question: which commands drive this management route.",
+    ],
   },
   {
     name: "ready",

@@ -62,6 +62,14 @@ subagent-fallback chain has nowhere to await, so an `await` added before the
 activation block would silently reroute subagents to a different model than the
 operator configured.
 
+That one is enforced too, in the same file: a scan reads the window between the
+`Bun.serve` call and the `labActivationRequired` check and fails on any `await`
+that would suspend `startServer` itself, plus on `startServer` being declared
+`async`. It has to ignore comments, string bodies, and nested functions to be
+usable, because the window legitimately contains three awaits inside the
+`server.stop` closure and two comments that mention the word. Until it existed,
+this paragraph was the only thing holding the guarantee.
+
 Design and audit history: `devlog/_fin/260814_lab_core_decoupling/`.
 
 ## The `devlog` directory
@@ -163,23 +171,75 @@ it binds you regardless of which mechanism is within reach.
 ```bash
 bun install
 bun run typecheck      # bun x tsc --noEmit (strict)
-bun run test           # full tests/ suite
+bun run test:changed   # import-graph tests against the resolved `dev` merge base
+bun run test           # full tests/ suite (PR-ready / explicit ask only)
 bun run lint:gui       # GUI eslint
 bun run privacy:scan   # credential/privacy scan used by CI
 bun run build:gui      # Vite GUI build
 ```
 
+`skills/ocx/` is the operating reference for the CLI — what an agent reads to *drive* a running
+proxy, as opposed to [`AGENTS_INSTALL.md`](./AGENTS_INSTALL.md) (installing and operating consent)
+or this file (changing the codebase). Its surface map is generated:
+
+```bash
+bun run skill:surface        # regenerate after adding a capability
+bun run skill:surface:check  # what CI asserts
+```
+
+`tests/skill-ocx.test.ts` fails if the committed map drifts from `src/cli/capabilities.ts`, and
+also if the hand-written pages name a command the registry does not have. That second check is not
+hypothetical: it caught a documented `ocx request-history` that never existed.
+
 During implementation, use the smallest focused checks that directly cover the
-changed subsystem. Do not run repository-wide `bun run typecheck` or
-`bun run test` for a scoped change unless the change affects shared runtime,
-routing, config, server behavior, a focused result is failed or ambiguous, or
-the user explicitly asks for full validation.
+changed subsystem. Prefer `bun test tests/<name>.test.ts` for a known file, or
+`bun run test:changed` when the touch set is broader than one file. Do **not**
+run repository-wide `bun run test` or a bare `bun test` with no file arguments
+for a scoped change by default. `bun run test:changed` follows Bun's parsed module graph: it
+selects test files that import changed modules, but it cannot see dependencies
+expressed through subprocesses, source files read as data, or golden/derived
+files. Run the relevant focused tests explicitly for those paths; if no reliable
+focused set covers them, the full suite is required even for a scoped change.
+That indirect-dependency case is the explicit exception to the scoped-change
+default. The full suite is ~850 files, so otherwise reserve it for a failed or
+ambiguous focused result, an explicit user request, or the PR-ready gate below.
 
 Before creating or updating a non-trivial PR as review-ready, or before
 approving such a PR, run `bun run typecheck` and `bun run test`. CI runs these
 on Linux, Windows, and macOS.
 
 Do not rerun passing checks on unchanged code merely for additional confidence.
+
+## Minimal containers and agent sandboxes
+
+Fresh dev containers and agent sandboxes (Cursor Cloud, devcontainers, CI
+images) often ship Node but not Bun. Install it first:
+
+```bash
+curl -fsSL https://bun.sh/install | bash   # installs ~/.bun/bin/bun
+export PATH="$HOME/.bun/bin:$PATH"
+bun install && (cd gui && bun install)
+```
+
+Run the proxy with `bun run src/cli/index.ts start --port <port>`. `/healthz`
+reports status, `/` serves the dashboard, and the management API requires the
+admin token the server writes to `$OPENCODEX_HOME/admin-api-token` at startup.
+
+`bun run test` has five known environment-only failures in such containers.
+They are not regressions; do not re-investigate them:
+
+- `service diagnostics > status summary exposes the service log path`,
+  `CLI subcommand help > status prints diagnostics without starting the proxy`,
+  and `CLI subcommand help > invalid service and codex-shim usage include
+  remove alias` require a running systemd init; in a container PID 1 is
+  typically `tini` or another minimal init, so service commands report
+  "systemd not found".
+- `package tree integrity > an in-place rewrite of the same byte length is
+  still a replacement` and `Codex Log Guard inspection > repeat inspection is
+  memoized and invalidated by a write` rely on filesystem mtime granularity
+  that some container filesystems do not provide.
+
+Everything else passes (15480 pass / 16 skip / 5 fail as of 2.35.0).
 
 ## Issues and pull requests (agents)
 
@@ -274,8 +334,9 @@ reviewers (Codex, CodeRabbit).
   assumptions about a compile step, or code paths that break `bun run
   typecheck` / `bun run test`.
 - **Tests:** behavior changes in `src/` need a focused regression test near
-  the existing tests for that subsystem. Shared routing, adapter, config, or
-  server changes need the full suite green.
+  the existing tests for that subsystem. During implementation, run the relevant
+  focused files and use `bun run test:changed` for import-connected coverage as
+  described above; the full suite is the PR-ready gate.
 - **Docs sync:** user-facing behavior changes should update `docs-site/` (and
   keep translated locales from contradicting the English source).
 - **Privacy:** `bun run privacy:scan` must stay green; never introduce logging

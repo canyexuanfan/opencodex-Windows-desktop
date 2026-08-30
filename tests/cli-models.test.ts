@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { INTERNAL_DEADLINE_MS, SPAWN_BUDGET_MS } from "./helpers/test-budget";
+import { configuredReasoningEfforts } from "../src/reasoning-effort";
 import { isModelTextOnly } from "../src/vision";
 import type { OcxProviderConfig } from "../src/types";
 
@@ -203,6 +204,48 @@ describe("ocx models richer metadata", () => {
     }
   });
 
+  test("the effort ladder is the one the runtime resolves, as with the modality", () => {
+    // `configuredReasoningEfforts` is what the catalog and the effort cap resolve
+    // through. Restating part of it here reported a ladder for a model the proxy
+    // strips reasoning from, and echoed a level Codex does not declare.
+    const dir = mkdtempSync(join(tmpdir(), "ocx-models-efforts-"));
+    const provider = {
+      adapter: "openai-chat",
+      baseUrl: "http://localhost:8080/v1",
+      allowPrivateNetwork: true,
+      defaultModel: "model-a",
+      models: ["model-a", "model-b", "model-c"],
+      reasoningEfforts: ["low", "medium", "high"],
+      noReasoningModels: ["model-b"],
+      modelReasoningEfforts: { "model-c": ["high", "bogus", "low"] },
+    };
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({ port: 10122, providers: { test: provider }, defaultProvider: "test" }),
+      "utf8",
+    );
+    try {
+      const config = provider as unknown as OcxProviderConfig;
+      // Ground truth first: what the proxy itself will do with this config.
+      expect(configuredReasoningEfforts(config, "model-a")).toEqual(["low", "medium", "high"]);
+      // An empty ladder is not the same claim as "no override": it says this model
+      // intentionally exposes no effort control, which is why it must survive to the row.
+      expect(configuredReasoningEfforts(config, "model-b")).toEqual([]);
+      expect(configuredReasoningEfforts(config, "model-c")).toEqual(["low", "high"]);
+
+      const result = runCli(["models", "--json"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(0);
+      const rows = JSON.parse(result.stdout).models as { model: string; reasoningEfforts: unknown }[];
+      const ladderOf = (model: string) => rows.find((m) => m.model === model)?.reasoningEfforts;
+
+      expect(ladderOf("model-a")).toEqual(["low", "medium", "high"]);
+      expect(ladderOf("model-b")).toEqual([]);
+      expect(ladderOf("model-c")).toEqual(["low", "high"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a noVision family entry beats an exact modality entry, as the runtime does", () => {
     // isModelTextOnly returns true on the noVisionModels match before it ever reads
     // modelInputModalities, so an exact entry listing "image" does not grant vision.
@@ -385,6 +428,138 @@ describe("ocx models custom slash ids", () => {
       expect(result.stderr).toContain("custom model id");
       const config = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
       expect(config.customModels).toHaveLength(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#2491 the removal selector uses the shared equivalence relation", () => {
+  /**
+   * `slugEquals` compared the raw and encoded spellings of ONE id, so a selector written in
+   * the NATIVE slash form matched only the slash row while the encoded form matched both.
+   * Catalog filtering and persisted sync had already agreed on the collision class through
+   * `slugEquivalenceKey`; this command disagreed with both on the same config.
+   */
+  test("a native-slash selector sees the same collision the encoded one does", () => {
+    const { dir } = freshConfig({
+      customModels: [
+        { id: "11111111-1111-4111-8111-111111111111", provider: "test", modelId: "openai/gpt-5.5" },
+        { id: "22222222-2222-4222-8222-222222222222", provider: "test", modelId: "openai-gpt-5.5" },
+      ],
+    });
+    try {
+      // Before: this deleted the slash row outright, because slugEquals matched only it.
+      const result = runCli(["models", "remove", "test/openai/gpt-5.5", "--yes"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("ambiguous");
+      // Refusing is the right default for a destructive command: nothing was removed.
+      const config = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
+      expect(config.customModels).toHaveLength(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an unambiguous slash selector still removes its row", () => {
+    // Widening the relation must not make ordinary removal ambiguous.
+    const { dir } = freshConfig({
+      customModels: [
+        { id: "11111111-1111-4111-8111-111111111111", provider: "test", modelId: "openai/gpt-5.5" },
+        { id: "33333333-3333-4333-8333-333333333333", provider: "test", modelId: "unrelated" },
+      ],
+    });
+    try {
+      const result = runCli(["models", "remove", "test/openai/gpt-5.5", "--yes"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(0);
+      const config = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
+      expect(config.customModels.map((m: { modelId: string }) => m.modelId)).toEqual(["unrelated"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a provider-qualified selector does not match a native id under another provider", () => {
+    const { dir } = freshConfig({
+      customModels: [
+        { id: "11111111-1111-4111-8111-111111111111", provider: "openai", modelId: "gpt-5.5" },
+        { id: "22222222-2222-4222-8222-222222222222", provider: "test", modelId: "openai/gpt-5.5" },
+      ],
+    });
+    try {
+      const result = runCli(["models", "remove", "openai/gpt-5.5", "--yes"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(0);
+      const config = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
+      expect(config.customModels).toEqual([
+        expect.objectContaining({ provider: "test", modelId: "openai/gpt-5.5" }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a provider-qualified selector cannot remove a sole row from another provider", () => {
+    const { dir } = freshConfig({
+      customModels: [
+        { id: "22222222-2222-4222-8222-222222222222", provider: "test", modelId: "openai/gpt-5.5" },
+      ],
+    });
+    try {
+      const result = runCli(["models", "remove", "openai/gpt-5.5", "--yes"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("not found");
+      const config = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
+      expect(config.customModels).toEqual([
+        expect.objectContaining({ provider: "test", modelId: "openai/gpt-5.5" }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * A provider may publish a native id that is itself namespaced under its own name, so
+   * `acme` owning `acme/turbo` makes the selector `acme/turbo` name that row exactly while
+   * ALSO reading as the provider-qualified form of a sibling `turbo`. The resolver was called
+   * once per row with a singleton roster, so each row matched its own reading, the command saw
+   * two matches and aborted — the exact native spelling could never remove its own row.
+   */
+  test("a self-namespaced selector removes the row it names exactly", () => {
+    const { dir } = freshConfig({
+      customModels: [
+        { id: "11111111-1111-4111-8111-111111111111", provider: "acme", modelId: "acme/turbo" },
+        { id: "22222222-2222-4222-8222-222222222222", provider: "acme", modelId: "turbo" },
+      ],
+    });
+    try {
+      const result = runCli(["models", "remove", "acme/turbo", "--yes"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(0);
+      const config = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
+      // The sibling survives: the selector named the native row, not the qualified reading.
+      expect(config.customModels).toEqual([
+        expect.objectContaining({ provider: "acme", modelId: "turbo" }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Guards the narrow path: with no sibling there is no collision, so this already worked and
+   * must keep working. It pins the case the resolver-level fix covers, so a future change that
+   * narrows the roster lookup cannot silently make a sole self-namespaced row unreachable.
+   */
+  test("a self-namespaced row is removable when it is the provider's only row", () => {
+    const { dir } = freshConfig({
+      customModels: [
+        { id: "11111111-1111-4111-8111-111111111111", provider: "acme", modelId: "acme/turbo" },
+      ],
+    });
+    try {
+      const result = runCli(["models", "remove", "acme/turbo", "--yes"], { OPENCODEX_HOME: dir });
+      expect(result.status).toBe(0);
+      const config = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
+      expect(config.customModels).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

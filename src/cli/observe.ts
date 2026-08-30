@@ -10,14 +10,17 @@ import {
   takeOption,
   type RuntimeApiDeps,
 } from "./runtime-api";
+import { formatUsageReport } from "./usage-report";
+import { USAGE_RANGES, USAGE_SURFACES } from "../usage/summary";
 
 const USAGE = `Usage:
   ocx observe logs [--provider <name>] [--model <id>] [--status <code>]
-      [--limit <n>] [--follow] [--json|--jsonl]
+      [--conversation <id>] [--limit <n>] [--follow] [--json|--jsonl]
   ocx logs explain <request-id> [--json]
   ocx logs rebuild-index
   ocx logs index-status
-  ocx observe usage [--range <7d|30d|all>] [--surface <all|codex|claude|grok>] [--json]
+  ocx observe usage [--range <today|1d|7d|30d|all>] [--surface <all|codex|claude|grok>]
+      [--provider <name>] [--model <id>] [--json]
   ocx observe storage [codex-logs [status|protect|unprotect|repair|compact] [--mode <compat|quiet>]] [--json]
   ocx observe memory [--json]
   ocx observe debug [--json]
@@ -47,7 +50,12 @@ function formatLog(row: LogEntry): string {
   const route = [row.provider, row.model].filter(Boolean).join("/");
   const status = row.status ?? row.statusCode ?? "?";
   const duration = row.durationMs !== undefined ? `${String(row.durationMs)}ms` : "";
-  return [time, String(status), route, duration].filter(Boolean).join("  ");
+  // The conversation id is shown because a conversation FILTER whose output never names the
+  // conversation is hard to trust: an empty result and a wrong-id result look identical (#2704).
+  const conversation = typeof row.conversationId === "string" && row.conversationId.length > 0
+    ? `conv=${row.conversationId}`
+    : "";
+  return [time, String(status), route, duration, conversation].filter(Boolean).join("  ");
 }
 
 async function logs(argv: string[], deps: RuntimeApiDeps): Promise<void> {
@@ -58,13 +66,16 @@ async function logs(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const provider = takeOption(args, "--provider");
   const model = takeOption(args, "--model");
   const status = takeOption(args, "--status");
+  // Both spellings, because the server accepts both (`request-log.ts:1032`) and an operator
+  // should not have to remember which one this surface wanted.
+  const conversationId = takeOption(args, "--conversation") ?? takeOption(args, "--conversationId");
   const limit = takeIntegerOption(args, "--limit", { min: 1 }) ?? 200;
   rejectArgs(args, USAGE);
   if (wantsJson && wantsJsonl) throw new CliUsageError("--json and --jsonl cannot be combined", USAGE);
   if (follow && wantsJson) throw new CliUsageError("--follow uses --jsonl, not --json", USAGE);
   let seen = new Set<string>();
   do {
-    const data = await runtimeRequest(`/api/logs${query({ provider, model, status, limit })}`, {}, deps);
+    const data = await runtimeRequest(`/api/logs${query({ provider, model, status, conversationId, limit })}`, {}, deps);
     const rows = logRows(data);
     if (!follow && wantsJson) printData(data, true);
     else {
@@ -131,11 +142,23 @@ async function usage(argv: string[], deps: RuntimeApiDeps): Promise<void> {
   const wantsJson = takeFlag(args, "--json");
   const range = takeOption(args, "--range") ?? "30d";
   const surface = takeOption(args, "--surface") ?? "all";
-  if (!["7d", "30d", "all"].includes(range)) throw new CliUsageError("--range must be 7d, 30d, or all", USAGE);
-  if (!["all", "codex", "claude", "grok"].includes(surface)) throw new CliUsageError("--surface must be all, codex, claude, or grok", USAGE);
+  const provider = takeOption(args, "--provider");
+  const model = takeOption(args, "--model");
+  // `1d` is accepted here as well as server-side so the CLI does not reject an
+  // alias the API would have understood.
+  const ranges = [...USAGE_RANGES, "1d"];
+  if (!ranges.includes(range)) throw new CliUsageError(`--range must be one of ${USAGE_RANGES.join(", ")} (1d aliases today)`, USAGE);
+  if (!USAGE_SURFACES.includes(surface as (typeof USAGE_SURFACES)[number])) {
+    throw new CliUsageError(`--surface must be one of ${USAGE_SURFACES.join(", ")}`, USAGE);
+  }
   rejectArgs(args, USAGE);
-  const result = await runtimeRequest(`/api/usage${query({ range, surface })}`, {}, deps);
-  printData(result, wantsJson, summaryLines(result));
+  const result = await runtimeRequest(`/api/usage${query({ range, surface, provider, model })}`, {}, deps);
+  // Built only when it will be printed: JavaScript evaluates arguments before
+  // the call, so passing formatUsageReport(...) inline would run the human
+  // renderer during --json and let its assumptions affect a path that is meant
+  // to bypass it entirely.
+  if (wantsJson) printData(result, true);
+  else printData(result, false, formatUsageReport(result as Parameters<typeof formatUsageReport>[0]));
 }
 
 async function simple(path: string, argv: string[], deps: RuntimeApiDeps): Promise<void> {

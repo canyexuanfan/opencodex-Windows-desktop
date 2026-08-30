@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -226,5 +226,40 @@ describe("devlog is tracked, with no submodule left behind", () => {
     }
 
     expect(offenders).toEqual([]);
+  });
+  test("every relative README asset is actually shipped in the npm tarball", async () => {
+    // npm renders README.md on the package page, and a relative src there resolves inside the
+    // published tarball. Three GIFs were referenced relatively while `files` shipped only one, so
+    // the package page rendered three broken images - visible to every visitor, invisible to every
+    // gate. Absolute URLs are the deliberate alternative: the GIFs total ~3.3MB and there is no
+    // reason to put that in the install path of a proxy.
+    const readme = await Bun.file(new URL("../README.md", import.meta.url)).text();
+    const pkg = JSON.parse(await Bun.file(new URL("../package.json", import.meta.url)).text()) as {
+      files?: string[];
+    };
+    const shipped = pkg.files ?? [];
+    expect(shipped.length).toBeGreaterThan(0);
+
+    // No lower bound on the match count: switching every image to an absolute URL is a legitimate
+    // end state, and a `toBeGreaterThan(0)` guard here would fail the suite for doing it.
+    const relative = [...readme.matchAll(/src="(?!https?:)([^"]+)"/g)].map((match) => match[1]!);
+
+    // A directory entry ships everything beneath it; a regular-file entry ships only itself.
+    // Deciding that by prefix alone let `assets/banner.png` vouch for a nonexistent
+    // `assets/banner.png/missing.gif`, so a broken README reference could pass. Ask the
+    // filesystem what each entry actually is instead of inferring it from the name.
+    const shippedDirectories = shipped.filter((entry) => {
+      const path = new URL(`../${entry}`, import.meta.url);
+      return existsSync(path) && statSync(path).isDirectory();
+    });
+    const isShipped = (asset: string): boolean =>
+      shipped.includes(asset)
+      || shippedDirectories.some((directory) => asset.startsWith(`${directory}/`));
+
+    expect(isShipped("assets/banner.png/missing.gif")).toBe(false);
+    expect(isShipped("LICENSE/missing.png")).toBe(false);
+
+    const missing = relative.filter((asset) => !isShipped(asset));
+    expect(missing).toEqual([]);
   });
 });

@@ -186,11 +186,16 @@ le proxy renvoie `426` et Codex se rabat sur HTTP/SSE.
 ## Identité et historique du fil de discussion
 
 La configuration de bouclage par défaut conserve l'étiquette du fournisseur natif `openai` de Codex sur les
-nouveaux fils ; la reprise normale de l'historique ne nécessite donc aucun remappage. Lors de la première
-synchronisation, elle remplace également par `openai` les étiquettes créées par d'anciennes versions
-d'opencodex. Hors bouclage, le mode fournisseur dédié continue de refléter l'historique sous le fournisseur
-`opencodex` tant qu'il est actif, puis restaure les métadonnées sauvegardées lorsqu'il prend fin. Définissez
-`syncResumeHistory: false` pour ne pas modifier l'historique.
+nouveaux fils ; la reprise normale de l'historique ne nécessite donc aucun remappage. La synchronisation et la
+restauration n'appliquent qu'un manifeste de sauvegarde correspondant et rétablissent exactement le fournisseur,
+la source et l'indicateur d'événement d'origine. Une ligne `opencodex` sans manifeste reste inchangée ; utilisez
+`ocx recover-history --legacy-openai --yes` uniquement pour forcer explicitement ce réétiquetage hérité. Cette commande
+est volontairement large : elle réétiquette en `openai` chaque fil contenant un message utilisateur et actuellement
+marqué `opencodex`, normalise `exec` en `cli` et active l'indicateur d'événement — y compris l'historique légitime
+d'un fournisseur dédié. Sauvegardez l'état et ne l'utilisez que si vous souhaitez cette portée complète. Hors bouclage,
+le mode fournisseur dédié continue de refléter l'historique sous le fournisseur `opencodex` tant qu'il est actif,
+puis restaure les métadonnées sauvegardées lorsqu'il prend fin. Définissez `syncResumeHistory: false` pour ne pas
+modifier l'historique.
 
 ## Synchronisation du catalogue de modèles
 
@@ -249,14 +254,13 @@ Ajoutez un nom d'affichage depuis la CLI ; si le proxy est actif, il synchronise
 ocx models add deepseek deepseek-v4 --display-name "DeepSeek V4" --context-window 128000
 ```
 
-Les clients Codex distants peuvent récupérer le même catalogue généré par l'API de gestion, avec le même jeton
-d'admission que pour les autres routes `/api/*` :
+Les clients Codex distants peuvent récupérer le même catalogue généré avec une clé ordinaire du plan de données — le même identifiant que celui utilisé pour `/v1/responses`, et non un jeton de gestion ou d'administration :
 
 ```bash
 dest="${CODEX_HOME:-$HOME/.codex}/opencodex-catalog.json"
 tmp="$(mktemp "${dest}.XXXXXX")"
-curl -fsS -H "x-opencodex-api-key: $OPENCODEX_ADMIN_AUTH_TOKEN" \
-  "https://proxy.example.com/api/catalog" > "$tmp" \
+curl -fsS -H "x-opencodex-api-key: $OPENCODEX_API_AUTH_TOKEN" \
+  "https://proxy.example.com/v1/catalog" > "$tmp" \
   && mv "$tmp" "$dest"
 ocx sync-cache
 ```
@@ -268,6 +272,8 @@ serveur, afin que les clients puissent détecter un écart de version.
 Vous pouvez également définir ou modifier ce nom dans l'API de gestion — `POST /api/custom-models` ou
 `PUT /api/custom-models/<id>` avec une chaîne `displayName` — et dans le tableau de bord web. Le caractère `/`
 est refusé, car il entrerait en collision avec le séparateur des identifiants de routage.
+
+`GET /v1/catalog` existe pour que la lecture d'une liste de modèles ne coûte pas un jeton d'administration. La route est en lecture seule (`GET` et `HEAD`), accepte `x-opencodex-api-key`, un jeton bearer ou `x-api-key`, et renvoie exactement les mêmes octets que la route de gestion. Les réponses portent un `ETag` fort — renvoyez-le dans `If-None-Match` pour revalider et obtenir un `304` — et `Cache-Control: private, no-cache`. Une clé du plan de données admise ici n'obtient **rien** sur le plan de gestion : `/api/catalog` et toutes les routes `/api/*` exigent toujours le jeton d'administration ou une session du tableau de bord.
 
 Le nom d'affichage sert **uniquement à l'affichage et reste stable entre les régénérations**. À chaque `ocx sync`
 et à chaque actualisation du catalogue, opencodex reconstruit les entrées routées depuis `config.json`, y compris
@@ -282,7 +288,7 @@ d'affichage personnalisé.
 
 Si `config.toml` sélectionne déjà un fournisseur autre que `openai` ou `opencodex`, OpenCodex ne modifie pas le
 fichier. Il ignore également l'écriture des profils, l'actualisation du catalogue et du cache, ainsi que la
-migration immédiate ou en arrière-plan de l'historique Codex. Les outils qui gèrent un fournisseur personnalisé
+restauration immédiate ou en arrière-plan des métadonnées de l'historique Codex. Les outils qui gèrent un fournisseur personnalisé
 étiquettent souvent les sessions existantes avec son identifiant ; remplacer l'identifiant actif peut faire
 disparaître ces sessions pourtant intactes de la vue d'historique de Codex. La même protection s'applique à un
 fournisseur externe sélectionné par un ancien profil racine.

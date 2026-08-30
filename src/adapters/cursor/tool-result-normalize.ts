@@ -9,6 +9,23 @@
  * dropping images oldest-first — see toolCallStep in protobuf-request.ts).
  */
 
+import {
+  EMPTY_EXEC_OUTPUT_MESSAGE,
+  EMPTY_EXEC_OUTPUT_REGEX,
+  FAILED_EXEC_OUTPUT_MESSAGE,
+  isFailedEmptyExecWrapper,
+  isCodexExecBridgeTool,
+} from "../exec-tool-result-normalize";
+
+/**
+ * Cursor treats a failed-but-empty wrapper as an empty result too (its Computer Use branch marks
+ * such results `isError` separately). The shared success regex deliberately excludes
+ * `Script failed`, so restore that arm here rather than widening the shared one.
+ */
+function isEmptyOrFailedExecWrapper(text: string): boolean {
+  return EMPTY_EXEC_OUTPUT_REGEX.test(text) || isFailedEmptyExecWrapper(text);
+}
+
 const COMPUTER_USE_TOOL_NAMES = new Set([
   "node_repl",
   "node_repl__js",
@@ -49,9 +66,6 @@ const RUNTIME_FAILURE_GUIDANCE: ReadonlyArray<{ marker: string; guidance: string
   },
 ];
 
-/** Matches exec wrappers whose only payload is an empty-output marker. */
-const EMPTY_EXEC_OUTPUT_REGEX = /^(?:(?:Script completed|Script failed|Command finished|Execution finished)[^\n]*\n+)?(?:Wall time[^\n]*\n+)?(?:Output:\s*)?(?:<empty>)?\s*$/;
-
 export interface NormalizedToolResultText {
   text: string;
   isError: boolean;
@@ -73,10 +87,20 @@ export function normalizeCursorToolResultText(
 ): NormalizedToolResultText {
   const isError = options.isError === true;
   const computerUse = isNodeReplOrComputerUseTool(options.toolName, options.toolNamespace);
-  if (computerUse && EMPTY_EXEC_OUTPUT_REGEX.test(text.trim())) {
+  if (computerUse && isEmptyOrFailedExecWrapper(text.trim())) {
     return {
       text: "[empty output: the tool ran but produced no stdout or return value. Verify application state with get_app_state, or make the script emit output.]",
       isError: true,
+      changed: true,
+    };
+  }
+  if (isCodexExecBridgeTool(options.toolName, options.toolNamespace) && isEmptyOrFailedExecWrapper(text.trim())) {
+    return {
+      // A `Script failed` wrapper is empty but NOT a success: reporting it as an empty success
+      // would erase the only failure signal. Text classification stays separate from Cursor's
+      // isError policy, which the Computer Use branch above owns.
+      text: isFailedEmptyExecWrapper(text.trim()) ? FAILED_EXEC_OUTPUT_MESSAGE : EMPTY_EXEC_OUTPUT_MESSAGE,
+      isError: false,
       changed: true,
     };
   }
@@ -89,4 +113,3 @@ export function normalizeCursorToolResultText(
   }
   return { text, isError, changed: false };
 }
-

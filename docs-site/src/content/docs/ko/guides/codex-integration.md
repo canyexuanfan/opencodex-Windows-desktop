@@ -108,7 +108,7 @@ Windows에서 Orca shell은 `CODEX_HOME`과 `ORCA_CODEX_HOME`을 Orca의 번들 
 
 ## 스레드 식별자와 대화 기록
 
-기본 loopback 형식은 새 thread에 네이티브 `openai` provider 태그를 유지하므로 일반적인 resume history는 다시 매핑할 필요가 없습니다. 첫 sync 때는 더 오래된 opencodex 빌드가 태그를 붙인 thread도 `openai`로 이관합니다. non-loopback 전용 provider 모드는 활성 상태일 때만 history를 `opencodex` provider 아래로 미러링하고, 종료할 때는 백업된 메타데이터를 복원합니다. history를 건드리지 않으려면 `syncResumeHistory: false`로 설정하세요.
+기본 loopback 형식은 새 thread에 네이티브 `openai` provider 태그를 유지하므로 일반적인 resume history는 다시 매핑할 필요가 없습니다. sync와 restore는 일치하는 백업 manifest만 적용하여 각 thread의 원래 provider, source, event marker를 정확히 복원합니다. manifest가 없는 `opencodex` row는 변경하지 않으며, legacy 재태깅을 명시적으로 강제하려는 경우에만 `ocx recover-history --legacy-openai --yes`를 사용합니다. 이 명령은 의도적으로 범위가 넓습니다. 사용자 메시지가 있고 현재 `opencodex`로 표시된 모든 thread를 `openai`로 바꾸고, `exec`를 `cli`로 정규화하며 event marker를 설정합니다. 정상적인 dedicated-provider history도 포함됩니다. 상태를 백업하고 이 전체 범위를 의도한 경우에만 사용하세요. non-loopback 전용 provider 모드는 활성 상태일 때만 history를 `opencodex` provider 아래로 미러링하고, 종료할 때는 백업된 메타데이터를 복원합니다. history를 건드리지 않으려면 `syncResumeHistory: false`로 설정하세요.
 
 ## 모델 카탈로그 동기화
 
@@ -153,13 +153,13 @@ CLI에서 표시 이름을 추가할 수 있습니다(proxy가 live 상태면 ca
 ocx models add deepseek deepseek-v4 --display-name "DeepSeek V4" --context-window 128000
 ```
 
-원격 Codex client는 management API로 같은 생성된 catalog를 가져올 수 있습니다(다른 `/api/*` 경로와 같은 admission token을 사용합니다):
+원격 Codex client는 관리자 토큰이 아니라 일반 데이터 플레인 키(`/v1/responses`에 이미 사용하는 것과 같은 자격 증명)로 같은 생성된 catalog를 가져올 수 있습니다:
 
 ```bash
 dest="${CODEX_HOME:-$HOME/.codex}/opencodex-catalog.json"
 tmp="$(mktemp "${dest}.XXXXXX")"
-curl -fsS -H "x-opencodex-api-key: $OPENCODEX_ADMIN_AUTH_TOKEN" \
-  "https://proxy.example.com/api/catalog" > "$tmp" \
+curl -fsS -H "x-opencodex-api-key: $OPENCODEX_API_AUTH_TOKEN" \
+  "https://proxy.example.com/v1/catalog" > "$tmp" \
   && mv "$tmp" "$dest"
 ocx sync-cache
 ```
@@ -168,11 +168,13 @@ ocx sync-cache
 
 또한 management API(`POST /api/custom-models`, `PUT /api/custom-models/<id>`의 `displayName` string)와 웹 대시보드에서도 설정하거나 수정할 수 있습니다. `/`는 routed-slug separator와 충돌하므로 거부됩니다.
 
+`GET /v1/catalog`은 모델 목록을 읽는 데 관리자 토큰이 필요하지 않도록 존재합니다. 읽기 전용(`GET`, `HEAD`)이며 `x-opencodex-api-key`, bearer 토큰, `x-api-key`를 허용하고 관리 라우트와 완전히 동일한 바이트를 제공합니다. 응답에는 강한 `ETag`가 포함되므로 `If-None-Match`로 다시 보내면 전체 문서 대신 `304`를 받고, `Cache-Control: private, no-cache`가 함께 설정됩니다. 여기서 허용된 데이터 플레인 키는 관리 플레인에서 **아무 권한도** 얻지 못합니다. `/api/catalog`을 비롯한 모든 `/api/*` 라우트는 여전히 관리자 토큰이나 대시보드 세션을 요구합니다.
+
 표시 이름은 **표시 전용이며 재생성 사이에서도 안정적**입니다. 모든 `ocx sync`와 catalog refresh는 `config.json`(`customModels` 포함)에서 routed entry를 다시 계산하므로, 설정된 이름이 라우팅 slug로 되돌아가지 않고 다시 적용됩니다. 관리형 service restart도 proxy가 bind된 직후 이 sync를 다시 시도합니다. 예를 들어 offline login 중이라 이 best-effort boot sync가 실패하면, 이전에 저장된 catalog는 유지되고 다음에 성공한 `ocx sync`가 설정된 이름을 다시 적용합니다. 진짜 upstream native name(예: `gpt-5.6-sol` → "GPT-5.6-Sol")은 고정된 upstream snapshot에서 오며, custom display name으로 덮어쓰지 않습니다.
 
 ### 외부 provider manager
 
-`config.toml`이 이미 `openai`나 `opencodex`가 아닌 provider를 선택하고 있으면, OpenCodex는 그 파일을 그대로 두고 profile write, catalog/cache refresh, 즉시 및 background Codex history migration을 건너뜁니다. custom provider를 관리하는 도구는 기존 session에 그 provider id를 붙이는 경우가 많고, 활성 id를 바꾸면 그 온전한 session이 Codex의 history view에서 사라질 수 있습니다. 이 보호는 legacy root profile이 선택한 외부 provider에도 동일하게 적용됩니다.
+`config.toml`이 이미 `openai`나 `opencodex`가 아닌 provider를 선택하고 있으면, OpenCodex는 그 파일을 그대로 두고 profile write, catalog/cache refresh, 즉시 및 background Codex history metadata 복원을 건너뜁니다. custom provider를 관리하는 도구는 기존 session에 그 provider id를 붙이는 경우가 많고, 활성 id를 바꾸면 그 온전한 session이 Codex의 history view에서 사라질 수 있습니다. 이 보호는 legacy root profile이 선택한 외부 provider에도 동일하게 적용됩니다.
 
 Codex provider configuration의 소유자는 한 도구만 맡게 하세요. 기존 provider manager 뒤에서 OpenCodex를 쓰려면, 그 provider를 `http://127.0.0.1:10100/v1`로 향하게 하고 Responses passthrough를 쓰세요(`wire_api = "responses"` in Codex TOML). Chat Completions translation은 쓰지 않습니다. proxy API auth가 켜져 있으면, 위의 non-loopback provider 형식과 맞추어 `OPENCODEX_API_AUTH_TOKEN`에서 `x-opencodex-api-key`도 함께 전달하세요. OpenCodex가 routing을 직접 주입하게 하려면 먼저 Codex를 built-in `openai` provider로 되돌리고, 사용자가 소유한 root `openai_base_url`을 지운 다음, `ocx start`를 다시 실행하세요.
 

@@ -202,6 +202,17 @@ function chatStream(text: string): Response {
   return new Response(frames, { headers: { "content-type": "text/event-stream" } });
 }
 
+function chatErrorStream(message: string, prefix?: string): Response {
+  const frames = [
+    ...(prefix
+      ? [`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: prefix }, finish_reason: null }] })}\n\n`]
+      : []),
+    `data: ${JSON.stringify({ error: { type: "server_error", code: "upstream_server_error", message } })}\n\n`,
+    "data: [DONE]\n\n",
+  ].join("");
+  return new Response(frames, { headers: { "content-type": "text/event-stream" } });
+}
+
 function responsesSuccess(text: string, model = "responses-model"): Record<string, unknown> {
   return {
     id: `resp-${model}`,
@@ -445,6 +456,109 @@ describe("server combo failover 030 activation matrix", () => {
     expect(streaming.status).toBe(200);
     expect(JSON.stringify(await collectSse(streaming))).toContain("stream backup");
     expect(hits).toEqual(["a:false", "b:false", "a:true", "b:true"]);
+  });
+
+  test("zero-output terminal SSE failure hops before committing the child stream", async () => {
+    const hits: string[] = [];
+    const a = serve(() => {
+      hits.push("a");
+      return chatErrorStream("service busy, please try again later");
+    });
+    const b = serve(() => {
+      hits.push("b");
+      return chatStream("stream backup");
+    });
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(a), "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    });
+
+    const response = await postLogged(config, { stream: true });
+    expect(response.status).toBe(200);
+    expect(JSON.stringify(await collectSse(response))).toContain("stream backup");
+    expect(hits).toEqual(["a", "b"]);
+
+    const { log, usage } = await latestAttemptReceipts(config);
+    for (const receipt of [log, usage]) {
+      expect(receipt).toMatchObject({
+        provider: "combo",
+        model: "combo/free",
+        resolvedModel: "m2",
+        attempts: [
+          { ordinal: 1, provider: "a", model: "m1", status: 502 },
+          { ordinal: 2, provider: "b", model: "m2", status: 200 },
+        ],
+      });
+      expect(receipt.attempts[0]).not.toHaveProperty("firstOutputMs");
+    }
+  });
+
+  test("terminal SSE failure after output stays on the first target and never replays", async () => {
+    const hits: string[] = [];
+    const a = serve(() => {
+      hits.push("a");
+      return chatErrorStream("late service failure", "already visible");
+    });
+    const b = serve(() => {
+      hits.push("b");
+      return chatStream("must not replay");
+    });
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(a), "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    });
+
+    const response = await post(config, { stream: true });
+    expect(response.status).toBe(200);
+    const frames = await collectSse(response);
+    expect(JSON.stringify(frames)).toContain("already visible");
+    expect(frames.some(frame => frame.data.type === "response.failed")).toBe(true);
+    expect(JSON.stringify(frames)).not.toContain("must not replay");
+    expect(hits).toEqual(["a"]);
+  });
+
+  test("model-lifecycle 410 hops once and cools only the dead combo target", async () => {
+    const hits: string[] = [];
+    const a = serve(() => {
+      hits.push("a");
+      return Response.json({
+        error: {
+          type: "invalid_request_error",
+          code: "model_end_of_life",
+          message: "The model 'm1' has reached its end of life and is no longer available.",
+        },
+      }, { status: 410 });
+    });
+    const b = serve(() => {
+      hits.push("b");
+      return chatSuccess("lifecycle backup", "m2");
+    });
+    const targets = [
+      { provider: "a", model: "m1" },
+      { provider: "b", model: "m2" },
+    ];
+    const config = comboConfig({
+      a: provider("openai-chat", baseUrl(a), "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    }, targets);
+
+    const response = await postLogged(config);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("lifecycle backup");
+    expect(isComboTargetInCooldown("free", targets[0]!)).toBe(true);
+    const { log, usage } = await latestAttemptReceipts(config);
+    for (const receipt of [log, usage]) {
+      expect(receipt.attempts).toMatchObject([
+        { ordinal: 1, provider: "a", model: "m1", status: 410 },
+        { ordinal: 2, provider: "b", model: "m2", status: 200 },
+      ]);
+    }
+
+    clearComboSelectionState();
+    const retry = await post(config);
+    expect(retry.status).toBe(200);
+    expect(await retry.text()).toContain("lifecycle backup");
+    expect(hits).toEqual(["a", "b", "b"]);
   });
 
   test("persists one logical A503 to B200 request with ordered physical usage", async () => {
@@ -695,7 +809,7 @@ describe("server combo failover 030 activation matrix", () => {
         const response = await fetch(new URL("/v1/models", server.url));
         expect(response.status).toBe(200);
         const payload = await response.json() as {
-          data: Array<{ id: string; owned_by: string }>;
+          data: Array<{ id: string; owned_by: string; is_combo?: boolean }>;
         };
         return payload.data;
       };
@@ -706,7 +820,7 @@ describe("server combo failover 030 activation matrix", () => {
       });
 
       expect((await publicRows()).filter(model => model.id === selector)).toEqual([
-        { id: selector, object: "model", created: 0, owned_by: "combo" },
+        { id: selector, object: "model", created: 0, owned_by: "openai", is_combo: true },
       ]);
 
       const renamed = await updateAlias("fast-chat");
@@ -716,7 +830,7 @@ describe("server combo failover 030 activation matrix", () => {
         { id: selector, object: "model", created: 0, owned_by: "deepseek" },
       ]);
       expect(renamedRows.filter(model => model.id === "fast-chat")).toEqual([
-        { id: "fast-chat", object: "model", created: 0, owned_by: "combo" },
+        { id: "fast-chat", object: "model", created: 0, owned_by: "openai", is_combo: true },
       ]);
 
       const restored = await updateAlias(selector);
@@ -727,7 +841,7 @@ describe("server combo failover 030 activation matrix", () => {
       expect(deletedRows.filter(model => model.id === selector)).toEqual([
         { id: selector, object: "model", created: 0, owned_by: "deepseek" },
       ]);
-      expect(deletedRows.some(model => model.owned_by === "combo")).toBe(false);
+      expect(deletedRows.some(model => model.is_combo === true)).toBe(false);
     } finally {
       await server.stop(true);
     }
@@ -747,10 +861,10 @@ describe("server combo failover 030 activation matrix", () => {
       const response = await fetch(new URL("/v1/models", server.url));
       expect(response.status).toBe(200);
       const payload = await response.json() as {
-        data: Array<{ id: string; owned_by: string }>;
+        data: Array<{ id: string; owned_by: string; is_combo?: boolean }>;
       };
       expect(payload.data.filter(model => model.id.startsWith("a/vendor")).sort((a, b) => a.id.localeCompare(b.id))).toEqual([
-        { id: "a/vendor-model", object: "model", created: 0, owned_by: "combo" },
+        { id: "a/vendor-model", object: "model", created: 0, owned_by: "openai", is_combo: true },
         { id: "a/vendor/model", object: "model", created: 0, owned_by: "a" },
       ]);
     } finally {
@@ -854,6 +968,49 @@ describe("server combo failover 030 activation matrix", () => {
       expect(JSON.stringify(receipt)).not.toContain(rawAccountId);
       expect(JSON.stringify(receipt)).not.toContain("acct-pool-safe");
     }
+  });
+
+  test("records one account-health failure for one zero-output native terminal", async () => {
+    const rawAccountId = "combo-terminal-account";
+    const config = comboConfig({
+      openai: {
+        adapter: "openai-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authMode: "forward",
+        codexAccountMode: "pool",
+      },
+    }, [{ provider: "openai", model: "gpt-5.4" }]);
+    config.codexAccounts = [{
+      id: rawAccountId,
+      email: "combo-terminal@example.test",
+      isMain: false,
+      logLabel: "pterm001",
+    }];
+    config.activeCodexAccountId = rawAccountId;
+    config.upstreamFailoverThreshold = 3;
+    config.streamMode = "legacy-tee";
+    saveCodexAccountCredential(rawAccountId, {
+      accessToken: "combo-terminal-access",
+      refreshToken: "combo-terminal-refresh",
+      expiresAt: Date.now() + 300_000,
+      chatgptAccountId: "acct-combo-terminal",
+    });
+    customTransientResponse = async () => new Response([
+      "event: response.created",
+      'data: {"type":"response.created","response":{"id":"resp_failed","status":"in_progress"}}',
+      "",
+      "event: response.failed",
+      'data: {"type":"response.failed","response":{"id":"resp_failed","status":"failed","error":{"type":"server_error","code":"upstream_server_error","message":"busy"}}}',
+      "",
+      "",
+    ].join("\n"), { headers: { "content-type": "text/event-stream" } });
+
+    const response = await post(config, { stream: true });
+    expect(response.status).toBe(502);
+    expect(getCodexUpstreamHealth(rawAccountId)).toMatchObject({
+      consecutiveFailures: 1,
+      lastFailureStatus: 502,
+    });
   });
 
   test("lets a same-provider combo try its next model after a reset-derived 429", async () => {
@@ -966,7 +1123,7 @@ describe("server combo failover 030 activation matrix", () => {
       },
     }, [
       { provider: "openai", model: "gpt-5.3-codex-spark" },
-      { provider: "openai", model: "gpt-5.6-terra" },
+      { provider: "openai", model: "gpt-5.5" },
     ]);
     config.codexAccounts = [{
       id: rawAccountId,
@@ -993,13 +1150,13 @@ describe("server combo failover 030 activation matrix", () => {
           headers: { "x-codex-primary-reset-at": String(resetAt) },
         });
       }
-      return Response.json(responsesSuccess("Terra fallback", "gpt-5.6-terra"));
+      return Response.json(responsesSuccess("Shared-native fallback", "gpt-5.5"));
     };
 
     const response = await post(config);
     expect(response.status).toBe(200);
     expect(upstreamCalls).toBe(2);
-    expect(await response.json()).toMatchObject({ model: "gpt-5.6-terra" });
+    expect(await response.json()).toMatchObject({ model: "gpt-5.5" });
   });
 
   test("keeps a failed estimate on A without overwriting B reported usage", async () => {
@@ -2260,6 +2417,32 @@ describe("server combo failover 030 activation matrix", () => {
     expect(frames.some(frame => frame.event === "response.completed")).toBe(false);
   });
 
+  test("runTurn control-only late errors stay on the adapter-owned stream", async () => {
+    let aHits = 0;
+    let bHits = 0;
+    customRunTurn = async (_parsed, _incoming, emit) => {
+      aHits += 1;
+      // preflightAdapterEvents commits this custom transport at its first
+      // non-heartbeat event even though the bridge emits no visible output.
+      emit({ type: "assistant_boundary" });
+      emit({ type: "error", message: "late runTurn failure" });
+    };
+    const b = serve(() => {
+      bHits += 1;
+      return chatStream("must not replay");
+    });
+    const config = comboConfig({
+      a: provider("test-run-turn", "test://run-turn", "key-a"),
+      b: provider("openai-chat", baseUrl(b), "key-b"),
+    });
+    const response = await post(config, { stream: true });
+    const frames = await collectSse(response);
+    expect(aHits).toBe(1);
+    expect(bHits).toBe(0);
+    expect(frames.filter(frame => frame.event === "response.failed")).toHaveLength(1);
+    expect(frames.some(frame => frame.event === "response.output_text.delta")).toBe(false);
+  });
+
   test("PATCH-disable-all returns combo_unavailable without any fallback hit", async () => {
     let aHits = 0;
     let bHits = 0;
@@ -2697,6 +2880,36 @@ describe("cursor conversation continuity across store:false chains", () => {
       { role: "user", content: "start" },
       { role: "assistant", content: "working" },
       { type: "function_call_output", call_id: "call_x", output: "tool result" },
+    ])).status).toBe(200);
+
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toBe(seen[0]);
+  });
+
+  test("Desktop session and thread headers retain Cursor ownership without a parent-thread header", async () => {
+    const seen: string[] = [];
+    customCursorTransportFactory = fakeCursorTransportFactory(seen);
+    const config = cursorConfig();
+    const postDesktopTurn = (input: unknown) => handleResponses(new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "session-id": "desktop-session-owner",
+        "thread-id": "desktop-thread-owner",
+      },
+      body: JSON.stringify({
+        model: "cursortest/grok-4.5",
+        input,
+        stream: false,
+        store: false,
+      }),
+    }), config, { model: "", provider: "" }, {});
+
+    expect((await postDesktopTurn("start")).status).toBe(200);
+    expect((await postDesktopTurn([
+      { role: "user", content: "start" },
+      { role: "assistant", content: "working" },
+      { role: "user", content: "continue" },
     ])).status).toBe(200);
 
     expect(seen).toHaveLength(2);

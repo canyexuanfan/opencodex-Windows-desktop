@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { parseRange, parseUsageSurface, summarizeUsage } from "../src/usage/summary";
+import {
+  MAX_USAGE_MODEL_BREAKDOWN_ROWS,
+  USAGE_RANGES,
+  USAGE_SURFACES,
+  parseRange,
+  parseUsageSurface,
+  rangeWindow,
+  summarizeUsage,
+} from "../src/usage/summary";
 import type { PersistedUsageEntry } from "../src/usage/log";
 
 const FIXED_NOW = Date.UTC(2026, 5, 28, 12, 0, 0);
@@ -35,6 +43,360 @@ describe("parseRange", () => {
     expect(parseRange(undefined)).toBe("30d");
     expect(parseRange("90d")).toBe("30d");
     expect(parseRange("")).toBe("30d");
+  });
+});
+
+describe("today range (CLI cost query)", () => {
+  test("accepts today and normalises the 1d alias to it", () => {
+    expect(parseRange("today")).toBe("today");
+    // `1d` deliberately collapses instead of becoming a second union member:
+    // a second member would need its own cache slot and grid arm for no gain.
+    expect(parseRange("1d")).toBe("today");
+    expect(parseRange("2d")).toBe("30d");
+  });
+
+  test("today is bounded by local midnight, never the all-history fallthrough", () => {
+    // rangeWindow has no exhaustive switch — its final return is the `all`
+    // window. A today member that failed to reach its own branch would compile
+    // clean and silently report all-time history, so assert since is bounded
+    // rather than only asserting the day count.
+    for (const at of [
+      new Date(2026, 7, 22, 0, 0, 0).getTime(),
+      new Date(2026, 7, 22, 12, 34, 56).getTime(),
+      new Date(2026, 7, 22, 23, 59, 59).getTime(),
+    ]) {
+      const window = rangeWindow("today", at);
+      expect(window.since).not.toBeNull();
+      expect(window.days).toBe(1);
+      expect(new Date(window.since!).getHours()).toBe(0);
+      expect(new Date(window.since!).getDate()).toBe(new Date(at).getDate());
+      expect(window.since).toBeLessThanOrEqual(at);
+    }
+  });
+
+  test("today excludes yesterday's entries", () => {
+    const midday = new Date(2026, 7, 22, 12, 0, 0).getTime();
+    const yesterday = new Date(2026, 7, 21, 12, 0, 0).getTime();
+    const entries = [
+      entry({ ts: midday, requestId: "today-1", usageStatus: "reported", usage: { inputTokens: 10, outputTokens: 2 } }),
+      entry({ ts: yesterday, requestId: "yday-1", usageStatus: "reported", usage: { inputTokens: 99, outputTokens: 9 } }),
+    ];
+    const sum = summarizeUsage(entries, "today", midday);
+    expect(sum.summary.requests).toBe(1);
+    expect(sum.days).toHaveLength(1);
+    expect(sum.days[0]!.requests).toBe(1);
+  });
+});
+
+describe("day-level estimated cost", () => {
+  const at = Date.UTC(2026, 5, 28, 10, 0, 0);
+
+  test("a day row equals the sum of its model rows, and the window equals the totals", () => {
+    const entries = [
+      entry({ ts: at, requestId: "r1", provider: "openai", model: "gpt-5.5", usageStatus: "reported", usage: { inputTokens: 1_000, outputTokens: 100 } }),
+      entry({ ts: at + 1, requestId: "r2", provider: "openai", model: "gpt-5.5", usageStatus: "reported", usage: { inputTokens: 2_000, outputTokens: 200 } }),
+    ];
+    const sum = summarizeUsage(entries, "30d", at);
+    const day = sum.days.find(d => d.requests === 2);
+    expect(day).toBeDefined();
+    expect(day!.estimatedCostUsd).toBeGreaterThan(0);
+
+    const modelSum = day!.models.reduce((acc, m) => acc + (m.estimatedCostUsd ?? 0), 0);
+    expect(day!.estimatedCostUsd).toBeCloseTo(modelSum, 10);
+
+    const windowSum = sum.days.reduce((acc, d) => acc + d.estimatedCostUsd, 0);
+    expect(windowSum).toBeCloseTo(sum.summary.estimatedCostUsd, 10);
+  });
+
+  test("combo cost partitions across attempts instead of double-counting the parent", () => {
+    const entries = [entry({
+      ts: at,
+      requestId: "combo-1",
+      provider: "combo",
+      model: "combo-model",
+      usageStatus: "reported",
+      attempts: [
+        { provider: "openai", model: "gpt-5.5", usageStatus: "reported", usage: { inputTokens: 1_000, outputTokens: 100 } },
+        { provider: "openai", model: "gpt-5.5-mini", usageStatus: "reported", usage: { inputTokens: 500, outputTokens: 50 } },
+      ],
+    } as Partial<PersistedUsageEntry> & { ts: number })];
+    const sum = summarizeUsage(entries, "30d", at);
+    const day = sum.days.find(d => d.requests === 1);
+    expect(day).toBeDefined();
+    const modelSum = day!.models.reduce((acc, m) => acc + (m.estimatedCostUsd ?? 0), 0);
+    expect(day!.estimatedCostUsd).toBeCloseTo(modelSum, 10);
+    expect(day!.estimatedCostUsd).toBeCloseTo(sum.summary.estimatedCostUsd, 10);
+  });
+
+  test("two attempts on the SAME model are counted once, not once per attempt", () => {
+    // The day grid prices per ATTRIBUTION but looks the cost up in a map keyed by
+    // provider/model. When a retry lands on the same model, that key appears twice in
+    // the attribution list while the map already holds the SUM of both attempts — so a
+    // naive lookup adds the pair's total once per attempt and doubles the day.
+    // Every other combo test in this file uses two DIFFERENT models, which is exactly
+    // why the bug survives them.
+    const at = Date.UTC(2026, 0, 15, 12, 0, 0);
+    const usage = { inputTokens: 1_000, outputTokens: 100 };
+    const entries = [entry({
+      ts: at,
+      requestId: "retry-same-model",
+      provider: "combo",
+      model: "combo-model",
+      usageStatus: "reported",
+      attempts: [
+        { provider: "openai", model: "gpt-5.5", usageStatus: "reported", usage },
+        { provider: "openai", model: "gpt-5.5", usageStatus: "reported", usage },
+      ],
+    } as Partial<PersistedUsageEntry> & { ts: number })];
+    const sum = summarizeUsage(entries, "30d", at);
+    const day = sum.days.find(d => d.requests === 1);
+    expect(day).toBeDefined();
+
+    // The window total prices each attempt once; the day must agree with it.
+    expect(day!.estimatedCostUsd).toBeCloseTo(sum.summary.estimatedCostUsd, 10);
+    const modelSum = day!.models.reduce((acc, m) => acc + (m.estimatedCostUsd ?? 0), 0);
+    expect(day!.estimatedCostUsd).toBeCloseTo(modelSum, 10);
+  });
+
+  test("the day overflow row sums the cost of the models it collapsed", () => {
+    // Past MAX_USAGE_MODEL_BREAKDOWN_ROWS the tail collapses into one "other"
+    // row. If that aggregation drops cost, every breakdown under the cap still
+    // looks right — which is every test one would write by hand.
+    const total = MAX_USAGE_MODEL_BREAKDOWN_ROWS + 20;
+    // Rows sort by request count, so the priced model must land in the TAIL to
+    // prove the aggregation sums cost rather than merely carrying the head.
+    // One request each keeps the order stable and puts the priced row last.
+    const entries = Array.from({ length: total }, (_, i) => entry({
+      ts: at + i,
+      requestId: `overflow-${i}`,
+      provider: "openai",
+      model: i === total - 1 ? "gpt-5.5" : `unpriced-variant-${String(i).padStart(4, "0")}`,
+      usageStatus: "reported",
+      usage: { inputTokens: 1_000, outputTokens: 100 },
+    }));
+    const sum = summarizeUsage(entries, "30d", at + total);
+    const day = sum.days.find(d => d.requests === total);
+    expect(day).toBeDefined();
+    expect(day!.models).toHaveLength(MAX_USAGE_MODEL_BREAKDOWN_ROWS);
+
+    const other = day!.models.find(m => m.model === "other");
+    expect(other).toBeDefined();
+    expect(other!.estimatedCostUsd).toBeGreaterThan(0);
+
+    const modelSum = day!.models.reduce((acc, m) => acc + (m.estimatedCostUsd ?? 0), 0);
+    expect(day!.estimatedCostUsd).toBeCloseTo(modelSum, 10);
+  });
+
+  test.each([
+    [0, 0],
+    [150, 1],
+  ])("overflow rows preserve cache reads and clamp cache hit rate (%d reads)", (cacheRead, expected) => {
+    const total = MAX_USAGE_MODEL_BREAKDOWN_ROWS + 1;
+    const entries = Array.from({ length: total }, (_, i) => entry({
+      ts: at + i,
+      requestId: `overflow-cache-${i}`,
+      provider: "openai",
+      model: i === total - 1 ? "overflow-cache-tail" : `overflow-cache-${String(i).padStart(4, "0")}`,
+      usageStatus: "reported",
+      usage: i === total - 1
+        ? { inputTokens: 100, outputTokens: 1, cacheReadInputTokens: cacheRead }
+        : { inputTokens: 1, outputTokens: 1 },
+    }));
+
+    const sum = summarizeUsage(entries, "30d", at + total);
+    const day = sum.days.find(d => d.requests === total);
+    const other = day?.models.find(model => model.model === "other");
+    expect(other?.cacheReadInputTokens).toBe(cacheRead);
+    expect(other?.cacheHitRate).toBe(expected);
+    expect(other).not.toHaveProperty("cacheObserved");
+
+    const modelOther = sum.models.find(model => model.model === "other");
+    expect(modelOther?.cacheReadInputTokens).toBe(cacheRead);
+    expect(modelOther?.cacheHitRate).toBe(expected);
+    expect(modelOther).not.toHaveProperty("cacheObserved");
+
+    const provider = sum.providers.find(row => row.provider === "openai");
+    expect(provider?.cacheReadInputTokens).toBe(cacheRead);
+    expect(provider?.cacheHitRate).toBeCloseTo(cacheRead / (total + 99));
+    expect(provider).not.toHaveProperty("cacheObserved");
+  });
+});
+
+import { projectUsageSummary } from "../src/usage/summary";
+
+describe("canonical range and surface constants", () => {
+  test("the exported members match what the parsers accept", () => {
+    expect([...USAGE_RANGES]).toEqual(["today", "7d", "30d", "all"]);
+    expect([...USAGE_SURFACES]).toEqual(["all", "codex", "claude", "grok"]);
+    for (const range of USAGE_RANGES) expect(parseRange(range)).toBe(range);
+    for (const surface of USAGE_SURFACES) expect(parseUsageSurface(surface)).toBe(surface);
+  });
+});
+
+describe("projectUsageSummary", () => {
+  const at = Date.UTC(2026, 5, 28, 10, 0, 0);
+  const priced = { inputTokens: 1_000, outputTokens: 100 };
+
+  test("finds a provider that exists only past the breakdown cap", () => {
+    // Breakdown rows past MAX_USAGE_MODEL_BREAKDOWN_ROWS collapse into a
+    // synthetic "other" row. A projection over rows could not see through it,
+    // so a real provider reported matched:false with zero cost.
+    const total = MAX_USAGE_MODEL_BREAKDOWN_ROWS + 10;
+    const entries = Array.from({ length: total }, (_, i) => entry({
+      ts: at + i,
+      requestId: `row-${i}`,
+      provider: i === total - 1 ? "rare-provider" : "openai",
+      model: i === total - 1 ? "rare-model" : `m-${String(i).padStart(4, "0")}`,
+      usageStatus: "reported",
+      usage: priced,
+    }));
+    const summary = summarizeUsage(entries, "30d", at + total);
+    expect(summary.models.some(row => row.model === "other")).toBe(true);
+    expect(summary.models.some(row => row.provider === "rare-provider")).toBe(false);
+
+    const projected = projectUsageSummary(summary, { provider: "rare-provider" }, entries);
+    expect(projected.filter?.matched).toBe(true);
+    expect(projected.summary.requests).toBe(1);
+    expect(projected.models.map(row => row.model)).toEqual(["rare-model"]);
+  });
+
+  test("a model filter narrows the provider row to the retained model", () => {
+    // A provider row is a whole-provider aggregate. Passing it through a model
+    // filter left providers[] reporting the provider's OTHER models while
+    // models[] and the totals excluded them — one response contradicting
+    // itself.
+    const entries = [
+      entry({ ts: at, requestId: "a", provider: "openai", model: "gpt-5.5", usageStatus: "reported", usage: priced }),
+      entry({ ts: at + 1, requestId: "b", provider: "openai", model: "gpt-5.4", usageStatus: "reported", usage: { inputTokens: 5_000, outputTokens: 500 } }),
+    ];
+    const projected = projectUsageSummary(summarizeUsage(entries, "30d", at + 2), { model: "gpt-5.5" }, entries);
+    expect(projected.models.map(row => row.model)).toEqual(["gpt-5.5"]);
+    for (const row of projected.providers) {
+      expect(row.requests).toBe(projected.summary.requests);
+      expect(row.totalTokens).toBe(projected.summary.totalTokens);
+    }
+  });
+
+  test("recomputes parent usage when filtering a combo to one attempt", () => {
+    const combo = entry({
+      ts: at,
+      requestId: "filtered-combo-parent-usage",
+      provider: "combo",
+      model: "combo/native",
+      usageStatus: "reported",
+      usage: { inputTokens: 150, outputTokens: 15 },
+      totalTokens: 165,
+      attempts: [
+        {
+          ordinal: 1,
+          provider: "openai",
+          model: "gpt-5.5",
+          adapter: "openai-responses",
+          status: 200,
+          durationMs: 10,
+          sendCount: 1,
+          recoveryKinds: [],
+          usageStatus: "reported",
+          usage: { inputTokens: 100, outputTokens: 10 },
+          totalTokens: 110,
+        },
+        {
+          ordinal: 2,
+          provider: "anthropic",
+          model: "claude-sonnet-5",
+          adapter: "anthropic",
+          status: 200,
+          durationMs: 20,
+          sendCount: 1,
+          recoveryKinds: [],
+          usageStatus: "reported",
+          usage: { inputTokens: 50, outputTokens: 5 },
+          totalTokens: 55,
+        },
+      ],
+    });
+    const projected = projectUsageSummary(
+      summarizeUsage([combo], "30d", at + 1),
+      { model: "gpt-5.5" },
+      [combo],
+    );
+    expect(projected.summary.inputTokens).toBe(100);
+    expect(projected.summary.outputTokens).toBe(10);
+    expect(projected.summary.totalTokens).toBe(110);
+    expect(projected.days.flatMap(day => day.models).find(model => model.model === "gpt-5.5")?.totalTokens).toBe(110);
+    expect(projected.models.find(model => model.model === "gpt-5.5")?.totalTokens).toBe(110);
+  });
+
+  test("unmetered and unpriced requests survive the projection", () => {
+    // Counted per request rather than inferred from a model row's single
+    // optional cost, which could not represent a model holding both priced and
+    // unpriced requests and always reported zero unmetered.
+    const entries = [
+      entry({ ts: at, requestId: "priced", provider: "openai", model: "gpt-5.5", usageStatus: "reported", usage: priced }),
+      entry({ ts: at + 1, requestId: "unmetered", provider: "openai", model: "gpt-5.5", usageStatus: "unreported" }),
+    ];
+    const unfiltered = summarizeUsage(entries, "30d", at + 2);
+    const projected = projectUsageSummary(unfiltered, { provider: "openai" }, entries);
+    expect(projected.summary.unmeteredRequests).toBe(unfiltered.summary.unmeteredRequests);
+    expect(projected.summary.unmeteredRequests).toBe(1);
+    expect(projected.summary.pricedRequests).toBe(unfiltered.summary.pricedRequests);
+  });
+
+  test("an unfiltered call is returned untouched", () => {
+    const entries = [entry({ ts: at, usageStatus: "reported", usage: priced })];
+    const summary = summarizeUsage(entries, "30d", at + 1);
+    expect(projectUsageSummary(summary, { provider: null, model: null }, entries)).toBe(summary);
+  });
+
+  test("a combo contributes only its matching attempts to filtered totals", () => {
+    // Keeping the whole entry because one attempt matched dragged the other
+    // attempt's tokens and cost into the filtered totals: filtering a combo to
+    // its cheap model reported the expensive model's spend as well.
+    const entries = [entry({
+      ts: at,
+      requestId: "combo-1",
+      provider: "combo",
+      model: "combo",
+      usageStatus: "reported",
+      attempts: [
+        { provider: "openai", model: "gpt-5.5", usageStatus: "reported", usage: priced },
+        { provider: "openai", model: "gpt-5.4", usageStatus: "reported", usage: { inputTokens: 90_000, outputTokens: 9_000 } },
+      ],
+    } as Partial<PersistedUsageEntry> & { ts: number })];
+
+    const alone = summarizeUsage(
+      [entry({ ts: at, requestId: "solo", provider: "openai", model: "gpt-5.5", usageStatus: "reported", usage: priced })],
+      "30d", at + 1,
+    );
+    const unfiltered = summarizeUsage(entries, "30d", at + 1);
+    const projected = projectUsageSummary(unfiltered, { model: "gpt-5.5" }, entries);
+
+    expect(unfiltered.summary.estimatedCostUsd).toBeGreaterThan(alone.summary.estimatedCostUsd);
+    expect(projected.summary.estimatedCostUsd).toBeCloseTo(alone.summary.estimatedCostUsd, 10);
+    expect(projected.models.map(row => row.model)).toEqual(["gpt-5.5"]);
+    // A combo entry reports no top-level usage of its own — the tokens live on
+    // its attempts — so the day/summary token total stays 0 here and the
+    // meaningful assertion is on the retained attempt's own row.
+    const retained = projected.models[0]!;
+    expect(retained.totalTokens).toBe(alone.models[0]!.totalTokens);
+    expect(retained.estimatedCostUsd).toBeCloseTo(alone.summary.estimatedCostUsd, 10);
+    expect(projected.filter?.comboOverlap).toBe(true);
+  });
+
+  test("matched reflects the requested window, not the whole log", () => {
+    // filter.matched drives the CLI's "no usage recorded" message, so a match
+    // outside the requested range must not claim there is something to show.
+    const yesterday = new Date(2026, 7, 21, 12, 0, 0).getTime();
+    const midday = new Date(2026, 7, 22, 12, 0, 0).getTime();
+    const entries = [entry({ ts: yesterday, requestId: "old", provider: "rare-provider", model: "m", usageStatus: "reported", usage: priced })];
+
+    const today = projectUsageSummary(summarizeUsage(entries, "today", midday), { provider: "rare-provider" }, entries);
+    expect(today.summary.requests).toBe(0);
+    expect(today.filter?.matched).toBe(false);
+
+    const wider = projectUsageSummary(summarizeUsage(entries, "30d", midday), { provider: "rare-provider" }, entries);
+    expect(wider.summary.requests).toBe(1);
+    expect(wider.filter?.matched).toBe(true);
   });
 });
 
@@ -520,8 +882,8 @@ describe("summarizeUsage", () => {
     expect(sum.providers[0]).toMatchObject({ provider: "openai", requests: 4, totalTokens: 14 });
     expect(sum.models).toHaveLength(1);
     expect(sum.models[0]).toMatchObject({ provider: "openai", model: "gpt-5.5", requests: 4, totalTokens: 14 });
-    expect(sum.days.find(day => day.requests === 4)?.models).toEqual([
-      { provider: "openai", model: "gpt-5.5", requests: 4, attemptCount: 4, totalTokens: 14 },
+    expect(sum.days.find(day => day.requests === 4)?.models).toMatchObject([
+      { provider: "openai", model: "gpt-5.5", requests: 4, attemptCount: 4, totalTokens: 14, estimatedCostUsd: 0.00017 },
     ]);
   });
 
@@ -577,7 +939,7 @@ describe("summarizeUsage", () => {
       expect.objectContaining({ provider: "b", requests: 1, attemptCount: 1, totalTokens: 12 }),
     ]);
     expect(sum.providers.some(provider => provider.provider === "combo")).toBe(false);
-    expect(sum.days.find(day => day.requests === 1)?.models).toEqual([
+    expect(sum.days.find(day => day.requests === 1)?.models).toMatchObject([
       { provider: "a", model: "model-a", requests: 1, attemptCount: 1, totalTokens: 100 },
       { provider: "b", model: "model-b", requests: 1, attemptCount: 1, totalTokens: 12 },
     ]);
@@ -937,37 +1299,181 @@ describe("summarizeUsage", () => {
     expect(sumMorning30d.since).toBe(sumEvening30d.since);
   });
 
-  test("caps top-level and per-day model breakdowns with a lossless other bucket", () => {
-    const entries = Array.from({ length: 260 }, (_, index) => entry({
-      ts: FIXED_NOW - index,
-      requestId: index >= 255 ? "shared-overflow-request" : `request-${index}`,
-      provider: `provider-${index}`,
-      model: `model-${index}`,
+  test("exposes per-provider, per-model, and per-day cache counters and price coverage (#1820)", () => {
+    const entries: PersistedUsageEntry[] = [
+      entry({
+        ts: FIXED_NOW - 1000,
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        usageStatus: "reported",
+        usage: {
+          inputTokens: 1000,
+          outputTokens: 200,
+          cacheReadInputTokens: 600,
+          cacheCreationInputTokens: 300,
+        },
+      }),
+      entry({
+        ts: FIXED_NOW - 2000,
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        usageStatus: "reported",
+        usage: {
+          inputTokens: 500,
+          outputTokens: 100,
+          cacheReadInputTokens: 0,
+        },
+      }),
+      entry({
+        ts: FIXED_NOW - 3000,
+        provider: "unpriced-prov",
+        model: "unpriced-model",
+        usageStatus: "reported",
+        usage: {
+          inputTokens: 100,
+          outputTokens: 50,
+        },
+      }),
+    ];
+
+    const summary = summarizeUsage(entries, "7d", FIXED_NOW);
+
+    // Model-level assertions
+    const sonnet = summary.models.find(m => m.model === "claude-sonnet-5");
+    expect(sonnet).toBeDefined();
+    expect(sonnet?.inputTokens).toBe(1500);
+    expect(sonnet?.outputTokens).toBe(300);
+    expect(sonnet?.cacheReadInputTokens).toBe(600);
+    expect(sonnet?.cacheCreationInputTokens).toBe(300);
+    expect(sonnet?.cacheHitRate).toBeCloseTo(600 / 1500);
+    expect(sonnet).not.toHaveProperty("cacheObserved");
+
+    const unpricedModel = summary.models.find(m => m.model === "unpriced-model");
+    expect(unpricedModel).toBeDefined();
+    expect(unpricedModel?.cacheHitRate).toBeNull();
+    expect(unpricedModel?.priceCoverageRatio).toBe(0);
+
+    // Provider-level assertions
+    const anthropicProv = summary.providers.find(p => p.provider === "anthropic");
+    expect(anthropicProv).toBeDefined();
+    expect(anthropicProv?.inputTokens).toBe(1500);
+    expect(anthropicProv?.outputTokens).toBe(300);
+    expect(anthropicProv?.cacheReadInputTokens).toBe(600);
+    expect(anthropicProv?.cacheCreationInputTokens).toBe(300);
+    expect(anthropicProv?.cacheHitRate).toBeCloseTo(600 / 1500);
+    expect(anthropicProv).not.toHaveProperty("cacheObserved");
+
+    // Day model assertions
+    const day = summary.days.find(d => d.models.some(m => m.model === "claude-sonnet-5"));
+    expect(day).toBeDefined();
+    const daySonnet = day?.models.find(m => m.model === "claude-sonnet-5");
+    expect(daySonnet?.inputTokens).toBe(1500);
+    expect(daySonnet?.outputTokens).toBe(300);
+    expect(daySonnet?.cacheReadInputTokens).toBe(600);
+    expect(daySonnet?.cacheCreationInputTokens).toBe(300);
+    expect(daySonnet?.cacheHitRate).toBeCloseTo(600 / 1500);
+    expect(daySonnet?.estimatedCostUsd).toBeGreaterThan(0);
+    expect(daySonnet).not.toHaveProperty("cacheObserved");
+
+    const dayUnpriced = summary.days
+      .flatMap(d => d.models)
+      .find(m => m.model === "unpriced-model");
+    expect(dayUnpriced?.cacheHitRate).toBeNull();
+  });
+
+  test("clamps cache hit rate when cache reads exceed input tokens", () => {
+    const sum = summarizeUsage([
+      entry({
+        ts: FIXED_NOW - 1000,
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        usageStatus: "reported",
+        usage: { inputTokens: 100, outputTokens: 20, cacheReadInputTokens: 150 },
+      }),
+    ], "30d", FIXED_NOW);
+
+    expect(sum.models[0]?.cacheHitRate).toBe(1);
+  });
+
+  test("attributes combo with mixed priced and unpriced attempts per attempt", () => {
+    const combo = entry({
+      ts: FIXED_NOW - 1000,
+      requestId: "combo-mixed-pricing",
+      provider: "combo",
+      model: "combo/native",
       usageStatus: "reported",
-      usage: { inputTokens: 1, outputTokens: 1 },
-      totalTokens: 2,
-    }));
-    const sum = summarizeUsage(entries, "30d", FIXED_NOW);
-    expect(sum.models).toHaveLength(256);
-    expect(sum.days.find(day => day.requests > 0)?.models).toHaveLength(256);
-    expect(sum.models.at(-1)).toMatchObject({
-      provider: "other",
-      model: "other",
-      requests: 1,
-      attemptCount: 5,
-      measuredRequests: 1,
-      reportedRequests: 1,
-      inputTokens: 5,
-      outputTokens: 5,
-      totalTokens: 10,
+      usage: { inputTokens: 150, outputTokens: 15 },
+      totalTokens: 165,
+      attempts: [
+        {
+          ordinal: 1,
+          provider: "openai",
+          model: "gpt-5.5",
+          adapter: "openai-responses",
+          status: 502,
+          durationMs: 10,
+          sendCount: 1,
+          recoveryKinds: [],
+          usageStatus: "reported",
+          usage: { inputTokens: 100, outputTokens: 10 },
+          totalTokens: 110,
+        },
+        {
+          ordinal: 2,
+          provider: "unpriced-prov",
+          model: "unpriced-model",
+          adapter: "openai-responses",
+          status: 200,
+          durationMs: 20,
+          sendCount: 1,
+          recoveryKinds: [],
+          usageStatus: "reported",
+          usage: { inputTokens: 50, outputTokens: 5 },
+          totalTokens: 55,
+        },
+      ],
     });
-    expect(sum.days.find(day => day.requests > 0)?.models.at(-1)).toMatchObject({
-      provider: "other",
-      model: "other",
-      requests: 1,
-      attemptCount: 5,
-      totalTokens: 10,
-    });
+
+    const sum = summarizeUsage([combo], "30d", FIXED_NOW);
+
+    // Totals should include the priced attempt's cost and count as priced
+    expect(sum.summary.pricedRequests).toBe(1);
+    expect(sum.summary.unpricedRequests).toBe(0);
+    const expectedCost = (100 * 5 + 10 * 30) / 1e6;
+    expect(sum.summary.estimatedCostUsd).toBeCloseTo(expectedCost, 9);
+
+    // Model breakdown
+    const gptModel = sum.models.find(m => m.model === "gpt-5.5");
+    expect(gptModel).toBeDefined();
+    expect(gptModel?.pricedRequests).toBe(1);
+    expect(gptModel?.unpricedRequests).toBe(0);
+    expect(gptModel?.priceCoverageRatio).toBe(1);
+    expect(gptModel?.estimatedCostUsd).toBeCloseTo(expectedCost, 9);
+
+    const unpricedModel = sum.models.find(m => m.model === "unpriced-model");
+    expect(unpricedModel).toBeDefined();
+    expect(unpricedModel?.pricedRequests).toBe(0);
+    expect(unpricedModel?.unpricedRequests).toBe(1);
+    expect(unpricedModel?.priceCoverageRatio).toBe(0);
+    expect(unpricedModel?.estimatedCostUsd).toBeUndefined();
+
+    // Provider breakdown
+    const openaiProv = sum.providers.find(p => p.provider === "openai");
+    expect(openaiProv).toBeDefined();
+    expect(openaiProv?.pricedRequests).toBe(1);
+    expect(openaiProv?.estimatedCostUsd).toBeCloseTo(expectedCost, 9);
+
+    const unpricedProv = sum.providers.find(p => p.provider === "unpriced-prov");
+    expect(unpricedProv).toBeDefined();
+    expect(unpricedProv?.unpricedRequests).toBe(1);
+    expect(unpricedProv?.estimatedCostUsd).toBeUndefined();
+
+    // Day models breakdown
+    const day = sum.days.find(d => d.requests > 0);
+    const dayGpt = day?.models.find(m => m.model === "gpt-5.5");
+    expect(dayGpt?.estimatedCostUsd).toBeCloseTo(expectedCost, 9);
+    const dayUnpriced = day?.models.find(m => m.model === "unpriced-model");
+    expect(dayUnpriced?.estimatedCostUsd).toBeUndefined();
   });
 
 });

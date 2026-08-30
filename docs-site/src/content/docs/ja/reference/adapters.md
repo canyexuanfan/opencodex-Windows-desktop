@@ -1,6 +1,6 @@
 ---
 title: アダプター
-description: 7つのプロバイダーアダプターの対象、リクエスト構成方式、固有の動作。
+description: プロバイダーアダプターの対象、リクエスト構成方式、固有の動作。
 ---
 
 **アダプター**は opencodex の内部リクエスト/レスポンスモデルとプロバイダーの wire 形式の間を変換します。すべてのアダプターは `ProviderAdapter` インターフェース（`src/adapters/base.ts`）を実装します。
@@ -22,7 +22,7 @@ interface ProviderAdapter {
 ## `openai-chat`
 
 **対象:** OpenAI **Chat Completions**（`POST {baseUrl}/chat/completions`）および互換プロバイダー
-— xAI、Kimi、DeepSeek、GLM、Groq、OpenRouter、Ollama（ローカルとクラウド）など。
+— xAI、Kimi、DeepSeek、GLM、Groq、OpenRouter、Ollama（ローカル）など。
 **認証:** `key`（Bearer）。
 
 - 内部メッセージを OpenAI role に変換し、ツールは `{type:"function", function:{…}}` と
@@ -40,6 +40,44 @@ interface ProviderAdapter {
   現在このリクエスト形式が明記されていません。アダプターは要求された `low`、`medium`、`high`、
   `xhigh`、`max` tier をそのまま保持し、`delta.reasoning_content` または `delta.reasoning` を
   reasoning delta として扱い、`stream_options.include_usage` でストリーム usage を要求し、非ストリームのレスポンス envelope からも usage を読み取ります。
+
+## `ollama-native`
+
+**対象：** OpenAI 互換サーフェスではなく、Ollama 自身の **Chat API**（`POST /api/chat`）。
+組み込みの `ollama-cloud` プロバイダーはこの adapter にレジストリで選択され、別名のカスタム /
+セルフホスト Ollama プロバイダーに `adapter: "ollama-native"` を設定して使うこともできます。
+**認証：** cloud / カスタム宛先は `key`（Bearer）。loopback または `authMode: "local"`
+の宛先には資格情報を送りません。
+
+- **レジストリ選択が実質的に効きます。** 組み込みの `ollama-cloud` 行は `/v1/models` による
+  ライブ探索のため `https://ollama.com/v1` を維持しつつ、推論は
+  `POST https://ollama.com/api/chat` に正規化されます。このプロバイダー行では設定した
+  `adapter` は破棄されます。通常の組み込みローカル Ollama は `openai-chat` のままです。
+  ローカル / セルフホスト宛先に `ollama-native` を選ぶのは、プロバイダー設定での明示的な判断
+  であり、ホストで判定されるため非 Ollama 宛先が黙って書き換えられることはありません。
+- **モデルメタデータ：** `/v1/models` にはモデルごとのメタデータがないため、正規の Ollama
+  Cloud では *上限付き* の `POST /api/show`（応答 256 KiB、1 要求 8 秒、並列 4、48 要求、
+  フェーズ全体に 12 秒の締切）で発見された各 id を補完し、実際の context window と vision
+  対応を取得します。show 要求は同一オリジンでリダイレクトを追わず、失敗してもその 1 モデル
+  だけが劣化し、発見自体は失敗しません。
+- **ストリーミング：** Ollama ネイティブの NDJSON。テキストと `message.thinking` の delta を
+  到着順に転送し、`done: true` の終端レコードでのみターンを完了します。buffer された
+  `done: false` や終端の欠落では部分的なテキストも tool call も一切出力しません。
+- **Reasoning：** Ollama ネイティブの `think` フィールド（`low` / `medium` / `high` / `max` と
+  boolean）に対応し、モデルの公開 ladder へクランプし、上流で設定された `__omit__` sentinel の
+  意味論に従います。
+- **画像：** vision 対応モデルではメッセージの `images` 配列でネイティブ送信します。video は
+  誤送信ではなく拒否され、リモート画像 URL の取得は行いません。
+- **ツール：** Ollama のネイティブ形状で宣言し、ストリームされる tool call は `arguments` が
+  オブジェクトの whole-call レコード、tool result のリプレイは call id と tool 名で厳密に対応
+  付けられます。`tool_choice: "none"` と `auto` は通常どおりです。**`required` や名前指定は
+  fail closed** です。Ollama の `/api/chat` にはそれを強制できる `tool_choice` フィールドが
+  ありません。
+- **構造化出力は正規の Ollama Cloud では拒否されます。** Ollama は Cloud で構造化出力が未対応
+  であると現在ドキュメントしており、Cloud は `format` フィールドを強制しません。そのため
+  OpenCodex は、schema 指定の要求に対して自由文を返すのではなく、要求を閉じて失敗させます。
+  ローカル / カスタムの `ollama-native` エンドポイントは Ollama ネイティブの `format` マッピング
+  （`json_object` → `"json"`、`json_schema` → schema オブジェクトそのもの）を保持します。
 
 ## `openai-responses`
 
@@ -122,15 +160,19 @@ filtered incomplete になります。実際のツール呼び出しを伴わな
 
 ## `cursor`
 
-**対象:** `api2.cursor.sh` の HTTP/2 Connect ストリーミング
-`agent.v1.AgentService/Run`。
+**対象:** デフォルトでは `api2.cursor.sh` の HTTP/2 Connect ストリーミング
+`agent.v1.AgentService/Run`。`upstreamHttpVersion: "http1.1"`（または `"h1"`）では Cursor の
+HTTP/1.1 互換トランスポートを使い、サーバー出力を `agent.v1.AgentService/RunSSE`、クライアント
+メッセージを `aiserver.v1.BidiService/BidiAppend` で送受信します。この設定は inference と live
+model discovery の両方に適用されます。
 **認証:** `provider.apiKey` または転送された authorization ヘッダーの Cursor OAuth/access token。
 
 - 通常の fetch/parse 経路の代わりに `runTurn` を使います。リクエスト、サーバーイベント、ツール引数、使用量 checkpoint、クライアントレスポンスは `cursor/gen/agent_pb.ts` の `@bufbuild/protobuf` スキーマでエンコードしたのち Connect メッセージとして framing します。
 - content-addressed blob で対話状態を再生し、サーバーツール呼び出しを Codex に再マッピングします。protobuf の `GetUsableModels` RPC でリアルタイム Cursor モデルを探し、run リクエストが wire に commit される前だけリトライします。
+- ツールなしで正常終了したターンでは、返された ConversationStateStructure をプロセスローカルに保持し、検証済みの線形継続で checkpoint を再利用します。tool-result ターンでは、対象メッセージ境界が判明している場合、最後に正常終了したターンの checkpoint に未収録の suffix だけを追加します。ref のない prefix lookup は、記憶済みの Cursor conversation または安定した client thread（制限付きの Desktop session/thread fallback を含む）があり、同じ provider conversation が所有する checkpoint が一意に一致する場合だけ許可します。それ以外は full replay に戻ります。compaction、helper/shadow の分離、account/model の不一致、ref の欠落、decode の失敗、forced-fresh recovery、invalid_argument retry でも full replay を使います。プロセスを再起動するとメモリ内 store は失われ、full replay になります。Cursor Connect は権威ある cache_read_tokens を公開しないため、OpenCodex usage は cache-hit counter ではありません。制限付き Desktop fallback が保存するのはプロセスローカルで HMAC から導出した owner だけで、raw session/thread header や OAuth/authorization material を checkpoint state に書き込みません。OAuth-backed live transport とアカウントで絞り込む live model discovery は実験的です。ログインと transport の設定は [provider guide](/ja/guides/providers/) と [Cursor provider configuration](/ja/reference/configuration/providers/#cursor-provider-adapter-cursor) を参照してください。checkpoint reuse 自体は自動で、ユーザー設定はありません。
 - `cursor/grok-4.5-fast` は選択可能なモデルとして維持しつつ、Cursor には正規の `grok-4.5`
   モデルを送信し、個別の `effort` および `fast=true` 値は `requested_model.parameters` に格納します。
-- Cursor ネイティブのローカルファイルシステム/shell/network 実行はデフォルトで拒否します。明示的な `mcpServers` と `desktopExecutor` 統合はそれぞれ別の opt-in です。`unsafeAllowNativeLocalExec` はより広い組み込み executor を有効にし、Codex の承認/サンドボックスルールを迂回します。
+- Cursor ネイティブのローカルファイルシステム/shell/network 実行はデフォルトで拒否します。明示的な `mcpServers` と `desktopExecutor` 統合はそれぞれ別の opt-in です。`nativeLocalExec: "on"` はより広い組み込み executor を有効にし、Codex の承認/サンドボックスルールを迂回します。従来の `unsafeAllowNativeLocalExec: true` は、`nativeLocalExec` が設定されていない場合にのみ同等です。
 
 ## `azure-openai`（別名: `azure`）
 

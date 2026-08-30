@@ -226,7 +226,7 @@ describe("usage log", () => {
   test("usage byte-prefix truncation and entry-count truncation report independent metadata", async () => {
     writeFileSync(
       usageLogPath(),
-      `${Array.from({ length: 500_001 }, (_, index) => JSON.stringify({ requestId: String(index) })).join("\n")}\n`,
+      `${Array.from({ length: 500_001 }, (_, index) => JSON.stringify({ requestId: String(index), provider: "p" })).join("\n")}\n`,
     );
     const snapshot = await readUsageSnapshotForManagement();
     expect(snapshot.entries).toHaveLength(500_000);
@@ -739,14 +739,26 @@ describe("usage log", () => {
     }]);
   });
 
-  test("skips malformed JSONL lines while keeping valid entries", () => {
+  test("skips malformed JSONL and rows without string usage identities", async () => {
     writeFileSync(usageLogPath(), [
-      "{\"requestId\":\"a\",\"timestamp\":1,\"provider\":\"p\",\"model\":\"m\",\"status\":200,\"durationMs\":1,\"usageStatus\":\"unreported\"}",
+      persistedLine("a"),
       "{not-json",
-      "{\"requestId\":\"b\",\"timestamp\":2,\"provider\":\"p\",\"model\":\"m\",\"status\":200,\"durationMs\":1,\"usageStatus\":\"reported\",\"usage\":{\"inputTokens\":1,\"outputTokens\":2},\"totalTokens\":3}",
+      "null",
+      "42",
+      "[]",
+      "{}",
+      JSON.stringify({ provider: "p", timestamp: 2 }),
+      JSON.stringify({ requestId: 42, provider: "p", timestamp: 2 }),
+      JSON.stringify({ requestId: "missing-provider", timestamp: 2 }),
+      JSON.stringify({ requestId: "null-provider", provider: null, timestamp: 2 }),
+      JSON.stringify({ requestId: "number-provider", provider: 42, timestamp: 2 }),
+      JSON.stringify({ requestId: "object-provider", provider: {}, timestamp: 2 }),
+      JSON.stringify({ requestId: "array-provider", provider: [], timestamp: 2 }),
+      persistedLine("b"),
     ].join("\n"));
 
     expect(readUsageEntries().map(entry => entry.requestId)).toEqual(["a", "b"]);
+    expect((await readUsageEntriesForManagement()).map(entry => entry.requestId)).toEqual(["a", "b"]);
   });
 
   test("keeps missing usage distinct from zero usage", () => {
@@ -770,6 +782,24 @@ describe("usage log", () => {
     expect(usageForFinalLog("cursor-pb51d9b", usage)).toEqual({ ...usage, estimated: true });
     expect(usageForFinalLog("openai", usage)).toEqual(usage);
     expect(usageForFinalLog("openai", { ...usage, estimated: true })).toEqual({ ...usage, estimated: true });
+  });
+
+  // A turn the proxy answered locally issued no upstream request, so its zero counts are exact.
+  // The provider-wide estimated marking exists because the Kiro/Cursor adapters can only guess a
+  // real inference's usage; there is nothing to guess when there was no inference, and marking it
+  // estimated makes a no-send turn indistinguishable from one whose usage frame never arrived.
+  test("a locally answered turn keeps exact usage instead of the provider estimated marking", () => {
+    const zero = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    expect(usageForFinalLog("kiro", zero, true)).toEqual(zero);
+    expect(usageForFinalLog("kiro-p9d8524", zero, true)).toEqual(zero);
+    // Default and explicit-false keep the existing behavior: this is opt-in per turn, so an
+    // ordinary Kiro turn cannot lose its estimated marking by omission.
+    expect(usageForFinalLog("kiro", zero)).toEqual({ ...zero, estimated: true });
+    expect(usageForFinalLog("kiro", zero, false)).toEqual({ ...zero, estimated: true });
+    // The flag reports a fact about the turn, not about the numbers: an adapter that genuinely
+    // estimated something still says so.
+    const guessed = { inputTokens: 4, outputTokens: 6, estimated: true };
+    expect(usageForFinalLog("kiro", guessed, true)).toEqual(guessed);
   });
 
   test("preserves cached token counts alongside estimated status", () => {

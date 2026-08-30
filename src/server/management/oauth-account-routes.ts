@@ -39,6 +39,7 @@ import {
   parseAccountPoolStickyLimit,
   parseAccountPoolStrategy,
 } from "../../codex/pool-rotation";
+import { normalizeAccountPoolQuotaWindow, parseAccountPoolQuotaWindow } from "../../oauth/anthropic-routing";
 import { primeCodexPoolQuotas } from "../../codex/auth-api";
 import { DEFAULT_PROVIDER_CONTEXT_CAP, globalContextCapValue, providerContextCap, providerContextCaps, setAllProviderContextCaps, setGlobalContextCapValue, setProviderContextCap } from "../../providers/context-cap";
 import { resolveCodexHomeDir } from "../../codex/home";
@@ -136,7 +137,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
   // the provider's loopback callback server (inside this process) captures the redirect in the
   // background, then the credential is persisted. The GUI opens the URL and polls /api/oauth/status.
   if (url.pathname === "/api/oauth/login" && req.method === "POST") {
-    const body = await readManagementJsonBodyOr(req, {}) as { provider?: string; addAccount?: boolean; accountId?: string; reauth?: boolean };
+    const body = await readManagementJsonBodyOr(req, {}) as { provider?: string; addAccount?: boolean; accountId?: string; reauth?: boolean; openBrowser?: unknown };
     const provider = (body.provider ?? "").trim().toLowerCase();
     if (!isPublicOAuthProvider(provider)) return jsonResponse({ error: "unknown oauth provider" }, 400);
     const namespaceCollision = codexAccountNamespaceProviderCollisionError(config.codexAccountNamespaces, provider);
@@ -167,9 +168,15 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
           reconcileLiveStateStores();
         },
       });
-      if (authUrl && !deviceCode) {
-        // Open the browser server-side (the proxy runs on the user's machine) — the GUI's
-        // window.open is popup-blocked because it runs after an await, not a direct click.
+      // Open the browser server-side (the proxy runs on the user's machine) — the GUI's
+      // window.open is popup-blocked because it runs after an await, not a direct click.
+      //
+      // The operator can decline, which is the only way to finish a login in a
+      // browser profile other than the OS default, or on a different machine
+      // than the proxy. Declining changes nothing else: the URL is still
+      // returned below and every login surface renders it with a copy button.
+      const { shouldOpenBrowserForLogin } = await import("../../oauth/open-browser-choice");
+      if (authUrl && !deviceCode && shouldOpenBrowserForLogin(body.openBrowser, config)) {
         const { openUrl } = await import("../../lib/open-url");
         openUrl(authUrl);
       }
@@ -320,6 +327,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
       autoSwitchThreshold: typeof pool.autoSwitchThreshold === "number" ? pool.autoSwitchThreshold : 80,
       strategy: normalizeAccountPoolStrategy(pool.strategy),
       stickyLimit: normalizeAccountPoolStickyLimit(pool.stickyLimit),
+      quotaWindow: normalizeAccountPoolQuotaWindow(pool.quotaWindow),
       experimental: true,
     });
   }
@@ -334,6 +342,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
       autoSwitchThreshold?: unknown;
       strategy?: unknown;
       stickyLimit?: unknown;
+      quotaWindow?: unknown;
     };
     const provider = typeof body.provider === "string" ? body.provider.trim().toLowerCase() : "";
     if (provider !== "anthropic") return jsonResponse({ error: "pool config is only supported for anthropic" }, 400);
@@ -370,11 +379,20 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
       }
       stickyLimit = parsed;
     }
+    let quotaWindow = config.anthropicAccountPool?.quotaWindow;
+    if (body.quotaWindow !== undefined) {
+      const parsed = parseAccountPoolQuotaWindow(body.quotaWindow);
+      if (parsed === null) {
+        return jsonResponse({ error: "quotaWindow must be one of: five-hour, weekly, max-utilization" }, 400);
+      }
+      quotaWindow = parsed;
+    }
     config.anthropicAccountPool = {
       enabled,
       autoSwitchThreshold: threshold,
       ...(strategy !== undefined ? { strategy } : {}),
       ...(stickyLimit !== undefined ? { stickyLimit } : {}),
+      ...(quotaWindow !== undefined ? { quotaWindow } : {}),
     };
     saveConfigPreservingClaudeCode(config);
     reconcileLiveStateStores();
@@ -385,6 +403,7 @@ export async function handleOauthAccountRoutes(ctx: ManagementContext): Promise<
       autoSwitchThreshold: threshold,
       strategy: normalizeAccountPoolStrategy(strategy),
       stickyLimit: normalizeAccountPoolStickyLimit(stickyLimit),
+      quotaWindow: normalizeAccountPoolQuotaWindow(quotaWindow),
       experimental: true,
     });
   }

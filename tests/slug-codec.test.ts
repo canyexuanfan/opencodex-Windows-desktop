@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
   decodeRoutedModelId,
+  resolveSlugSelection,
   decodeRoutedModelIdOrThrow,
   encodeRoutedModelId,
   encodedModelIdCollides,
@@ -318,5 +319,88 @@ describe("catalog emission (Codex-facing)", () => {
     expect(rawFeatured.find(e => e.slug === "zenmux/moonshotai-kimi-k3")?.priority).toBe(0);
     const encodedFeatured = buildCatalogEntries(nativeTemplate(), [], models, ["zenmux/moonshotai-kimi-k3"]);
     expect(encodedFeatured.find(e => e.slug === "zenmux/moonshotai-kimi-k3")?.priority).toBe(0);
+  });
+});
+
+describe("#2491 one selection resolver reports what it actually matched", () => {
+  /**
+   * The Codex one-slash rule forces `a/b` and `a-b` onto the same encoded form, so the
+   * equivalence key cannot separate them. Filtering and persisted sync already share that key;
+   * what was missing is any way for a caller to LEARN that a selection was ambiguous instead of
+   * silently granting the whole collision class.
+   */
+  test("an unambiguous selection resolves to exactly one id, marked exact", () => {
+    const match = resolveSlugSelection("p", "a-b", ["a-b", "unrelated"]);
+    expect(match.matched).toEqual(["a-b"]);
+    expect(match.exact).toBe("a-b");
+    expect(match.ambiguous).toBe(false);
+  });
+
+  test("both spellings present is reported as ambiguous, with the exact one named", () => {
+    const both = ["a/b", "a-b"];
+    const viaDash = resolveSlugSelection("p", "a-b", both);
+    expect(viaDash.ambiguous).toBe(true);
+    expect(viaDash.matched.sort()).toEqual(["a-b", "a/b"]);
+    // The caller can still prefer the row the operator literally typed.
+    expect(viaDash.exact).toBe("a-b");
+
+    const viaSlash = resolveSlugSelection("p", "a/b", both);
+    expect(viaSlash.ambiguous).toBe(true);
+    expect(viaSlash.exact).toBe("a/b");
+  });
+
+  test("a selection written as the full routed slug resolves the same way", () => {
+    const match = resolveSlugSelection("p", "p/a-b", ["a/b", "a-b"]);
+    expect(match.ambiguous).toBe(true);
+    expect(match.matched.sort()).toEqual(["a-b", "a/b"]);
+  });
+
+  test("an id absent from an incomplete roster still reports no match rather than guessing", () => {
+    // Live discovery can omit a published id; the resolver must not invent one.
+    const match = resolveSlugSelection("p", "missing", ["a-b"]);
+    expect(match.matched).toEqual([]);
+    expect(match.exact).toBeUndefined();
+    expect(match.ambiguous).toBe(false);
+  });
+
+  test("a nested-slash id resolves through its fully encoded form", () => {
+    const match = resolveSlugSelection("p", "x-y-z", ["x/y/z"]);
+    expect(match.matched).toEqual(["x/y/z"]);
+    // Encoded-only: the operator did not type the native spelling.
+    expect(match.exact).toBeUndefined();
+  });
+
+  /**
+   * A native id may be self-namespaced: provider "acme" publishing `acme/turbo`. Its literal
+   * spelling is indistinguishable from the provider-qualified form of a sibling `turbo`, so
+   * treating every `<provider>/…` selection as qualified made the published row unreachable
+   * and, worse, silently redirected the selection onto the sibling. `ocx models remove` reads
+   * its match from this resolver, so the redirect targets a destructive command.
+   */
+  test("a self-namespaced native id wins over the provider-qualified reading", () => {
+    const match = resolveSlugSelection("acme", "acme/turbo", ["acme/turbo", "turbo"]);
+    expect(match.matched).toEqual(["acme/turbo"]);
+    expect(match.exact).toBe("acme/turbo");
+    expect(match.ambiguous).toBe(false);
+  });
+
+  test("a self-namespaced native id resolves even when it is the only known id", () => {
+    const match = resolveSlugSelection("acme", "acme/turbo", ["acme/turbo"]);
+    expect(match.matched).toEqual(["acme/turbo"]);
+    expect(match.exact).toBe("acme/turbo");
+  });
+
+  test("the sibling is still reachable through its own bare spelling", () => {
+    const match = resolveSlugSelection("acme", "turbo", ["acme/turbo", "turbo"]);
+    expect(match.matched).toEqual(["turbo"]);
+    expect(match.exact).toBe("turbo");
+  });
+
+  test("the provider-qualified reading still applies when no native id matches literally", () => {
+    // Nothing is spelled `acme/turbo` natively here, so the selection keeps its qualified
+    // meaning and resolves against the encoded roster as before.
+    const match = resolveSlugSelection("acme", "acme/turbo", ["turbo"]);
+    expect(match.matched).toEqual(["turbo"]);
+    expect(match.exact).toBe("turbo");
   });
 });

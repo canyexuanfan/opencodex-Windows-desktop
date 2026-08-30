@@ -72,6 +72,7 @@ function readDefaultReasoningEffort(raw: unknown, efforts: string[] | undefined)
 import type { CatalogModel } from "../../codex/catalog";
 import { accountBoundNativeOpenAiSlugsBySelector, catalogModelSlug, configuredNativeAliasSlugs, disabledNativeSlugs, invalidateCodexModelsCache, nativeModelRows, shouldIncludeAccountBoundNativeOpenAi, uniqueCatalogModelsForPublicList } from "../../codex/catalog";
 import { CatalogGatherBusyError } from "../../codex/catalog/provider-fetch";
+import { NATIVE_OPENAI_MODELS } from "../../codex/catalog/native-models";
 import { getProviderLiveModelCount } from "../../codex/model-cache";
 import {
   DEFAULT_SUBAGENT_MODELS,
@@ -99,6 +100,8 @@ import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
 import { encodedModelIdCollides, routedSlug, slugEquals } from "../../providers/slug-codec";
 import { knownModelIdsForProvider } from "../../router";
+import { effectiveModelAliases, MODEL_ALIAS_PATTERN } from "../../providers/default-aliases";
+import { comboPublicModelId } from "../../combos/types";
 import { COMBO_NAMESPACE, comboDisabledModelSelectors, comboModelId, preservesPhysicalComboProvider } from "../../combos";
 import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../../providers/quota";
 import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
@@ -149,6 +152,12 @@ import type { MetricUnavailableReason, TokPerSecondResult, CostEstimateReason, C
 import type { ManagementContext } from "./context";
 import { listManagementModelRows, loadExportModels } from "./model-rows";
 import { readManagementJsonBody, rethrowManagementBodyTooLarge } from "./body";
+import {
+  hasModelPreset,
+  markModelPresetDiverged,
+  materializeModelPreset,
+  modelPresetFor,
+} from "../../providers/model-presets";
 
 /**
  * Counts read back off the SERIALIZED document rather than recomputed from the input rows.
@@ -171,18 +180,173 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
   // ~/.opencodex/config.json with the `existing-uuid` test fixture.
   const persistConfig = deps.saveConfigPreservingClaudeCode ?? saveConfigPreservingClaudeCode;
 
+  if (url.pathname === "/api/model-discovery" && req.method === "GET") {
+    const providers = Object.fromEntries(Object.entries(config.providers).map(([name, provider]) => [
+      name, provider.newModelPolicy ?? "inherit",
+    ]));
+    const recentArrivals = Object.fromEntries(Object.entries(config.modelDiscovery?.recentArrivals ?? {}).map(([name, rows]) => [
+      name,
+      rows.map(row => ({
+        ...row,
+        state: (config.disabledModels ?? []).some(slug => slugEquals(slug, name, row.id))
+          ? "auto-disabled" : "enabled",
+      })),
+    ]));
+    const baselineCounts = Object.fromEntries(Object.entries(config.modelDiscovery?.knownModels ?? {}).map(([name, baseline]) => [
+      name, baseline.ids.length,
+    ]));
+    return jsonResponse({
+      policy: config.modelDiscovery?.newModelPolicy ?? "on", providers, recentArrivals, baselineCounts,
+    });
+  }
+
+  if (url.pathname === "/api/model-discovery" && req.method === "PUT") {
+    let body: { policy?: unknown; provider?: unknown };
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (body.policy !== "on" && body.policy !== "off") return jsonResponse({ error: "policy must be on or off" }, 400);
+    const provider = typeof body.provider === "string" && body.provider.trim() ? body.provider.trim() : null;
+    let baselineBootstrapped = false;
+    if (provider) {
+      if (!hasOwnProvider(config.providers, provider)) return jsonResponse({ error: "unknown provider" }, 404);
+      config.providers[provider].newModelPolicy = body.policy;
+    } else {
+      const wasAbsent = config.modelDiscovery?.newModelPolicy === undefined;
+      config.modelDiscovery ??= {};
+      config.modelDiscovery.newModelPolicy = body.policy;
+      if (body.policy === "off" && wasAbsent) {
+        const models = await fetchAllModels(config);
+        const known = config.modelDiscovery.knownModels ??= {};
+        const at = new Date().toISOString();
+        for (const name of Object.keys(config.providers)) {
+          known[name] ??= { ids: [...new Set(models.filter(m => m.provider === name).map(m => m.id))].sort(), removed: [], updatedAt: at };
+        }
+        baselineBootstrapped = true;
+      }
+    }
+    persistConfig(config);
+    const catalogRefresh = await convergeCodexCatalog();
+    return jsonResponse({ ok: true, policy: body.policy, provider, ...(baselineBootstrapped ? { baselineBootstrapped } : {}), catalogRefresh });
+  }
+
+  if (url.pathname === "/api/model-discovery/acknowledge" && req.method === "POST") {
+    let body: { provider?: unknown; ids?: unknown };
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
+    const provider = typeof body.provider === "string" ? body.provider.trim() : "";
+    if (!provider || !Array.isArray(body.ids) || body.ids.some(id => typeof id !== "string")) {
+      return jsonResponse({ error: "provider and string ids are required" }, 400);
+    }
+    const acknowledged = new Set(body.ids as string[]);
+    const recent = config.modelDiscovery?.recentArrivals;
+    if (recent?.[provider]) recent[provider] = recent[provider].filter(row => !acknowledged.has(row.id));
+    persistConfig(config);
+    const catalogRefresh = await convergeCodexCatalog();
+    return jsonResponse({ ok: true, provider, acknowledged: [...acknowledged], catalogRefresh });
+  }
+
+  if (url.pathname === "/api/aliases" && req.method === "GET") {
+    const providers: Record<string, string> = {};
+    const models: Record<string, Record<string, { alias: string; source: "user" | "builtin"; stale?: boolean }>> = {};
+    for (const [name, provider] of Object.entries(config.providers)) {
+      if (provider.alias) providers[name] = provider.alias;
+      const known = knownModelIdsForProvider(name, provider, config);
+      const knownSet = new Set(known);
+      const rows: Record<string, { alias: string; source: "user" | "builtin"; stale?: boolean }> = {};
+      for (const [id, value] of effectiveModelAliases(config, provider, new Set([...known, ...Object.keys(provider.modelAliases ?? {})]))) {
+        rows[id] = { ...value, ...(!knownSet.has(id) ? { stale: true } : {}) };
+      }
+      if (Object.keys(rows).length) models[name] = rows;
+    }
+    return jsonResponse({ providers, models, defaults: {
+      global: config.defaultModelAliases ?? false,
+      providers: Object.fromEntries(Object.entries(config.providers).filter(([, p]) => p.defaultAliases !== undefined).map(([n, p]) => [n, p.defaultAliases])),
+    } });
+  }
+
+  const providerAliasMatch = url.pathname.match(/^\/api\/providers\/([^/]+)\/alias$/);
+  if (providerAliasMatch && req.method === "PUT") {
+    const name = decodeURIComponent(providerAliasMatch[1]!);
+    // `keys` is not a provider name: `/api/providers/keys/alias` is the API-KEY POOL's rename
+    // endpoint (oauth-account-routes.ts), and model routes are dispatched BEFORE it. Without
+    // this guard the alias route matched `name = "keys"`, found no such provider, and returned
+    // 404 for every key-pool rename.
+    if (name === "keys") return null;
+    const provider = config.providers[name];
+    if (!provider) return jsonResponse({ error: `provider '${name}' not found` }, 404, req, config);
+    let raw: unknown;
+    try { raw = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (!isPlainRecord(raw) || (raw.alias !== null && typeof raw.alias !== "string")) return jsonResponse({ error: "alias must be a string or null" }, 400, req, config);
+    const alias = typeof raw.alias === "string" ? raw.alias.trim() : null;
+    if (alias && !isValidProviderName(alias)) return jsonResponse({ error: "invalid provider alias" }, 400, req, config);
+    const lower = alias?.toLowerCase();
+    const collision = lower && Object.entries(config.providers).find(([other, p]) =>
+      other !== name && (other.toLowerCase() === lower || p.alias?.toLowerCase() === lower));
+    const comboCollision = lower && Object.entries(config.combos ?? {}).find(([, combo]) => comboPublicModelId("", combo).toLowerCase() === lower);
+    const accountCollision = lower && Object.keys(config.codexAccountNamespaces ?? {}).find(value => value.toLowerCase() === lower);
+    if (collision || comboCollision || accountCollision) return jsonResponse({ error: `alias conflicts with '${collision?.[0] ?? comboCollision?.[0] ?? accountCollision}'` }, 409, req, config);
+    if (alias) provider.alias = alias; else delete provider.alias;
+    persistConfig(config);
+    const catalogRefresh = await convergeCodexCatalog();
+    return jsonResponse({ ok: true, provider: name, alias, catalogRefresh });
+  }
+
+  const modelAliasMatch = url.pathname.match(/^\/api\/providers\/([^/]+)\/model-aliases$/);
+  if (modelAliasMatch && req.method === "PUT") {
+    const name = decodeURIComponent(modelAliasMatch[1]!);
+    if (name === "keys") return null;
+    const provider = config.providers[name];
+    if (!provider) return jsonResponse({ error: `provider '${name}' not found` }, 404, req, config);
+    let raw: unknown;
+    try { raw = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (!isPlainRecord(raw) || (raw.set !== undefined && !isPlainRecord(raw.set)) || (raw.remove !== undefined && !Array.isArray(raw.remove))) return jsonResponse({ error: "invalid model alias update" }, 400, req, config);
+    const next = { ...(provider.modelAliases ?? {}) };
+    for (const id of (raw.remove ?? []) as unknown[]) if (typeof id === "string") delete next[id];
+    const conflicts: Array<{ alias: string; heldBy: string }> = [];
+    const known = knownModelIdsForProvider(name, provider, config);
+    for (const [id, value] of Object.entries((raw.set ?? {}) as Record<string, unknown>)) {
+      if (typeof value !== "string" || !MODEL_ALIAS_PATTERN.test(value)) return jsonResponse({ error: `invalid model alias for '${id}'` }, 400, req, config);
+      const lower = value.toLowerCase();
+      const heldBy = Object.entries(next).find(([other, alias]) => other !== id && alias.toLowerCase() === lower)?.[0]
+        ?? known.find(native => native.toLowerCase() === lower)
+        ?? Object.entries(config.combos ?? {}).find(([, combo]) => comboPublicModelId("", combo).toLowerCase() === lower)?.[0];
+      if (heldBy || /^(?:gpt-|o1-|o3-|o4-|codex-)/i.test(value)) conflicts.push({ alias: value, heldBy: heldBy ?? "native OpenAI family" });
+      else next[id] = value;
+    }
+    if (conflicts.length) return jsonResponse({ error: "model alias collision", conflicts }, 409, req, config);
+    provider.modelAliases = next;
+    persistConfig(config);
+    const catalogRefresh = await convergeCodexCatalog();
+    return jsonResponse({ ok: true, aliases: next, catalogRefresh });
+  }
+
+  if (url.pathname === "/api/default-aliases" && req.method === "PUT") {
+    let raw: unknown;
+    try { raw = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (!isPlainRecord(raw) || typeof raw.enabled !== "boolean" || (raw.provider !== undefined && typeof raw.provider !== "string")) return jsonResponse({ error: "enabled must be boolean" }, 400, req, config);
+    if (typeof raw.provider === "string") {
+      const provider = config.providers[raw.provider];
+      if (!provider) return jsonResponse({ error: `provider '${raw.provider}' not found` }, 404, req, config);
+      provider.defaultAliases = raw.enabled;
+    } else config.defaultModelAliases = raw.enabled;
+    persistConfig(config);
+    const catalogRefresh = await convergeCodexCatalog();
+    return jsonResponse({ ok: true, catalogRefresh });
+  }
+
   if (url.pathname === "/api/catalog" && req.method === "GET") {
-    const { readCatalog, readCodexCatalogPath } = await import("../../codex/catalog");
-    const catalog = readCatalog(readCodexCatalogPath());
-    if (!catalog) return jsonResponse({ error: "catalog not found" }, 404, req, config);
+    // Shared with GET|HEAD /v1/catalog (#809) so both planes emit identical bytes.
+    const { serializePersistedCatalog, persistedCodexVersion } = await import("../catalog-download");
+    const serialized = await serializePersistedCatalog();
+    // No size ceiling here on purpose: this route's behavior predates the shared serializer
+    // and a 2,000-model catalog (~92 MB, within the supported bound) must keep working.
+    if (serialized.body === null) return jsonResponse({ error: "catalog not found" }, 404, req, config);
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       ...corsHeaders(req, config),
     };
-    const { loadPersistedCodexRuntime } = await import("../../codex/runtime");
-    const version = loadPersistedCodexRuntime()?.selectedVersion;
+    if (serialized.etag) headers.ETag = serialized.etag;
+    const version = await persistedCodexVersion();
     if (version) headers["x-opencodex-codex-version"] = version;
-    return new Response(JSON.stringify(catalog), { status: 200, headers });
+    return new Response(serialized.body, { status: 200, headers });
   }
 
   if (url.pathname === "/api/models" && req.method === "GET") {
@@ -305,6 +469,12 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     const supportedNative = new Set([
       ...nativeModelRows(config).map(row => row.slug),
       ...accountNativeQualified,
+      // A model suppressed by an unconfirmed entitlement roster is absent from
+      // nativeModelRows, so validating against those rows alone rejected a model this build
+      // knows perfectly well and left the operator with no way to clear its disable key
+      // (#2886). Accepting the target says "this build knows this model", not "this account
+      // may use it" — visibility only writes disabledModels and routing stays gated.
+      ...NATIVE_OPENAI_MODELS,
     ]);
     const targets: Array<{ id: string; native: boolean }> = [];
     const seen = new Set<string>();
@@ -370,6 +540,10 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
           providerConfig.selectedModels = [...new Set([...providerConfig.selectedModels, ...additions])];
         }
         disabled = disabled.filter(stored => !targets.some(target => matchesTarget(stored, target)));
+        const arrivals = config.modelDiscovery?.recentArrivals?.[provider];
+        if (arrivals) config.modelDiscovery!.recentArrivals![provider] = arrivals.filter(row => (
+          !targets.some(target => !target.native && target.id === row.id)
+        ));
       }
     } else {
       for (const target of targets) {
@@ -394,8 +568,10 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
   }
 
   if (url.pathname === "/api/custom-models" && req.method === "POST") {
-    let body: { provider?: unknown; modelId?: unknown; displayName?: unknown; contextWindow?: unknown; inputModalities?: unknown; reasoningEfforts?: unknown; defaultReasoningEffort?: unknown };
-    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
+    let parsedBody: unknown;
+    try { parsedBody = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (!isPlainRecord(parsedBody)) return jsonResponse({ error: "invalid JSON body" }, 400);
+    const body = parsedBody;
     const provider = typeof body.provider === "string" ? body.provider.trim() : "";
     const modelId = typeof body.modelId === "string" ? body.modelId.trim() : "";
     if (!provider || !modelId) return jsonResponse({ error: "provider and modelId are required" }, 400);
@@ -441,8 +617,10 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
   if (customPutMatch && req.method === "PUT") {
     let id: string;
     try { id = decodeURIComponent(customPutMatch[1]); } catch { return jsonResponse({ error: "invalid id encoding" }, 400); }
-    let body: { displayName?: unknown; contextWindow?: unknown; inputModalities?: unknown; modelId?: unknown; reasoningEfforts?: unknown; defaultReasoningEffort?: unknown };
-    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
+    let parsedBody: unknown;
+    try { parsedBody = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
+    if (!isPlainRecord(parsedBody)) return jsonResponse({ error: "invalid JSON body" }, 400);
+    const body = parsedBody;
     const list = config.customModels ?? [];
     const idx = list.findIndex(cm => cm.id === id);
     if (idx === -1) return jsonResponse({ error: "not found" }, 404);
@@ -539,6 +717,104 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     }
     return jsonResponse({ selected, available, liveModelCounts });
   }
+  if (url.pathname === "/api/model-presets" && req.method === "GET") {
+    // Preview without applying: rules evaluated against the CURRENT catalog, so the count the
+    // user sees is the count they would get.
+    const models = await fetchAllModels(config);
+    const byProvider = new Map<string, string[]>();
+    for (const m of models) {
+      const ids = byProvider.get(m.provider) ?? [];
+      ids.push(m.id);
+      byProvider.set(m.provider, ids);
+    }
+    const providers: Record<string, unknown> = {};
+    for (const [name, prov] of Object.entries(config.providers)) {
+      const preset = modelPresetFor(name);
+      if (!preset) continue;
+      const catalogIds = byProvider.get(name) ?? [];
+      const presetIds = materializeModelPreset(name, catalogIds);
+      providers[name] = {
+        mode: prov.modelPreset?.mode ?? "all",
+        ...(prov.modelPreset?.appliedVersion !== undefined
+          ? { appliedVersion: prov.modelPreset.appliedVersion }
+          : {}),
+        availableVersion: preset.version,
+        presetIds,
+        presetCount: presetIds.length,
+        totalCount: catalogIds.length,
+        ...(prov.modelPreset?.fallback ? { fallback: prov.modelPreset.fallback } : {}),
+      };
+    }
+    return jsonResponse({ providers });
+  }
+  if (url.pathname === "/api/model-presets" && req.method === "PUT") {
+    let body: { provider?: unknown; mode?: unknown };
+    try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
+    const provider = typeof body.provider === "string" ? body.provider : "";
+    if (!provider || !hasOwnProvider(config.providers, provider)) {
+      return jsonResponse({ error: "unknown provider" }, provider ? 404 : 400);
+    }
+    const mode = body.mode;
+    if (mode !== "preset" && mode !== "all" && mode !== "custom") {
+      return jsonResponse({ error: "mode must be preset, all, or custom" }, 400);
+    }
+    const target = config.providers[provider];
+    if (mode === "all") {
+      // Same effect as today's empty-list PUT: no allowlist, no marker to reconcile.
+      delete target.selectedModels;
+      delete target.modelPreset;
+      persistConfig(config);
+      return jsonResponse({ ok: true, provider, mode, selected: [], catalogRefresh: await convergeCodexCatalog() });
+    }
+    if (mode === "custom") {
+      // Keep whatever is selected; only the marker changes, so a user can pin their edits
+      // without the proxy re-materializing over them.
+      target.modelPreset = { ...(target.modelPreset ?? {}), mode: "custom" };
+      persistConfig(config);
+      return jsonResponse({ ok: true, provider, mode, selected: [...(target.selectedModels ?? [])] });
+    }
+    if (!hasModelPreset(provider)) {
+      return jsonResponse({ error: `no model preset is shipped for provider '${provider}'` }, 400);
+    }
+    const models = await fetchAllModels(config);
+    const catalogIds = models.filter(m => m.provider === provider).map(m => m.id);
+    const presetIds = materializeModelPreset(provider, catalogIds);
+    const preset = modelPresetFor(provider)!;
+    if (presetIds.length === 0) {
+      // NEVER write an empty allowlist from a preset: empty means ALL, so it would silently
+      // un-curate instead of curating. Keep the previous selection and record the fallback so
+      // the next convergence can retry.
+      target.modelPreset = {
+        mode: "all",
+        appliedVersion: preset.version,
+        appliedAt: new Date().toISOString(),
+        fallback: "preset-empty",
+      };
+      persistConfig(config);
+      return jsonResponse({
+        ok: true,
+        provider,
+        mode: "all",
+        fallback: "preset-empty",
+        selected: [...(target.selectedModels ?? [])],
+      });
+    }
+    target.selectedModels = presetIds;
+    target.modelPreset = {
+      mode: "preset",
+      appliedVersion: preset.version,
+      appliedAt: new Date().toISOString(),
+    };
+    persistConfig(config);
+    return jsonResponse({
+      ok: true,
+      provider,
+      mode: "preset",
+      appliedVersion: preset.version,
+      selected: presetIds,
+      catalogRefresh: await convergeCodexCatalog(),
+    });
+  }
   if (url.pathname === "/api/selected-models" && req.method === "PUT") {
     let body: { provider?: unknown; models?: unknown };
     try { body = await readManagementJsonBody(req); } catch (error) { rethrowManagementBodyTooLarge(error); return jsonResponse({ error: "invalid JSON body" }, 400); }
@@ -552,6 +828,10 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     // Empty list clears the allowlist (provider reverts to exposing all models).
     if (models.length > 0) config.providers[provider].selectedModels = models;
     else delete config.providers[provider].selectedModels;
+    // Divergence is detected at the WRITE path, not by diffing (#2465): a user edit while the
+    // provider is in preset mode makes the selection theirs, and the proxy must never
+    // re-materialize over it afterwards.
+    markModelPresetDiverged(config.providers[provider]);
     persistConfig(config);
     const catalogRefresh = await convergeCodexCatalog();
     return jsonResponse({ ok: true, provider, selected: models, catalogRefresh });

@@ -1,6 +1,6 @@
 ---
 title: Adapters
-description: 七个 provider adapter 的目标、请求构建方式与各自特性。
+description: provider adapter 的目标、请求构建方式与各自特性。
 ---
 
 **adapter** 负责在 opencodex 的内部请求/响应模型与某个 provider 的 wire 格式之间转换。每个
@@ -25,7 +25,7 @@ interface ProviderAdapter {
 ## `openai-chat`
 
 **目标：** OpenAI **Chat Completions**（`POST {baseUrl}/chat/completions`）以及所有兼容 provider，
-包括 xAI、Kimi、DeepSeek、GLM、Groq、OpenRouter、Ollama（本地与云端）等。
+包括 xAI、Kimi、DeepSeek、GLM、Groq、OpenRouter、Ollama（本地）等。
 **认证：** `key`（Bearer）。
 
 - 把内部消息转换成 OpenAI role；工具映射为 `{type:"function", function:{…}}` 和
@@ -42,6 +42,38 @@ interface ProviderAdapter {
   `{ enabled: false }`。其公开 API 文档目前没有说明这一请求格式。adapter 会保留请求的 `low`、
   `medium`、`high`、`xhigh` 或 `max` 档位，把 `delta.reasoning_content` 或 `delta.reasoning`
   作为 reasoning delta，通过 `stream_options.include_usage` 请求流式 usage，并从非流式响应 envelope 中读取 usage。
+
+## `ollama-native`
+
+**目标：** Ollama 自有的 **Chat API**（`POST /api/chat`），而不是其 OpenAI 兼容接口。内置的
+`ollama-cloud` 提供方由 registry 选择到该 adapter；也可以在单独命名的自定义 / 自托管 Ollama
+提供方上配置 `adapter: "ollama-native"`。
+**认证：** cloud / 自定义端点使用 `key`（Bearer）；loopback 或 `authMode: "local"`
+端点不会收到任何凭据。
+
+- **registry 选择起决定作用。** 内置的 `ollama-cloud` 行保留 `https://ollama.com/v1` 作为
+  `/v1/models` 动态发现的基础 URL，同时推理会规范化到 `POST https://ollama.com/api/chat`。
+  对该提供方行，配置中的 `adapter` 会被丢弃。普通内置本地 Ollama 仍走 `openai-chat`；为本
+  地或自托管端点选择 `ollama-native` 是显式的提供方配置决策，并按主机名判别，因此非 Ollama
+  目标永远不会被悄悄改写。
+- **模型元数据：** `/v1/models` 不携带任何模型级元数据，因此在正典 Ollama Cloud 上，提供方
+  会通过 *有界限的* `POST /api/show`（每响应 256 KiB、每请求 8 秒、并发 4、48 个请求、整阶段
+  12 秒期限）补全每个被发现 id 的真实 context window 与 vision 能力。show 请求同源且从不
+  跟随重定向；失败只降级该模型，不会令发现本身失败。
+- **流式：** Ollama 原生 NDJSON。文本与 `message.thinking` delta 到达即转发；回合仅在
+  `done: true` 终止记录上完成，缓冲的 `done: false` 或缺失终记录会完全抑制部分文本与工具调用。
+- **Reasoning：** 映射到 Ollama 原生 `think` 字段（`low`/`medium`/`high`/`max`，外加布尔值），
+  按模型声明的档位收紧，并遵守上游配置的 `__omit__` sentinel 语义。
+- **图像：** 在模型具备 vision 能力时原样放入消息的 `images` 数组发送；video 会被拒绝而非
+  误发，远程图像 URL 不会被拉取。
+- **工具：** 以 Ollama 原生形状声明；流式 tool call 是 `arguments` 为对象的整调用记录，
+  tool result 回放按 call id 与工具名严格配对。`tool_choice: "none"` 与 `auto` 表现正常；
+  **`required` 或精确命名选择会 fail closed**，因为 Ollama 的 `/api/chat` 没有可用来强制它的
+  `tool_choice` 字段。
+- **正典 Ollama Cloud 上拒绝结构化输出。** Ollama 目前在文档中说明其 Cloud 不支持结构化输出，
+  且 Cloud 不会强制 `format` 字段，因此对按 schema 提出的请求，OpenCodex 会让其显式失败，而
+  不是返回不受约束的自由文本。本地 / 自定义 `ollama-native` 端点保留 Ollama 原生的 `format`
+  映射（`json_object` → `"json"`，`json_schema` → schema 对象本身）。
 
 ## `openai-responses`
 
@@ -139,13 +171,27 @@ Cursor 的 HTTP/1.1 兼容传输：通过 `agent.v1.AgentService/RunSSE` 接收 
   Connect message。
 - 经 content-addressed blob 重放对话状态，把 server tool call 映射回 Codex，用 protobuf
   `GetUsableModels` RPC 发现实时 Cursor 模型，并且只在 run request 尚未 commit 到 wire 前重试。
+- 对不含工具且正常完成的 turn，会在进程本地保存返回的 ConversationStateStructure，并在经过验证的
+  线性 continuation 中复用 checkpoint。tool-result turn 会在已知覆盖消息边界时，复用最后一个已完成
+  turn 的 checkpoint，并只追加尚未覆盖的 suffix。无 ref 的 prefix lookup 仅在存在已记忆的 Cursor
+  conversation 或稳定 client thread（包括受限的 Desktop session/thread fallback），且唯一匹配的
+  checkpoint 由同一 provider conversation 所有时才允许；否则执行 full replay。compaction、
+  helper/shadow 隔离、account/model 不匹配、ref 缺失、decode 失败、forced-fresh recovery 以及
+  invalid_argument 重试也会回退到 full replay。进程重启会丢弃内存 store 并执行 full replay。
+  Cursor Connect 不提供权威的 cache_read_tokens，因此 OpenCodex usage 不是 cache hit 计数器。
+  受限的 Desktop fallback 只保存进程本地由 HMAC 派生的 owner；原始 session/thread header 与
+  OAuth/authorization 材料不会写入 checkpoint state。基于 OAuth 的 live transport 和按账号过滤的
+  live model discovery 仍是实验功能；登录与 transport 设置参见[提供商指南](/zh-cn/guides/providers/)
+  和 [Cursor 提供商配置](/zh-cn/reference/configuration/providers/#cursor-provider-adapter-cursor)。
+  checkpoint 复用本身是自动的，没有用户设置。
 - 模型实时发现和推理都会遵守 `upstreamHttpVersion`。`auto`、`http2` 与 `h2` 保持原有 HTTP/2
   transport；只有 `http1.1` 与 `h1` 会选择兼容模式。
 - 保留 `cursor/grok-4.5-fast` 作为可选模型，但向 Cursor 发送规范的 `grok-4.5` 模型，并将独立的
   `effort` 和 `fast=true` 值放入 `requested_model.parameters`。
 - Cursor 原生本地 filesystem/shell/network 执行默认被拒绝。显式 `mcpServers` 与
-  `desktopExecutor` 集成分别需要 opt-in；`unsafeAllowNativeLocalExec` 会启用更广泛的内置
-  executor，并绕过 Codex 审批和 sandbox 语义。
+  `desktopExecutor` 集成分别需要 opt-in；`nativeLocalExec: "on"` 会启用更广泛的内置
+  executor，并绕过 Codex 审批和 sandbox 语义；旧的 `unsafeAllowNativeLocalExec: true` 仅在
+  `nativeLocalExec` 未设置时等同。
 
 ## `azure-openai`（别名：`azure`）
 

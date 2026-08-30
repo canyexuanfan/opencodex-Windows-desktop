@@ -4,7 +4,15 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createKiroAdapter } from "../src/adapters/kiro";
-import { KIRO_TOOL_RESULT_CARRIER_MESSAGE } from "../src/adapters/kiro-constants";
+import {
+  KIRO_ANSWER_DELIVERED_MESSAGE,
+  KIRO_COMPLETION_RETRY_MESSAGE,
+  KIRO_COMPLETION_TOOL_NAME,
+  KIRO_CONTINUATION_MESSAGE,
+  KIRO_EMPTY_TOOL_RESULT_MESSAGE,
+  KIRO_TOOL_RESULT_CARRIER_MESSAGE,
+} from "../src/adapters/kiro-constants";
+import { EMPTY_EXEC_OUTPUT_MESSAGE, FAILED_EXEC_OUTPUT_MESSAGE } from "../src/adapters/exec-tool-result-normalize";
 import { MAX_KIRO_TOOL_CATALOG_BYTES, MAX_KIRO_TOOL_COUNT } from "../src/adapters/kiro-tools";
 import { applyProviderConfigHints, buildCatalogEntries } from "../src/codex/catalog";
 import { getValidAccessTokenSnapshot } from "../src/oauth";
@@ -12,6 +20,7 @@ import { saveCredential } from "../src/oauth/store";
 import { normalizeKiroModelId } from "../src/providers/kiro-models";
 import { configuredReasoningEfforts, mapReasoningEffort } from "../src/reasoning-effort";
 import { PROVIDER_REGISTRY } from "../src/providers/registry";
+import { parseRequest } from "../src/responses/parser";
 import type { OcxParsedRequest, OcxProviderConfig } from "../src/types";
 
 const origHome = process.env.HOME;
@@ -306,6 +315,155 @@ describe("kiro adapter — buildRequest", () => {
 
     expect(current.content.trim()).not.toBe("");
     expect(current.userInputMessageContext.toolResults[0].content[0].text.trim()).not.toBe("");
+  });
+
+  // An empty code-mode exec result must say WHY it is empty. Without this the model reads a blank
+  // result, concludes earlier context was lost, and restarts finished work.
+  test("an empty code-mode exec result carries the actionable reason, not the generic fallback", async () => {
+    const execTool = { name: "exec", description: "Run JavaScript", parameters: { type: "object" } };
+    for (const raw of ["", "Script completed\nWall time 0.1 seconds\nOutput:\n", "<empty>"]) {
+      const messages = [
+        { role: "user", content: "run it" },
+        { role: "assistant", content: [{ type: "toolCall", id: "call-x", name: "exec", arguments: {} }] },
+        { role: "toolResult", toolCallId: "call-x", toolName: "exec", content: raw, isError: false },
+      ];
+      const { body } = await createKiroAdapter(provider).buildRequest(parsedWith(messages, [execTool]));
+      const resultText = JSON.parse(body).conversationState.currentMessage.userInputMessage
+        .userInputMessageContext.toolResults[0].content[0].text;
+
+      expect(resultText).toBe(EMPTY_EXEC_OUTPUT_MESSAGE);
+      // The generic fallback would leave the model to guess; assert it is NOT what shipped.
+      expect(resultText).not.toBe(KIRO_EMPTY_TOOL_RESULT_MESSAGE);
+    }
+  });
+
+  test("real exec output and empty non-exec results are left alone", async () => {
+    // Review finding (Codex P2): a failed cell with no output is empty but NOT a success. The
+    // success guidance would erase the only failure signal — reachable via Responses history,
+    // where function_call_output is parsed with isError: false.
+    const execTool0 = { name: "exec", description: "Run JavaScript", parameters: { type: "object" } };
+    const failed = [
+      { role: "user", content: "run it" },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-f", name: "exec", arguments: {} }] },
+      { role: "toolResult", toolCallId: "call-f", toolName: "exec", content: "Script failed\nWall time 0.1 seconds\nOutput:\n", isError: false },
+    ];
+    const failedBody = await createKiroAdapter(provider).buildRequest(parsedWith(failed, [execTool0]));
+    const failedText = JSON.parse(failedBody.body).conversationState.currentMessage.userInputMessage
+      .userInputMessageContext.toolResults[0].content[0].text;
+    expect(failedText).toBe(FAILED_EXEC_OUTPUT_MESSAGE);
+    expect(failedText).not.toBe(EMPTY_EXEC_OUTPUT_MESSAGE);
+
+    const execTool = { name: "exec", description: "Run JavaScript", parameters: { type: "object" } };
+    const withExecOutput = [
+      { role: "user", content: "run it" },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-x", name: "exec", arguments: {} }] },
+      { role: "toolResult", toolCallId: "call-x", toolName: "exec", content: "Output:\nhello", isError: false },
+    ];
+    const execBody = await createKiroAdapter(provider).buildRequest(parsedWith(withExecOutput, [execTool]));
+    expect(JSON.parse(execBody.body).conversationState.currentMessage.userInputMessage
+      .userInputMessageContext.toolResults[0].content[0].text).toBe("Output:\nhello");
+
+    // A non-exec tool keeps the generic message: asserting code-mode semantics for arbitrary
+    // tools would tell the model to call text()/notify() in a runtime that has neither.
+    const nonExec = [
+      { role: "user", content: "run it" },
+      { role: "assistant", content: [{ type: "toolCall", id: "call-y", name: "bash", arguments: {} }] },
+      { role: "toolResult", toolCallId: "call-y", toolName: "bash", content: "", isError: false },
+    ];
+    const bashBody = await createKiroAdapter(provider).buildRequest(parsedWith(nonExec, [bashTool]));
+    expect(JSON.parse(bashBody.body).conversationState.currentMessage.userInputMessage
+      .userInputMessageContext.toolResults[0].content[0].text).toBe(KIRO_EMPTY_TOOL_RESULT_MESSAGE);
+  });
+
+  // A delivered final answer already ended its turn. Asking it to continue reopens closed work,
+  // which is what made a finished task behave like a still-open goal.
+  test("a delivered final answer is not told to continue or to complete again", async () => {
+    const messages = [
+      { role: "user", content: "do it" },
+      { role: "assistant", phase: "final_answer", content: [{ type: "text", text: "Done: the answer." }] },
+    ];
+    const { body } = await createKiroAdapter(provider).buildRequest(parsedWith(messages, [bashTool]));
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+
+    expect(current.content).toBe(KIRO_ANSWER_DELIVERED_MESSAGE);
+    expect(current.content).not.toContain(KIRO_CONTINUATION_MESSAGE);
+    expect(current.content).not.toContain(KIRO_COMPLETION_RETRY_MESSAGE);
+  });
+
+  test("an unfinished trailing assistant turn still gets the continuation prompt", async () => {
+    // Same shape minus `phase`: proves the new branch keys off the delivered final answer and did
+    // not simply disable continuation for every trailing assistant turn.
+    const messages = [
+      { role: "user", content: "do it" },
+      { role: "assistant", content: [{ type: "text", text: "Working on it..." }] },
+    ];
+    const { body } = await createKiroAdapter(provider).buildRequest(parsedWith(messages, [bashTool]));
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+
+    expect(current.content).toContain(KIRO_CONTINUATION_MESSAGE);
+    expect(current.content).not.toBe(KIRO_ANSWER_DELIVERED_MESSAGE);
+  });
+
+  // Review finding (Codex P2): suppressing the resume wording is not enough. While completion
+  // stays "required" the request keeps advertising the completion tool, so the model answers again
+  // or trips the text_fallback retry, which reopens the finished task.
+  test("a delivered final answer stops advertising the completion tool", async () => {
+    const delivered = [
+      { role: "user", content: "do it" },
+      { role: "assistant", phase: "final_answer", content: [{ type: "text", text: "Done." }] },
+    ];
+    const { body } = await createKiroAdapter(provider).buildRequest(parsedWith(delivered, [bashTool]));
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+    const toolNames = (current.userInputMessageContext?.tools ?? [])
+      .map((t: { toolSpecification?: { name?: string } }) => t.toolSpecification?.name);
+
+    expect(toolNames).toContain("bash");
+    expect(toolNames).not.toContain(KIRO_COMPLETION_TOOL_NAME);
+    // The instructions must go too: they tell the model to call a tool that is no longer offered.
+    expect(current.content).not.toContain(KIRO_COMPLETION_TOOL_NAME);
+
+    // Control: an unfinished turn still gets the completion contract.
+    const unfinished = [
+      { role: "user", content: "do it" },
+      { role: "assistant", content: [{ type: "text", text: "Working..." }] },
+    ];
+    const open = await createKiroAdapter(provider).buildRequest(parsedWith(unfinished, [bashTool]));
+    const openNames = (JSON.parse(open.body).conversationState.currentMessage.userInputMessage
+      .userInputMessageContext?.tools ?? [])
+      .map((t: { toolSpecification?: { name?: string } }) => t.toolSpecification?.name);
+    expect(openNames).toContain(KIRO_COMPLETION_TOOL_NAME);
+  });
+
+  // Review finding (CodeRabbit): the acknowledgement was detected by comparing user content, so a
+  // real user message quoting that sentence lost its thinking tags and completion retry.
+  test("a user message quoting the acknowledgement is still treated as user content", async () => {
+    const messages = [
+      { role: "user", content: "do it" },
+      { role: "assistant", content: [{ type: "text", text: "ok" }] },
+      { role: "user", content: KIRO_ANSWER_DELIVERED_MESSAGE },
+    ];
+    const { body } = await createKiroAdapter(provider).buildRequest({
+      ...parsedWith(messages, [bashTool]),
+      options: { reasoning: "xhigh" },
+    } as never);
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+
+    // Real user text keeps its reasoning injection; internal state must not be inferred from it.
+    expect(current.content).toContain("<thinking_mode>");
+  });
+
+  test("commentary after a final answer reopens continuation", async () => {
+    // A merged assistant turn is terminal only if its LAST component was the final answer.
+    const messages = [
+      { role: "user", content: "do it" },
+      { role: "assistant", phase: "final_answer", content: [{ type: "text", text: "Done." }] },
+      { role: "assistant", content: [{ type: "text", text: "Actually, one more check." }] },
+    ];
+    const { body } = await createKiroAdapter(provider).buildRequest(parsedWith(messages, [bashTool]));
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+
+    expect(current.content).toContain(KIRO_CONTINUATION_MESSAGE);
+    expect(current.content).not.toBe(KIRO_ANSWER_DELIVERED_MESSAGE);
   });
 
   test("tool result images are attached to Kiro carrier user messages", async () => {
@@ -674,6 +832,16 @@ describe("kiro adapter — buildRequest", () => {
     const withDefs = await pick({ $defs: { X: { type: "string" } }, anyOf: [{ properties: { a: { $ref: "#/$defs/X" } } }] });
     expect(withDefs.$defs).toEqual({ X: { type: "string" } });
     expect(withDefs.properties).toEqual({ a: { $ref: "#/$defs/X" } });
+
+    // Property names remain data while flattening, even when they collide with rejected keywords.
+    const keywordNames = await pick({
+      properties: { format: { type: "string", format: "uuid" } },
+      required: ["format"],
+      oneOf: [{ properties: { pattern: { type: "string", pattern: "^x" } } }],
+    });
+    expect(keywordNames.properties.format).toEqual({ type: "string" });
+    expect(keywordNames.properties.pattern).toEqual({ type: "string" });
+    expect(keywordNames.required).toEqual(["format"]);
   });
 
   test("tool descriptions use deterministic model-specific caps without prompt injection", async () => {
@@ -721,6 +889,41 @@ describe("kiro adapter — buildRequest", () => {
     expect(current.content).toContain(`Kiro's outbound catalog budget allows ${MAX_KIRO_TOOL_COUNT} of ${tools.length} client tools`);
     expect(current.content).toContain("count_tool_048");
     expect(current.content).toContain("Omitted and unavailable this turn");
+  });
+
+  test("large catalogs prioritize tool-search discoveries and the search gateway", async () => {
+    const ordinaryTools = Array.from({ length: MAX_KIRO_TOOL_COUNT + 20 }, (_, index) => ({
+      name: `ordinary_tool_${String(index).padStart(3, "0")}`,
+      description: `Ordinary tool ${index}`,
+      parameters: { type: "object" },
+    }));
+    const searchGateway = {
+      name: "tool_search",
+      description: "Search deferred tools",
+      parameters: { type: "object" },
+      toolSearch: true,
+    };
+    const loadedTool = {
+      name: "codex_app__send_message_to_thread",
+      description: "Send a message to a task",
+      parameters: { type: "object" },
+      loadedFromToolSearch: true,
+    };
+    const tools = [...ordinaryTools, searchGateway, loadedTool];
+
+    const current = JSON.parse((await createKiroAdapter(provider).buildRequest(
+      parsedWith([{ role: "user", content: "hi" }], tools),
+    )).body).conversationState.currentMessage.userInputMessage;
+    const ordinary = current.userInputMessageContext.tools.slice(0, -1);
+    const names = ordinary.map((tool: { toolSpecification: { name: string } }) => tool.toolSpecification.name);
+    const omissionNotice = current.content.split("\n\n", 1)[0];
+
+    expect(ordinary).toHaveLength(MAX_KIRO_TOOL_COUNT);
+    expect(names.slice(0, 2)).toEqual([loadedTool.name, searchGateway.name]);
+    expect(names.slice(2)).toEqual(ordinaryTools.slice(0, MAX_KIRO_TOOL_COUNT - 2).map(tool => tool.name));
+    expect(omissionNotice).toContain("ordinary_tool_046");
+    expect(omissionNotice).not.toContain(loadedTool.name);
+    expect(omissionNotice).not.toContain(searchGateway.name);
   });
 
   test("large catalogs retain the declared prefix within Kiro's serialized byte budget", async () => {
@@ -835,7 +1038,6 @@ describe("kiro adapter — buildRequest", () => {
     for (const options of [
       { toolChoice: "required" },
       { toolChoice: { name: "bash" } },
-      { parallelToolCalls: true },
       { serviceTier: "priority" },
     ]) {
       await expect(createKiroAdapter(provider).buildRequest({
@@ -847,11 +1049,123 @@ describe("kiro adapter — buildRequest", () => {
     await expect(createKiroAdapter(provider).buildRequest({
       ...parsedWith([{ role: "user", content: "hi" }], [bashTool]),
       _structuredOutput: true,
-    } as OcxParsedRequest)).rejects.toThrow("Kiro does not support Responses text controls or structured output");
+    } as OcxParsedRequest)).rejects.toThrow("Kiro does not support Responses structured output");
 
     const none = { ...parsedWith([{ role: "user", content: "hi" }], [bashTool]), options: { toolChoice: "none" } } as OcxParsedRequest;
     const current = JSON.parse((await createKiroAdapter(provider).buildRequest(none)).body).conversationState.currentMessage.userInputMessage;
     expect(current.userInputMessageContext?.tools).toBeUndefined();
+  });
+
+  test("tolerates non-structured Responses text controls and keeps them off the Kiro wire", async () => {
+    // Regression: the guard used to reject the PRESENCE of any \`text\` member, so a verbosity
+    // hint or a plain \`format: {type:"text"}\` produced HTTP 400 while the identical turn
+    // without \`text\` succeeded. Neither is structured output, and Kiro has no wire field for
+    // either, so both belong on the tolerated side of the guard.
+    for (const text of [
+      { verbosity: "medium" },
+      { format: { type: "text" } },
+      {},
+    ]) {
+      const parsed = parseRequest({
+        model: "kiro/claude-haiku-4.5",
+        input: "test",
+        stream: true,
+        text,
+        tools: [{
+          type: "function",
+          name: "bash",
+          description: "Run a shell command",
+          parameters: { type: "object" },
+        }],
+      } as never);
+      expect(parsed._structuredOutput ?? false).toBe(false);
+      expect((parsed._rawBody as Record<string, unknown>).text).toBeDefined();
+
+      const payload = JSON.parse((await createKiroAdapter(provider).buildRequest(parsed)).body) as {
+        text?: unknown;
+        verbosity?: unknown;
+        conversationState?: {
+          text?: unknown;
+          verbosity?: unknown;
+          currentMessage: {
+            userInputMessage: {
+              userInputMessageContext?: { text?: unknown; verbosity?: unknown };
+            };
+          };
+        };
+      };
+
+      // The turn reached the wire at all — the point of the fix.
+      expect(payload.conversationState).toBeDefined();
+      // ...but the control itself is not forwarded, at any level that exists on the payload.
+      const context = payload.conversationState?.currentMessage.userInputMessage.userInputMessageContext;
+      // The fixture advertises a tool so userInputMessageContext really exists here; without
+      // one the adapter omits it and this third assertion would pass vacuously.
+      expect(context).toBeDefined();
+      for (const level of [payload, payload.conversationState, context]) {
+        expect(level?.text).toBeUndefined();
+        expect(level?.verbosity).toBeUndefined();
+      }
+    }
+  });
+
+  test("still refuses genuine structured output", async () => {
+    for (const text of [
+      { format: { type: "json_schema", name: "answer", schema: { type: "object" } } },
+      { format: { type: "json_object" } },
+    ]) {
+      const parsed = parseRequest({
+        model: "kiro/claude-haiku-4.5",
+        input: "test",
+        stream: true,
+        text,
+      } as never);
+      expect(parsed._structuredOutput).toBe(true);
+      await expect(createKiroAdapter(provider).buildRequest(parsed))
+        .rejects.toThrow("Kiro does not support Responses structured output");
+    }
+  });
+
+  test("accepts Codex's permissive parallel-tool hint while keeping the Kiro wire serialized", async () => {
+    const parsed = parseRequest({
+      model: "kiro/claude-haiku-4.5",
+      input: "test",
+      stream: true,
+      parallel_tool_calls: true,
+      tools: [{
+        type: "function",
+        name: "bash",
+        description: "Run a shell command",
+        parameters: { type: "object" },
+      }],
+    });
+    expect(parsed.options.parallelToolCalls).toBe(true);
+
+    const payload = JSON.parse((await createKiroAdapter(provider).buildRequest(parsed)).body) as {
+      parallel_tool_calls?: boolean;
+      parallelToolCalls?: boolean;
+      conversationState: {
+        parallel_tool_calls?: boolean;
+        parallelToolCalls?: boolean;
+        currentMessage: {
+          userInputMessage: {
+            userInputMessageContext?: {
+              parallel_tool_calls?: boolean;
+              parallelToolCalls?: boolean;
+              tools?: Array<{ toolSpecification?: { name?: string } }>;
+            };
+          };
+        };
+      };
+    };
+    const context = payload.conversationState.currentMessage.userInputMessage.userInputMessageContext;
+    expect(context?.tools?.some(tool => tool.toolSpecification?.name === "bash")).toBe(true);
+    expect(payload.parallel_tool_calls).toBeUndefined();
+    expect(payload.parallelToolCalls).toBeUndefined();
+    expect(payload.conversationState.parallel_tool_calls).toBeUndefined();
+    expect(payload.conversationState.parallelToolCalls).toBeUndefined();
+    expect(context?.parallel_tool_calls).toBeUndefined();
+    expect(context?.parallelToolCalls).toBeUndefined();
   });
 });
 
@@ -1078,5 +1392,188 @@ describe("boundedInjectedInstruction surrogate safety", () => {
     expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
     expect(result!.includes("\uFFFD")).toBe(false);
     expect(Buffer.byteLength(result!, "utf8")).toBeGreaterThan(0);
+  });
+});
+
+describe("kiro code-mode catalog nudge", () => {
+  // Codex code mode advertises ONE freeform `exec` and reaches everything else through nested
+  // `tools.<name>(...)` helpers. The nudge sentence naming `ALL_TOOLS` is the only place a routed
+  // model learns those helpers are discoverable, and Kiro was the one adapter that never enabled
+  // it: `buildNonOpenAIToolCatalogNudgeFromNames` was called without `codeModeExecName`, so a
+  // Kiro model concluded no spawn/subagent tool existed and never delegated.
+  async function kiroSystemText(tools: unknown[], modelId = "claude-sonnet-4.5"): Promise<string> {
+    const { body } = await createKiroAdapter(provider).buildRequest(parsedWith([{ role: "user", content: "hi" }], tools, modelId));
+    return JSON.parse(body).conversationState.currentMessage.userInputMessage.content as string;
+  }
+
+  const codeModeExec = { name: "exec", description: "Run JavaScript", freeform: true, parameters: { type: "object" } };
+
+  test("names ALL_TOOLS when a freeform exec is advertised without a bare shell bridge", async () => {
+    const content = await kiroSystemText([codeModeExec, { name: "wait", description: "Resume", parameters: { type: "object" } }]);
+
+    expect(content).toContain("ALL_TOOLS");
+    expect(content).toContain("Codex code mode");
+    // Reaches the ACTUAL Kiro wire prompt, not just the builder: the live 2026-08-28 session that
+    // misread a blank result was a routed Kiro turn.
+    expect(content).toContain("Nothing in the isolate is echoed automatically");
+    // The generic fallback must be gone, not merely accompanied.
+    expect(content).not.toContain("If a listed tool exposes nested helpers such as a tools.* API");
+  });
+
+  test("keeps the generic fallback for a STRUCTURED tool that merely shares the name exec", async () => {
+    // A provider may advertise an ordinary structured `exec` that takes a shell string. Telling
+    // that turn its body is JavaScript would be false, so the semantic `freeform` flag decides —
+    // not the name. This is the control: a name-only implementation passes every other assertion
+    // in this block and fails here.
+    const content = await kiroSystemText([{ name: "exec", description: "Run a shell command", parameters: { type: "object" } }]);
+
+    expect(content).not.toContain("ALL_TOOLS");
+    expect(content).toContain("If a listed tool exposes nested helpers such as a tools.* API");
+  });
+
+  test("does not claim code mode when a bare shell bridge sits beside exec", async () => {
+    const content = await kiroSystemText([codeModeExec, { name: "exec_command", description: "Run a shell command", parameters: { type: "object" } }]);
+
+    expect(content).not.toContain("ALL_TOOLS");
+  });
+
+  test("decides on the EMITTED catalog: a budget-omitted shell bridge no longer suppresses code mode", async () => {
+    // Resolving the predicates over the REQUESTED list is wrong in a reproducible way: the bridge
+    // can be dropped by the count budget while `exec` survives, so the model receives a
+    // code-mode-shaped catalog containing no shell bridge at all. Suppressing the nudge there
+    // withholds discovery in exactly the crowded-catalog sessions where delegation matters most.
+    const filler = Array.from({ length: MAX_KIRO_TOOL_COUNT - 1 }, (_, index) => ({
+      name: `filler_${String(index).padStart(3, "0")}`,
+      description: `Filler ${index}`,
+      parameters: { type: "object" },
+    }));
+    const { body } = await createKiroAdapter(provider).buildRequest(
+      parsedWith([{ role: "user", content: "hi" }], [...filler, codeModeExec, { name: "exec_command", description: "Run a shell command", parameters: { type: "object" } }]),
+    );
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+    const emitted = current.userInputMessageContext.tools.map((tool: { toolSpecification: { name: string } }) => tool.toolSpecification.name);
+
+    expect(emitted).toContain("exec");
+    expect(emitted).not.toContain("exec_command");
+    expect(current.content).toContain("ALL_TOOLS");
+  });
+
+  test("does not name a STRUCTURED exec that the catalog budget dropped", async () => {
+    // A tool the model cannot call must never be named as its execution surface. wp2 makes a
+    // code-mode `exec` survive the budget, so this invariant is now demonstrated on a structured
+    // `exec`: it stays ordinary filler, so 48 fillers ahead of it drop it deterministically.
+    const filler = Array.from({ length: MAX_KIRO_TOOL_COUNT }, (_, index) => ({
+      name: `filler_${String(index).padStart(3, "0")}`,
+      description: `Filler ${index}`,
+      parameters: { type: "object" },
+    }));
+    const { body } = await createKiroAdapter(provider).buildRequest(
+      parsedWith([{ role: "user", content: "hi" }], [...filler, { name: "exec", description: "Run a shell command", parameters: { type: "object" } }]),
+    );
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+    const emitted = current.userInputMessageContext.tools.map((tool: { toolSpecification: { name: string } }) => tool.toolSpecification.name);
+
+    expect(emitted).not.toContain("exec");
+    expect(current.content).not.toContain("ALL_TOOLS");
+  });
+
+  test("advertises no code mode for a tool_choice:none turn", async () => {
+    const parsed = {
+      modelId: "claude-sonnet-4.5",
+      stream: true,
+      options: { toolChoice: "none" },
+      context: { messages: [{ role: "user", content: "hi" }], tools: [codeModeExec] },
+    } as unknown as OcxParsedRequest;
+    const { body } = await createKiroAdapter(provider).buildRequest(parsed);
+    const content = JSON.parse(body).conversationState.currentMessage.userInputMessage.content as string;
+
+    expect(content).not.toContain("ALL_TOOLS");
+  });
+});
+
+describe("kiro code-mode exec survives the catalog budget", () => {
+  // Under code mode `exec` is not one tool among many: shell, file edits, apply_patch and every
+  // MCP helper are reachable ONLY as nested `tools.<name>(...)` calls inside it. A catalog that
+  // drops `exec` to keep more helpers admits tools the model cannot call at all. Cursor pins its
+  // execution path for the same reason (request-builder.ts, #399); Kiro ranked it as filler.
+  const codeModeExec = { name: "exec", description: "Run JavaScript", freeform: true, parameters: { type: "object" } };
+  const fillerTools = (count: number) => Array.from({ length: count }, (_, index) => ({
+    name: `ordinary_${String(index).padStart(3, "0")}`,
+    description: `Ordinary ${index}`,
+    parameters: { type: "object" },
+  }));
+
+  async function emitted(tools: unknown[]): Promise<{ names: string[]; notice: string }> {
+    const { body } = await createKiroAdapter(provider).buildRequest(parsedWith([{ role: "user", content: "hi" }], tools));
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+    return {
+      // Drop Kiro's private completion tool, which is appended after the client catalog.
+      names: current.userInputMessageContext.tools.slice(0, -1).map((tool: { toolSpecification: { name: string } }) => tool.toolSpecification.name),
+      notice: current.content.split("\n\n", 1)[0] as string,
+    };
+  }
+
+  test("a last-declared code-mode exec survives an over-budget catalog", async () => {
+    const { names } = await emitted([...fillerTools(MAX_KIRO_TOOL_COUNT + 20), codeModeExec]);
+
+    expect(names).toContain("exec");
+    expect(names).toHaveLength(MAX_KIRO_TOOL_COUNT);
+  });
+
+  test("reserving exec costs exactly one loaded tool, not the execution path", async () => {
+    // The reservation tradeoff, stated as a test. A session can accumulate an unbounded number of
+    // tool_search results (responses/parser.ts pushes every spec), all of which outrank exec. If
+    // the fill loop ran unreserved, 48 loaded tools would exhaust the count budget and drop the
+    // one tool that makes the other 48 callable.
+    const loaded = Array.from({ length: MAX_KIRO_TOOL_COUNT }, (_, index) => ({
+      name: `loaded_${String(index).padStart(3, "0")}`,
+      description: `Loaded ${index}`,
+      parameters: { type: "object" },
+      loadedFromToolSearch: true,
+    }));
+    const { names, notice } = await emitted([...loaded, codeModeExec]);
+
+    expect(names).toContain("exec");
+    expect(names).toHaveLength(MAX_KIRO_TOOL_COUNT);
+    // Exactly one loaded tool pays for the reservation, and the notice names it honestly.
+    expect(names.filter(name => name.startsWith("loaded_"))).toHaveLength(MAX_KIRO_TOOL_COUNT - 1);
+    expect(notice).toContain("loaded_047");
+    expect(notice).not.toContain("`exec`");
+  });
+
+  test("emits loaded -> exec -> gateway order in an over-budget catalog", async () => {
+    // Declared adversarially (gateway first, loaded last) so the assertion can only pass if the
+    // priority comparator actually ran. The sort is gated on exceedsBudget, so the fixture must
+    // exceed the count budget or this would pass identically without the change.
+    const gateway = { name: "tool_search", description: "Search deferred tools", parameters: { type: "object" }, toolSearch: true };
+    const loaded = { name: "codex_app__send_message_to_thread", description: "Send", parameters: { type: "object" }, loadedFromToolSearch: true };
+    const { names, notice } = await emitted([gateway, ...fillerTools(MAX_KIRO_TOOL_COUNT + 20), codeModeExec, loaded]);
+
+    expect(names.slice(0, 3)).toEqual([loaded.name, "exec", gateway.name]);
+    expect(notice).not.toContain(loaded.name);
+    expect(notice).not.toContain(gateway.name);
+  });
+
+  test("a byte-budget catalog reserves room for exec without breaching the budget", async () => {
+    // The count budget is the easy case. Bytes are where a naive reservation breaks: the budget is
+    // measured over the serialized ARRAY, so exec must be projected into every fit check rather
+    // than subtracted as a standalone size. Admitting exec on top of an already-full catalog would
+    // satisfy "exec survives" while blowing the ceiling, so both halves are asserted here.
+    const heavy = Array.from({ length: 40 }, (_, index) => ({
+      name: `heavy_${String(index).padStart(3, "0")}`,
+      description: `Heavy ${index}`,
+      parameters: { type: "object", properties: { blob: { type: "string", description: "x".repeat(8_000) } } },
+    }));
+    const { body } = await createKiroAdapter(provider).buildRequest(
+      parsedWith([{ role: "user", content: "hi" }], [...heavy, codeModeExec]),
+    );
+    const current = JSON.parse(body).conversationState.currentMessage.userInputMessage;
+    const specs = current.userInputMessageContext.tools.slice(0, -1);
+    const names = specs.map((tool: { toolSpecification: { name: string } }) => tool.toolSpecification.name);
+    const serializedBytes = new TextEncoder().encode(JSON.stringify(specs)).byteLength;
+
+    expect(names).toContain("exec");
+    expect(names.length).toBeLessThan(heavy.length + 1);
+    expect(serializedBytes).toBeLessThanOrEqual(MAX_KIRO_TOOL_CATALOG_BYTES);
   });
 });

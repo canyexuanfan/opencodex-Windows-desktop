@@ -269,14 +269,15 @@ describe("resolveMatchedPrice", () => {
     expect(resolveMatchedPrice("openrouter", "anthropic-claude-3.5-sonnet")).toBeNull();
   });
 
-  test("16. shipped overlay membership: 55 keys, including Opus 5 and compatibility prices", () => {
-    expect(EXPECTED_PRICE_OVERLAYS.length).toBe(55);
+  test("16. shipped overlay membership: 56 keys, including Opus 5 and compatibility prices", () => {
+    expect(EXPECTED_PRICE_OVERLAYS.length).toBe(56);
     expect(EXPECTED_PRICE_OVERLAYS.some(row => row.status === "unverified")).toBe(false);
     const keys = new Set(EXPECTED_PRICE_OVERLAYS.map(row => `${row.provider}/${row.modelId}`));
     for (const expected of [
       "anthropic/claude-opus-5",
       "cursor/claude-opus-5",
       "kiro/claude-opus-5",
+      "openai/gpt-daybreak-blue-latest",
       "openai-apikey/daybreak-red-latest",
       "openai-apikey/daybreak-blue-latest",
       "minimax/MiniMax-M2.1-highspeed",
@@ -326,6 +327,13 @@ describe("resolveMatchedPrice", () => {
       "cursor/auto",
     ]) {
       expect(keys.has(expected)).toBe(true);
+    }
+    for (const impossible of [
+      "openai/daybreak-blue-latest",
+      "openai/daybreak-red-latest",
+      "openai-apikey/gpt-daybreak-blue-latest",
+    ]) {
+      expect(keys.has(impossible)).toBe(false);
     }
 
     const direct = findExpectedPriceOverlay("google", "gemini-3.6-flash");
@@ -540,6 +548,8 @@ describe("priority (Fast) service tier multiplier", () => {
 
   test("P8. resolvePriorityMultiplier returns correct values", () => {
     expect(resolvePriorityMultiplier("gpt-5.6-sol")).toBe(2);
+    expect(resolvePriorityMultiplier("gpt-daybreak-blue-latest")).toBe(2);
+    expect(resolvePriorityMultiplier("daybreak-blue-latest")).toBe(2);
     expect(resolvePriorityMultiplier("gpt-5.6-terra")).toBe(2);
     expect(resolvePriorityMultiplier("gpt-5.6-luna")).toBe(2);
     expect(resolvePriorityMultiplier("gpt-5.5")).toBe(2.5);
@@ -550,12 +560,21 @@ describe("priority (Fast) service tier multiplier", () => {
   });
 
   test("P9. PRIORITY_MULTIPLIERS table has expected entries", () => {
-    expect(Object.keys(PRIORITY_MULTIPLIERS)).toHaveLength(6);
+    expect(Object.keys(PRIORITY_MULTIPLIERS)).toHaveLength(8);
     expect(PRIORITY_MULTIPLIERS["gpt-5.6-sol"]).toBe(2);
+    expect(PRIORITY_MULTIPLIERS["gpt-daybreak-blue-latest"]).toBe(2);
+    expect(PRIORITY_MULTIPLIERS["daybreak-blue-latest"]).toBe(2);
     expect(PRIORITY_MULTIPLIERS["gpt-5.6-terra"]).toBe(2);
     expect(PRIORITY_MULTIPLIERS["gpt-5.6-luna"]).toBe(2);
     expect(PRIORITY_MULTIPLIERS["gpt-5.5"]).toBe(2.5);
     expect(PRIORITY_MULTIPLIERS["gpt-5.4-mini"]).toBe(2);
+  });
+
+  test("P9b. Daybreak priority rules stay inside their routable provider namespace", () => {
+    expect(findPriorityPricingRule("openai", "gpt-daybreak-blue-latest")?.multiplier).toBe(2);
+    expect(findPriorityPricingRule("openai-apikey", "daybreak-blue-latest")?.multiplier).toBe(2);
+    expect(findPriorityPricingRule("openai-apikey", "gpt-daybreak-blue-latest")).toBeUndefined();
+    expect(findPriorityPricingRule("openai", "daybreak-blue-latest")).toBeUndefined();
   });
 
   test("P10. attempt cost with priority tier", () => {
@@ -764,28 +783,36 @@ describe("long-context pricing tiers (#908)", () => {
     // An alias is priced as its current snapshot, so the shipped rows are the real check.
     const red = resolveMatchedPrice("openai-apikey", "daybreak-red-latest");
     const blue = resolveMatchedPrice("openai-apikey", "daybreak-blue-latest");
+    const gptBlueOpenAi = resolveMatchedPrice("openai", "gpt-daybreak-blue-latest");
     expect(red?.cost4).toEqual({ input: 12.5, output: 75, cacheRead: 1.25, cacheWrite: 15.625 });
-    expect(blue?.cost4).toEqual({ input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 });
+    expect(blue?.cost4).toEqual({ input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 });
+    expect(gptBlueOpenAi?.cost4).toEqual({ input: 4, output: 20, cacheRead: 0.4, cacheWrite: 5 });
     // verified-derived, never verified: the pricing page has no daybreak-* rows, only the
     // snapshots'. This status is also what keeps `estimated` on downstream, and an alias is
     // more drift-prone than a normal row because OpenAI can repoint it.
     expect(red?.status).toBe("verified-derived");
     expect(blue?.status).toBe("verified-derived");
+    expect(gptBlueOpenAi?.status).toBe("verified-derived");
+    expect(resolveMatchedPrice("openai-apikey", "gpt-daybreak-blue-latest")).toBeNull();
+    expect(resolveMatchedPrice("openai", "daybreak-blue-latest")).toBeNull();
+    expect(resolveMatchedPrice("openai", "daybreak-red-latest")).toBeNull();
 
-    const alias = (model: string, usage: Record<string, number>) =>
-      estimateRequestCost({ provider: "openai-apikey", model, usageStatus: "reported", usage });
+    const alias = (model: string, usage: Record<string, number>, provider = "openai-apikey") =>
+      estimateRequestCost({ provider, model, usageStatus: "reported", usage });
     // Blue aliases gpt-5.6-sol, which publishes a long-context row: same exclusive boundary.
     expect(alias("daybreak-blue-latest", { inputTokens: 272_000, outputTokens: 10_000 })!.contextTier).toBeUndefined();
     expect(alias("daybreak-blue-latest", { inputTokens: 272_001, outputTokens: 10_000 })!.contextTier).toBe("long");
+    expect(alias("gpt-daybreak-blue-latest", { inputTokens: 272_000, outputTokens: 10_000 }, "openai")!.contextTier).toBeUndefined();
+    expect(alias("gpt-daybreak-blue-latest", { inputTokens: 272_001, outputTokens: 10_000 }, "openai")!.contextTier).toBe("long");
     // Red aliases gpt-5.6-cyber, whose four long-context cells are all "-" — no tier at all,
     // so a large prompt must stay on the standard rate rather than inheriting the family rule.
     const redOver = alias("daybreak-red-latest", { inputTokens: 272_001, outputTokens: 10_000 })!;
     expect(redOver.contextTier).toBeUndefined();
     expect(redOver.cost.input / (272_001 / 1e6)).toBeCloseTo(12.5, 9);
 
-    // The Blue tier is scoped to openai-apikey: Daybreak is not routable on Codex login, so
-    // it must not drift back into the shared two-provider expansion.
+    // Each spelling stays in the provider namespace where that selector is routable.
     expect(CONTEXT_TIERS.filter(t => t.modelId === "daybreak-blue-latest").map(t => t.provider)).toEqual(["openai-apikey"]);
+    expect(CONTEXT_TIERS.filter(t => t.modelId === "gpt-daybreak-blue-latest").map(t => t.provider)).toEqual(["openai"]);
     expect(CONTEXT_TIERS.some(t => t.modelId === "daybreak-red-latest")).toBe(false);
   });
 

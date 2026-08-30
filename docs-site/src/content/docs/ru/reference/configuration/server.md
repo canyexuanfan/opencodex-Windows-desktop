@@ -13,7 +13,7 @@ description: Listener, удалённый доступ, admission key, тайм�
 | `port` | `number` | `10100` | Порт, который слушает прокси. |
 | `hostname?` | `string` | `"127.0.0.1"` | Адрес bind'а. Не-loopback bind требует `OPENCODEX_API_AUTH_TOKEN`. |
 | `proxy?` | `string` | — | URL исходящего HTTP(S)-прокси или `${ENV_VAR}`. Применяется к `HTTP_PROXY` / `HTTPS_PROXY` только когда эти переменные не заданы; loopback всегда остаётся в `NO_PROXY`. |
-| `emptyCompletionRetry?` | `boolean` | `false` | Явно включает один идентичный повтор Responses, если completion не содержит ни текста, ни tool call. Повтор может тарифицироваться. `OCX_EMPTY_COMPLETION_RETRY=0` отключает его без изменения config; combo и routed-compaction turn исключены. |
+| `emptyCompletionRetry?` | `boolean` | `false` | Явно включает один идентичный повтор Responses, если в turn нет ни текста, ни tool call, включая случай, когда stream завершается до terminal event. Повтор может тарифицироваться. `OCX_EMPTY_COMPLETION_RETRY=0` отключает его без изменения config; combo и routed-compaction turn исключены. |
 | `stallTimeoutSec?` | `number` | `300` | Секунды без upstream-данных до `response.incomplete`. Минимум 1. |
 | `connectTimeoutMs?` | `number` | `200000` | Дедлайн одной попытки DNS/TCP/TLS/final-header; он завершается до генерации тела ответа. |
 | `shutdownTimeoutMs?` | `number` | `5000` | Дедлайн graceful-drain до принудительного прерывания активных turn'ов. |
@@ -25,14 +25,15 @@ description: Listener, удалённый доступ, admission key, тайм�
 | `codexAutoStart?` | `boolean` | `true` | Разрешает shim'у Codex запускать `ocx ensure` перед стартом Codex. При false `ensure` становится no-op. |
 | `codexShimAutoRestore?` | `boolean` | `true` | Восстанавливает установленный shim после завершённого внешнего обновления Codex, которое заменило его. Для отключения через окружение: `OPENCODEX_CODEX_SHIM_AUTO_RESTORE=0`. |
 | `syncResumeHistory?` | `boolean` | `true` | Обратимый режим совместимости истории Codex App. Исходные metadata резервируются и восстанавливаются через `ocx stop` / `ocx restore`. |
-| `shadowCallIntercept?` | `{ enabled?: boolean; model?: string; sourceModels?: string[] }` | off | Перенаправляет распознанные helper/shadow-call'ы Codex на выбранную модель с low effort. Source-prefix по умолчанию: `gpt-5.6-luna`; клиенты до 0.144.x включительно использовали `gpt-5.4-mini`, который можно восстановить через `sourceModels`. |
+| `shadowCallIntercept?` | `{ enabled?: boolean; model?: string; sourceModels?: string[] }` | off | Перенаправляет распознанные helper/shadow-call'ы Codex на выбранную модель с сохранением настроенного для запроса reasoning effort. Source-prefix по умолчанию: `gpt-5.6-luna`; клиенты до 0.144.x включительно использовали `gpt-5.4-mini`, который можно восстановить через `sourceModels`. |
 | `webSearchSidecar?` | `OcxWebSearchSidecarConfig` | on when usable | Настройки sidecar'а web-search. |
 | `visionSidecar?` | `OcxVisionSidecarConfig` | on when usable | Настройки sidecar'а описания изображений. |
 | `images?` | `OcxImagesConfig` | automatic OpenAI selection | Настройки standalone Images relay для Codex `image_gen`. |
 
 Если более старая development-сборка изменила metadata resume-history до появления резервного
-backup'а, выполните `ocx recover-history --legacy-openai`, чтобы принудительно вернуть
+backup'а, выполните `ocx recover-history --legacy-openai --yes`, чтобы принудительно вернуть
 native-provider history.
+Команда переименовывает все строки `opencodex` с пользовательским сообщением, включая корректную историю выделенного провайдера; перед запуском прочитайте предупреждение о полном охвате в справочнике lifecycle.
 
 ## Удалённый доступ
 
@@ -131,7 +132,7 @@ ssh -L 20100:localhost:10100 -L 1455:localhost:1455 you@remote
 
 Codex использует маленькие helper-model'и для задач вроде заголовков и commit message. Включите
 `shadowCallIntercept`, чтобы перенаправлять распознанные `sourceModels` на другую настроенную
-модель. Замещающая модель работает с low effort. `sourceModels` задавайте только если клиент
+модель. Замещающая модель сохраняет настроенный для запроса reasoning effort. `sourceModels` задавайте только если клиент
 использует другие helper-id.
 
 ```json

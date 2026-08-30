@@ -12,7 +12,7 @@ description: リスナー、リモート アクセス、アドミッション �
 | `port` | `number` | `10100` |プロキシリッスンポート。 |
 | `hostname?` | `string` | `"127.0.0.1"` |バインドアドレス。非ループバック バインドには `OPENCODEX_API_AUTH_TOKEN` が必要です。 |
 | `proxy?` | `string` | — |送信 HTTP(S) プロキシ URL または `${ENV_VAR}`。これらの変数が設定されていない場合にのみ、`HTTP_PROXY` / `HTTPS_PROXY` に適用されます。ループバックは `NO_PROXY` に残ります。 |
-| `emptyCompletionRetry?` | `boolean` | `false` | テキストもツール呼び出しもない Responses 完了を、同一リクエストで 1 回再試行するよう明示的に有効化します。再試行は課金対象になる場合があります。`OCX_EMPTY_COMPLETION_RETRY=0` で設定を変更せず無効化できます。combo と routed-compaction turn は対象外です。 |
+| `emptyCompletionRetry?` | `boolean` | `false` | テキストもツール呼び出しもない Responses ターンを、ターミナルイベント前にストリームが終了した場合も含め、同一リクエストで 1 回再試行するよう明示的に有効化します。再試行は課金対象になる場合があります。`OCX_EMPTY_COMPLETION_RETRY=0` で設定を変更せず無効化できます。combo と routed-compaction turn は対象外です。 |
 | `stallTimeoutSec?` | `number` | `300` | `response.incomplete` より前にアップストリーム データがない秒数。最小 1。
 | `connectTimeoutMs?` | `number` | `200000` |試行ごとの DNS/TCP/TLS/最終ヘッダーの期限。本体が生成される前に終了します。 |
 | `shutdownTimeoutMs?` | `number` | `5000` |アクティブなターンが中止される前の正常な排出期限。 |
@@ -24,12 +24,13 @@ description: リスナー、リモート アクセス、アドミッション �
 | `codexAutoStart?` | `boolean` | `true` | Codex を起動する前に、Codex シムで `ocx ensure` を実行させます。 False を指定すると、操作が行われないことが保証されます。 |
 | `codexShimAutoRestore?` | `boolean` | `true` |完了した外部 Codex アップデートによってインストールされたシムが置き換えられた後、インストールされているシムを復元します。環境オプトアウト: `OPENCODEX_CODEX_SHIM_AUTO_RESTORE=0`。 |
 | `syncResumeHistory?` | `boolean` | `true` | Codex App 履歴の互換性を元に戻すことができます。元のメタデータは `ocx stop` / `ocx restore` によってバックアップおよび復元されます。 |
-| `shadowCallIntercept?` | `{ enabled?: boolean; model?: string; sourceModels?: string[] }` |オフ |認識された Codex ヘルパー/シャドウ呼び出しを、少ない労力で選択したモデルにリダイレクトします。デフォルトのソースプレフィックスは `gpt-5.6-luna` です。0.144.x 以前のクライアントでは `gpt-5.4-mini` が使われており、`sourceModels` で復元できます。 |
+| `shadowCallIntercept?` | `{ enabled?: boolean; model?: string; sourceModels?: string[] }` |オフ |認識された Codex ヘルパー/シャドウ呼び出しを、リクエストに設定された推論エフォートを維持したまま選択したモデルにリダイレクトします。デフォルトのソースプレフィックスは `gpt-5.6-luna` です。0.144.x 以前のクライアントでは `gpt-5.4-mini` が使われており、`sourceModels` で復元できます。 |
 | `webSearchSidecar?` | `OcxWebSearchSidecarConfig` |使用可能な場合はオン | Web 検索サイドカー オプション。 |
 | `visionSidecar?` | `OcxVisionSidecarConfig` |使用可能な場合はオン |画像説明サイドカー オプション。 |
 | `images?` | `OcxImagesConfig` | OpenAI の自動選択 | Codex `image_gen` のスタンドアロン イメージ リレー オプション。 |
 
-バックアップ サポートが存在する前に古い開発ビルドで再開履歴メタデータが変更された場合は、`ocx recover-history --legacy-openai` を実行してネイティブ プロバイダーの回復を強制します。
+バックアップ サポートが存在する前に古い開発ビルドで再開履歴メタデータが変更された場合は、`ocx recover-history --legacy-openai --yes` を実行してネイティブ プロバイダーの回復を強制します。
+このコマンドは、正当な専用プロバイダー履歴を含む、ユーザーメッセージを持つすべての `opencodex` 行を再ラベル付けします。実行前にライフサイクル リファレンスの全範囲に関する警告を確認してください。
 
 ## リモートアクセス
 
@@ -105,7 +106,7 @@ ssh -L 20100:localhost:10100 -L 1455:localhost:1455 you@remote
 
 ## シャドウコール
 
-Codex は、タイトルやコミット メッセージなどのタスクに小さなヘルパー モデルを使用します。 `shadowCallIntercept` を有効にして、認識されたソース モデル プレフィックスを別の構成済みモデルにリダイレクトします。交換作業は少ない労力で実行されます。クライアントが異なるヘルパー ID を使用する場合にのみ、`sourceModels` を設定します。
+Codex は、タイトルやコミット メッセージなどのタスクに小さなヘルパー モデルを使用します。 `shadowCallIntercept` を有効にして、認識されたソース モデル プレフィックスを別の構成済みモデルにリダイレクトします。置換後も、リクエストに設定された推論エフォートは維持されます。クライアントが異なるヘルパー ID を使用する場合にのみ、`sourceModels` を設定します。
 
 ```json
 {

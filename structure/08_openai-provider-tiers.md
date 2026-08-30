@@ -18,6 +18,20 @@ engine. Direct short-circuits that engine before pool state is read or mutated a
 current caller/main-login bearer. Neither mode may fall through to `openai-apikey`, and the API
 provider may not fall through to Codex-login credentials.
 
+The two routes also keep separate request-compatibility contracts. The canonical ChatGPT Codex
+forward destination removes public `prompt_cache_options` because that backend rejects the field
+before inference; `prompt_cache_key` remains supported. `openai-apikey` and noncanonical/custom
+Responses destinations preserve caller-provided options because their upstream contracts may
+support them.
+
+[Decision Log]
+- 목적과 의도: Let public Responses clients use the Codex-login route without one unsupported prompt-cache extension failing the whole turn.
+- 기존 구현 및 제약 조건: Parsing already preserves unknown top-level fields in `_rawBody`, and the canonical backend rejects `prompt_cache_options`; API-key and custom providers may accept the same field.
+- 검토한 주요 대안: Add the field to the Zod schema; strip it for every Responses provider; translate it to a legacy retention hint; remove it only at the canonical destination boundary.
+- 선택한 방식: Keep parser passthrough unchanged and strip the caller field only after `isCanonicalOpenAiForwardProvider` succeeds.
+- 다른 대안 대신 이 방식을 선택한 이유: Schema admission does not change `_rawBody`, global stripping would remove supported public API behavior, and translation would invent cache policy.
+- 장점, 단점 및 영향: VS Code and other public-shape clients avoid the canonical backend rejection while API-key/custom routes retain their wire options; canonical callers cannot request this cache option through OpenCodex.
+
 Pool affinity preserves the existing `x-codex-parent-thread-id` supplied by ordinary Codex clients.
 The parent id is trimmed and bounded under the same 512-byte component limit as the Desktop
 fallback. When Codex Desktop omits it or sends an unusable value, the complete bounded `session-id`

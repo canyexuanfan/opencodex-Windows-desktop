@@ -627,7 +627,7 @@ describe("request log metadata", () => {
   });
 
   test("generates compact request ids", () => {
-    expect(nextRequestLogId(1_700_000_000_000)).toMatch(/^ocx-[a-z0-9]+-[a-z0-9]+$/);
+    expect(nextRequestLogId(1_700_000_000_000)).toMatch(/^ocx-[a-f0-9]{32}$/);
     expect(nextRequestLogId(1_700_000_000_000)).not.toBe(nextRequestLogId(1_700_000_000_000));
   });
 
@@ -721,6 +721,36 @@ describe("request log metadata", () => {
 
     const combined = filterRequestLogs(logs, new URLSearchParams("provider=umans&status=5xx&tail=1"));
     expect(combined.map(entry => entry.requestId)).toEqual(["c"]);
+  });
+
+  /**
+   * #2704: there was no `model` clause at all, so `?model=x` was accepted and silently
+   * ignored -- every row came back, and `ocx logs --model x` looked like it had filtered.
+   * The non-matching assertion is the one that matters: an unfiltered implementation passes
+   * the positive case for free.
+   */
+  test("filters logs by model, including the attempt that actually served a failover", () => {
+    const logs = [
+      log({ requestId: "a", model: "gpt-test", provider: "openai" }),
+      log({ requestId: "b", model: "grok-4.6", provider: "xai" }),
+      log({
+        requestId: "c",
+        model: "sonnet-4.6",
+        provider: "anthropic",
+        attempts: [
+          { ordinal: 1, provider: "anthropic", model: "sonnet-4.6", adapter: "anthropic", status: 429, durationMs: 5, sendCount: 1, recoveryKinds: [], usageStatus: "unreported" },
+          { ordinal: 2, provider: "xai", model: "grok-4.6", adapter: "openai", status: 200, durationMs: 7, sendCount: 1, recoveryKinds: [], usageStatus: "reported" },
+        ],
+      }),
+    ];
+
+    expect(filterRequestLogs(logs, new URLSearchParams("model=gpt-test")).map(entry => entry.requestId)).toEqual(["a"]);
+    // "c" matches on its second ATTEMPT, mirroring how `provider` already behaves: the request
+    // was ultimately served by grok-4.6, so a grok-4.6 search has to find it.
+    expect(filterRequestLogs(logs, new URLSearchParams("model=grok-4.6")).map(entry => entry.requestId)).toEqual(["b", "c"]);
+    // The assertion an unfiltered implementation cannot pass.
+    expect(filterRequestLogs(logs, new URLSearchParams("model=absent-model"))).toEqual([]);
+    expect(filterRequestLogs(logs, new URLSearchParams("model=grok-4.6&provider=xai")).map(entry => entry.requestId)).toEqual(["b", "c"]);
   });
 
   test("filters logs by offset and limit", () => {
@@ -982,6 +1012,172 @@ describe("request log metadata", () => {
       status: 400,
       errorCode: "cyber_policy",
       closeReason: "terminal",
+    });
+  });
+
+  test("deferred SSE logging maps policy response.incomplete to failed 400", async () => {
+    const entries: RequestLogEntry[] = [];
+    const payload = JSON.stringify({
+      type: "response.incomplete",
+      response: {
+        id: "resp-policy-incomplete",
+        status: "incomplete",
+        incomplete_details: { reason: "content_filter" },
+        error: { type: "invalid_request_error", code: "cyber_policy", message: "blocked" },
+      },
+    });
+    const response = responseWithDeferredRequestLog(
+      new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`event: response.incomplete\ndata: ${payload}\n\n`));
+          controller.close();
+        },
+      }), { status: 200, headers: { "content-type": "text/event-stream" } }),
+      "ocx-test-cyber-policy-incomplete",
+      Date.now(),
+      { model: "gpt-5.6-sol", provider: "openai" },
+      entry => entries.push(entry),
+    );
+
+    await response.text();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      terminalStatus: "failed",
+      upstreamError: "blocked",
+      status: 400,
+      errorCode: "cyber_policy",
+      closeReason: "terminal",
+    });
+  });
+
+  test("deferred SSE logging recognizes policy text from incomplete_details.message", async () => {
+    const entries: RequestLogEntry[] = [];
+    const policyMessage = "This request was flagged for possible cybersecurity risk.";
+    const payload = JSON.stringify({
+      type: "response.incomplete",
+      response: {
+        id: "resp-policy-incomplete-message",
+        status: "incomplete",
+        incomplete_details: {
+          reason: "content_filter",
+          message: policyMessage,
+        },
+      },
+    });
+    const response = responseWithDeferredRequestLog(
+      new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`event: response.incomplete\ndata: ${payload}\n\n`));
+          controller.close();
+        },
+      }), { status: 200, headers: { "content-type": "text/event-stream" } }),
+      "ocx-test-cyber-policy-incomplete-message",
+      Date.now(),
+      { model: "gpt-5.6-sol", provider: "openai" },
+      entry => entries.push(entry),
+    );
+
+    await response.text();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      terminalStatus: "failed",
+      upstreamError: policyMessage,
+      status: 400,
+      errorCode: "cyber_policy",
+      closeReason: "terminal",
+    });
+  });
+
+  test("deferred SSE logging maps a policy top-level error to failed 400", async () => {
+    const entries: RequestLogEntry[] = [];
+    const payload = JSON.stringify({
+      type: "error",
+      error: { type: "invalid_request_error", message: "This request was flagged for possible cybersecurity risk." },
+    });
+    const response = responseWithDeferredRequestLog(
+      new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`event: error\ndata: ${payload}\n\n`));
+          controller.close();
+        },
+      }), { status: 200, headers: { "content-type": "text/event-stream" } }),
+      "ocx-test-cyber-policy-error",
+      Date.now(),
+      { model: "gpt-5.6-sol", provider: "openai" },
+      entry => entries.push(entry),
+    );
+
+    await response.text();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      terminalStatus: "failed",
+      status: 400,
+      errorCode: "cyber_policy",
+      closeReason: "terminal",
+    });
+  });
+
+  test("deferred SSE logging checks all policy candidates, not only the first code", async () => {
+    const entries: RequestLogEntry[] = [];
+    const payload = JSON.stringify({
+      type: "response.incomplete",
+      error: { type: "upstream_error", code: "upstream_reset", message: "connection ended" },
+      response: {
+        status: "incomplete",
+        error: { type: "invalid_request_error", code: "cyber_policy", message: "blocked" },
+      },
+    });
+    const response = responseWithDeferredRequestLog(
+      new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`data: ${payload}\n\n`));
+          controller.close();
+        },
+      }), { status: 200, headers: { "content-type": "text/event-stream" } }),
+      "ocx-test-cyber-policy-candidates",
+      Date.now(),
+      { model: "gpt-5.6-sol", provider: "openai" },
+      entry => entries.push(entry),
+    );
+
+    await response.text();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      terminalStatus: "failed",
+      status: 400,
+      errorCode: "cyber_policy",
+    });
+  });
+
+  test("deferred SSE logging maps ordinary failed status from response.error only", async () => {
+    const entries: RequestLogEntry[] = [];
+    const payload = JSON.stringify({
+      type: "response.failed",
+      code: "context_length_exceeded",
+      response: {
+        status: "failed",
+        error: { type: "rate_limit_error", code: "rate_limit_exceeded", message: "rate limited" },
+      },
+    });
+    const response = responseWithDeferredRequestLog(
+      new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`data: ${payload}\n\n`));
+          controller.close();
+        },
+      }), { status: 200, headers: { "content-type": "text/event-stream" } }),
+      "ocx-test-ordinary-failed-authority",
+      Date.now(),
+      { model: "gpt-5.6-sol", provider: "openai" },
+      entry => entries.push(entry),
+    );
+
+    await response.text();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      terminalStatus: "failed",
+      status: 429,
+      errorCode: "rate_limit_exceeded",
     });
   });
 

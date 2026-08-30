@@ -106,7 +106,12 @@ describe("DigitalOcean and Scaleway providers", () => {
       },
     });
     const digitaloceanModels = discoveryAllowlist(registryEntry("digitalocean"));
-    expect(digitaloceanModels).toHaveLength(27);
+    // 28 since glm-5.3-flash was seeded into this allowlist. The seeding commit added
+    // the id to both the DigitalOcean and Scaleway lists and moved neither length
+    // assertion; Scaleway's happened to still match, so only this one went red - and it
+    // stayed red on dev, which is how a broken shard reached the branch that noticed it.
+    expect(digitaloceanModels).toHaveLength(28);
+    expect(digitaloceanModels).toContain("glm-5.3-flash");
     expect(digitaloceanModels).toContain("openai-gpt-5.6-sol");
     expect(digitaloceanModels).toContain("meta-llama/Meta-Llama-3.1-8B-Instruct");
     expect(digitaloceanModels).not.toContain("openai-gpt-5.5");
@@ -135,7 +140,12 @@ describe("DigitalOcean and Scaleway providers", () => {
       },
     });
     const scalewayModels = discoveryAllowlist(registryEntry("scaleway"));
-    expect(scalewayModels).toHaveLength(11);
+    // 12 for the same reason as DigitalOcean above: the seeding commit added
+    // glm-5.3-flash here too. Both assertions were stale, and the second only surfaced
+    // once the first stopped failing - which is why a length assertion should name the
+    // id it is counting.
+    expect(scalewayModels).toHaveLength(12);
+    expect(scalewayModels).toContain("glm-5.3-flash");
     expect(scalewayModels).toContain("qwen3.6-35b-a3b");
     expect(scalewayModels).toContain("pixtral-12b-2409");
     expect(scalewayModels).not.toContain("gpt-oss-120b");

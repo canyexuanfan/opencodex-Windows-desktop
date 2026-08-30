@@ -8,6 +8,7 @@ import {
 import { readJsonOrThrow } from "../fetch-json";
 import type { TKey } from "../i18n/shared";
 import type { StartupHealthStatus } from "../startup-health-ui";
+import { shadowSourceModelList } from "./shadow-call-source";
 
 export type DashboardSection = "overview" | "providers" | "models";
 
@@ -47,6 +48,8 @@ export interface ProviderInfo { name: string; adapter: string; baseUrl: string; 
 export interface ModelInfo { id: string; provider: string; namespaced: string; owned_by?: string; reasoningEfforts?: string[] }
 export interface SettingsData {
   codexAutoStart: boolean;
+  /** Whether a login may open a browser on the machine running the proxy. */
+  oauthOpenBrowser?: boolean;
   port: number;
   hostname: string;
   /** IANA zone of the machine running the proxy, used to render log timestamps (#725). */
@@ -388,9 +391,28 @@ export function visionModelOptions(
 }
 
 /** Options for shadow-call replacement models use the proxy's canonical routing id. */
-export function shadowCallModelOptions(models: ModelInfo[], current: string | undefined) {
-  const out = [{ value: "", label: "—" }, ...models.map(model => ({ value: model.namespaced, label: model.namespaced }))];
-  if (current && !out.some(option => option.value === current)) out.push({ value: current, label: current });
+export function shadowCallModelOptions(models: ModelInfo[], current: string | undefined, sourceModels?: string[]) {
+  const sourcePrefixes = shadowSourceModelList(sourceModels);
+  const sourceIdentities = sourcePrefixes.flatMap(prefix => {
+    const source = models.find(model => model.namespaced.startsWith(prefix))
+      ?? models.find(model => model.id.startsWith(prefix));
+    return source ? [{ provider: source.provider, modelId: prefix }] : [];
+  });
+  const intersecting = models.filter(model => sourceIdentities.some(source =>
+    model.provider === source.provider && model.id.startsWith(source.modelId)));
+  const invalidSelectors = new Set([
+    ...sourcePrefixes.flatMap(prefix => [prefix, `openai/${prefix}`]),
+    ...intersecting.flatMap(model => [model.namespaced, `${model.provider}/${model.id}`]),
+  ]);
+  const out = [
+    { value: "", label: "—" },
+    ...models
+      .filter(model => !invalidSelectors.has(model.namespaced))
+      .map(model => ({ value: model.namespaced, label: model.namespaced })),
+  ];
+  if (current && !invalidSelectors.has(current) && !out.some(option => option.value === current)) {
+    out.push({ value: current, label: current });
+  }
   return out;
 }
 

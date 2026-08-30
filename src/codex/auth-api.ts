@@ -209,21 +209,59 @@ function codexAccountPersistenceConflict(
     : undefined;
 }
 
+/**
+ * The exact label `parseUsageQuota` emits for the Codex Spark window (quota.ts).
+ * Matching on the label rather than on "is a custom window" is load-bearing: the same array
+ * carries Cursor's First-party models / API usage, Anthropic's Fable / Opus / Sonnet,
+ * Antigravity's Gem / Cla, Kimi's subscription credits and a dozen dynamic provider meters.
+ */
+const CODEX_SPARK_WINDOW_LABEL = "GPT-5.3-Codex-Spark Weekly";
+
+/**
+ * Drop the Spark window unless the operator asked for it (default hidden).
+ *
+ * Applied at the DTO boundary, never at parse or cache time: custom windows participate in
+ * quota-presence checks, snapshot reconciliation and capacity aggregation, so removing Spark
+ * upstream of this point would change routing state rather than display.
+ *
+ * Both GUI surfaces funnel through here — the Codex Auth rows directly, and /api/provider-quotas
+ * via listCodexAuthAccountsSnapshot — so one filter covers both. Filtering only one would leave
+ * the other still rendering the row the operator switched off.
+ */
+export function withSparkVisibility<T extends Omit<StoredAccountQuota, "updatedAt"> | StoredAccountQuota | null>(
+  quota: T,
+): T {
+  if (!quota?.customWindows?.length) return quota;
+  if (loadConfig().showCodexSparkQuota === true) return quota;
+  const kept = quota.customWindows.filter(window => window.label !== CODEX_SPARK_WINDOW_LABEL);
+  if (kept.length === quota.customWindows.length) return quota;
+  // An empty list is dropped rather than serialized: an absent field and an empty array should
+  // not be two different ways of saying "no custom windows" on the wire.
+  const next = { ...quota } as Record<string, unknown>;
+  if (kept.length > 0) next.customWindows = kept;
+  else delete next.customWindows;
+  return next as T;
+}
+
+
 function quotaForPlan<T extends Omit<StoredAccountQuota, "updatedAt"> | StoredAccountQuota | null>(
   quota: T,
   plan: unknown,
 ): T {
-  if (!quota || !isThirtyDayOnlyCodexPlan(plan)) return quota;
+  const visible = withSparkVisibility(quota);
+  if (!visible || !isThirtyDayOnlyCodexPlan(plan)) return visible;
+  const quotaWindows = visible;
   return {
-    ...(quota.monthlyPercent !== undefined ? { monthlyPercent: quota.monthlyPercent } : {}),
-    ...(quota.monthlyResetAt !== undefined ? { monthlyResetAt: quota.monthlyResetAt } : {}),
+    ...(quotaWindows.monthlyPercent !== undefined ? { monthlyPercent: quotaWindows.monthlyPercent } : {}),
+    ...(quotaWindows.monthlyResetAt !== undefined ? { monthlyResetAt: quotaWindows.monthlyResetAt } : {}),
     // A 30-day plan can still carry a burst window, and it blocks the account on its own.
     // Dropping it here would show a healthy card for an account upstream is refusing (#1791).
-    ...(quota.shortPercent !== undefined ? { shortPercent: quota.shortPercent } : {}),
-    ...(quota.shortResetAt !== undefined ? { shortResetAt: quota.shortResetAt } : {}),
-    ...(quota.shortWindowSeconds !== undefined ? { shortWindowSeconds: quota.shortWindowSeconds } : {}),
-    ...(quota.resetCredits !== undefined ? { resetCredits: quota.resetCredits } : {}),
-    ...("updatedAt" in quota ? { updatedAt: quota.updatedAt } : {}),
+    ...(quotaWindows.shortPercent !== undefined ? { shortPercent: quotaWindows.shortPercent } : {}),
+    ...(quotaWindows.shortResetAt !== undefined ? { shortResetAt: quotaWindows.shortResetAt } : {}),
+    ...(quotaWindows.shortWindowSeconds !== undefined ? { shortWindowSeconds: quotaWindows.shortWindowSeconds } : {}),
+    ...(quotaWindows.customWindows !== undefined ? { customWindows: quotaWindows.customWindows } : {}),
+    ...(quotaWindows.resetCredits !== undefined ? { resetCredits: quotaWindows.resetCredits } : {}),
+    ...("updatedAt" in quotaWindows ? { updatedAt: quotaWindows.updatedAt } : {}),
   } as T;
 }
 
@@ -1806,7 +1844,7 @@ export async function handleCodexAuthAPI(
   }
 
   if (url.pathname === "/api/codex-auth/login" && req.method === "POST") {
-    const body = (await req.json().catch(() => ({}))) as { id?: string; reauth?: boolean };
+    const body = (await req.json().catch(() => ({}))) as { id?: string; reauth?: boolean; openBrowser?: unknown };
     const requestedAccountId = body.id?.trim();
     const reauth = body.reauth === true;
     if (requestedAccountId && !isValidCodexAccountId(requestedAccountId)) {
@@ -1840,7 +1878,9 @@ export async function handleCodexAuthAPI(
 
       // Open the browser server-side (same pattern as /api/oauth/login in management-api.ts).
       // The GUI's window.open is popup-blocked because it runs after an await, not a direct click.
-      if (result.url) {
+      // Both login routes share one resolver so this surface cannot drift from the other.
+      const { shouldOpenBrowserForLogin } = await import("../oauth/open-browser-choice");
+      if (result.url && shouldOpenBrowserForLogin(body.openBrowser, runtimeConfig)) {
         const { openUrl } = await import("../lib/open-url");
         openUrl(result.url);
       }

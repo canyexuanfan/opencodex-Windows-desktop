@@ -1,8 +1,9 @@
 import type { OcxProviderConfig } from "../types";
+import { isXaiResponsesDestination } from "../providers/xai-transport";
 
 const CODEX_WEB_SEARCH_TOOL = "web_search";
 const CODEX_WEB_SEARCH_PREVIEW_TOOL = "web_search_preview";
-const XAI_API_HOST = "api.x.ai";
+const XAI_SEARCH_TOOL = "x_search";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -10,18 +11,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function isCodexWebSearchToolType(value: unknown): boolean {
   return value === CODEX_WEB_SEARCH_TOOL || value === CODEX_WEB_SEARCH_PREVIEW_TOOL;
-}
-
-/** Match only xAI's documented public API, not arbitrary Responses-compatible gateways. */
-function isXaiPublicApi(provider: Pick<OcxProviderConfig, "baseUrl">): boolean {
-  try {
-    const url = new URL(provider.baseUrl);
-    return url.protocol === "https:"
-      && url.hostname.toLowerCase() === XAI_API_HOST
-      && (url.port === "" || url.port === "443");
-  } catch {
-    return false;
-  }
 }
 
 type ToolGroupRewrite = {
@@ -60,10 +49,15 @@ function normalizeToolGroup(tools: unknown[]): ToolGroupRewrite {
       : undefined;
     const enableImageSearch = searchContentTypes?.includes("image") === true;
     const next: Record<string, unknown> = { ...tool, type: CODEX_WEB_SEARCH_TOOL };
+    // Only the two fields xAI actually refuses are removed. Probed 2026-08-22, one field per
+    // request, against BOTH xAI destinations (api.x.ai and cli-chat-proxy.grok.com): they behave
+    // identically — `external_web_access` 400s on every value including `true`, and
+    // `search_context_size` 400s, while `user_location`, `search_content_types`, `filters` and
+    // `enable_image_search` are all accepted. Deleting the accepted ones was a silent capability
+    // loss, and it contradicted the sibling layer, whose own probe note already records
+    // user_location/filters as accepted (tests/responses-routed-web-search-fields.test.ts).
     delete next.external_web_access;
     delete next.search_context_size;
-    delete next.search_content_types;
-    delete next.user_location;
     if (enableImageSearch && !Object.hasOwn(next, "enable_image_search")) {
       next.enable_image_search = true;
     }
@@ -142,15 +136,32 @@ function normalizeToolChoice(body: Record<string, unknown>): Record<string, unkn
   return body;
 }
 
+function currentInputStart(inputLength: number, replayPrefixLength: number | undefined): number {
+  if (typeof replayPrefixLength !== "number" || !Number.isFinite(replayPrefixLength)) return 0;
+  return Math.min(inputLength, Math.max(0, Math.trunc(replayPrefixLength)));
+}
+
+function hasToolType(tools: unknown, type: string): boolean {
+  return Array.isArray(tools) && tools.some(tool => isPlainObject(tool) && tool.type === type);
+}
+
 /**
  * Make Codex's hosted web-search declaration acceptable to xAI Responses without changing other
  * providers or mutating the caller-owned request body.
+ *
+ * Scoped to BOTH xAI Responses hosts, not just the public API. The 2026-08-22 probe recorded in
+ * `normalizeToolGroup` and in `isXaiResponsesDestination` already found the two hosts to be one
+ * dialect, but this gate stayed on `api.x.ai` alone, so the Grok CLI proxy — the OAuth lane — was
+ * left unnormalized. Re-probed 2026-08-27 against `cli-chat-proxy.grok.com`:
+ * `web_search_preview` -> 422 `unknown variant`, `external_web_access` -> 400 on every value,
+ * `search_context_size` -> 400, while `user_location` and `search_content_types` -> 200. Identical
+ * to the public API, which is what makes one shared gate correct.
  */
 export function normalizeXaiResponsesWebSearch(
   body: unknown,
   provider: Pick<OcxProviderConfig, "baseUrl">,
 ): unknown {
-  if (!isXaiPublicApi(provider) || !isPlainObject(body)) return body;
+  if (!isXaiResponsesDestination(provider) || !isPlainObject(body)) return body;
 
   let next: Record<string, unknown> = body;
   if (Array.isArray(body.tools)) {
@@ -182,4 +193,52 @@ export function normalizeXaiResponsesWebSearch(
   }
 
   return normalizeToolChoice(next);
+}
+
+function isLiveWebSearchTool(tool: unknown): boolean {
+  return isPlainObject(tool)
+    && tool.type === CODEX_WEB_SEARCH_TOOL
+    && (!Object.hasOwn(tool, "external_web_access") || tool.external_web_access === true);
+}
+
+/**
+ * Add xAI's hosted X search declaration without changing web-search normalization or selectors.
+ * Destination classification belongs only to this opt-in injection path; the public-API
+ * normalizer above intentionally retains its narrower causality boundary.
+ */
+export function injectXaiResponsesXSearch(
+  body: unknown,
+  provider: Pick<OcxProviderConfig, "baseUrl" | "xaiResponsesXSearch">,
+  replayPrefixLength?: number,
+): unknown {
+  if (
+    !isPlainObject(body)
+    || !isXaiResponsesDestination(provider)
+    || provider.xaiResponsesXSearch !== true
+  ) return body;
+
+  const input = Array.isArray(body.input) ? body.input : undefined;
+  const inputStart = input ? currentInputStart(input.length, replayPrefixLength) : 0;
+  const currentInput = input?.slice(inputStart) ?? [];
+  const currentXSearchDeclared = hasToolType(body.tools, XAI_SEARCH_TOOL)
+    || currentInput.some(item =>
+      isPlainObject(item)
+      && item.type === "additional_tools"
+      && hasToolType(item.tools, XAI_SEARCH_TOOL)
+    );
+  if (currentXSearchDeclared) return body;
+
+  const liveWebSearchSurvives = Array.isArray(body.tools) && body.tools.some(isLiveWebSearchTool)
+    || currentInput.some(item =>
+      isPlainObject(item)
+      && item.type === "additional_tools"
+      && Array.isArray(item.tools)
+      && item.tools.some(isLiveWebSearchTool)
+    );
+  if (!liveWebSearchSurvives) return body;
+
+  // Declaration does not grant selection when `tool_choice` names a specific tool or carries an
+  // `allowed_tools` set that excludes x_search, so leave that selector byte-shape untouched.
+  const tools = Array.isArray(body.tools) ? body.tools : [];
+  return { ...body, tools: [...tools, { type: XAI_SEARCH_TOOL }] };
 }

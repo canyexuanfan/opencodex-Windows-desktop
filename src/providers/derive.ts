@@ -254,6 +254,9 @@ export function providerConfigSeed(entry: ProviderRegistryEntry): OcxProviderCon
     ...(entry.requiresAdjacentResponsesToolResults !== undefined
       ? { requiresAdjacentResponsesToolResults: entry.requiresAdjacentResponsesToolResults }
       : {}),
+    ...(entry.annotateEmptyToolOutputs !== undefined
+      ? { annotateEmptyToolOutputs: entry.annotateEmptyToolOutputs }
+      : {}),
     ...(entry.autoToolChoiceOnlyModels ? { autoToolChoiceOnlyModels: [...entry.autoToolChoiceOnlyModels] } : {}),
     ...(entry.preserveReasoningContentModels ? { preserveReasoningContentModels: [...entry.preserveReasoningContentModels] } : {}),
     ...(entry.requiresReasoningPlaceholderModels ? { requiresReasoningPlaceholderModels: [...entry.requiresReasoningPlaceholderModels] } : {}),
@@ -391,6 +394,32 @@ function serviceTierModelDefaultsFor(
 }
 
 /**
+ * Materialize the registry's verbosity opt-out into the provider config at seed/enrich time.
+ *
+ * The catalog hint pass must not read PROVIDER_REGISTRY: a gather flight captures its registry
+ * authority up front and forbids any later read, so consulting the registry per model turned
+ * every hint pass into a post-lookup read and dropped a custom-destination flight's own
+ * discovery result (tests/codex-gather-authority.test.ts).
+ *
+ * Registry values go in first so an explicit user entry still wins, matching
+ * `applyReasoningSummaryDefaults`. `supportsVerbosity` is the provider-wide default, expanded
+ * across the seeded model list so an id discovered later still inherits it through the same
+ * Record the hint pass already reads.
+ */
+function applyVerbosityDefaults(prov: OcxProviderConfig, entry: ProviderRegistryEntry | undefined): void {
+  if (!entry) return;
+  const perModel = entry.modelSupportsVerbosity;
+  if (!perModel && entry.supportsVerbosity === undefined) return;
+  prov.modelSupportsVerbosity = {
+    ...(perModel ?? {}),
+    ...(prov.modelSupportsVerbosity ?? {}),
+  };
+  if (entry.supportsVerbosity !== undefined) {
+    prov.supportsVerbosity ??= entry.supportsVerbosity;
+  }
+}
+
+/**
  * Last-resort enrichment for a provider whose NAME matches no registry id.
  *
  * #1100 was reported against a hand-added provider called "GLM" pointing at a vendor endpoint
@@ -426,6 +455,7 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
     // destinations, so a templated or overridable base URL cannot be claimed by it.
     enrichReasoningSummariesByDestination(prov);
     applyServiceTierModelDefaults(prov, serviceTierModelDefaultsFor(registryEntryForProviderDestination(prov), prov));
+    applyVerbosityDefaults(prov, registryEntryForProviderDestination(prov));
     return;
   }
   const explicitDirectReasoning: DirectReasoningEffortOverrides = {
@@ -474,6 +504,9 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   if (prov.requiresAdjacentResponsesToolResults === undefined && seed.requiresAdjacentResponsesToolResults !== undefined) {
     prov.requiresAdjacentResponsesToolResults = seed.requiresAdjacentResponsesToolResults;
   }
+  if (prov.annotateEmptyToolOutputs === undefined && seed.annotateEmptyToolOutputs !== undefined) {
+    prov.annotateEmptyToolOutputs = seed.annotateEmptyToolOutputs;
+  }
   // Registry-only metadata (never seeded into saved config): backfill straight from
   // the entry so an explicit user value stays distinguishable from the default.
   if (prov.fastWire === undefined && entry.fastWire !== undefined) {
@@ -489,6 +522,7 @@ export function enrichProviderFromRegistry(name: string, prov: OcxProviderConfig
   if (prov.preserveResponsesReasoningContent === undefined && entry.preserveResponsesReasoningContent !== undefined) prov.preserveResponsesReasoningContent = entry.preserveResponsesReasoningContent;
   applyReasoningSummaryDefaults(prov, entry.modelSupportsReasoningSummaries);
   applyServiceTierModelDefaults(prov, serviceTierModelDefaultsFor(entry, prov));
+  applyVerbosityDefaults(prov, entry);
   // Registry-only repair policy (#938): fill only when the runtime provider has
   // no explicit policy, and deep-clone so saved/user values never alias the
   // registry constant.

@@ -16,7 +16,7 @@ export function buildAddModalAccountRows(
         id: name,
         label: formatProviderDisplayName(name, t),
         kind: "codex" as const,
-        href: "#codex-auth",
+        href: "#codex-set",
       })),
     ...oauthProviders
       .toSorted((a, b) => a.localeCompare(b))

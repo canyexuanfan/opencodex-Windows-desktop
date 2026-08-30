@@ -1,12 +1,17 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTrustedWindowsElevationExecutablesForTests } from "../src/lib/windows-elevation";
 import {
+  createWindowsPowerShellFixture,
+  probeWindowsPowerShellFixture,
+  type WindowsPowerShellFixture,
+} from "./helpers/windows-power-shell-fixture";
+import {
   afterCatalogWriteHandleAppServers,
   attachStaleAppServerHint,
+  CATALOG_STATE_MAX_STALE_MS,
   catalogStateTtlMs,
   collectCodexAppServerCatalogState,
   collectCodexAppServerCatalogStateForRequest,
@@ -26,30 +31,29 @@ import {
 describe("collectCodexAppServerCatalogState (#857)", () => {
 const APP_SERVER_CMD = "/usr/local/bin/codex app-server";
 
-/**
- * A stand-in for powershell.exe that stalls, prints `line`, and exits.
- *
- * Platform-shaped on purpose: `execFile` launches its target directly with no shell, so a
- * POSIX `.sh` script is not an executable on Windows — and Windows is the platform this
- * whole fix exists for, with its own CI shard running this suite. On Windows the fake is a
- * `.cmd` invoked through `cmd.exe`; elsewhere it is a shell script.
- */
-function writeStallingFakePowerShell(dir: string, line: string): string {
-  if (process.platform === "win32") {
-    const cmd = join(dir, "fake-powershell.cmd");
-    writeFileSync(cmd, [
-      "@echo off",
-      // ~200ms without depending on timeout.exe, which refuses a redirected stdin.
-      "ping -n 1 -w 200 192.0.2.1 >nul 2>&1",
-      `echo ${line.replace(/\t/g, "\t")}`,
-    ].join("\r\n"));
-    return cmd;
-  }
-  const sh = join(dir, "fake-powershell.sh");
-  writeFileSync(sh, ["#!/bin/sh", "sleep 0.2", `printf '%s\\n' '${line}'`].join("\n"));
-  chmodSync(sh, 0o755);
-  return sh;
-}
+let stallingFakePowerShell: WindowsPowerShellFixture;
+beforeAll(async () => {
+  stallingFakePowerShell = await createWindowsPowerShellFixture();
+});
+afterAll(() => stallingFakePowerShell?.cleanup());
+
+  // Both #1852 cases below reach the collector through the real execFile path, and
+  // the collector maps any exec failure to `state: "unknown"` with no processes.
+  // So a fixture that cannot run produces exactly the assertion failures a
+  // synchronous implementation would, and the Windows leg reported the design
+  // regression it does not have. This names the real condition instead.
+  test("the PowerShell fixture the #1852 cases depend on actually executes", async () => {
+    const probe = await probeWindowsPowerShellFixture(stallingFakePowerShell);
+    expect(probe.ok, `fake PowerShell fixture at ${stallingFakePowerShell.executable} did not run: ${probe.detail}`).toBe(true);
+  });
+
+  test("a hung PowerShell fixture probe is killed at its local deadline", async () => {
+    const startedAt = Date.now();
+    const probe = await probeWindowsPowerShellFixture(stallingFakePowerShell, 25);
+    expect(probe.ok).toBe(false);
+    expect(probe.detail).toContain("timed out after 25ms");
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+  });
 
   test("not_running when no app-server process exists", () => {
     const status = collectCodexAppServerCatalogState({
@@ -134,9 +138,7 @@ function writeStallingFakePowerShell(dir: string, line: string): string {
   // asynchronous one does not. That difference is the entire content of #1852.
   test("the default Windows request path keeps the event loop alive through both PowerShell calls (#1852)", async () => {
     resetCodexAppServerCatalogStateCache();
-    const dir = mkdtempSync(join(tmpdir(), "ocx-ps-fake-"));
-    const fake = writeStallingFakePowerShell(dir, `42\t${APP_SERVER_CMD}\tCONTOSO\\jun`);
-    setTrustedWindowsElevationExecutablesForTests({ powershell: fake });
+    setTrustedWindowsElevationExecutablesForTests({ powershell: stallingFakePowerShell.executable });
 
     // Phase signal instead of a timer count. A callback tally has to pick a threshold
     // between "sync" and "async" observations, and `setInterval` makes no catch-up
@@ -157,7 +159,6 @@ function writeStallingFakePowerShell(dir: string, line: string): string {
     } finally {
       clearInterval(beat);
       setTrustedWindowsElevationExecutablesForTests(null);
-      rmSync(dir, { recursive: true, force: true });
       resetCodexAppServerCatalogStateCache();
     }
 
@@ -172,15 +173,14 @@ function writeStallingFakePowerShell(dir: string, line: string): string {
   // blocking when an app-server exists, so it needs its own oracle.
   test("the default Windows start-time discovery keeps the event loop alive (#1852)", async () => {
     resetCodexAppServerCatalogStateCache();
-    const dir = mkdtempSync(join(tmpdir(), "ocx-ps-start-"));
-    const fake = writeStallingFakePowerShell(dir, `42\t${APP_SERVER_CMD}\tCONTOSO\\jun`);
-    setTrustedWindowsElevationExecutablesForTests({ powershell: fake });
+    setTrustedWindowsElevationExecutablesForTests({ powershell: stallingFakePowerShell.executable });
 
     let loopRanDuringExec = false;
     const beat = setInterval(() => { loopRanDuringExec = true; }, 5);
+    let status: Awaited<ReturnType<typeof collectCodexAppServerCatalogStateForRequest>>;
     try {
       // No readStartMsBatchAsync override: the default start-time path must run for real.
-      await collectCodexAppServerCatalogStateForRequest({
+      status = await collectCodexAppServerCatalogStateForRequest({
         platform: "win32",
         listSnapshotsAsync: async () => [{ pid: 42, commandLine: APP_SERVER_CMD }],
         catalogMtimeMs: () => 1_000,
@@ -188,11 +188,14 @@ function writeStallingFakePowerShell(dir: string, line: string): string {
     } finally {
       clearInterval(beat);
       setTrustedWindowsElevationExecutablesForTests(null);
-      rmSync(dir, { recursive: true, force: true });
       resetCodexAppServerCatalogStateCache();
     }
 
     expect(loopRanDuringExec).toBe(true);
+    expect(status).toMatchObject({
+      state: "stale",
+      processes: [{ pid: 42, startedAtMs: 500 }],
+    });
   });
 
   test("Windows request collection shares one in-flight refresh and its short cache (#1852)", async () => {
@@ -394,6 +397,74 @@ describe("Codex app-server process matching (#476)", () => {
     expect(isCodexAppServerCommandLine("node /opt/codex-code-mode-host --session 1")).toBe(true);
   });
 
+  /**
+   * Reported by a contributor in #2884 with `ps` output from an affected host: once the
+   * autostart shim renames the original launcher to `codex.opencodex-real`,
+   * `--restart-codex` matched nothing and left app-servers alive on stale catalogs.
+   */
+  test("matches the .opencodex-real launcher backups the shim creates", () => {
+    expect(isCodexAppServerCommandLine("/home/ubuntu/.local/bin/codex.opencodex-real app-server proxy")).toBe(true);
+    // The exact command line from the report.
+    expect(isCodexAppServerCommandLine(
+      "/home/ubuntu/.local/bin/codex.opencodex-real -c features.code_mode_host=true app-server --listen unix://",
+    )).toBe(true);
+    expect(isCodexAppServerCommandLine("\"C:\\Program Files\\nodejs\\codex.opencodex-real.cmd\" app-server")).toBe(true);
+    // findWindowsCodexTargets shims codex.ps1 alongside codex.cmd, so its backup runs too.
+    expect(isCodexAppServerCommandLine("\"C:\\Program Files\\nodejs\\codex.opencodex-real.ps1\" app-server")).toBe(true);
+    expect(isCodexAppServerCommandLine("node /usr/local/bin/codex.opencodex-real app-server proxy")).toBe(true);
+
+    // Still narrow: the suffix does not turn a subcommand or an argument into a match.
+    expect(isCodexAppServerCommandLine("codex.opencodex-real exec 'hello'")).toBe(false);
+    expect(isCodexAppServerCommandLine("node worker.js codex.opencodex-real app-server")).toBe(false);
+    // A backup name must not be normalised into the target-triple pattern. Stripping the
+    // suffix before that test would make this unrelated binary a kill target.
+    expect(isCodexAppServerCommandLine("/opt/tools/codex-report-generator-worker.opencodex-real app-server")).toBe(false);
+    // No shim installation can produce a .exe backup: Windows refuses to rename a native
+    // codex.exe. Matching a name nothing writes only widens what SIGTERM can reach.
+    expect(isCodexAppServerCommandLine("C:\\tools\\codex.opencodex-real.exe app-server")).toBe(false);
+  });
+
+  /**
+   * `--` ends option parsing, so the next word is a TUI prompt rather than a subcommand.
+   * `codex -- app-server` opens an interactive session whose first prompt word happens to
+   * be "app-server"; matching it sent SIGTERM to a live session. Predates the shim-backup
+   * work and applies to every launcher name.
+   */
+  test("a prompt after -- is not the app-server subcommand", () => {
+    expect(isCodexAppServerCommandLine("codex -- app-server")).toBe(false);
+    expect(isCodexAppServerCommandLine("/usr/local/bin/codex -- app-server --listen unix://")).toBe(false);
+    expect(isCodexAppServerCommandLine("codex.opencodex-real -- app-server")).toBe(false);
+    expect(isCodexAppServerCommandLine("codex -c features.x=true -- app-server")).toBe(false);
+    expect(isCodexAppServerCommandLine("node /usr/local/bin/codex -- app-server")).toBe(false);
+    // The real invocations still match: a global option before the subcommand is ordinary.
+    expect(isCodexAppServerCommandLine("codex app-server")).toBe(true);
+    expect(isCodexAppServerCommandLine("codex -c features.x=true app-server")).toBe(true);
+  });
+
+
+  test("matches the npm wrapper that supervises the native app-server", () => {
+    // The shape that made `ocx sync --restart-codex` report a survivor on Linux. An
+    // npm-installed Codex runs as a PAIR: `node /usr/local/bin/codex app-server` and
+    // the vendored native binary it spawns. Only the child matched, so SIGTERM went to
+    // the child while its supervisor kept the socket. Both halves have to match.
+    expect(isCodexAppServerCommandLine("node /usr/local/bin/codex app-server proxy")).toBe(true);
+    expect(isCodexAppServerCommandLine(
+      "node /usr/local/bin/codex -c features.code_mode_host=true app-server --listen unix://",
+    )).toBe(true);
+    expect(isCodexAppServerCommandLine("bun /usr/local/bin/codex app-server")).toBe(true);
+
+    // The interpreter pair only forms when the codex-shaped token is IMMEDIATELY next.
+    // `worker.js` is not codex-shaped, so this stays the unrelated process it always was.
+    expect(isCodexAppServerCommandLine("node worker.js codex app-server")).toBe(false);
+    // Subcommand discipline survives the slice: `exec` is not `app-server`.
+    expect(isCodexAppServerCommandLine("node /usr/local/bin/codex exec 'hello'")).toBe(false);
+    // `run` is an npm-script indirection, not the executable.
+    expect(isCodexAppServerCommandLine("bun run codex app-server")).toBe(false);
+    // Interpreter FLAGS are deliberately unsupported: skipping them generically would
+    // mistake an option VALUE for the entrypoint (`node --require codex app-server x.js`).
+    expect(isCodexAppServerCommandLine("node --inspect /usr/local/bin/codex app-server")).toBe(false);
+  });
+
   test("matches official platform-baked Codex target-triple basenames", () => {
     expect(isCodexAppServerCommandLine(
       "/opt/codex/codex-x86_64-unknown-linux-musl app-server --listen unix:///tmp/c.sock",
@@ -468,6 +539,22 @@ describe("Codex app-server process matching (#476)", () => {
     // Stay narrow: incidental "opencodex" paths must not pay GetOwner.
     expect(isWindowsCodexCandidateCommandLine(
       "node C:\\Users\\a\\opencodex\\src\\cli\\index.ts start",
+    )).toBe(false);
+    // Shim backups reach GetOwner, in the shape backupPathFor actually writes: the
+    // suffix goes after the stem and before the extension.
+    expect(isWindowsCodexCandidateCommandLine(
+      "\"C:\\Program Files\\nodejs\\codex.opencodex-real.cmd\" app-server",
+    )).toBe(true);
+    expect(isWindowsCodexCandidateCommandLine(
+      "\"C:\\Program Files\\nodejs\\codex.opencodex-real.ps1\" app-server",
+    )).toBe(true);
+    expect(isWindowsCodexCandidateCommandLine(
+      "C:\\Users\\a\\.local\\bin\\codex.opencodex-real app-server",
+    )).toBe(true);
+    // The reverse ordering is a name nothing produces. Admitting it would pay GetOwner
+    // on a process that cannot be a shim backup.
+    expect(isWindowsCodexCandidateCommandLine(
+      "C:\\x\\codex.opencodex-real-x86_64-pc-windows-msvc.exe app-server",
     )).toBe(false);
     expect(isWindowsCodexCandidateCommandLine("opencodex app-server")).toBe(false);
     expect(isWindowsCodexCandidateCommandLine("hermes-codex-bridge-mcp")).toBe(false);
@@ -623,7 +710,7 @@ describe("CLI /api sync wiring for stale app-servers (#476)", () => {
 
   test("ocx sync only handles app-servers after a catalog/cache write and forwards --restart-codex", () => {
     const syncCase = dispatchSource.slice(dispatchSource.indexOf("sync: async"), dispatchSource.indexOf("v2: async"));
-    expect(syncCase).toContain('deps.args.slice(1).includes("--restart-codex")');
+    expect(syncCase).toContain('includes("--restart-codex")');
     expect(syncCase).toContain("synced.catalogWritten || synced.cacheSynced");
     expect(syncCase).toContain("afterCatalogWriteHandleAppServers");
     expect(syncCase).toContain("restart: restartCodex");
@@ -633,6 +720,21 @@ describe("CLI /api sync wiring for stale app-servers (#476)", () => {
     const gatedBlock = syncCase.slice(syncCase.indexOf("if (synced.catalogWritten"));
     expect(gatedBlock).toContain("afterCatalogWriteHandleAppServers");
     expect(syncCase.replace(gatedBlock, "")).not.toContain("afterCatalogWriteHandleAppServers");
+  });
+
+  test("--restart-desktop-app is a separate opt-in that --restart-codex never implies (#2292)", () => {
+    for (const [name, endMarker] of [["sync: async", "v2: async"], ['"sync-cache": async', "gui: async"]] as const) {
+      const handler = dispatchSource.slice(dispatchSource.indexOf(name), dispatchSource.indexOf(endMarker));
+      // Two independent flag reads. If the desktop restart were derived from
+      // restartCodex, quitting the user's app would ride along on a flag whose
+      // documented contract is app-server-only.
+      expect(handler).toContain('includes("--restart-desktop-app")');
+      expect(handler).toMatch(/if \(restartDesktopApp\) await handleDesktopAppRestart\((console|jsonSafeLog)\)/);
+      expect(handler).not.toContain("restartDesktopApp = restartCodex");
+      // Gated behind the same real-write condition as the app-server handling.
+      const desktopAt = handler.indexOf("restartDesktopApp) await handleDesktopAppRestart");
+      expect(handler.indexOf("afterCatalogWriteHandleAppServers")).toBeLessThan(desktopAt);
+    }
   });
 
   test("ocx sync-cache only handles app-servers after a successful models_cache write", () => {
@@ -907,14 +1009,20 @@ describe("warnIfStaleCodexAppServersAfterStartupWrite (#1046)", () => {
    * invalidation is verified by reading it, not by a test that cannot fail.
    */
   test("a defaulted read is memoized, and invalidation is what clears it", () => {
-    resetCodexAppServerCatalogStateCache();
-    const first = collectCodexAppServerCatalogState();
-    const second = collectCodexAppServerCatalogState();
-    // Same object identity: the second call served the memo rather than recomputing.
-    expect(second).toBe(first);
+    const realDateNow = Date.now;
+    Date.now = () => 1_000;
+    try {
+      resetCodexAppServerCatalogStateCache();
+      const first = collectCodexAppServerCatalogState();
+      const second = collectCodexAppServerCatalogState();
+      // Same object identity: the second call served the memo rather than recomputing.
+      expect(second).toBe(first);
 
-    resetCodexAppServerCatalogStateCache();
-    expect(collectCodexAppServerCatalogState()).not.toBe(first);
+      resetCodexAppServerCatalogStateCache();
+      expect(collectCodexAppServerCatalogState()).not.toBe(first);
+    } finally {
+      Date.now = realDateNow;
+    }
   });
 
   /*
@@ -1046,5 +1154,210 @@ describe("platform termination ladder", () => {
 
     expect(execCalls).toEqual([]);
     expect(signals).toEqual([{ pid: 4242, signal: "SIGTERM" }]);
+  });
+});
+
+describe("request-path catalog state serves stale while revalidating (#2499)", () => {
+  // The suite's other command-line fixture is scoped to its own describe block.
+  const APP_SERVER_COMMAND_LINE = "/usr/local/bin/codex app-server";
+  const APP_SERVER = [{ pid: 42, commandLine: APP_SERVER_COMMAND_LINE }];
+
+  /**
+   * A probe that never settles on its own. Every test here needs to observe what a
+   * caller gets back WHILE an enumeration is still running, which is the whole point:
+   * on Windows this probe costs ~0.4s per candidate process and routinely outlives
+   * the 5s TTL, so before this change one turn per window paid for it on the request
+   * path.
+   */
+  function makeIo(clock: { ms: number }) {
+    const releases: Array<(snapshots: Array<{ pid: number; commandLine: string }>) => void> = [];
+    const io = {
+      platform: "win32" as const,
+      now: () => clock.ms,
+      listSnapshotsAsync: () =>
+        new Promise<Array<{ pid: number; commandLine: string }>>(resolve => {
+          releases.push(resolve);
+        }),
+      readStartMsBatchAsync: async (pids: number[]) => new Map(pids.map(pid => [pid, 2_000] as const)),
+      catalogMtimeMs: () => 1_000,
+    };
+    return { io, releases, enumerations: () => releases.length };
+  }
+
+  /**
+   * Yield until the released refresh has stored its result, or give up loudly.
+   *
+   * A fixed sleep would be a bet on how many turns the refresh's continuation
+   * needs, and losing that bet on a slow runner looks like a product bug rather
+   * than a slow machine. This waits for the condition instead of for a duration.
+   */
+  async function drainUntil(predicate: () => boolean, what: string) {
+    for (let attempt = 0; attempt < 1_000; attempt += 1) {
+      if (predicate()) return;
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    throw new Error(`timed out waiting for ${what}`);
+  }
+  /** Did *promise* settle without the pending probe being released? */
+  async function settledWithoutTheProbe<T>(promise: Promise<T> | T): Promise<T | "waited"> {
+    return Promise.race([
+      Promise.resolve(promise),
+      new Promise<"waited">(resolve => setTimeout(() => resolve("waited"), 25)),
+    ]);
+  }
+
+  beforeEach(() => {
+    resetCodexAppServerCatalogStateCache();
+  });
+
+  test("the first turn waits, later turns do not, and N turns cost one enumeration", async () => {
+    const clock = { ms: 1_000_000 };
+    const { io, releases, enumerations } = makeIo(clock);
+
+    // Cold: nothing cached, so this one has to wait for the probe.
+    const cold = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(cold)).toBe("waited");
+    releases[0]([...APP_SERVER]);
+    await expect(cold).resolves.toMatchObject({ state: "fresh" });
+    expect(enumerations()).toBe(1);
+
+    // Past the TTL. The reading is expired, and the refresh it triggers is still
+    // running -- the caller must get the previous reading now, not wait for it.
+    clock.ms += catalogStateTtlMs("fresh") + 1;
+    const warm = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(warm)).toMatchObject({ state: "fresh" });
+    expect(enumerations()).toBe(2);
+
+    // Three more turns while that refresh is still in flight: still served, and the
+    // in-flight dedup means none of them starts another enumeration.
+    for (let turn = 0; turn < 3; turn += 1) {
+      clock.ms += 10;
+      const next = collectCodexAppServerCatalogStateForRequest(io);
+      expect(await settledWithoutTheProbe(next)).toMatchObject({ state: "fresh" });
+    }
+    expect(enumerations()).toBe(2);
+  });
+
+  test("the refresh it triggers is what makes the next reading current", async () => {
+    const clock = { ms: 2_000_000 };
+    const { io, releases } = makeIo(clock);
+
+    const cold = collectCodexAppServerCatalogStateForRequest(io);
+    releases[0]([...APP_SERVER]);
+    await expect(cold).resolves.toMatchObject({ state: "fresh" });
+
+    clock.ms += catalogStateTtlMs("fresh") + 1;
+    // Served from the expired entry, and the refresh that call started is what the
+    // rest of this test is about.
+    const served = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(served)).toMatchObject({ state: "fresh" });
+
+    // The background refresh finds the machine empty now.
+    let refreshed = false;
+    served.then(() => {}).catch(() => {});
+    releases[1]([]);
+    // The refresh has landed once a read at the same instant reports the new
+    // state; before that it still answers from the entry it is replacing.
+    await drainUntil(() => {
+      void collectCodexAppServerCatalogStateForRequest(io).then(seen => {
+        if (seen.state === "not_running") refreshed = true;
+      });
+      return refreshed;
+    }, "the background refresh to store not_running");
+
+    // Served from the refreshed entry, still without waiting.
+    clock.ms += 1;
+    const after = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(after)).toMatchObject({ state: "not_running" });
+  });
+
+  test("a reading older than the bound is not served -- the caller waits for a real one", async () => {
+    const clock = { ms: 3_000_000 };
+    const { io, releases } = makeIo(clock);
+
+    const cold = collectCodexAppServerCatalogStateForRequest(io);
+    releases[0]([...APP_SERVER]);
+    await expect(cold).resolves.toMatchObject({ state: "fresh" });
+
+    // One tick inside the bound, which runs from expiry rather than from when the
+    // reading was taken: still served, still without waiting.
+    clock.ms += catalogStateTtlMs("fresh") + CATALOG_STATE_MAX_STALE_MS - 1;
+    const last = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(last)).toMatchObject({ state: "fresh" });
+
+    // One tick past it, where the reading stops being evidence about the machine.
+    // That call joins the refresh the previous one started rather than waiting on a
+    // second enumeration, so releasing that one probe is what settles it.
+    clock.ms += 1;
+    const tooOld = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(tooOld)).toBe("waited");
+    releases[1]([...APP_SERVER]);
+    await expect(tooOld).resolves.toMatchObject({ state: "fresh" });
+  });
+
+  test("a failed refresh does not evict the reading it was refreshing", async () => {
+    const clock = { ms: 5_000_000 };
+    const releases: Array<(snapshots: Array<{ pid: number; commandLine: string }>) => void> = [];
+    const rejects: Array<(reason: Error) => void> = [];
+    const io = {
+      platform: "win32" as const,
+      now: () => clock.ms,
+      listSnapshotsAsync: () =>
+        new Promise<Array<{ pid: number; commandLine: string }>>((resolve, reject) => {
+          releases.push(resolve);
+          rejects.push(reject);
+        }),
+      readStartMsBatchAsync: async (pids: number[]) => new Map(pids.map(pid => [pid, 2_000] as const)),
+      catalogMtimeMs: () => 1_000,
+    };
+
+    const cold = collectCodexAppServerCatalogStateForRequest(io);
+    releases[0]([{ pid: 42, commandLine: APP_SERVER_COMMAND_LINE }]);
+    await expect(cold).resolves.toMatchObject({ state: "fresh" });
+
+    // Expire it, take the stale answer, and let the refresh it started fail.
+    clock.ms += catalogStateTtlMs("fresh") + 1;
+    const served = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(served)).toMatchObject({ state: "fresh" });
+    rejects[1](new Error("windows_enum_incomplete"));
+    await drainUntil(() => rejects.length === 2, "the failing refresh to be started");
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    // The transient failure must not have replaced the observation. Caching
+    // `unknown` over it would take the answer away from the next caller: `unknown`
+    // is not servable, so that caller would wait for a probe instead of being
+    // handed the reading it would otherwise have had.
+    clock.ms += 1;
+    const after = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(after)).toMatchObject({ state: "fresh" });
+  });
+
+  test("`unknown` is never served stale -- a failure to observe is not an observation", async () => {
+    const clock = { ms: 4_000_000 };
+    const releases: Array<(value: never[]) => void> = [];
+    const rejects: Array<(reason: Error) => void> = [];
+    const io = {
+      platform: "win32" as const,
+      now: () => clock.ms,
+      listSnapshotsAsync: () =>
+        new Promise<never[]>((resolve, reject) => {
+          releases.push(resolve);
+          rejects.push(reject);
+        }),
+      readStartMsBatchAsync: async (pids: number[]) => new Map(pids.map(pid => [pid, 2_000] as const)),
+      catalogMtimeMs: () => 1_000,
+    };
+
+    const cold = collectCodexAppServerCatalogStateForRequest(io);
+    rejects[0](new Error("windows_enum_incomplete"));
+    await expect(cold).resolves.toMatchObject({ state: "unknown" });
+
+    // Its own short window has passed. Handing `unknown` back again would keep
+    // guidance suppressed on the strength of a reading that never observed anything.
+    clock.ms += catalogStateTtlMs("unknown") + 1;
+    const next = collectCodexAppServerCatalogStateForRequest(io);
+    expect(await settledWithoutTheProbe(next)).toBe("waited");
+    releases[1]([]);
+    await expect(next).resolves.toMatchObject({ state: "not_running" });
   });
 });

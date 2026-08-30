@@ -4,7 +4,7 @@
  * rows, current-account breakdown). Shared by the aggregate dashboard and the
  * single-provider Overview so both surfaces present the same capacity semantics.
  */
-import { useT, useI18n } from "../../i18n/shared";
+import { useT, useI18n, type Locale } from "../../i18n/shared";
 import {
   accountQuotaFromReport,
   capacityAggregationFromReport,
@@ -14,11 +14,38 @@ import {
 import { type QuotaWindowKey } from "../QuotaBars";
 import QuotaBars from "../QuotaBars";
 
+function bcp47(locale: Locale): string {
+  switch (locale) {
+    case "en": return "en-GB";
+    case "de": return "de-DE";
+    case "fr": return "fr-FR";
+    case "ko": return "ko-KR";
+    case "zh": return "zh-CN";
+    case "zh-TW": return "zh-TW";
+    case "ru": return "ru-RU";
+    case "ja": return "ja-JP";
+    case "tr": return "tr-TR";
+    default: {
+      const _exhaustive: never = locale;
+      return _exhaustive;
+    }
+  }
+}
+
+// `Intl.DateTimeFormat.format()` throws a RangeError on a time value outside ±8.64e15 ms.
+// These timestamps come from provider APIs and persisted cache, so one unrepresentable value
+// would take down the whole capacity panel. Resolve to null and omit the line instead.
+function asDate(value: number): Date | null {
+  const date = new Date(value > 10_000_000_000 ? value : value * 1000);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
 export function ProviderCapacityQuota({ report, pending }: { report: ProviderQuotaReportView; pending: boolean }) {
   const t = useT();
   const { locale } = useI18n();
   const aggregation = capacityAggregationFromReport(report);
   const primaryQuota = accountQuotaFromReport(report);
+  const credits = primaryQuota?.creditsUsd;
   const showsAggregate = aggregation?.presentation === "aggregate";
   const incompleteWindowKeys = new Set<QuotaWindowKey>();
   const incompleteCustomWindowLabels = new Set<string>();
@@ -37,10 +64,23 @@ export function ProviderCapacityQuota({ report, pending }: { report: ProviderQuo
     ...(aggregation.customWindows ?? []).map((window, index) => ({ key: index + 3, label: window.label, window })),
   ] : [];
   const formatPercent = (value: number) => new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value);
-  const formatRecoveryAt = (value: number) => new Intl.DateTimeFormat(locale, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value > 10_000_000_000 ? value : value * 1000));
+  const formatRecoveryAt = (value: number) => {
+    const date = asDate(value);
+    return date === null ? null : new Intl.DateTimeFormat(locale, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(date);
+  };
+  const localeTag = bcp47(locale);
+  const formatCredits = (value: number) => new Intl.NumberFormat(localeTag, {
+    style: "currency",
+    currency: "USD",
+  }).format(value);
+  const formatPeriodEnd = (value: number) => {
+    const date = asDate(value);
+    return date === null ? null : new Intl.DateTimeFormat(localeTag, { dateStyle: "medium" }).format(date);
+  };
+  const periodEnd = credits?.expiresAt === undefined ? null : formatPeriodEnd(credits.expiresAt);
 
   return (
     <>
@@ -56,17 +96,29 @@ export function ProviderCapacityQuota({ report, pending }: { report: ProviderQuo
           incompleteCustomWindowLabels={showsAggregate ? incompleteCustomWindowLabels : undefined}
         />
       )}
-      {aggregation && (
+      {(credits || aggregation) && (
         <div className="pws-capacity-details">
-          {recoveryRows.flatMap(({ key, label, window }) => (
-            window.nextRecoveryAt !== undefined && window.nextRecoveryPercent !== undefined
+          {credits && (
+            <div className="pws-capacity-recovery">
+              <span>{t("quota.creditsBalance")}</span>
+              <strong>{formatCredits(credits.remaining)}</strong>
+            </div>
+          )}
+          {periodEnd !== null && (
+            <div className="pws-capacity-recovery">
+              <span>{t("quota.creditsPeriodEnds", { date: periodEnd })}</span>
+            </div>
+          )}
+          {recoveryRows.flatMap(({ key, label, window }) => {
+            const recoveryAt = window.nextRecoveryAt === undefined ? null : formatRecoveryAt(window.nextRecoveryAt);
+            return recoveryAt !== null && window.nextRecoveryPercent !== undefined
               ? [<div className="pws-capacity-recovery" key={key}>
-                  <span>{t("pws.capacity.nextRecovery")} · {label} · {formatRecoveryAt(window.nextRecoveryAt)}</span>
+                  <span>{t("pws.capacity.nextRecovery")} · {label} · {recoveryAt}</span>
                   <strong>{t("pws.capacity.recoveryShare", { percent: formatPercent(window.nextRecoveryPercent) })}</strong>
                 </div>]
-              : []
-          ))}
-          {showsAggregate && aggregation.currentAccount?.quota && (
+              : [];
+          })}
+          {showsAggregate && aggregation && aggregation.currentAccount?.quota && (
             <div className="pws-capacity-current">
               <span className="pws-capacity-label">
                 {t("pws.capacity.currentAccount")}
@@ -75,7 +127,7 @@ export function ProviderCapacityQuota({ report, pending }: { report: ProviderQuo
               <QuotaBars quota={aggregation.currentAccount.quota} threshold={80} t={t} layout="stacked" />
             </div>
           )}
-          {aggregation.incomplete && aggregation.excludedAccounts > 0 && (
+          {aggregation && aggregation.incomplete && aggregation.excludedAccounts > 0 && (
             <div className="pws-capacity-incomplete">
               {t("pws.capacity.incomplete", {
                 excluded: aggregation.excludedAccounts,
@@ -83,7 +135,7 @@ export function ProviderCapacityQuota({ report, pending }: { report: ProviderQuo
               })}
             </div>
           )}
-          {aggregation.partialWindowAccounts > 0 && (
+          {aggregation && aggregation.partialWindowAccounts > 0 && (
             <div className="pws-capacity-incomplete">
               {t("pws.capacity.partial", { count: aggregation.partialWindowAccounts })}
             </div>

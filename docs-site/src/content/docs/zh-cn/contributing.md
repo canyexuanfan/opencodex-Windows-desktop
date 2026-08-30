@@ -12,7 +12,9 @@ bun install
 bun run dev:proxy    # 开发模式代理 API
 bun run dev:gui      # 仪表盘 dev 服务器（另一个终端）
 bun run typecheck    # bun x tsc --noEmit
-bun run test         # bun test ./tests/
+bun run test:changed              # routine import-graph test selection
+bun test tests/router.test.ts     # routine focused test
+bun run test                      # complete suite (PR-ready / explicit ask)
 ```
 
 `bun run dev` 继续作为 `bun run dev:proxy` 的别名。仪表盘 dev 服务器使用 `bun run dev:gui`；
@@ -129,6 +131,20 @@ bun run release:watch               # 观察最新的 Release workflow run
 `openai-chat.ts` 为参考。只有 adapter 自己负责 transport retry 时才使用 `fetchResponse`；Cursor
 这类真正的双向 transport 应使用 `runTurn`。在 `tests/` 中添加聚焦测试；如果 factory 属于 public
 package API，还要从 `src/index.ts` export。
+
+### 添加兼容性声明
+
+兼容性声明位于 `src/compatibility/`。声明的范围比 adapter 更窄：它必须指定已经验证的准确 provider、
+规范化 upstream base URL、认证模式、inbound/upstream 协议和 model id。不要仅因为使用相同的 adapter
+或 wire format，就把声明复制到其他 provider 或目标地址。
+
+请使用带版本的 disposition：`passthrough`、`translated`、`degraded` 或 `unsupported`。每个非
+`passthrough` 声明都必须说明具体限制；基于 fixture 的声明必须列出证明它的准确 assertion id。
+在 `tests/fixtures/compatibility/` 中添加不含 secret 的 request vector，并编写通过 production adapter
+执行该向量的聚焦测试。
+
+兼容性 manifest 是被动数据。普通 router、Responses handler 和 server startup path 不得导入 manifest
+目录或激活 Compatibility Lab。
 
 ## 在声称完成前先验证
 

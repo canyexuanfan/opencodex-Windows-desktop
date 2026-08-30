@@ -12,7 +12,9 @@ bun install
 bun run dev:proxy    # прокси-API в режиме разработки
 bun run dev:gui      # dev-сервер дашборда (другой терминал)
 bun run typecheck    # bun x tsc --noEmit
-bun run test         # bun test ./tests/
+bun run test:changed              # routine import-graph test selection
+bun test tests/router.test.ts     # routine focused test
+bun run test                      # complete suite (PR-ready / explicit ask)
 ```
 
 `bun run dev` остаётся псевдонимом для `bun run dev:proxy`. Dev-сервер дашборда — `bun run dev:gui`;
@@ -138,6 +140,22 @@ Pull request'ы с ребейзом приветствуются: ребейз �
 только когда адаптер сам управляет повторными попытками транспорта, а `runTurn` — для действительно
 двунаправленного транспорта вроде Cursor. Добавьте сфокусированные тесты в `tests/` и экспортируйте
 фабрику из `src/index.ts`, если она входит в публичный API пакета.
+
+### Добавление заявления о совместимости
+
+Заявления о совместимости находятся в `src/compatibility/`. Их область уже области адаптера: в
+заявлении указываются точный проверенный провайдер, нормализованный upstream base URL, режим
+аутентификации, входной и upstream-протоколы и model id. Не переносите заявление на другого
+провайдера или адрес только потому, что они используют тот же адаптер или wire format.
+
+Используйте одну из версионированных категорий: `passthrough`, `translated`, `degraded` или
+`unsupported`. Для каждого заявления, кроме `passthrough`, опишите конкретное ограничение, а для
+заявления на основе fixture укажите точные assertion id, которые его доказывают. Добавьте request
+vector без секретов в `tests/fixtures/compatibility/` и сфокусированный тест, выполняющий его через
+production adapter.
+
+Манифесты совместимости являются пассивными данными. Обычные router, Responses handler и server
+startup path не должны импортировать каталог манифестов или активировать Compatibility Lab.
 
 ## Проверяйте, прежде чем объявлять работу завершённой
 

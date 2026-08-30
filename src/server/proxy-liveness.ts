@@ -9,7 +9,8 @@
  *
  * Lives outside cli.ts (which dispatches argv at module top level) so tests can import it.
  */
-import { loadConfig, readAlivePid, readRuntimePort, verifyPidIdentity } from "../config";
+import { loadConfig } from "../config";
+import { readAlivePid, readRuntimePort, verifyPidIdentity } from "../config/process-state";
 import { directLocalHttpFetch } from "./direct-local-http";
 
 export interface HealthzIdentity {
@@ -67,6 +68,14 @@ export interface LiveProxy {
   hostname?: string;
   /** Whether the successful probe used runtime-port metadata or the configured listen port. */
   source: "runtime" | "config";
+  /**
+   * Version the live proxy reported on `/healthz`, when it reported one.
+   *
+   * Carried so a stale `ocx` on PATH can be detected without a second request: the
+   * identity probe already parsed and validated this body. Absent for a legacy proxy whose
+   * healthz body predates the field.
+   */
+  version?: string;
 }
 
 /**
@@ -98,7 +107,7 @@ export async function proxyIdentityAt(
   port: number,
   opts: { hostname?: string; expectedPid?: number } = {},
   io: LivenessIo = {},
-): Promise<{ pid: number | null } | null> {
+): Promise<{ pid: number | null; version?: string } | null> {
   const fetchFn = io.fetchFn ?? directLocalHttpFetch;
   const sleepFn = io.sleepFn ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
   const nowFn = io.nowFn ?? Date.now;
@@ -121,7 +130,9 @@ export async function proxyIdentityAt(
       if (!isOpencodexHealthz(body)) return null;
       const pid = typeof body?.pid === "number" ? body.pid : null;
       if (opts.expectedPid !== undefined && pid !== null && pid !== opts.expectedPid) return null;
-      return { pid };
+      // Guarded the same way `pid` is: a non-string version is absent, not coerced.
+      const version = typeof body?.version === "string" ? body.version : undefined;
+      return version === undefined ? { pid } : { pid, version };
     } catch {
       // Transport failure (timeout / refused) — retry while budget remains; a proxy that
       // has only just begun listening can miss a single short probe (#764).
@@ -179,7 +190,13 @@ export async function findLiveProxy(io: LivenessIo = {}): Promise<LiveProxy | nu
         // healthz confirmed the pid itself → trusted; a pidless legacy body did not,
         // so the cheap pid must pass full identity verification before it is returned.
         const trusted = identity.pid === pid ? pid : killablePid(pid);
-        return { pid: trusted, port: runtime.port, hostname: runtime.hostname, source: "runtime" };
+        return {
+          pid: trusted,
+          port: runtime.port,
+          hostname: runtime.hostname,
+          source: "runtime",
+          ...(identity.version === undefined ? {} : { version: identity.version }),
+        };
       }
     }
   }
@@ -196,7 +213,13 @@ export async function findLiveProxy(io: LivenessIo = {}): Promise<LiveProxy | nu
     // (its process dead, the port reused by a pidless legacy proxy) — synthesizing it
     // would hand destructive callers (stopProxy → kill fallback) a reusable pid.
     if (identity) {
-      return { pid: verifiedReportedPid(identity.pid), port: record.port, hostname: record.hostname, source: "runtime" };
+      return {
+        pid: verifiedReportedPid(identity.pid),
+        port: record.port,
+        hostname: record.hostname,
+        source: "runtime",
+        ...(identity.version === undefined ? {} : { version: identity.version }),
+      };
     }
   }
 
@@ -210,6 +233,7 @@ export async function findLiveProxy(io: LivenessIo = {}): Promise<LiveProxy | nu
       port,
       hostname: config.hostname,
       source: "config",
+      ...(identity.version === undefined ? {} : { version: identity.version }),
     };
   }
   return null;

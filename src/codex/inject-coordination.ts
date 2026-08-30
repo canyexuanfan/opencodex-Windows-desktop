@@ -11,7 +11,13 @@ import { atomicWriteFile } from "../config";
 import type { CodexWriteLockResult } from "./codex-write-lock";
 import { inspectCodexCoordinatorPath } from "./coordinator-doctor";
 import { JOURNAL_PATH } from "./journal";
+import { updateIntegrationRecord } from "./integration-record";
 import { CODEX_CONFIG_PATH, CODEX_PROFILE_PATH } from "./paths";
+import type {
+  CodexArtifactId,
+  CodexProvenanceEntry,
+  CodexProvenanceLedger,
+} from "./convergence-types";
 import {
   codexWriteCoordination,
   type CodexWriteCandidate,
@@ -41,6 +47,7 @@ export const DEFAULT_INJECT_LOCK_TIMEOUT_MS = 5_000;
  */
 export type CodexWriteCoordinationEligibility =
   | { kind: "coordinated" }
+  | { kind: "adopt" }
   | { kind: "legacy-uncoordinated"; reason: string }
   | { kind: "refused"; reason: string };
 
@@ -97,6 +104,7 @@ export function codexWriteCoordinationEligibility(deps: {
 
   const residue = deps.residue();
   if (residue.kind === "clean") return { kind: "coordinated" };
+  if (residue.kind === "residue" && !coordinatorIsStableZeroByte) return { kind: "adopt" };
   /*
    * Everything else keeps the path it has always had.
    *
@@ -174,6 +182,178 @@ export function captureCodexPreImages(): CodexPreImages {
     profile: readOrNull(CODEX_PROFILE_PATH),
     journal: readOrNull(JOURNAL_PATH),
   };
+}
+
+/**
+ * How many transactions of evidence the ledger keeps.
+ *
+ * Each transaction appends three entries, and a `present` baseline embeds the artifact's exact
+ * bytes as base64 — a 25 KB `config.toml` is ~34 KB per entry, so roughly 100 KB per transaction.
+ * A machine that syncs on every start would grow this file without limit, and it is re-read and
+ * re-serialized on every append, so the cost is quadratic rather than merely large.
+ *
+ * A ledger is evidence, not an archive. The most recent transactions are the ones anyone
+ * diagnoses against, so the window keeps those and drops the oldest.
+ */
+export const CODEX_PROVENANCE_MAX_TRANSACTIONS = 16;
+
+/**
+ * How many serialized bytes of evidence the ledger keeps.
+ *
+ * The transaction window alone bounds the ledger only if each transaction is small, and a
+ * baseline embeds the artifact's exact bytes. Those artifacts sit outside this proxy's trust
+ * boundary: a native `config.toml` grown to hundreds of megabytes is copied into the record as
+ * base64 and re-serialized on every append, so a single oversized file turns a 16-transaction
+ * window into a multi-gigabyte write.
+ *
+ * The size is derived from the window above rather than picked: the 25 KB `config.toml` that
+ * comment describes measures 100.8 KiB per transaction, so a full 16-transaction window is
+ * 1.58 MiB. 4 MiB leaves that ordinary window untouched with room to spare while still refusing
+ * the pathological case, and a regression test pins the ordinary window so the two cannot drift
+ * apart silently.
+ */
+export const CODEX_PROVENANCE_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Measure the representation the integration-record writer actually emits.
+ *
+ * The minimal wrapper reproduces the final indentation depth of `provenance.entries`, including
+ * structured unknown extension fields preserved from older records. Its fixed wrapper makes this
+ * slightly conservative as a ledger-only ceiling, which is preferable to admitting an entry that
+ * expands past the limit when `JSON.stringify(record, null, 2)` writes it.
+ */
+function serializedProvenanceBytes(
+  entries: readonly CodexProvenanceEntry[],
+  ledger: CodexProvenanceLedger | undefined,
+): number {
+  return Buffer.byteLength(`${JSON.stringify({
+    version: 1,
+    provenance: { ...ledger, entries },
+  }, null, 2)}\n`, "utf-8");
+}
+
+function provenanceBaseline(bytes: string | null): CodexProvenanceEntry["baseline"] {
+  if (bytes === null) return { kind: "absent" };
+  return {
+    kind: "present",
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    bytesBase64: Buffer.from(bytes).toString("base64"),
+  };
+}
+
+function provenancePostImage(path: string): string | null {
+  try {
+    return createHash("sha256").update(readFileSync(path)).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Keep the newest transactions that fit both the transaction window and the byte ceiling, whole.
+ *
+ * Trimming by ENTRY count would cut a transaction in half and leave evidence that says a
+ * transaction touched two artifacts when it touched three — worse than dropping it outright,
+ * because a partial record still reads as complete. Order is preserved; only whole transactions
+ * are removed.
+ *
+ * The byte ceiling applies the same rule: a transaction that does not fit is omitted whole,
+ * including the newest one — a record silently truncated to fit would be read as a faithful
+ * pre-image. An oversized transaction is skipped rather than ending the scan, so one pathological
+ * artifact cannot erase the smaller transactions that still fit and are still diagnosable.
+ */
+export function boundProvenanceEntries(
+  entries: readonly CodexProvenanceEntry[],
+  maxTransactions = CODEX_PROVENANCE_MAX_TRANSACTIONS,
+  maxBytes = CODEX_PROVENANCE_MAX_BYTES,
+  ledger?: CodexProvenanceLedger,
+): readonly CodexProvenanceEntry[] {
+  const transactions = new Map<string, CodexProvenanceEntry[]>();
+  for (const entry of entries) {
+    const transaction = transactions.get(entry.txId);
+    if (transaction) transaction.push(entry);
+    else transactions.set(entry.txId, [entry]);
+  }
+  const order = [...transactions.keys()];
+  if (order.length <= maxTransactions) {
+    const baselineBytes = entries.reduce(
+      (total, entry) => total + (entry.baseline.kind === "present" ? entry.baseline.bytesBase64.length : 0),
+      0,
+    );
+    if (
+      baselineBytes <= maxBytes
+      && serializedProvenanceBytes(entries, ledger) <= maxBytes
+    ) return entries;
+  }
+  // Newest first, so the transactions anyone diagnoses against are the ones that fit.
+  const keep = new Set<string>();
+  let baselineBytes = 0;
+  for (let i = order.length - 1; i >= 0 && keep.size < maxTransactions; i--) {
+    const txId = order[i]!;
+    const txEntries = transactions.get(txId)!;
+    // Measure the embedded pre-images first: a pathological baseline is refused without
+    // serializing it, so the ceiling does not itself allocate the payload it exists to reject.
+    const transactionBaselineBytes = txEntries.reduce(
+      (total, entry) => total + (entry.baseline.kind === "present" ? entry.baseline.bytesBase64.length : 0),
+      0,
+    );
+    if (baselineBytes + transactionBaselineBytes > maxBytes) continue;
+    const candidateKeep = new Set(keep);
+    candidateKeep.add(txId);
+    // Reuse the already-grouped transactions: this avoids another full-ledger filter on each
+    // iteration while preserving the original transaction and entry order.
+    const candidateEntries = order.flatMap(id =>
+      candidateKeep.has(id) ? transactions.get(id)! : []
+    );
+    if (serializedProvenanceBytes(candidateEntries, ledger) > maxBytes) continue;
+    baselineBytes += transactionBaselineBytes;
+    keep.add(txId);
+  }
+  if (keep.size === order.length) return entries;
+  return entries.filter(entry => keep.has(entry.txId));
+}
+
+/** Append evidence for an already-committed native transaction, best-effort. */
+export function recordCodexNativeTransactionProvenance(
+  preImages: CodexPreImages,
+  txId: string,
+) {
+  const at = new Date().toISOString();
+  const surfaces: readonly [CodexArtifactId, string, string | null][] = [
+    [{ kind: "config" }, CODEX_CONFIG_PATH, preImages.config],
+    [{ kind: "generated-profile" }, CODEX_PROFILE_PATH, preImages.profile],
+    [{ kind: "injection-journal" }, JOURNAL_PATH, preImages.journal],
+  ];
+  const entries: readonly CodexProvenanceEntry[] = surfaces.map(([artifact, path, baseline]) => ({
+    artifact,
+    baseline: provenanceBaseline(baseline),
+    postImage: provenancePostImage(path),
+    txId,
+    at,
+  }));
+  return updateIntegrationRecord(record => {
+    const previousLedger = record.provenance;
+    // Unknown ledger extensions are forward-compatible and must be preserved. If those fixed
+    // fields alone exceed the ceiling, no entry selection can make the write compliant. Keep the
+    // existing record byte-for-byte instead of deleting all known evidence and rewriting the
+    // same oversized extension on every native transaction.
+    if (
+      previousLedger
+      && serializedProvenanceBytes([], previousLedger) > CODEX_PROVENANCE_MAX_BYTES
+    ) return record;
+    return {
+      ...record,
+      provenance: {
+        ...previousLedger,
+        entries: boundProvenanceEntries(
+          [...(previousLedger?.entries ?? []), ...entries],
+          CODEX_PROVENANCE_MAX_TRANSACTIONS,
+          CODEX_PROVENANCE_MAX_BYTES,
+          previousLedger,
+        ),
+      },
+    };
+  });
 }
 
 /**

@@ -8,7 +8,8 @@ Codex Desktop App makes background API calls with a hard-coded helper model for 
 - **Commit message generation** — generates git commit messages
 - **Skill orchestration** — internal orchestration turns
 
-These calls happen independently of your selected main model and use `reasoningEffort: low`.
+These calls happen independently of your selected main model. When intercepted, the request keeps
+its configured reasoning effort.
 
 The helper model is not stable across client versions. Codex used `gpt-5.4-mini` up to 0.144.x and
 moved to `gpt-5.6-luna` in 0.145.0, which silently disabled a single-literal intercept
@@ -63,18 +64,15 @@ the defaults rather than extending them:
 
 ### Behavior
 
-- Matching maintenance requests, including `prewarm`, `compaction`, and `memory`, are
-  rewritten to the configured model
-- Normal user turns identified by `x-codex-turn-metadata` with `request_kind: "turn"` are
-  never rewritten
-- Headerless legacy clients retain the original prefix behavior: matching bare model ids are
-  rewritten
-- Missing, malformed, or unrecognized turn metadata retains the legacy prefix behavior
-- Reasoning effort is forced to `low` (matching the original behavior)
+- Every request whose bare model id matches a configured source prefix is rewritten to the
+  configured model, including normal `request_kind: "turn"` requests and maintenance requests
+  such as `prewarm`, `compaction`, and `memory`
+- `x-codex-turn-metadata` does not exempt a matching request from interception
+- The request's configured reasoning effort is preserved
 - The original model ID is logged as `shadowCallRewrittenFrom` in request logs
 - When disabled (default), no interception occurs
 
 ### Warning
 
-Headerless clients cannot distinguish foreground turns from background helper calls. If such a
-client uses `gpt-5.6-luna` as its main model, narrow `sourceModels` or disable the intercept.
+Interception is model-based and does not distinguish foreground turns from background helper calls.
+If a client uses `gpt-5.6-luna` as its main model, narrow `sourceModels` or disable the intercept.

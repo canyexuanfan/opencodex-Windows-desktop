@@ -510,6 +510,18 @@ describe("claude outbound SSE", () => {
     expect(events.at(-1)!.data).toEqual({ type: "error", error: { type: "overloaded_error", message: "bad gateway" } });
   });
 
+  test("pre-output heartbeat stays transport-only before an initial error", async () => {
+    const upstream = [
+      sse("response.created", { response: {} }),
+      sse("response.heartbeat", {}),
+      sse("response.failed", { response: { status: "failed", error: { status: 502, message: "bad gateway" } } }),
+    ].join("");
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m", { pingIntervalMs: 0 }));
+    expect(events.map(event => event.name)).toEqual(["ping", "error"]);
+    expect(events.some(event => event.name === "message_start")).toBe(false);
+    expect(events.at(-1)!.data).toEqual({ type: "error", error: { type: "overloaded_error", message: "bad gateway" } });
+  });
+
   test("failed with NO status (relaySseWithFailedTail synthetic tail) -> default 500 -> overloaded_error", async () => {
     const upstream = [
       sse("response.created", { response: {} }),
@@ -519,6 +531,111 @@ describe("claude outbound SSE", () => {
     expect(events.at(-1)!.data).toEqual({
       type: "error",
       error: { type: "overloaded_error", message: "Upstream stream terminated unexpectedly" },
+    });
+  });
+
+  // Internal response.failed envelopes carry the classified {type, code, message} but no
+  // numeric status (adapterFailureFromEvent drops httpStatus at the wire boundary). The
+  // classified status must be derived the same way /api/logs derives it, or every classified
+  // failure is masked as retryable overloaded_error — a Cursor plan/quota 429 surfaced in
+  // Claude Code as "Repeated 529 Overloaded errors".
+  test("failed with classified rate_limit_error but NO numeric status -> rate_limit_error, not overloaded", async () => {
+    const upstream = [
+      sse("response.created", { response: {} }),
+      sse("response.failed", {
+        response: {
+          status: "failed",
+          error: { type: "rate_limit_error", code: "rate_limit_exceeded", message: "Cursor rate limit exceeded: quota exhausted" },
+        },
+      }),
+    ].join("");
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    expect(events.at(-1)!.data).toEqual({
+      type: "error",
+      error: { type: "rate_limit_error", message: "Cursor rate limit exceeded: quota exhausted" },
+    });
+  });
+
+  test("failed with classified authentication_error but NO numeric status -> authentication_error, not overloaded", async () => {
+    const upstream = [
+      sse("response.created", { response: {} }),
+      sse("response.failed", {
+        response: {
+          status: "failed",
+          error: { type: "authentication_error", code: "invalid_api_key", message: "Cursor authentication failed: expired token" },
+        },
+      }),
+    ].join("");
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    expect(events.at(-1)!.data).toEqual({
+      type: "error",
+      error: { type: "authentication_error", message: "Cursor authentication failed: expired token" },
+    });
+  });
+
+  test("failed with classified invalid_request_error but NO numeric status -> invalid_request_error, not overloaded", async () => {
+    const upstream = [
+      sse("response.created", { response: {} }),
+      sse("response.failed", {
+        response: {
+          status: "failed",
+          error: { type: "invalid_request_error", code: "context_length_exceeded", message: "Cursor context limit exceeded" },
+        },
+      }),
+    ].join("");
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    expect(events.at(-1)!.data).toEqual({
+      type: "error",
+      error: { type: "invalid_request_error", message: "Cursor context limit exceeded" },
+    });
+  });
+
+  test("failed with classified server overload but NO numeric status -> still overloaded_error", async () => {
+    const upstream = [
+      sse("response.created", { response: {} }),
+      sse("response.failed", {
+        response: {
+          status: "failed",
+          error: { type: "server_error", code: "server_is_overloaded", message: "Cursor server overloaded: unavailable" },
+        },
+      }),
+    ].join("");
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    expect(events.at(-1)!.data).toEqual({
+      type: "error",
+      error: { type: "overloaded_error", message: "Cursor server overloaded: unavailable" },
+    });
+  });
+
+  // Deriving the status from the classified payload is only safe if a STRUCTURED server
+  // class outranks the message heuristics. `httpStatusFromTerminalError` recognized only
+  // `server_error` + `server_is_overloaded`, so a generic `upstream_server_error` fell
+  // through to `inferHttpStatusFromAdapterMessage`. An upstream 5xx whose text happens to
+  // contain "malformed" or "invalid request" then returned 400, and Claude Code stopped
+  // retrying a genuinely retryable upstream failure — the exact inversion this PR set out
+  // to fix, reintroduced one layer down. classifyError assigns `upstream_server_error` to
+  // every 5xx it sees, so the class is authoritative over the words in the message.
+  test("generic upstream_server_error with client-sounding text stays a transient server failure", async () => {
+    const upstream = [
+      sse("response.created", { response: {} }),
+      sse("response.failed", {
+        response: {
+          status: "failed",
+          error: {
+            type: "server_error",
+            code: "upstream_server_error",
+            message: "upstream stream produced malformed tool call arguments",
+          },
+        },
+      }),
+    ].join("");
+    const events = await collectEvents(responsesSseToAnthropicSse(streamFrom(upstream), "m"));
+    expect(events.at(-1)!.data).toEqual({
+      type: "error",
+      error: {
+        type: "overloaded_error",
+        message: "upstream stream produced malformed tool call arguments",
+      },
     });
   });
 
@@ -615,6 +732,58 @@ describe("claude outbound SSE", () => {
     const pings = events.filter(e => e.name === "ping").length;
     expect(pings).toBeGreaterThanOrEqual(3); // startup ping + >=2 idle pings after semantic start
     expect(events.at(-1)!.name).toBe("message_stop");
+  });
+
+  test("idle keepalive pings flow before the first semantic output", async () => {
+    const PING_INTERVAL_MS = 25;
+    const SILENCE_MS = 300;
+    const encoder = new TextEncoder();
+    const upstream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(encoder.encode(sse("response.created", { response: {} })));
+        await new Promise(r => setTimeout(r, SILENCE_MS));
+        controller.enqueue(encoder.encode(sse("response.output_text.delta", { delta: "x" })));
+        controller.enqueue(encoder.encode(sse("response.completed", { response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1 } } })));
+        controller.close();
+      },
+    });
+    const events = await collectEvents(responsesSseToAnthropicSse(upstream, "m", { pingIntervalMs: PING_INTERVAL_MS }));
+    const messageStartIndex = events.findIndex(event => event.name === "message_start");
+    expect(messageStartIndex).toBeGreaterThanOrEqual(2);
+    expect(events.slice(0, messageStartIndex).every(event => event.name === "ping")).toBe(true);
+    expect(events.at(-1)!.name).toBe("message_stop");
+  });
+
+  test("unread pre-output keepalives preserve budget for semantic output", async () => {
+    const HEARTBEAT_COUNT = 100;
+    const MAX_BUFFERED_PINGS = 10;
+    const UNREAD_MS = 100;
+    const encoder = new TextEncoder();
+    const upstream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(encoder.encode(sse("response.created", { response: {} })));
+        for (let index = 0; index < HEARTBEAT_COUNT; index++) {
+          controller.enqueue(encoder.encode(sse("response.heartbeat", {})));
+        }
+        await new Promise(r => setTimeout(r, UNREAD_MS));
+        controller.enqueue(encoder.encode(sse("response.output_text.delta", { delta: "x" })));
+        controller.enqueue(encoder.encode(sse("response.completed", { response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1 } } })));
+        controller.close();
+      },
+    });
+    const budget = createTestTranslatorBudget({ maxTurnBytes: 2 * 1024 });
+    const output = responsesSseToAnthropicSse(upstream, "m", { pingIntervalMs: 1, translatorBudget: budget });
+    await new Promise(r => setTimeout(r, UNREAD_MS + 25));
+
+    const events = await collectEvents(output);
+    // The exact number admitted depends on the runtime's stream queue size. A generous
+    // ceiling still catches either an unguarded heartbeat burst or the 1 ms timer.
+    expect(events.filter(event => event.name === "ping").length).toBeLessThanOrEqual(MAX_BUFFERED_PINGS);
+    expect(events.some(event => event.name === "error")).toBe(false);
+    expect(events.at(-1)!.name).toBe("message_stop");
+    const snapshot = budget.snapshot();
+    expect(snapshot.overflows).toBe(0);
+    expect(snapshot.highWaterBytes).toBeLessThan(2 * 1024);
   });
 
   test("no-output completed still emits a valid empty message", async () => {

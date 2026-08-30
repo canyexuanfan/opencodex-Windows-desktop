@@ -17,6 +17,15 @@ export interface OpenRouterProviderRouting {
   allowFallbacks?: boolean;
 }
 
+export interface VercelGatewayRouting {
+  /** Vercel AI Gateway provider slugs to try first, in priority order. */
+  order?: string[];
+  /** Restrict routing to these Vercel AI Gateway provider slugs. */
+  only?: string[];
+  /** Sort providers by "cost", "ttft", or "tps". */
+  sort?: "cost" | "ttft" | "tps";
+}
+
 export interface ResponsesItemIdRepairConfig {
   /** Exact `message` item ids that the proxy should rewrite to request-local canonical ids. */
   message?: string[];
@@ -30,6 +39,25 @@ export interface ResponsesItemIdRepairConfig {
    * function_call ids and call_id pairing are never rewritten.
    */
   repairInvalidIds?: boolean;
+}
+
+/**
+ * Opt-in retry for pre-stream transient upstream statuses (500/502/503/504/520/521/522) on
+ * `providers.<name>.transientRetryOn5xx`.
+ *
+ * Disabled unless the object is present; a bare `{}` opts in with defaults. Separate from
+ * `retryOn429`, which handles rate limiting with its own waits.
+ */
+export interface TransientRetryPolicy {
+  /** Master switch. Presence of the object also enables the policy (default true). */
+  enabled?: boolean;
+  /**
+   * TOTAL upstream sends allowed for one request, including the first (1..10, default 3).
+   *
+   * Not a per-layer retry count: the connection-reset and transient-status recovery layers
+   * share this single budget, so `3` means at most three real requests reach the provider.
+   */
+  attempts?: number;
 }
 
 /**
@@ -115,6 +143,15 @@ export interface TierObservationContext {
   fastWire: FastWire | null;
   demandDecision: "force-fast" | "force-default" | "inherit";
   callerTier?: string;
+  /**
+   * Whether the destination's echoed `service_tier` is authoritative about Fast scheduling.
+   *
+   * The ChatGPT-internal Codex backend returns `service_tier: "default"` on turns that were in
+   * fact scheduled as priority, so treating its echo as a downgrade produced a false
+   * `response-declined` on every Fast request (#2558). Absent means "assume authoritative",
+   * preserving the behaviour for the public API where the echo does mean what it says.
+   */
+  responseTierAuthoritative?: boolean;
 }
 
 export type TierDecision =
@@ -127,6 +164,12 @@ export type TierDecision =
  * retries are allowed; OAuth/forward credentials and local runtimes are never replayed.
  */
 export interface OcxProviderConfig {
+  /** Optional short provider namespace used only at request/catalog presentation time. */
+  alias?: string;
+  /** Native model id -> short, slash-free request alias. */
+  modelAliases?: Record<string, string>;
+  /** Override the global built-in model-alias switch for this provider. */
+  defaultAliases?: boolean;
   adapter: string;
   /**
    * Codex tool calling mode for routed models.
@@ -182,6 +225,16 @@ export interface OcxProviderConfig {
    * preserved after it, and parallel calls stay together with the reasoning turn that produced them.
    */
   requiresAdjacentResponsesToolResults?: boolean;
+  /**
+   * When enabled, a tool result that is present but empty (no usable text or content
+   * part) is rewritten to an explicit annotation before it reaches the upstream wire,
+   * so models do not silently accept an empty result or re-issue the same call.
+   * Non-empty results and missing-result placeholders stay byte-identical.
+   * Seeded true for DeepSeek; absent keeps legacy behavior for every other provider.
+   * Only the OpenAI-family adapters (openai-chat / openai-responses) read this option;
+   * other adapters ignore it.
+   */
+  annotateEmptyToolOutputs?: boolean;
   /**
    * Provider fallback for canonical Fast capability over an OpenAI `service_tier` wire.
    * This pure tri-state feeds catalog publication, routing eligibility, compatibility
@@ -266,6 +319,33 @@ export interface OcxProviderConfig {
    * full set so the user can pick). See devlog issue_052_provider-model-allowlist.
    */
   selectedModels?: string[];
+  /** Override for newly discovered models. Absent/"inherit" uses the install policy. */
+  newModelPolicy?: "on" | "off" | "inherit";
+  /**
+   * Model-preset marker for `selectedModels` (#2465). Absent means "all", exactly today's
+   * semantics — an existing provider is never narrowed by an upgrade.
+   *
+   * The preset is a SEED, not a lock: `selectedModels` holds concrete ids materialized from
+   * the shipped rules, so every existing consumer and older binaries keep working against a
+   * plain allowlist. Divergence is detected at the WRITE path rather than by diffing — any user
+   * edit while the mode is "preset" flips it to "custom", after which the proxy never
+   * re-materializes. That collapses upgrade reconciliation to a version compare.
+   *
+   * Deliberately distinct from `deriveProviderPresets`, which curates WHICH PROVIDERS to offer.
+   * This curates which MODELS a provider exposes; the code says "model preset" throughout.
+   */
+  modelPreset?: {
+    mode: "preset" | "all" | "custom";
+    /** MODEL_PRESETS version materialized into `selectedModels`. */
+    appliedVersion?: number;
+    appliedAt?: string;
+    /**
+     * Set when materialization matched nothing and the provider fell back to "all". A preset
+     * must never write an empty allowlist, because empty means ALL and would silently
+     * un-curate; the fallback marker lets the next convergence retry.
+     */
+    fallback?: "preset-empty";
+  };
   /** Provider-wide fallback when context metadata is absent; otherwise caps the reported window. */
   contextWindow?: number;
   /** Per-model fallback when context metadata is absent; otherwise caps the reported window. */
@@ -274,6 +354,11 @@ export interface OcxProviderConfig {
   modelInputModalities?: Record<string, string[]>;
   /** Model-specific max input token limits. Values cap auto_compact_token_limit. */
   modelMaxInputTokens?: Record<string, number>;
+  /**
+   * Per-model soft compaction budgets. Values may only lower the effective
+   * context/max-input envelope; they never raise hard admission limits.
+   */
+  modelAutoCompactTokenLimits?: Record<string, number>;
   /**
    * Provider-wide fallback for chat-completions `max_tokens` when the caller omits
    * Responses `max_output_tokens`. Adapters still let an explicit request win.
@@ -295,6 +380,10 @@ export interface OcxProviderConfig {
   openRouterRouting?: OpenRouterProviderRouting;
   /** Exact model-id overrides for `openRouterRouting`. Each matching entry replaces the default. */
   modelOpenRouterRouting?: Record<string, OpenRouterProviderRouting>;
+  /** Default provider-routing preferences for models sent through Vercel AI Gateway (issue #1406). */
+  vercelGatewayRouting?: VercelGatewayRouting;
+  /** Exact model-id overrides for `vercelGatewayRouting`. Each matching entry replaces the default. */
+  modelVercelGatewayRouting?: Record<string, VercelGatewayRouting>;
   /**
    * "key" (default): authenticate upstream with `apiKey`.
    * "forward": relay the caller's incoming auth headers verbatim (OAuth passthrough; gpt only).
@@ -304,6 +393,16 @@ export interface OcxProviderConfig {
    * providers whose registry entry declares authKind "local" (management API enforces).
    */
   authMode?: "key" | "forward" | "oauth" | "local";
+  /**
+   * Per-provider override for generic OAuth multi-account 429 failover (#2568).
+   *
+   * Rotation is presence-driven by default — 2+ logged-in accounts activate it — so this exists
+   * for the operator who accepts rotation on one provider and refuses it on another. An explicit
+   * boolean here beats the global `oauthAccountFailover` and beats presence.
+   */
+  oauthAccountFailover?: {
+    enabled?: boolean;
+  };
   /** Allow an explicitly key/oauth provider to run without a credential (for keyless local proxies). */
   keyOptional?: boolean;
   /**
@@ -337,6 +436,18 @@ export interface OcxProviderConfig {
    */
   modelSupportsReasoningSummaries?: Record<string, boolean>;
   /**
+   * Model-specific Codex Responses verbosity capability. Set false when the upstream ignores
+   * `text.verbosity`; the catalog hides the no-op picker and the Responses adapter strips stale
+   * or caller-supplied values while preserving other `text` fields.
+   */
+  modelSupportsVerbosity?: Record<string, boolean>;
+  /**
+   * Provider-wide Codex Responses verbosity capability, applied to models the per-model map
+   * does not enumerate (a live-discovered id, for example). Materialized from the registry at
+   * seed/enrich time so the catalog hint pass never has to read PROVIDER_REGISTRY.
+   */
+  supportsVerbosity?: boolean;
+  /**
    * Per-model wire value for Responses `stream_options.reasoning_summary_delivery`.
    * Presence also advertises reasoning-summary support for that routed model.
    */
@@ -352,6 +463,12 @@ export interface OcxProviderConfig {
    * passthrough compatibility for OpenAI and unclassified gateways.
    */
   supportsOpenAiWebSearchToolFields?: boolean;
+  /**
+   * Opt xAI Responses destinations into the provider-hosted `x_search` declaration when a live
+   * `web_search` tool survives final request normalization. Disabled by default. This is separate
+   * from the web-search sidecar's `search.xSearch` options and never widens caller tool selectors.
+   */
+  xaiResponsesXSearch?: boolean;
   /**
    * Whether the Responses upstream accepts native custom tools and custom_tool_call items.
    * Set false only for a provider whose native contract rejects them; absence preserves
@@ -468,6 +585,12 @@ export interface OcxProviderConfig {
    * before any response bytes are relayed, so the replay is lossless.
    */
   retryOn429?: RateLimitRetryPolicy;
+  /**
+   * Opt-in retry for pre-stream transient upstream statuses
+   * (`providers.<name>.transientRetryOn5xx`). Disabled unless present; a bare `{}` opts in
+   * with defaults. Key-auth `openai-chat` only.
+   */
+  transientRetryOn5xx?: TransientRetryPolicy;
   /**
    * Model ids whose OpenAI-compatible chat endpoint accepts `reasoning_split: true` and returns
    * thinking separately in `reasoning_content` / `reasoning_details` instead of visible content.

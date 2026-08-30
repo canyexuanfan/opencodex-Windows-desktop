@@ -3,7 +3,20 @@
   "scope": "full",
   "blocking": "warning",
   "ignore": {
-    "files": ["dist/**", "node_modules/**"]
+    "files": [
+      "dist/**",
+      "node_modules/**"
+    ],
+    "overrides": [
+      {
+        "files": [
+          "src/pages/Models.tsx"
+        ],
+        "rules": [
+          "react-hooks/exhaustive-deps"
+        ]
+      }
+    ]
   },
   "rules": {
     "react-doctor/no-fetch-in-effect": "off",

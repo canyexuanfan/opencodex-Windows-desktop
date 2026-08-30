@@ -30,14 +30,14 @@ describe("ocx account main", () => {
     const errors: string[] = [];
     console.error = (...values: unknown[]) => errors.push(values.join(" "));
 
-    expect(apiError({ error: "validation failed" }, "fallback")).toBe(1);
-    expect(apiError({ error: "validation failed", cleanupRequired: "true" }, "fallback")).toBe(1);
+    expect(apiError({ error: "validation failed" }, "fallback", 500)).toBe(1);
+    expect(apiError({ error: "validation failed", cleanupRequired: "true" }, "fallback", 500)).toBe(1);
     expect(errors).toEqual([
       "Error: validation failed",
       "Error: validation failed",
     ]);
 
-    expect(apiError({ error: "validation failed", cleanupRequired: true }, "fallback")).toBe(1);
+    expect(apiError({ error: "validation failed", cleanupRequired: true }, "fallback", 500)).toBe(1);
     expect(errors.at(-1)).toBe("Warning: native-login staging cleanup is still required; run 'ocx account main doctor'.");
   });
 
@@ -216,7 +216,11 @@ describe("ocx account main", () => {
       baseUrl: "http://127.0.0.1:10100",
       fetchImpl,
       runCodexLoginImpl: async () => 0,
-    })).toBe(1);
+      // 409 from `stage/finish` is a conflict, so the uniform exit vocabulary maps it to 5.
+      // This asserted 1 only because every account-family failure used to exit 1 regardless
+      // of status, which is the defect the 404->4 / 409->5 mapping fixed; the cancel-fallback
+      // behaviour this test actually covers is unchanged.
+    })).toBe(5);
     expect(requests).toEqual([
       "/api/native-main-profiles/stage",
       "/api/native-main-profiles/stage/heartbeat",

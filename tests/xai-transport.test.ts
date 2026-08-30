@@ -3,6 +3,7 @@ import { createOpenAIChatAdapter } from "../src/adapters/openai-chat";
 import { parseRequest } from "../src/responses/parser";
 import { buildModelsRequest } from "../src/oauth";
 import {
+  isXaiResponsesDestination,
   resolveProviderTransport,
   deriveXaiConvId,
   XAI_CONV_ID_HEADER,
@@ -10,6 +11,8 @@ import {
   XAI_GROK_CLIENT_VERSION,
 } from "../src/providers/xai-transport";
 import { getProviderRegistryEntry } from "../src/providers/registry";
+import { XAI_RESPONSES_OPT_IN_MODELS } from "../src/providers/xai-responses-opt-in";
+import { resolveWireProtocolOverride } from "../src/server/adapter-resolve";
 import type { OcxAssistantMessage, OcxParsedRequest, OcxProviderConfig } from "../src/types";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -50,6 +53,27 @@ function parsed(): OcxParsedRequest {
     options: { reasoning: "low" },
   };
 }
+
+describe("xAI Responses destination detection", () => {
+  test.each([
+    "https://api.x.ai/v1",
+    "https://api.x.ai:443/v1",
+    XAI_GROK_CLI_BASE_URL,
+    "https://CLI-CHAT-PROXY.GROK.COM:443/v1",
+  ])("accepts the exact xAI HTTPS destination %s", baseUrl => {
+    expect(isXaiResponsesDestination({ baseUrl })).toBe(true);
+  });
+
+  test.each([
+    "http://api.x.ai/v1",
+    "https://api.x.ai:444/v1",
+    "https://api.x.ai.evil.test/v1",
+    "https://cli-chat-proxy.grok.com.evil.test/v1",
+    "not a URL",
+  ])("rejects a non-xAI or malformed destination %s", baseUrl => {
+    expect(isXaiResponsesDestination({ baseUrl })).toBe(false);
+  });
+});
 
 describe("xAI auth-mode transport selection", () => {
   test("OAuth selects the Grok CLI subscription transport and required headers", () => {
@@ -185,7 +209,9 @@ describe("xAI auth-mode transport selection", () => {
       token: { type: "string" },
       mode: { anyOf: [{ const: "path" }, { const: "url" }] },
     });
-    expect(xaiParameters.required).toEqual(["token"]);
+    // `mode` absent matched BOTH branches, which the root `oneOf` rejects, so flattening has to
+    // require the discriminator to keep accepting exactly what the original accepted.
+    expect(xaiParameters.required).toEqual(["token", "mode"]);
   });
 
   test("omits an xAI union whose branch required fields cannot be flattened", () => {
@@ -580,7 +606,7 @@ describe("xAI outbound compatibility headers", () => {
 });
 
 describe("xAI reasoning_content cache preservation", () => {
-  test("registry preset replays reasoning_content for grok reasoning models only", () => {
+  test("registry preset exposes multi-agent only on Responses without claiming replay material", () => {
     const entry = getProviderRegistryEntry("xai");
     expect(entry?.preserveReasoningContentModels).toEqual([
       "grok-4.6",
@@ -588,7 +614,50 @@ describe("xAI reasoning_content cache preservation", () => {
       "grok-4.3",
       "grok-4.20-0309-reasoning",
     ]);
-    expect(entry?.models).not.toContain("grok-4.20-multi-agent-0309");
+    expect(entry?.models).toContain("grok-4.20-multi-agent-0309");
+    expect(entry?.preserveReasoningContentModels).not.toContain("grok-4.20-multi-agent-0309");
+    expect(entry?.modelSupportsReasoningSummaries?.["grok-4.20-multi-agent-0309"]).toBeUndefined();
+    expect(resolveWireProtocolOverride(
+      "xai",
+      "grok-4.20-multi-agent-0309",
+      provider("oauth"),
+      "responses",
+    ).adapter).toBe("openai-responses");
+    expect(resolveWireProtocolOverride(
+      "xai",
+      "grok-4.20-multi-agent-0309",
+      provider("key"),
+      "responses",
+    ).adapter).toBe("openai-responses");
+    expect(resolveWireProtocolOverride(
+      "xai",
+      "grok-4.20-multi-agent-0309",
+      provider("oauth"),
+      "chat",
+    ).adapter).toBe("openai-responses");
+    expect(resolveWireProtocolOverride(
+      "xai",
+      "grok-4.20-multi-agent-0309",
+      provider("key"),
+      "chat",
+    ).adapter).toBe("openai-responses");
+    // The Claude Messages lane resolves with inbound "anthropic" (src/server/claude-messages.ts).
+    // It is not a spelling of "responses": an inbound missing from the allow-list makes
+    // providerModelWireDefault return undefined, which silently keeps xAI's provider-wide
+    // openai-chat adapter — the one wire this model answers with a 400.
+    expect(resolveWireProtocolOverride(
+      "xai",
+      "grok-4.20-multi-agent-0309",
+      provider("oauth"),
+      "anthropic",
+    ).adapter).toBe("openai-responses");
+    expect(resolveWireProtocolOverride(
+      "xai",
+      "grok-4.20-multi-agent-0309",
+      provider("key"),
+      "anthropic",
+    ).adapter).toBe("openai-responses");
+    expect(XAI_RESPONSES_OPT_IN_MODELS).not.toContain("grok-4.20-multi-agent-0309");
     expect(entry?.models).toContain("grok-build-0.1");
     for (const noReasoning of entry?.noReasoningModels ?? []) {
       expect(entry?.preserveReasoningContentModels).not.toContain(noReasoning);

@@ -1,4 +1,5 @@
 import type { AdapterEvent, OcxConfig, OcxUsage } from "../../types";
+import { sanitizeLogMetadataString } from "../../lib/redact";
 
 /**
  * Empty-completion guard for Responses turns (port of codex-router's
@@ -21,6 +22,21 @@ import type { AdapterEvent, OcxConfig, OcxUsage } from "../../types";
  */
 export const EMPTY_COMPLETION_RETRY_ENV = "OCX_EMPTY_COMPLETION_RETRY";
 
+/**
+ * The observability notice for a turn that ended empty with the retry guard off.
+ *
+ * Both labels are caller-supplied: the request names its provider and model. Interpolated raw,
+ * a model name carrying newlines or terminal escapes writes additional lines into whatever
+ * reads this warning, so a caller could forge log records it never produced. Both are reduced
+ * to bounded single-line metadata first.
+ */
+export function emptyCompletionNotice(providerName: unknown, modelId: unknown): string {
+  const provider = sanitizeLogMetadataString(providerName) ?? "unknown";
+  const model = sanitizeLogMetadataString(modelId) ?? "unknown";
+  return `[opencodex] ${provider}/${model} completed with no output text and no tool call. `
+    + "Set \"emptyCompletionRetry\": true to retry such turns once.";
+}
+
 /** Retained pre-content events are bounded independently by count and encoded size. */
 export const EMPTY_COMPLETION_MAX_BUFFERED_EVENTS = 1_024;
 export const EMPTY_COMPLETION_MAX_BUFFERED_BYTES = 1_048_576;
@@ -34,6 +50,41 @@ export function emptyCompletionRetryEnabled(
 
 /** Surfaced when the single retry was also empty or failed upstream. */
 export const EMPTY_COMPLETION_RETRY_FAILED_CODE = "empty_completion_retry_failed";
+
+/**
+ * Observe an event stream for the empty-completion shape WITHOUT changing it (#2472).
+ *
+ * The guard above is opt-in, so with the default configuration a turn that completes with no
+ * output text and no tool call passes through untouched and the client records a silent
+ * success. That is the reported symptom: an empty result nobody can explain, with no trace
+ * that the proxy saw anything unusual.
+ *
+ * This is deliberately a passthrough observer, not a second guard. Retrying by default would
+ * re-send a turn that may have already had billable side effects; the honest default is to
+ * leave the stream alone and make the occurrence visible, so a user can correlate it and
+ * decide whether to enable the retry.
+ */
+export async function* observeEmptyCompletion(
+  events: AsyncIterable<AdapterEvent>,
+  onEmptyTurn: () => void,
+): AsyncGenerator<AdapterEvent> {
+  let sawContent = false;
+  let sawTerminal = false;
+  for await (const event of events) {
+    // Reasoning is deliberately NOT content, matching the guard: a reasoning-only stream that
+    // ends with nothing is the canonical shape of this failure.
+    if (isContentEvent(event)) sawContent = true;
+    if (isTerminalEvent(event)) {
+      sawTerminal = true;
+      // Only a successful terminal is the silent failure. `error` and `incomplete` are already
+      // a stated outcome the client can render, so flagging them would be noise.
+      if (!sawContent && event.type === "done") onEmptyTurn();
+    }
+    yield event;
+  }
+  // A stream that ends before any terminal is the pre-output EOF variant of the same failure.
+  if (!sawContent && !sawTerminal) onEmptyTurn();
+}
 
 /**
  * Terminal stop reasons the bridge renders as a visible `response.incomplete`
@@ -153,9 +204,10 @@ export interface EmptyCompletionGuardOptions {
  * Watch an adapter event stream for the empty-completion failure mode. Events
  * are held until the turn produces content or ends: reasoning and other
  * pre-content events stay buffered (released in order on first content), the
- * terminal is withheld, and an empty terminal triggers one identical-turn
- * retry through `continuation`. Usage is merged across attempts so the bridge
- * and request log meter the whole turn, not just the attempt that succeeded.
+ * terminal is withheld, and an empty terminal or pre-output EOF triggers one
+ * identical-turn retry through `continuation`. Usage is merged across attempts
+ * so the bridge and request log meter the whole turn, not just the attempt that
+ * succeeded.
  *
  * Heartbeats always pass through untouched: they feed the bridge's stall
  * watchdog, so holding them behind the content gate would trip false
@@ -194,7 +246,11 @@ export async function* guardEmptyCompletionEventStream(
       if (sawContent || passthrough) {
         // Buffered content is already flowing; everything downstream passes
         // through. Every terminal carries usage merged across every attempt.
-        yield isTerminalEvent(event) ? withUsage(event) : event;
+        if (isTerminalEvent(event)) {
+          yield withUsage(event);
+          return;
+        }
+        yield event;
         continue;
       }
       if (isContentEvent(event)) {
@@ -267,8 +323,25 @@ export async function* guardEmptyCompletionEventStream(
       if (isReasoningEvent(event)) yield { type: "heartbeat" };
     }
     if (!terminalSeen) {
-      // The source ended without a terminal event (truncated stream). Release
-      // what was held so the bridge can mark the stream incomplete.
+      // A terminal-less EOF before text or a tool call is replay-safe: nothing
+      // actionable reached the client. Retry once, then surface a stated error
+      // instead of letting the bridge reduce the turn to adapter_eof.
+      if (!sawContent && !passthrough && retries < maxRetries) {
+        retries += 1;
+        try {
+          source = await options.continuation();
+        } catch {
+          yield emptyCompletionRetryFailedEvent(usage, true);
+          return;
+        }
+        continue;
+      }
+      if (!sawContent && retries > 0) {
+        yield emptyCompletionRetryFailedEvent(usage, true);
+        return;
+      }
+      // Post-output EOF remains incomplete; replaying could duplicate text or
+      // executable tool calls.
       yield* releaseHeld();
       return;
     }

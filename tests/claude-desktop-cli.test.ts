@@ -152,3 +152,19 @@ test("no-arg and legacy mode flags apply Desktop config", async () => {
     error.mockRestore();
   }
 });
+
+test("usage errors on desktop verbs exit 2, not 1", async () => {
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  const error = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    expect(await handleClaudeDesktopCommand(["status", "--wat"])).toBe(2);
+    expect(await handleClaudeDesktopCommand(["status", "extra"])).toBe(2);
+    expect(await handleClaudeDesktopCommand(["show", "--wat"])).toBe(2);
+    expect(await handleClaudeDesktopCommand(["move"])).toBe(2);
+    expect(await handleClaudeDesktopCommand(["nope"])).toBe(2);
+    expect(await handleClaudeDesktopCommand(["apply", "--wat"])).toBe(2);
+  } finally {
+    log.mockRestore();
+    error.mockRestore();
+  }
+});

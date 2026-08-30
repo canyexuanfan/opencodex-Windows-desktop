@@ -3,6 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveConfig } from "../src/config";
+import {
+  resetCodexModelEntitlementCacheForTests,
+} from "../src/codex/model-entitlements";
 import { handleManagementAPI } from "../src/server/management-api";
 import { startServer } from "../src/server";
 import type { OcxConfig } from "../src/types";
@@ -25,6 +28,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetCodexModelEntitlementCacheForTests();
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
   isolatedCodexHome?.restore();
@@ -159,6 +163,23 @@ test("OpenAI list shape and Codex catalog shape stay unchanged", async () => {
 });
 
 test("Codex discovery applies the OpenAI context cap to native rows (#1430)", async () => {
+  writeFileSync(join(isolatedCodexHome!.path, "auth.json"), JSON.stringify({
+    tokens: { access_token: "context-cap-access", account_id: "context-cap-account" },
+  }), "utf8");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => {
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/backend-api/codex/models") {
+      const entitled = request.headers.get("authorization") === "Bearer context-cap-access"
+        && request.headers.get("chatgpt-account-id") === "context-cap-account";
+      const slugs = entitled ? ["gpt-5.6-sol"] : [];
+      return Response.json({
+        models: slugs.map(slug => ({ slug, supported_in_api: true, visibility: "list" })),
+      });
+    }
+    return originalFetch(request);
+  }) as typeof fetch;
   const config = configWithStaticModels();
   config.providers.openai = {
     adapter: "openai-responses",
@@ -186,6 +207,7 @@ test("Codex discovery applies the OpenAI context cap to native rows (#1430)", as
     });
   } finally {
     await server.stop(true);
+    globalThis.fetch = originalFetch;
   }
 });
 
@@ -490,5 +512,53 @@ test("disabled canonical OpenAI preserves bare bootstrap rows without advertisin
     expect(catalog.models.some(model => model.slug.startsWith("team/"))).toBe(false);
   } finally {
     await server.stop(true);
+  }
+});
+
+test("the request's client_version reaches entitlement discovery (#2886)", async () => {
+  // Codex sends client_version on this route and the value used to be discarded, so upstream
+  // was always asked as 0.0.0 — which it answers with a short roster, and the fail-closed gate
+  // reads that as a confirmed denial. This asserts the forwarding itself: the version observed
+  // on the OUTBOUND /codex/models request must be the one the client sent.
+  const config = configWithStaticModels();
+  config.providers.openai = {
+    adapter: "openai-responses",
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+    liveModels: false,
+  };
+  saveConfig(config);
+  writeFileSync(join(isolatedCodexHome!.path, "auth.json"), JSON.stringify({
+    tokens: { access_token: "main-token", account_id: "main-account" },
+  }), "utf8");
+
+  const { resetCatalogRuntimeStateForTests } = await import("../src/codex/catalog");
+  resetCatalogRuntimeStateForTests();
+  resetCodexModelEntitlementCacheForTests();
+
+  const askedVersions: string[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input : input.url);
+    if (url.hostname === "chatgpt.com" && url.pathname.endsWith("/models")) {
+      askedVersions.push(url.searchParams.get("client_version") ?? "");
+      return Response.json({ models: [{ slug: "gpt-5.5", supported_in_api: true, visibility: "list" }] });
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+
+  // Started INSIDE the try: if startServer throws, the mocked global fetch must still be
+  // restored, or every later test in this file inherits it.
+  let server: ReturnType<typeof startServer> | null = null;
+  try {
+    server = startServer(0);
+    await fetch(new URL("/v1/models?client_version=0.151.7", server.url))
+      .then(response => response.json());
+    expect(askedVersions.length).toBeGreaterThan(0);
+    // Forwarded verbatim, and in particular never the placeholder that caused #2886.
+    expect(askedVersions).toEqual(askedVersions.map(() => "0.151.7"));
+    expect(askedVersions).not.toContain("0.0.0");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (server) await server.stop(true);
   }
 });

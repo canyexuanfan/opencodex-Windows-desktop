@@ -8,12 +8,33 @@ import { sanitizeLogMetadataString } from "../lib/redact";
 import { usageDisplayTotalTokens } from "./totals";
 import type { AttemptTierOutcome, OcxUsage } from "../types";
 import { normalizeRouteDecisionTrace, type RouteDecisionTraceV1 } from "../routing/trace";
-import { CODEX_ACCOUNT_LOG_LABEL_RE } from "../codex/account-label";
+import { ACCOUNT_LOG_LABEL_RE, CODEX_ACCOUNT_LOG_LABEL_RE } from "../codex/account-label";
 
 export type UsageStatus = "reported" | "unreported" | "unsupported" | "estimated";
-export type CodexUsageAccountLogLabel = "main" | `p${string}`;
+/**
+ * A persisted account label: a Codex pool account (`main`/`p<hex6>`) or a non-Codex OAuth
+ * provider account (`o<hex6>`, #2699).
+ *
+ * The old name `CodexUsageAccountLogLabel` is kept as an alias because it is exported and used
+ * across modules; the two predicates below are what callers should choose between.
+ */
+export type UsageAccountLogLabel = "main" | `p${string}` | `o${string}`;
+export type CodexUsageAccountLogLabel = UsageAccountLogLabel;
 
-export function isCodexUsageAccountLogLabel(value: unknown): value is CodexUsageAccountLogLabel {
+/**
+ * Accepts EITHER label family. This is the predicate the persistence writers use, so widening
+ * it here is what stops six separate call sites from silently dropping an `o`-label -- including
+ * two in the live request path (`request-log.ts:972` and `:1187`).
+ *
+ * The name is unchanged deliberately: renaming it would touch every call site for no behavior,
+ * and the widened contract is what every one of those sites wanted.
+ */
+export function isCodexUsageAccountLogLabel(value: unknown): value is UsageAccountLogLabel {
+  return value === "main" || (typeof value === "string" && ACCOUNT_LOG_LABEL_RE.test(value));
+}
+
+/** Strictly a Codex pool label. Use when the Codex-only distinction actually matters. */
+export function isCodexPoolAccountLogLabel(value: unknown): value is "main" | `p${string}` {
   return value === "main" || (typeof value === "string" && CODEX_ACCOUNT_LOG_LABEL_RE.test(value));
 }
 
@@ -28,6 +49,7 @@ export type AttemptRecoveryKind =
   | "key-429"
   | "rate-limit-429"
   | "anthropic-oauth-429"
+  | "oauth-account-429"
   | "image-413"
   | "opaque-blob-rejection"
   | "empty-completion";
@@ -50,6 +72,13 @@ export interface PersistedUsageAttempt {
   sendCount: number;
   recoveryKinds: AttemptRecoveryKind[];
   usageStatus: UsageStatus;
+  /**
+   * True when the proxy answered this turn locally and issued no upstream request. It travels on
+   * the attempt itself rather than as a `finishRequestAttempt` argument because that function is
+   * called from six places, and a new parameter would silently default to the wrong answer at any
+   * one of them that was missed. Absent on ordinary attempts so old rows keep their exact shape.
+   */
+  locallyAnswered?: boolean;
   /** Stable non-PII identity for the Codex pool account that served this attempt. */
   accountLogLabel?: CodexUsageAccountLogLabel;
   inputTokenEstimate?: number;
@@ -68,6 +97,7 @@ export interface PersistedUsageAttempt {
 }
 
 export interface PersistedUsageEntry {
+  requestedAlias?: string;
   requestId: string;
   timestamp: number;
   provider: string;
@@ -179,8 +209,20 @@ function isEstimatedUsageProvider(providerOrAdapter: string): boolean {
     || providerOrAdapter === "cursor" || providerOrAdapter.startsWith("cursor-");
 }
 
-export function usageForFinalLog(provider: string, usage: OcxUsage | undefined): OcxUsage | undefined {
+export function usageForFinalLog(
+  provider: string,
+  usage: OcxUsage | undefined,
+  /**
+   * True when the proxy answered this turn locally and issued no upstream request. Such a turn's
+   * zero counts are EXACT, so the provider-wide estimated marking must not apply: Kiro and Cursor
+   * are marked estimated because their adapters can only guess a real inference's usage, and a
+   * turn with no inference has nothing to guess. Without this, a no-send turn is indistinguishable
+   * from a real one whose usage frame never arrived.
+   */
+  locallyAnswered = false,
+): OcxUsage | undefined {
   if (!usage) return undefined;
+  if (locallyAnswered) return usage;
   if (usage.estimated || isEstimatedUsageProvider(provider)) return { ...usage, estimated: true };
   return usage;
 }
@@ -218,6 +260,7 @@ const ATTEMPT_RECOVERY_KINDS = new Set<AttemptRecoveryKind>([
   "key-429",
   "rate-limit-429",
   "anthropic-oauth-429",
+  "oauth-account-429",
   "image-413",
   "opaque-blob-rejection",
   "empty-completion",
@@ -927,6 +970,10 @@ async function readUsageEntriesIncrementally(
     // A shrink means truncation or replacement-in-place; the retained rows may no
     // longer correspond to file contents, so refuse to extend them.
     if (size < retained.coveredThroughBytes) return null;
+    // Retained-state reuse is only an optimization. A burst larger than the configured
+    // window must re-anchor through the bounded full-tail reader instead of reading and
+    // parsing every byte appended since the previous poll.
+    if (size - retained.coveredThroughBytes > maxReadBytes) return null;
     // Verify the retained REGION is unchanged before anything is reused. Identity keeps
     // dev/ino/birthtime, and an append and an in-place rewrite both move mtime/ctime
     // forward, so only the bytes themselves settle it.
@@ -1138,6 +1185,14 @@ export async function readUsageEntriesForManagement(): Promise<PersistedUsageEnt
   return (await readUsageSnapshotForManagement()).entries;
 }
 
+/** Keep legacy optional fields permissive, but reject rows that cannot be safely attributed. */
+function normalizePersistedUsageRow(value: unknown): PersistedUsageEntry | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  if (typeof row.requestId !== "string" || typeof row.provider !== "string") return undefined;
+  return normalizeUsageEntry(row as unknown as PersistedUsageEntry);
+}
+
 export function readUsageEntries(): PersistedUsageEntry[] {
   const path = usageLogPath();
   if (!existsSync(path)) return [];
@@ -1146,10 +1201,8 @@ export function readUsageEntries(): PersistedUsageEntry[] {
   for (const line of lines) {
     if (!line.trim()) continue;
     try {
-      const parsed = JSON.parse(line) as PersistedUsageEntry;
-      if (parsed && typeof parsed === "object" && typeof parsed.requestId === "string") {
-        entries.push(normalizeUsageEntry(parsed));
-      }
+      const parsed = normalizePersistedUsageRow(JSON.parse(line));
+      if (parsed) entries.push(parsed);
     } catch {
       /* keep reading after a partially written or hand-edited line */
     }
@@ -1162,10 +1215,8 @@ function parseUsageLines(lines: string[]): PersistedUsageEntry[] {
   for (const line of lines) {
     if (!line.trim()) continue;
     try {
-      const parsed = JSON.parse(line) as PersistedUsageEntry;
-      if (parsed && typeof parsed === "object" && typeof parsed.requestId === "string") {
-        entries.push(normalizeUsageEntry(parsed));
-      }
+      const parsed = normalizePersistedUsageRow(JSON.parse(line));
+      if (parsed) entries.push(parsed);
     } catch {
       /* skip partial / hand-edited lines */
     }
