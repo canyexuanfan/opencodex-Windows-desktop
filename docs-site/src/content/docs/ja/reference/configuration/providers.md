@@ -79,6 +79,7 @@ account を削除しても mapping は保持され、同じ id を再追加す�
 | `headers?` | `Record<string, string>` |追加の上流ヘッダー。認証、Cookie、API キー ヘッダー、埋め込まれた改行、および無効な名前は拒否されます。 |
 | `openRouterRouting?` | `OpenRouterProviderRouting` |デフォルトの OpenRouter `order`、`only`、および `allowFallbacks` 設定。 `openai-chat` を持つ正規 OpenRouter に対してのみ有効です。 |
 | `modelOpenRouterRouting?` | `Record<string, OpenRouterProviderRouting>` |プロバイダー全体の OpenRouter 設定を置き換える正確なモデル ID のオーバーライド。 |
+| `vercelGatewayRouting?` | `VercelGatewayRouting` |デフォルトの Vercel AI Gateway `order`、`only`、および `sort` (`"cost"` \| `"ttft"` \| `"tps"`) 設定。`openai-chat` を使用する正規の Vercel AI Gateway に対してのみ有効です。 |
 | `authMode?` | `"key" \| "forward" \| "oauth" \| "local"` |認証モード (デフォルトは `key`)。 OAuth/サブスクリプション認証情報は `config.json` の外部に保存されます。 `local` は、レジストリ エントリで許可されているプロバイダーに限定されます。 |
 | `codexAccountMode?` | `"pool" \| "direct"` |正規の `openai` のみ。デフォルトはプールです。直接はプール状態をバイパスします。 |
 | `refreshPolicy?` | `"proactive" \| "lazy-only" \| "disabled"` |この OAuth プロバイダーの Token Guardian ポリシーをオーバーライドします。 |
@@ -88,6 +89,7 @@ account を削除しても mapping は保持され、同じ id を再追加す�
 | `modelReasoningSummaryDelivery?` | `Record<string, "sequential" \| "sequential_cutoff" \| "concurrent" \| "concurrent_cutoff">` |モデルごとの応答配信列挙型。既存の配信フィールドを書き換えます。 |
 | `modelAdapters?` | `Record<string, string>` | 混合配線ゲートウェイのモデルごとの `openai-chat` または `openai-responses` 配線オーバーライド。明示的なエントリはレジストリのデフォルトを破ります。DeepSeek のプリセットは `deepseek-v4-flash` のネイティブ Responses を選択でき、GitHub Copilot は GPT-5 ファミリー (`gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`) を Responses 専用デフォルトとして宣言します。これらのモデルはエージェント トラフィックで `/chat/completions` を拒否するためです。`gpt-5.4-nano` のようなビルトイン デフォルトのないモデルはここでオプトインできます。単線アップストリーム ピンと正規の ChatGPT 転送はオーバーライドを拒否します。 |
 | xAI Responses オプトイン（ダッシュボード） | スイッチ | `xai` のみで、`grok-4.5` と `grok-4.6` の `modelAdapters` エントリを原子的に設定または削除します。片方だけの場合は、次のスイッチ操作で両方が正規化されるまで混合状態を表示します。他のオーバーライドと tier 動作は変わりません。 |
+| `xaiResponsesXSearch?` | `boolean` | デフォルトでは無効です。xAI Responses の宛先では、最終的なリクエスト正規化後もライブの `web_search` ツールが残っている場合にのみ、プロバイダーがホストする `x_search` 宣言を追加します。既存の宣言は重複させず、呼び出し元の `tool_choice` / `allowed_tools` セレクターの範囲を拡張することもありません。また、これは `search.xSearch` オプションを持つウェブ検索サイドカーとは別です。 |
 | `modelPreferHostedTools?` | `Record<string,string[]>` | hosted tool namespace を予約する非 forward Responses gateway 向けの完全一致モデル opt-in。現在は `["image_generation"]` のみを受け付けます。一致したモデルは `openai-responses` wire を使い、その hosted tool をサポートする必要があります。競合するクライアント `image_gen` 宣言を除去し、呼び出し元の tool choice を維持するため selector も書き換えます。OpenAI API の仮想 `-pro` モデルでは、まず選択した公開 ID に一致させ、解決後のベース wire-model ID をフォールバックとして使用します。`modelAdapters` は公開 ID、次にベース ID の順に解決し、後者の結果が最終 wire を決めます。未設定のモデルは通常の alias 動作を維持します。 |
 | `annotateEmptyToolOutputs?` | `boolean` | 存在するものの空であるツール結果を、モデルに届く前に短いマーカーへ置き換え、空白の結果が欠落した結果として解釈されないようにします。空文字列とテキストのみのパーツ配列に適用されます。画像、ファイル、暗号化されたパーツには一切手を加えません。組み込みレジストリでは `DeepSeek` のデフォルトが `true` で、それ以外は未設定です。プロバイダーを対象外にするには `false` を設定します。明示的な `false` は、後続の編集でこのフィールドが省略されても保持されます。`PATCH /api/providers?name=<provider>` は `true`、`false`、またはオーバーライドを消去してレジストリのデフォルト動作へ戻すための `null` を受け付けます。 |
 | `reasoningEffortMap?` | `Record<string, string>` |ラベルを推論するためのプロバイダー全体のワイヤ エイリアス。 |
@@ -298,6 +300,37 @@ OpenRouter は、複数の推論プロバイダーを通じて 1 つのモデル
 ```
 
 モデル キーは、外部の opencodex プロバイダー プレフィックスを除いた、正確なネイティブ OpenRouter ID です。 `openrouter/anthropic-claude-sonnet-5` を選択すると、モデル ルールを適用する前のネイティブ `anthropic/claude-sonnet-5` が復元されます。
+
+## Vercel AI Gateway プロバイダーのルーティング
+
+Vercel AI Gateway は、1 つのモデルを複数の基盤となる推論プロバイダーへルーティングできます。`vercelGatewayRouting` はプロバイダー全体の設定を構成し、`modelVercelGatewayRouting` は正確なモデル ID ごとにそれを置き換えます。両方とも未設定の場合、`resolveVercelGatewayRouting()` は `undefined` を返すため、Chat リクエスト ビルダーは `provider` フィールドを省略し、Vercel AI Gateway のデフォルトの動的ルーティング動作が維持されます。
+
+- `order`: 優先順位順の Vercel AI Gateway アップストリーム プロバイダー スラッグ。
+- `only`: 対象となる Vercel AI Gateway アップストリーム プロバイダーを制限する明示的な許可リスト。
+- `sort`: 対象となるプロバイダーを `"cost"` (最安コスト)、`"ttft"` (最初のトークンまでの時間)、または `"tps"` (1 秒あたりのトークン数) で自動的に並べ替えます。
+
+```json
+{
+  "providers": {
+    "vercel-ai-gateway": {
+      "adapter": "openai-chat",
+      "baseUrl": "https://ai-gateway.vercel.sh/v1",
+      "apiKey": "${VERCEL_AI_GATEWAY_KEY}",
+      "vercelGatewayRouting": {
+        "sort": "ttft"
+      },
+      "modelVercelGatewayRouting": {
+        "zai/glm-5.2": {
+          "only": ["novita", "deepinfra"],
+          "order": ["novita", "deepinfra"]
+        }
+      }
+    }
+  }
+}
+```
+
+モデル キーは、外側の opencodex プロバイダー プレフィックスを除いた Vercel の公開モデル セレクターです。`vercel-ai-gateway/zai-glm-5.2` を選択すると、モデル ルールを適用する前にネイティブの `zai/glm-5.2` が復元されます。ネイティブの `vercel/<model-id>` セレクターにも同じマッピングが適用されます。opencodex ではエンコードされた `vercel-ai-gateway/vercel-<model-id>` セレクターを使用し、モデル キーには `vercel/<model-id>` を指定してください。
 
 ## 静的モデルのホワイトリスト
 

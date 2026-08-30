@@ -60,6 +60,7 @@ description: 供應商項目、認證、端點、模型目錄、配額、context
 | `headers?` | `Record<string, string>` | 額外上游標頭。Authorization、cookie、API-key 標頭、內嵌換行與無效名稱被拒絕。 |
 | `openRouterRouting?` | `OpenRouterProviderRouting` | 預設 OpenRouter `order`、`only` 與 `allowFallbacks` 偏好；僅對規範 OpenRouter 搭配 `openai-chat` 有效。 |
 | `modelOpenRouterRouting?` | `Record<string, OpenRouterProviderRouting>` | 取代供應商範圍 OpenRouter 偏好的精確 model-id 覆寫。 |
+| `vercelGatewayRouting?` | `VercelGatewayRouting` | 預設 Vercel AI Gateway `order`、`only` 與 `sort`（`"cost"` \| `"ttft"` \| `"tps"`）偏好；僅對規範 Vercel AI Gateway 搭配 `openai-chat` 有效。 |
 | `authMode?` | `"key" \| "forward" \| "oauth" \| "local"` | 認證模式（預設 `key`）。OAuth／訂閱憑證儲存在 `config.json` 之外；`local` 僅限其 registry 項目允許的供應商。 |
 | `codexAccountMode?` | `"pool" \| "direct"` | 僅規範 `openai`；預設為池。Direct 繞過池狀態。 |
 | `refreshPolicy?` | `"proactive" \| "lazy-only" \| "disabled"` | 覆寫此 OAuth 供應商的 Token Guardian 政策。 |
@@ -70,6 +71,7 @@ description: 供應商項目、認證、端點、模型目錄、配額、context
 | `modelAdapters?` | `Record<string, string>` | 混合 wire 閘道的 Per-model `openai-chat` 或 `openai-responses` wire 覆寫。明確項目勝過 registry 預設；DeepSeek 的預設可為 `deepseek-v4-flash` 選擇原生 Responses。單一 wire 上游 pin 與規範 ChatGPT forward 拒絕覆寫。 |
 | xAI Responses 選用（儀表板） | 開關 | 僅用於 `xai`，以原子方式設定或清除 `grok-4.5` 與 `grok-4.6` 的 `modelAdapters` 項目。若只有一個項目，會顯示混合狀態，直到下次開關寫入統一兩者。其他覆寫與層級行為不變。 |
 | `annotateEmptyToolOutputs?` | `boolean` | 在工具結果送達模型前，將已存在但為空的結果替換成簡短標記，使空白結果不會被解讀為遺漏的結果。適用於空白字串及僅含文字部分的陣列；影像、檔案及加密部分絕不會被更動。DeepSeek 透過內建登錄檔預設為 `true`，其他情況則不設定。設為 `false` 可讓供應商停用此功能；後續編輯即使省略此欄位，也會保留明確設定的 `false`。`PATCH /api/providers?name=<provider>` 接受 `true`、`false` 或 `null`；`null` 會清除覆寫並恢復使用登錄檔的預設行為。 |
+| `xaiResponsesXSearch?` | `boolean` | 預設停用。在 xAI Responses 目的地上，僅當即時 `web_search` 工具通過最終請求正規化後仍保留時，才附加由供應商託管的 `x_search` 宣告。既有宣告不會重複，呼叫端的 `tool_choice`／`allowed_tools` 選擇器絕不會擴大，且此設定與網頁搜尋輔助服務的 `search.xSearch` 選項分開。 |
 | `reasoningEffortMap?` | `Record<string, string>` | 供應商範圍的 reasoning 標籤 wire 別名。 |
 | `modelReasoningEffortMap?` | `Record<string, Record<string, string>>` | Per-model 的 reasoning 標籤 wire 別名。 |
 | `noReasoningModels?` | `string[]` | 拒絕 reasoning/thinking 參數的模型。 |
@@ -269,6 +271,37 @@ OpenRouter 可透過多個推論供應商提供一個模型。`openRouterRouting
 ```
 
 模型 key 為精確的原生 OpenRouter id，不含外層 opencodex 供應商前綴。選擇 `openrouter/anthropic-claude-sonnet-5` 會在套用模型規則前還原原生 `anthropic/claude-sonnet-5`。
+
+## Vercel AI Gateway 供應商路由
+
+Vercel AI Gateway 可在多個底層推論供應商之間路由一個模型。`vercelGatewayRouting` 設定供應商範圍偏好；`modelVercelGatewayRouting` 會針對精確模型 ID 取代它。若兩者皆未設定，`resolveVercelGatewayRouting()` 會回傳 `undefined`，因此 Chat 請求建構器會省略 `provider` 欄位，讓 Vercel AI Gateway 保留其預設的動態路由行為。
+
+- `order`：依優先順序排列的 Vercel AI Gateway 上游供應商 slug。
+- `only`：限制合格 Vercel AI Gateway 上游供應商的明確允許清單。
+- `sort`：依 `"cost"`（最低成本）、`"ttft"`（首個權杖時間）或 `"tps"`（每秒權杖數）自動排序合格供應商。
+
+```json
+{
+  "providers": {
+    "vercel-ai-gateway": {
+      "adapter": "openai-chat",
+      "baseUrl": "https://ai-gateway.vercel.sh/v1",
+      "apiKey": "${VERCEL_AI_GATEWAY_KEY}",
+      "vercelGatewayRouting": {
+        "sort": "ttft"
+      },
+      "modelVercelGatewayRouting": {
+        "zai/glm-5.2": {
+          "only": ["novita", "deepinfra"],
+          "order": ["novita", "deepinfra"]
+        }
+      }
+    }
+  }
+}
+```
+
+模型 key 是不含外層 OpenCodex 供應商前綴的 Vercel 公開模型選擇器。選擇 `vercel-ai-gateway/zai-glm-5.2` 時，會先還原原生 `zai/glm-5.2`，再套用模型規則。相同映射也適用於原生 `vercel/<model-id>` 選擇器：在 OpenCodex 中使用編碼後的 `vercel-ai-gateway/vercel-<model-id>` 選擇器，並保留 `vercel/<model-id>` 作為模型 key。
 
 ## 靜態模型允許清單
 

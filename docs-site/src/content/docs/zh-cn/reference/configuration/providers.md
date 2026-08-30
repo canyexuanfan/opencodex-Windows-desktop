@@ -79,6 +79,7 @@ selector，而不是分配一个新名称。
 | `headers?` | `Record<string, string>` | 额外的上游请求头。会拒绝 Authorization、cookie、API key 头、嵌入换行符以及无效名称。 |
 | `openRouterRouting?` | `OpenRouterProviderRouting` | 默认的 OpenRouter `order`、`only` 和 `allowFallbacks` 偏好；仅对使用 `openai-chat` 的规范 OpenRouter 有效。 |
 | `modelOpenRouterRouting?` | `Record<string, OpenRouterProviderRouting>` | 精确模型 id 级别的覆盖项，会替换提供者级 OpenRouter 偏好。 |
+| `vercelGatewayRouting?` | `VercelGatewayRouting` | 默认的 Vercel AI Gateway `order`、`only` 和 `sort`（`"cost"` \| `"ttft"` \| `"tps"`）偏好；仅对使用 `openai-chat` 的规范 Vercel AI Gateway 有效。 |
 | `authMode?` | `"key" \| "forward" \| "oauth" \| "local"` | 身份验证模式（默认 `key`）。OAuth/订阅凭据存放在 `config.json` 之外；`local` 仅限注册表条目允许它的提供者。 |
 | `codexAccountMode?` | `"pool" \| "direct"` | 仅适用于规范的 `openai`；默认是 Pool。Direct 会绕过池状态。 |
 | `refreshPolicy?` | `"proactive" \| "lazy-only" \| "disabled"` | 覆盖该 OAuth 提供者的 Token Guardian 策略。 |
@@ -88,6 +89,7 @@ selector，而不是分配一个新名称。
 | `modelReasoningSummaryDelivery?` | `Record<string, "sequential" \| "sequential_cutoff" \| "concurrent" \| "concurrent_cutoff">` | 按模型设置的 Responses 交付枚举；会重写现有的 delivery 字段。 |
 | `modelAdapters?` | `Record<string, string>` | 按模型设置的 `openai-chat` 或 `openai-responses` 线协议覆盖项，用于混合线协议网关。显式条目优先于注册表默认值；DeepSeek 预设可以为 `deepseek-v4-flash` 选择原生 Responses，GitHub Copilot 则为 GPT-5 系列（`gpt-5.3-codex`、`gpt-5.4`、`gpt-5.4-mini`、`gpt-5.5`、`gpt-5.6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`）声明了 Responses 专用默认值，因为这些模型在代理流量下会拒绝 `/chat/completions`。没有内置默认值的模型（例如 `gpt-5.4-nano`）可以在此手动启用。单一线协议上游固定项和规范 ChatGPT forward 会拒绝覆盖。 |
 | xAI Responses 启用项（仪表板） | 开关 | 仅用于 `xai`，以原子方式设置或清除 `grok-4.5` 和 `grok-4.6` 的 `modelAdapters` 条目。若只存在一个条目，则显示混合状态，直到下次开关写入将两者统一。其他覆盖项和层级行为不变。 |
+| `xaiResponsesXSearch?` | `boolean` | 默认禁用。在 xAI Responses 目标上，仅当有效的 `web_search` 工具在最终请求规范化后仍保留时，才附加由提供方托管的 `x_search` 声明。不会重复已有声明，绝不会扩大调用方的 `tool_choice`/`allowed_tools` 选择范围，并且此项独立于网络搜索辅助服务的 `search.xSearch` 选项。 |
 | `modelPreferHostedTools?` | `Record<string,string[]>` | 非 forward Responses gateway 的精确模型 ID opt-in，用于上游预留 hosted tool namespace 的情况。目前只支持 `["image_generation"]`；匹配模型必须使用 `openai-responses` wire 且支持该 hosted 工具。它会移除冲突的客户端 `image_gen` 声明，并改写其 selector 以保持调用方的 tool choice。对于 OpenAI API 的虚拟 `-pro` 模型，先匹配所选公开 ID，未命中时才使用解析出的基础 wire-model ID 作为回退。`modelAdapters` 会先按公开 ID、再按基础 ID 解析；后一次结果决定最终 wire。未配置模型保持普通 alias 行为。 |
 | `annotateEmptyToolOutputs?` | `boolean` | 在工具结果到达模型之前，将存在但为空的结果替换为简短标记，以免空白结果被误认为缺失结果。适用于空白字符串和仅包含文本的部件数组；图像、文件和加密部件绝不会被修改。内置注册表中 `DeepSeek` 的默认值为 `true`，其他情况下不设置。设为 `false` 可让提供者退出此行为——后续编辑即使省略该字段，也会保留显式的 `false`。`PATCH /api/providers?name=<provider>` 接受 `true`、`false` 或 `null`；传入 `null` 可清除覆盖值并恢复注册表默认行为。 |
 | `reasoningEffortMap?` | `Record<string, string>` | 提供者级、用于推理标签的线协议别名。 |
@@ -301,6 +303,37 @@ OpenRouter 可以通过多个推理提供者来提供同一个模型。`openRout
 ```
 
 模型键必须是精确的原生 OpenRouter id，不带外层的 opencodex 提供者前缀。选择 `openrouter/anthropic-claude-sonnet-5` 会在应用模型规则之前，还原为原生 `anthropic/claude-sonnet-5`。
+
+## Vercel AI Gateway 提供者路由
+
+Vercel AI Gateway 可以在多个底层推理提供者之间路由一个模型。`vercelGatewayRouting` 配置提供者级偏好；`modelVercelGatewayRouting` 会针对精确模型 ID 替换这些偏好。两者均未设置时，`resolveVercelGatewayRouting()` 返回 `undefined`，因此 Chat 请求构建器会省略 `provider` 字段，Vercel AI Gateway 则保留其默认的动态路由行为。
+
+- `order`：按优先级排列的 Vercel AI Gateway 上游提供者 slug。
+- `only`：限制可用 Vercel AI Gateway 上游提供者的显式允许列表。
+- `sort`：按 `"cost"`（成本最低）、`"ttft"`（首个 token 所需时间）或 `"tps"`（每秒 token 数）自动排列可用提供者。
+
+```json
+{
+  "providers": {
+    "vercel-ai-gateway": {
+      "adapter": "openai-chat",
+      "baseUrl": "https://ai-gateway.vercel.sh/v1",
+      "apiKey": "${VERCEL_AI_GATEWAY_KEY}",
+      "vercelGatewayRouting": {
+        "sort": "ttft"
+      },
+      "modelVercelGatewayRouting": {
+        "zai/glm-5.2": {
+          "only": ["novita", "deepinfra"],
+          "order": ["novita", "deepinfra"]
+        }
+      }
+    }
+  }
+}
+```
+
+模型键是 Vercel 的公开模型选择器，不带外层的 OpenCodex 提供者前缀。选择 `vercel-ai-gateway/zai-glm-5.2` 时，会先还原为原生 `zai/glm-5.2`，再应用模型规则。相同映射也适用于原生 `vercel/<model-id>` 选择器：在 OpenCodex 中使用编码后的 `vercel-ai-gateway/vercel-<model-id>` 选择器，并将 `vercel/<model-id>` 保留为模型键。
 
 ## 静态模型允许列表
 

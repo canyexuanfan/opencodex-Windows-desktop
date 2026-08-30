@@ -92,6 +92,7 @@ cross-route credential fallback не существует. Строки API GPT-
 | `headers?` | `Record<string, string>` | Дополнительные upstream-header'ы. Заголовки авторизации, cookie, API-key-header'ы, встроенные переводы строк и невалидные имена отклоняются. |
 | `openRouterRouting?` | `OpenRouterProviderRouting` | Предпочтения по умолчанию для OpenRouter (`order`, `only`, `allowFallbacks`); валидно только для канонического OpenRouter с `openai-chat`. |
 | `modelOpenRouterRouting?` | `Record<string, OpenRouterProviderRouting>` | Exact override по model id, которые полностью заменяют provider-wide preference для OpenRouter. |
+| `vercelGatewayRouting?` | `VercelGatewayRouting` | Предпочтения по умолчанию для Vercel AI Gateway: `order`, `only` и `sort` (`"cost"` \| `"ttft"` \| `"tps"`); допустимо только для канонического Vercel AI Gateway с `openai-chat`. |
 | `authMode?` | `"key" \| "forward" \| "oauth" \| "local"` | Режим аутентификации (по умолчанию `key`). OAuth/subscription credential'ы хранятся вне `config.json`; `local` разрешён только для тех провайдеров, где это допускает registry-entry. |
 | `codexAccountMode?` | `"pool" \| "direct"` | Только для канонического `openai`; по умолчанию Pool. Direct обходит состояние пула. |
 | `refreshPolicy?` | `"proactive" \| "lazy-only" \| "disabled"` | Переопределение политики Token Guardian для этого OAuth-провайдера. |
@@ -101,6 +102,7 @@ cross-route credential fallback не существует. Строки API GPT-
 | `modelReasoningSummaryDelivery?` | `Record<string, "sequential" \| "sequential_cutoff" \| "concurrent" \| "concurrent_cutoff">` | Responses delivery enum по моделям; переписывает уже существующее поле delivery. |
 | `modelAdapters?` | `Record<string, string>` | Wire-override по модели для `openai-chat` или `openai-responses` в gateway с несколькими wire-форматами. Явные записи имеют приоритет над default'ами registry; preset DeepSeek может выбирать native Responses для `deepseek-v4-flash`, а GitHub Copilot объявляет Responses-only default'ы для семейства GPT-5 (`gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`), потому что эти модели отклоняют `/chat/completions` для агентного трафика. Модели без встроенного default'а (например, `gpt-5.4-nano`) можно включить здесь. Single-wire upstream pin'ы и canonical ChatGPT forward override не принимают. |
 | Opt-in xAI Responses (панель) | переключатель | Только для `xai`: атомарно задаёт или удаляет записи `modelAdapters` для `grok-4.5` и `grok-4.6`. Одна запись отображается как смешанное состояние до следующего переключения. Остальные override и поведение tier не меняются. |
+| `xaiResponsesXSearch?` | `boolean` | По умолчанию отключено. Для назначения xAI Responses декларация `x_search`, размещённая у провайдера, добавляется только тогда, когда действующий инструмент `web_search` сохраняется после окончательной нормализации запроса. Существующие декларации не дублируются, селекторы вызывающей стороны `tool_choice`/`allowed_tools` никогда не расширяются, и эта настройка не связана с параметрами `search.xSearch` сайдкара веб-поиска. |
 | `modelPreferHostedTools?` | `Record<string,string[]>` | Opt-in для точного model ID в non-forward Responses gateway, который резервирует namespace hosted tool. Сейчас допускается только `["image_generation"]`; совпавшая модель должна использовать wire `openai-responses` и поддерживать этот hosted tool. Прокси удаляет конфликтующие клиентские объявления `image_gen` и переписывает их selectors, сохраняя caller tool choice. Для виртуальных моделей OpenAI API `-pro` сначала сопоставляется выбранный публичный ID, а затем в качестве fallback используется ID базовой wire-модели. `modelAdapters` сначала разрешается по публичному ID, затем по базовому ID; второй результат определяет итоговый wire. Остальные модели сохраняют обычное alias-поведение. |
 | `annotateEmptyToolOutputs?` | `boolean` | Заменяет присутствующий, но пустой результат вызова инструмента короткой меткой до его передачи модели, чтобы пустой результат не воспринимался как отсутствующий. Применяется к пустым строкам и массивам частей, содержащим только текст; части с изображениями, файлами и зашифрованными данными никогда не изменяются. Во встроенном реестре по умолчанию имеет значение `true` для DeepSeek, а для остальных провайдеров не задано. Укажите `false`, чтобы отключить эту возможность для провайдера: явное значение `false` сохраняется при последующих изменениях без этого поля. `PATCH /api/providers?name=<provider>` принимает `true`, `false` или `null`, чтобы удалить переопределение и вернуться к поведению по умолчанию из реестра. |
 | `reasoningEffortMap?` | `Record<string, string>` | Provider-wide wire-alias'ы для reasoning-label'ов. |
@@ -373,6 +375,47 @@ OpenRouter может обслуживать одну и ту же модель 
 Ключи моделей здесь должны быть exact native OpenRouter id, без внешнего префикса провайдера
 opencodex. При выборе `openrouter/anthropic-claude-sonnet-5` система сначала восстанавливает
 native-id `anthropic/claude-sonnet-5`, а уже затем применяет model rule.
+
+## Маршрутизация провайдеров Vercel AI Gateway
+
+Vercel AI Gateway может маршрутизировать одну модель между несколькими нижележащими
+inference-провайдерами. `vercelGatewayRouting` задаёт предпочтения для всего провайдера, а
+`modelVercelGatewayRouting` полностью заменяет их для точных идентификаторов моделей. Если обе
+настройки отсутствуют, `resolveVercelGatewayRouting()` возвращает `undefined`, поэтому построители
+Chat-запросов не добавляют поле `provider`, а Vercel AI Gateway сохраняет стандартное динамическое
+поведение маршрутизации.
+
+- `order`: slug'и upstream-провайдеров Vercel AI Gateway в порядке приоритета.
+- `only`: явный allowlist допустимых upstream-провайдеров Vercel AI Gateway.
+- `sort`: автоматическая сортировка допустимых провайдеров по `"cost"` (минимальная стоимость),
+  `"ttft"` (время до первого токена) или `"tps"` (токенов в секунду).
+
+```json
+{
+  "providers": {
+    "vercel-ai-gateway": {
+      "adapter": "openai-chat",
+      "baseUrl": "https://ai-gateway.vercel.sh/v1",
+      "apiKey": "${VERCEL_AI_GATEWAY_KEY}",
+      "vercelGatewayRouting": {
+        "sort": "ttft"
+      },
+      "modelVercelGatewayRouting": {
+        "zai/glm-5.2": {
+          "only": ["novita", "deepinfra"],
+          "order": ["novita", "deepinfra"]
+        }
+      }
+    }
+  }
+}
+```
+
+Ключи моделей — это публичные селекторы моделей Vercel без внешнего префикса провайдера OpenCodex.
+При выборе `vercel-ai-gateway/zai-glm-5.2` перед применением правила модели восстанавливается нативный
+идентификатор `zai/glm-5.2`. То же преобразование применяется к нативному селектору
+`vercel/<model-id>`: в OpenCodex используйте кодированный селектор
+`vercel-ai-gateway/vercel-<model-id>`, а в качестве ключа модели оставьте `vercel/<model-id>`.
 
 ## Статические allowlist'ы моделей
 

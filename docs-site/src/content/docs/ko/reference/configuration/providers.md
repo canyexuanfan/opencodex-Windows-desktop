@@ -79,6 +79,7 @@ managed map을 활성화하면 privacy-safe selector를 만들고, 이후 계정
 | `headers?` | `Record<string, string>` | 추가 상위 헤더입니다. Authorization, cookies, API-key 헤더, 내장 개행, 잘못된 이름은 허용하지 않습니다. |
 | `openRouterRouting?` | `OpenRouterProviderRouting` | 기본 OpenRouter `order`, `only`, `allowFallbacks` 선호도입니다. 정식 OpenRouter와 `openai-chat`에서만 유효합니다. |
 | `modelOpenRouterRouting?` | `Record<string, OpenRouterProviderRouting>` | 공급자 전반의 OpenRouter 선호도를 덮어쓰는 정확한 모델 id별 재정의입니다. |
+| `vercelGatewayRouting?` | `VercelGatewayRouting` | 기본 Vercel AI Gateway `order`, `only`, `sort`(`"cost"` \| `"ttft"` \| `"tps"`) 선호도입니다. 정식 Vercel AI Gateway와 `openai-chat`에서만 유효합니다. |
 | `authMode?` | `"key" \| "forward" \| "oauth" \| "local"` | 인증 모드입니다. 기본값은 `key`입니다. OAuth/구독 자격 증명은 `config.json` 밖에 저장되며, `local`은 레지스트리 항목이 허용하는 공급자에서만 사용할 수 있습니다. |
 | `codexAccountMode?` | `"pool" \| "direct"` | 정식 `openai` 전용입니다. 기본값은 Pool입니다. Direct는 풀 상태를 우회합니다. |
 | `refreshPolicy?` | `"proactive" \| "lazy-only" \| "disabled"` | 이 OAuth 공급자의 Token Guardian 정책을 덮어씁니다. |
@@ -88,6 +89,7 @@ managed map을 활성화하면 privacy-safe selector를 만들고, 이후 계정
 | `modelReasoningSummaryDelivery?` | `Record<string, "sequential" \| "sequential_cutoff" \| "concurrent" \| "concurrent_cutoff">` | 모델별 Responses 전달 enum입니다. 기존 delivery 필드를 다시 씁니다. |
 | `modelAdapters?` | `Record<string, string>` | 혼합 와이어 게이트웨이를 위한 모델별 `openai-chat` 또는 `openai-responses` 와이어 재정의입니다. 명시적 항목이 레지스트리 기본값보다 우선합니다. DeepSeek 프리셋은 `deepseek-v4-flash`에 네이티브 Responses를 선택할 수 있고, GitHub Copilot은 GPT-5 계열(`gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`)을 Responses 전용 기본값으로 선언합니다. 이 모델들은 에이전트 트래픽에서 `/chat/completions`를 거부하기 때문입니다. `gpt-5.4-nano`처럼 기본값이 없는 모델은 여기서 직접 옵트인할 수 있습니다. 단일 와이어 상위 항목과 정식 ChatGPT forward는 재정의를 거부합니다. |
 | xAI Responses 옵트인(대시보드) | 스위치 | `xai`에서만 `grok-4.5`와 `grok-4.6`의 `modelAdapters` 항목을 원자적으로 설정하거나 지웁니다. 한 항목만 있으면 다음 스위치 쓰기가 둘을 정규화할 때까지 혼합 상태로 표시됩니다. 다른 재정의와 티어 동작은 바뀌지 않습니다. |
+| `xaiResponsesXSearch?` | `boolean` | 기본적으로 비활성화됩니다. xAI Responses 대상에서는 최종 요청 정규화 후에도 실제 `web_search` 도구가 남아 있을 때만 공급자가 호스팅하는 `x_search` 선언을 추가합니다. 기존 선언은 중복하지 않고, 호출자의 `tool_choice`/`allowed_tools` 선택기 범위를 확장하지 않으며, 웹 검색 사이드카의 `search.xSearch` 옵션과는 별개입니다. |
 | `modelPreferHostedTools?` | `Record<string,string[]>` | hosted tool namespace를 예약하는 non-forward Responses gateway용 정확한 모델 ID opt-in입니다. 현재 `["image_generation"]`만 허용하며, 일치하는 모델은 `openai-responses` wire를 사용하고 해당 hosted tool을 지원해야 합니다. 충돌하는 클라이언트 `image_gen` 선언을 제거하고 호출자의 tool choice를 유지하도록 selector도 다시 씁니다. OpenAI API 가상 `-pro` 모델은 선택한 공개 ID를 먼저 일치시키고, 해석된 기본 wire-model ID를 대체값으로 사용합니다. `modelAdapters`는 공개 ID를 먼저, 그 다음 기본 ID를 해석하며, 두 번째 결과가 최종 wire를 결정합니다. 설정하지 않은 모델은 일반 alias 동작을 유지합니다. |
 | `annotateEmptyToolOutputs?` | `boolean` | 존재하지만 비어 있는 도구 결과가 모델에 도달하기 전에 짧은 표시로 바꿔, 빈 결과를 누락된 결과로 해석하지 않도록 합니다. 빈 문자열과 텍스트 전용 파트 배열에 적용되며, 이미지·파일·암호화된 파트는 절대 변경하지 않습니다. 기본 제공 레지스트리에 따라 DeepSeek의 기본값은 `true`이며, 그 외에는 설정되지 않습니다. 공급자를 이 동작에서 제외하려면 `false`로 설정합니다. 명시적인 `false`는 이후 해당 필드를 생략한 편집에서도 유지됩니다. `PATCH /api/providers?name=<provider>`는 `true`, `false`, 또는 `null`을 받아 재정의를 지우고 레지스트리 기본 동작으로 되돌릴 수 있습니다. |
 | `reasoningEffortMap?` | `Record<string, string>` | reasoning 레이블의 공급자 전반 와이어 별칭입니다. |
@@ -299,6 +301,43 @@ OpenRouter는 하나의 모델을 여러 추론 공급자로 제공할 수 있�
 ```
 
 모델 키는 외부 opencodex 공급자 접두사 없이, 정확한 네이티브 OpenRouter id여야 합니다. `openrouter/anthropic-claude-sonnet-5`를 선택하면 모델 규칙을 적용하기 전에 네이티브 `anthropic/claude-sonnet-5`로 되돌아갑니다.
+
+## Vercel AI Gateway 공급자 라우팅
+
+Vercel AI Gateway는 하나의 모델을 여러 기반 추론 공급자에 걸쳐 라우팅할 수 있습니다. `vercelGatewayRouting`은
+공급자 전반의 선호도를 구성하고, `modelVercelGatewayRouting`은 정확한 모델 ID에 대해 이를 대체합니다. 둘 다
+설정하지 않으면 `resolveVercelGatewayRouting()`이 `undefined`를 반환하므로 Chat 요청 빌더는 `provider` 필드를
+생략하고 Vercel AI Gateway의 기본 동적 라우팅 동작이 유지됩니다.
+
+- `order`: Vercel AI Gateway 업스트림 공급자 slug를 우선순위 순으로 지정합니다.
+- `only`: 사용할 수 있는 Vercel AI Gateway 업스트림 공급자를 제한하는 명시적 허용 목록입니다.
+- `sort`: 사용할 수 있는 공급자를 `"cost"`(최저 비용), `"ttft"`(첫 토큰까지 걸리는 시간), `"tps"`(초당 토큰 수) 기준으로 자동 정렬합니다.
+
+```json
+{
+  "providers": {
+    "vercel-ai-gateway": {
+      "adapter": "openai-chat",
+      "baseUrl": "https://ai-gateway.vercel.sh/v1",
+      "apiKey": "${VERCEL_AI_GATEWAY_KEY}",
+      "vercelGatewayRouting": {
+        "sort": "ttft"
+      },
+      "modelVercelGatewayRouting": {
+        "zai/glm-5.2": {
+          "only": ["novita", "deepinfra"],
+          "order": ["novita", "deepinfra"]
+        }
+      }
+    }
+  }
+}
+```
+
+모델 키는 외부 OpenCodex 공급자 접두사가 없는 Vercel 공개 모델 선택자입니다.
+`vercel-ai-gateway/zai-glm-5.2`를 선택하면 모델 규칙 적용 전에 네이티브 `zai/glm-5.2`가 복원됩니다. 네이티브
+`vercel/<model-id>` 선택자에도 동일한 매핑이 적용됩니다. OpenCodex에서는 인코딩된
+`vercel-ai-gateway/vercel-<model-id>` 선택자를 사용하고, 모델 키에는 `vercel/<model-id>`를 유지하십시오.
 
 ## 정적 모델 허용 목록
 
