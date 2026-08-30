@@ -21,6 +21,7 @@ import { rewriteRoutedToolSearchForUpstream } from "../responses/tool-search-com
 import { rewriteRoutedNamespaceToolsForUpstream } from "../responses/namespace-tool-compat";
 import { openaiResponsesUrl } from "./openai-responses-url";
 import { injectXaiResponsesXSearch, normalizeXaiResponsesWebSearch } from "./xai-web-search";
+import { EMPTY_TOOL_OUTPUT_ANNOTATION, isWhitespaceOnlyTextPartArray } from "./empty-tool-output-annotation";
 import {
   isXaiSchemaTarget,
   normalizeXaiToolParameters,
@@ -840,6 +841,40 @@ function toolOutputText(output: unknown): string {
     if (part.type === "refusal" && typeof part.refusal === "string") return `[refusal] ${part.refusal}`;
     return "";
   }).filter(Boolean).join("\n");
+}
+
+/** True when a Responses tool output item is present but carries no usable content. */
+function isToolOutputEmpty(output: unknown): boolean {
+  if (typeof output === "string") return output.trim() === "";
+  if (Array.isArray(output)) {
+    // Mirror the Chat wire rule through the shared contract: only a pure
+    // text/refusal part array whose joined content trims empty is annotated.
+    // input_image, encrypted_content, input_file and any other non-text part is
+    // real output and must never be replaced.
+    return isWhitespaceOnlyTextPartArray(output);
+  }
+  // A missing or null `output` is not a present-but-empty result: it is an
+  // incomplete payload. Leave it untouched so the upstream contract fails
+  // closed, and the orphan repair can surface it honestly instead of claiming
+  // the tool ran with no output.
+  return false;
+}
+
+/**
+ * Rewrite present-but-empty tool outputs to an explicit annotation. Synthetic
+ * missing-result placeholders are non-empty and pass through untouched. No-op unless
+ * the provider opts in (`annotateEmptyToolOutputs`).
+ */
+function annotateEmptyResponsesToolOutputs(body: unknown, enabled: boolean): unknown {
+  if (!enabled || !isPlainObject(body) || !Array.isArray(body.input)) return body;
+  let changed = false;
+  const input = body.input.map(item => {
+    if (!isPlainObject(item) || (item.type !== "function_call_output" && item.type !== "custom_tool_call_output")) return item;
+    if (!isToolOutputEmpty(item.output)) return item;
+    changed = true;
+    return { ...item, output: EMPTY_TOOL_OUTPUT_ANNOTATION };
+  });
+  return changed ? { ...body, input } : body;
 }
 
 /**
@@ -2030,6 +2065,9 @@ export function createResponsesPassthroughAdapter(provider: OcxProviderConfig): 
       // pair from its own storage either, so it needs the same repair the forward
       // backend gets — dropping previous_response_id is not much use if the body that
       // reaches the wire is unparseable.
+      if (provider.annotateEmptyToolOutputs === true) {
+        outBody = annotateEmptyResponsesToolOutputs(outBody, true);
+      }
       if (forward || stateless) {
         outBody = repairOrphanedInputItems(outBody, unexpandedMiss, stateless && !forward);
       }

@@ -1,4 +1,5 @@
 import { isCanonicalOpenAiForwardProvider } from "../providers/openai-tiers";
+import { redactSecretString } from "../lib/redact";
 import { modelRecordValue } from "../reasoning-effort";
 import {
   isWirePinnedModel,
@@ -119,6 +120,16 @@ export function booleanRecordConfigError(value: unknown, field: string): string 
   for (const [key, entry] of Object.entries(value)) {
     if (!key.trim()) return `${field} keys must be nonblank model ids`;
     if (typeof entry !== "boolean") return `${field}.${key} must be a boolean`;
+  }
+  return null;
+}
+
+/** Validate the management DTO boundary for the opt-in empty-tool-output annotation. */
+export function providerEmptyToolOutputConfigError(name: string, provider: unknown): string | null {
+  const raw = provider as Record<string, unknown> | null | undefined;
+  const value = raw === null || raw === undefined ? undefined : raw.annotateEmptyToolOutputs;
+  if (value !== undefined && typeof value !== "boolean") {
+    return `provider ${JSON.stringify(redactSecretString(name))} annotateEmptyToolOutputs must be a boolean`;
   }
   return null;
 }
