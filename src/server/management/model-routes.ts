@@ -72,6 +72,7 @@ function readDefaultReasoningEffort(raw: unknown, efforts: string[] | undefined)
 import type { CatalogModel } from "../../codex/catalog";
 import { accountBoundNativeOpenAiSlugsBySelector, catalogModelSlug, configuredNativeAliasSlugs, disabledNativeSlugs, invalidateCodexModelsCache, nativeModelRows, shouldIncludeAccountBoundNativeOpenAi, uniqueCatalogModelsForPublicList } from "../../codex/catalog";
 import { CatalogGatherBusyError } from "../../codex/catalog/provider-fetch";
+import { NATIVE_OPENAI_MODELS } from "../../codex/catalog/native-models";
 import { getProviderLiveModelCount } from "../../codex/model-cache";
 import {
   DEFAULT_SUBAGENT_MODELS,
@@ -332,17 +333,20 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
   }
 
   if (url.pathname === "/api/catalog" && req.method === "GET") {
-    const { readCatalog, readCodexCatalogPath } = await import("../../codex/catalog");
-    const catalog = readCatalog(readCodexCatalogPath());
-    if (!catalog) return jsonResponse({ error: "catalog not found" }, 404, req, config);
+    // Shared with GET|HEAD /v1/catalog (#809) so both planes emit identical bytes.
+    const { serializePersistedCatalog, persistedCodexVersion } = await import("../catalog-download");
+    const serialized = await serializePersistedCatalog();
+    // No size ceiling here on purpose: this route's behavior predates the shared serializer
+    // and a 2,000-model catalog (~92 MB, within the supported bound) must keep working.
+    if (serialized.body === null) return jsonResponse({ error: "catalog not found" }, 404, req, config);
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       ...corsHeaders(req, config),
     };
-    const { loadPersistedCodexRuntime } = await import("../../codex/runtime");
-    const version = loadPersistedCodexRuntime()?.selectedVersion;
+    if (serialized.etag) headers.ETag = serialized.etag;
+    const version = await persistedCodexVersion();
     if (version) headers["x-opencodex-codex-version"] = version;
-    return new Response(JSON.stringify(catalog), { status: 200, headers });
+    return new Response(serialized.body, { status: 200, headers });
   }
 
   if (url.pathname === "/api/models" && req.method === "GET") {
@@ -465,6 +469,12 @@ export async function handleModelRoutes(ctx: ManagementContext): Promise<Respons
     const supportedNative = new Set([
       ...nativeModelRows(config).map(row => row.slug),
       ...accountNativeQualified,
+      // A model suppressed by an unconfirmed entitlement roster is absent from
+      // nativeModelRows, so validating against those rows alone rejected a model this build
+      // knows perfectly well and left the operator with no way to clear its disable key
+      // (#2886). Accepting the target says "this build knows this model", not "this account
+      // may use it" — visibility only writes disabledModels and routing stays gated.
+      ...NATIVE_OPENAI_MODELS,
     ]);
     const targets: Array<{ id: string; native: boolean }> = [];
     const seen = new Set<string>();

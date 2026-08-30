@@ -3,7 +3,7 @@ import { deriveStartupHealth, formatStartupRoutingDetail, startupHealthSummary }
 import { unusedProxyWarningLines } from "../src/cli/status";
 import { classifyCodexRouting, hasInjectedCodexRouting } from "../src/codex/inject";
 import { handleManagementAPI } from "../src/server/management-api";
-import { invalidateStartupHealthCache, markStartupHealthDiagnosticStale } from "../src/server/startup-health-cache";
+import { getCachedStartupHealth, invalidateStartupHealthCache, markStartupHealthDiagnosticStale } from "../src/server/startup-health-cache";
 import type { OcxConfig } from "../src/types";
 
 const base = {
@@ -195,11 +195,26 @@ describe("Codex startup health", () => {
 
   test("exposes fresh secret-free startup health across cache expiry", async () => {
     invalidateStartupHealthCache();
+    let now = 1_000;
+    let probeCalls = 0;
+    const cacheDeps = {
+      now: () => now,
+      probe: async () => {
+        probeCalls += 1;
+        return deriveStartupHealth({
+          ...base,
+          routingKind: probeCalls === 1 ? "native" : "custom-remote",
+        });
+      },
+    };
+    const readStartupHealth = (config: Pick<OcxConfig, "codexAutoStart">) =>
+      getCachedStartupHealth(config, cacheDeps);
     const url = new URL("http://localhost/api/startup-health");
     const responsePromise = handleManagementAPI(
       new Request(url),
       url,
       { port: 10100, providers: {}, defaultProvider: "openai", codexAutoStart: true } as OcxConfig,
+      { getCachedStartupHealth: readStartupHealth },
     );
     const response = await responsePromise;
     expect(response?.status).toBe(200);
@@ -209,6 +224,8 @@ describe("Codex startup health", () => {
     expect(typeof body.rebootSafe).toBe("boolean");
     expect(typeof body.routingInjected).toBe("boolean");
     expect(body.diagnosticStale).toBe(false);
+    expect(body.routingKind).toBe("native");
+    expect(probeCalls).toBe(1);
     expect(body.commands).toEqual({
       installService: "ocx service install",
       repairService: "ocx service repair",
@@ -221,15 +238,45 @@ describe("Codex startup health", () => {
       expect(serialized).not.toContain(secretName);
     }
 
-    await Bun.sleep(30_050);
+    now += 30_001;
     const refreshed = await handleManagementAPI(
       new Request(url),
       url,
       { port: 10100, providers: {}, defaultProvider: "openai", codexAutoStart: true } as OcxConfig,
+      { getCachedStartupHealth: readStartupHealth },
     );
     const refreshedBody = await refreshed!.json() as Record<string, unknown>;
     expect(refreshedBody.diagnosticStale).toBe(false);
-  }, 40_000);
+    expect(refreshedBody.routingKind).toBe("custom-remote");
+    expect(probeCalls).toBe(2);
+  });
+
+  test("a platform probe that misses its bounded wait returns stale health", async () => {
+    invalidateStartupHealthCache();
+    let releaseProbe!: (value: ReturnType<typeof deriveStartupHealth>) => void;
+    const pendingProbe = new Promise<ReturnType<typeof deriveStartupHealth>>(resolve => {
+      releaseProbe = resolve;
+    });
+    let observedWaitMs = 0;
+
+    const health = await getCachedStartupHealth(
+      { codexAutoStart: true },
+      {
+        probe: async () => pendingProbe,
+        waitForProbe: async (_probe, timeoutMs) => {
+          observedWaitMs = timeoutMs;
+          return null;
+        },
+      },
+    );
+
+    expect(health.diagnosticStale).toBe(true);
+    expect(observedWaitMs).toBeGreaterThan(0);
+
+    releaseProbe(deriveStartupHealth({ ...base, routingKind: "native" }));
+    await pendingProbe;
+    invalidateStartupHealthCache();
+  });
 });
 import { ManagementRequest as Request } from "./helpers/management-auth";
 

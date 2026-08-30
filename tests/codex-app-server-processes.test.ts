@@ -3,7 +3,11 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTrustedWindowsElevationExecutablesForTests } from "../src/lib/windows-elevation";
-import { createWindowsPowerShellFixture, type WindowsPowerShellFixture } from "./helpers/windows-power-shell-fixture";
+import {
+  createWindowsPowerShellFixture,
+  probeWindowsPowerShellFixture,
+  type WindowsPowerShellFixture,
+} from "./helpers/windows-power-shell-fixture";
 import {
   afterCatalogWriteHandleAppServers,
   attachStaleAppServerHint,
@@ -32,6 +36,24 @@ beforeAll(async () => {
   stallingFakePowerShell = await createWindowsPowerShellFixture();
 });
 afterAll(() => stallingFakePowerShell?.cleanup());
+
+  // Both #1852 cases below reach the collector through the real execFile path, and
+  // the collector maps any exec failure to `state: "unknown"` with no processes.
+  // So a fixture that cannot run produces exactly the assertion failures a
+  // synchronous implementation would, and the Windows leg reported the design
+  // regression it does not have. This names the real condition instead.
+  test("the PowerShell fixture the #1852 cases depend on actually executes", async () => {
+    const probe = await probeWindowsPowerShellFixture(stallingFakePowerShell);
+    expect(probe.ok, `fake PowerShell fixture at ${stallingFakePowerShell.executable} did not run: ${probe.detail}`).toBe(true);
+  });
+
+  test("a hung PowerShell fixture probe is killed at its local deadline", async () => {
+    const startedAt = Date.now();
+    const probe = await probeWindowsPowerShellFixture(stallingFakePowerShell, 25);
+    expect(probe.ok).toBe(false);
+    expect(probe.detail).toContain("timed out after 25ms");
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+  });
 
   test("not_running when no app-server process exists", () => {
     const status = collectCodexAppServerCatalogState({
@@ -375,6 +397,50 @@ describe("Codex app-server process matching (#476)", () => {
     expect(isCodexAppServerCommandLine("node /opt/codex-code-mode-host --session 1")).toBe(true);
   });
 
+  /**
+   * Reported by a contributor in #2884 with `ps` output from an affected host: once the
+   * autostart shim renames the original launcher to `codex.opencodex-real`,
+   * `--restart-codex` matched nothing and left app-servers alive on stale catalogs.
+   */
+  test("matches the .opencodex-real launcher backups the shim creates", () => {
+    expect(isCodexAppServerCommandLine("/home/ubuntu/.local/bin/codex.opencodex-real app-server proxy")).toBe(true);
+    // The exact command line from the report.
+    expect(isCodexAppServerCommandLine(
+      "/home/ubuntu/.local/bin/codex.opencodex-real -c features.code_mode_host=true app-server --listen unix://",
+    )).toBe(true);
+    expect(isCodexAppServerCommandLine("\"C:\\Program Files\\nodejs\\codex.opencodex-real.cmd\" app-server")).toBe(true);
+    // findWindowsCodexTargets shims codex.ps1 alongside codex.cmd, so its backup runs too.
+    expect(isCodexAppServerCommandLine("\"C:\\Program Files\\nodejs\\codex.opencodex-real.ps1\" app-server")).toBe(true);
+    expect(isCodexAppServerCommandLine("node /usr/local/bin/codex.opencodex-real app-server proxy")).toBe(true);
+
+    // Still narrow: the suffix does not turn a subcommand or an argument into a match.
+    expect(isCodexAppServerCommandLine("codex.opencodex-real exec 'hello'")).toBe(false);
+    expect(isCodexAppServerCommandLine("node worker.js codex.opencodex-real app-server")).toBe(false);
+    // A backup name must not be normalised into the target-triple pattern. Stripping the
+    // suffix before that test would make this unrelated binary a kill target.
+    expect(isCodexAppServerCommandLine("/opt/tools/codex-report-generator-worker.opencodex-real app-server")).toBe(false);
+    // No shim installation can produce a .exe backup: Windows refuses to rename a native
+    // codex.exe. Matching a name nothing writes only widens what SIGTERM can reach.
+    expect(isCodexAppServerCommandLine("C:\\tools\\codex.opencodex-real.exe app-server")).toBe(false);
+  });
+
+  /**
+   * `--` ends option parsing, so the next word is a TUI prompt rather than a subcommand.
+   * `codex -- app-server` opens an interactive session whose first prompt word happens to
+   * be "app-server"; matching it sent SIGTERM to a live session. Predates the shim-backup
+   * work and applies to every launcher name.
+   */
+  test("a prompt after -- is not the app-server subcommand", () => {
+    expect(isCodexAppServerCommandLine("codex -- app-server")).toBe(false);
+    expect(isCodexAppServerCommandLine("/usr/local/bin/codex -- app-server --listen unix://")).toBe(false);
+    expect(isCodexAppServerCommandLine("codex.opencodex-real -- app-server")).toBe(false);
+    expect(isCodexAppServerCommandLine("codex -c features.x=true -- app-server")).toBe(false);
+    expect(isCodexAppServerCommandLine("node /usr/local/bin/codex -- app-server")).toBe(false);
+    // The real invocations still match: a global option before the subcommand is ordinary.
+    expect(isCodexAppServerCommandLine("codex app-server")).toBe(true);
+    expect(isCodexAppServerCommandLine("codex -c features.x=true app-server")).toBe(true);
+  });
+
 
   test("matches the npm wrapper that supervises the native app-server", () => {
     // The shape that made `ocx sync --restart-codex` report a survivor on Linux. An
@@ -473,6 +539,22 @@ describe("Codex app-server process matching (#476)", () => {
     // Stay narrow: incidental "opencodex" paths must not pay GetOwner.
     expect(isWindowsCodexCandidateCommandLine(
       "node C:\\Users\\a\\opencodex\\src\\cli\\index.ts start",
+    )).toBe(false);
+    // Shim backups reach GetOwner, in the shape backupPathFor actually writes: the
+    // suffix goes after the stem and before the extension.
+    expect(isWindowsCodexCandidateCommandLine(
+      "\"C:\\Program Files\\nodejs\\codex.opencodex-real.cmd\" app-server",
+    )).toBe(true);
+    expect(isWindowsCodexCandidateCommandLine(
+      "\"C:\\Program Files\\nodejs\\codex.opencodex-real.ps1\" app-server",
+    )).toBe(true);
+    expect(isWindowsCodexCandidateCommandLine(
+      "C:\\Users\\a\\.local\\bin\\codex.opencodex-real app-server",
+    )).toBe(true);
+    // The reverse ordering is a name nothing produces. Admitting it would pay GetOwner
+    // on a process that cannot be a shim backup.
+    expect(isWindowsCodexCandidateCommandLine(
+      "C:\\x\\codex.opencodex-real-x86_64-pc-windows-msvc.exe app-server",
     )).toBe(false);
     expect(isWindowsCodexCandidateCommandLine("opencodex app-server")).toBe(false);
     expect(isWindowsCodexCandidateCommandLine("hermes-codex-bridge-mcp")).toBe(false);

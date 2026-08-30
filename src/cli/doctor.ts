@@ -10,8 +10,9 @@
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { getConfigDir, getConfigPath, readConfigDiagnostics, resolveEnvValue } from "../config";
+import { getConfigDir, getConfigPath, readConfigDiagnostics } from "../config";
 import { readPid } from "../config/process-state";
+import { probeUncleanExitState } from "./status";
 import { findLiveProxy, type LiveProxy } from "../server/proxy-liveness";
 import { BUN_RUNTIME_SOURCES } from "../lib/bun-runtime";
 import type { BunRuntimeSource } from "../lib/bun-runtime";
@@ -26,7 +27,8 @@ import { probeNativeProfileRecoveryState, resolveNativeProfileContext } from "..
 import { NativeProfileError } from "../codex/native-profile-types";
 import { collectOrcaCodexHomeDiagnostic, resolveCodexHomeDir as resolveCodexHomeDirImpl, isWslRuntime, listWslWindowsCodexHomes, wslAutomountRoot, type CodexHomeDeps } from "../codex/home";
 import { scanCodexAgentRolesWithTomlModelFallback } from "../codex/subagent-model-fallback";
-import { findCodexOnPath, isWindowsInteropDir } from "../codex/shim";
+import { diagnoseCodexShim, findCodexOnPath, isWindowsInteropDir, type CodexShimDiagnostic } from "../codex/shim";
+import { providerTableString, rootTomlString } from "../codex/injected-marker";
 import { countPendingOpencodexHistory } from "../codex/history-provider";
 import {
   inspectCodexCoordinator,
@@ -403,6 +405,10 @@ export function collectWslDualInstall(deps: WslDualInstallDeps = {}): WslDualIns
 export type ProxyEnvRow = { key: string; present: boolean };
 export type EnvMap = Record<string, string | undefined>;
 
+function ownEnvValue(env: EnvMap, name: string): string | undefined {
+  return Object.hasOwn(env, name) ? env[name] : undefined;
+}
+
 /** Report only presence/absence of proxy env vars - never the value (it may
  * embed credentials). Checks both upper- and lower-case forms. */
 export function collectProxyEnv(env: EnvMap = process.env): ProxyEnvRow[] {
@@ -438,11 +444,6 @@ export function collectProviderApiKeyDiagnostics(
   providers: Record<string, { authMode?: string; apiKey?: string }> = readConfigDiagnostics().config.providers ?? {},
   env: EnvMap = process.env,
 ): ProviderApiKeyDiagnostic[] {
-  const resolveInEnv = (value: string): string | undefined => {
-    const name = envReferenceName(value);
-    if (!name) return value;
-    return env[name];
-  };
   const rows: ProviderApiKeyDiagnostic[] = [];
   for (const [provider, config] of Object.entries(providers)) {
     if (config.authMode !== "key") continue;
@@ -450,7 +451,7 @@ export function collectProviderApiKeyDiagnostics(
     if (!raw) continue;
     const envName = envReferenceName(raw);
     if (!envName) continue;
-    const resolved = resolveInEnv(raw);
+    const resolved = ownEnvValue(env, envName);
     if (resolved?.trim()) continue;
     rows.push({
       provider,
@@ -459,6 +460,33 @@ export function collectProviderApiKeyDiagnostics(
     });
   }
   return rows;
+}
+
+export type CodexEnvKeyReadinessDiagnostic = {
+  envName: string;
+  shimState: "missing" | "unhealthy";
+  detail: string;
+  action: string;
+};
+
+/** Warn when routed Codex cannot obtain its configured admission token at launch. */
+export function collectCodexEnvKeyReadiness(
+  configText: string | null,
+  env: EnvMap,
+  shim: CodexShimDiagnostic,
+  serviceTokenPresent: boolean,
+): CodexEnvKeyReadinessDiagnostic | null {
+  if (!configText || rootTomlString(configText, "model_provider") !== "opencodex") return null;
+  const envName = providerTableString(configText, "opencodex", "env_key")?.trim();
+  const envValue = envName ? ownEnvValue(env, envName) : undefined;
+  if (!envName || envValue?.trim() || shim.healthy || !serviceTokenPresent) return null;
+  const shimState = shim.installed ? "unhealthy" : "missing";
+  return {
+    envName,
+    shimState,
+    detail: `Codex uses env_key ${envName}, but that variable is unset and the OpenCodex shim is ${shimState}; the service token file exists but plain Codex does not load it`,
+    action: `Run 'ocx codex-shim install' to repair launch-time token injection, or export ${envName} in the process that starts Codex`,
+  };
 }
 
 export function collectConfiguredProxy(): ConfiguredProxyDiagnostic {
@@ -484,7 +512,9 @@ export function collectConfiguredProxy(): ConfiguredProxyDiagnostic {
   }
 
   const envName = envReferenceName(rawProxy);
-  const resolved = resolveEnvValue(rawProxy);
+  const resolved = rawProxy.startsWith("$")
+    ? ownEnvValue(process.env, envName ?? rawProxy.slice(1))
+    : rawProxy;
   if (resolved?.trim()) {
     return {
       key: "config.proxy",
@@ -505,7 +535,7 @@ export function collectConfiguredProxy(): ConfiguredProxyDiagnostic {
 }
 
 export function parseProcessEnvBlock(content: string): EnvMap {
-  const env: EnvMap = {};
+  const env: EnvMap = Object.create(null);
   for (const entry of content.split("\0")) {
     if (!entry) continue;
     const separator = entry.indexOf("=");
@@ -943,6 +973,11 @@ export function proxyDownRestartHint(input: {
   /** Absent means "unknown"; the hint then keeps its pre-repair wording. */
   serviceInstalled?: boolean;
   serviceConflict?: boolean;
+  /**
+   * Persisted owner records outlived their process (#1419). Cause-neutral: what is on
+   * disk proves an unclean exit, not which signal caused it.
+   */
+  staleProcessState?: boolean;
 }): string | null {
   if (input.proxyRunning) return null;
   // `serviceViable` alone conflates "no service at all" with "registered but stale or
@@ -955,7 +990,10 @@ export function proxyDownRestartHint(input: {
     : installedButBroken
       ? "Restart it with 'ocx start', or refresh the installed service: 'ocx service repair'."
       : "Restart it with 'ocx start', or install the persistent service: 'ocx service install'.";
-  return `The ocx proxy is not running. Codex/Claude clients pinned to 127.0.0.1:${input.port} fail with errors like "error sending request for url (http://127.0.0.1:${input.port}/v1/responses)". ${restart}`;
+  const uncleanExit = input.staleProcessState === true
+    ? "Stale process records remain, so the previous run may have exited unexpectedly. "
+    : "";
+  return `The ocx proxy is not running. ${uncleanExit}Codex/Claude clients pinned to 127.0.0.1:${input.port} fail with errors like "error sending request for url (http://127.0.0.1:${input.port}/v1/responses)". ${restart}`;
 }
 
 export async function runDoctor(args: string[] = []): Promise<void> {
@@ -1059,6 +1097,17 @@ export async function runDoctor(args: string[] = []): Promise<void> {
   }
 
   const doctorConfig = readConfigDiagnostics().config;
+  const codexConfigPath = join(resolveCodexHomeDirImpl(), "config.toml");
+  const codexConfigText = (() => {
+    try { return readFileSync(codexConfigPath, "utf8"); } catch { return null; }
+  })();
+  const serviceTokenPresent = Boolean(readInstalledServiceToken()?.trim());
+  const codexEnvKeyReadiness = collectCodexEnvKeyReadiness(
+    codexConfigText,
+    process.env,
+    diagnoseCodexShim(),
+    serviceTokenPresent,
+  );
   const startup = collectStartupHealth(doctorConfig);
   console.log("\nCodex restart safety");
   console.log(`  ${startup.rebootSafe ? "ok " : "!! "} ${startupHealthSummary(startup)}`);
@@ -1135,6 +1184,14 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     for (const row of providerApiKeys) {
       console.log(`  !!     ${row.detail}`);
     }
+  }
+
+  console.log("\nCodex env_key launch readiness");
+  if (codexEnvKeyReadiness) {
+    console.log(`  !!     ${codexEnvKeyReadiness.detail}`);
+    console.log(`         Action: ${codexEnvKeyReadiness.action}`);
+  } else {
+    console.log("  ok     no broken OpenCodex env_key launch path detected");
   }
 
   console.log("\nRunning proxy process proxy env (presence only)");
@@ -1269,11 +1326,20 @@ export async function runDoctor(args: string[] = []): Promise<void> {
     serviceViable: startup.serviceViable,
     serviceInstalled: startup.serviceInstalled,
     serviceConflict: startup.serviceConflict,
+    // Threaded through the same decision helper `ocx status` uses, so the two
+    // diagnostics cannot drift. A helper-only change would satisfy a unit test while
+    // real `ocx doctor` output never mentioned the crash (#1419).
+    staleProcessState: await probeUncleanExitState({
+      live: Boolean(live),
+      port: doctorConfig.port,
+      hostname: doctorConfig.hostname,
+    }),
   });
   if (proxyDown) hints.push(proxyDown);
   for (const row of providerApiKeys) {
     hints.push(`${row.detail}. Set ${row.envName} in the shell that starts the proxy, or store a literal key in config (value hidden here).`);
   }
+  if (codexEnvKeyReadiness) hints.push(`${codexEnvKeyReadiness.detail}. ${codexEnvKeyReadiness.action}.`);
   const anyDrvfs = paths.some(p => detectFsType(p.path, mounts).isDrvfs || detectFsType(p.path, mounts).isMntDrive);
   const noProxy = currentProxyEnv.every(p => !p.present) && !configuredProxy.present;
   if (!startup.rebootSafe) {

@@ -194,7 +194,7 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
   {
     name: "combo",
     usage: "ocx combo <list|show|set|remove> ...",
-    summary: "Manage combo failover and round-robin virtual models.",
+    summary: "Manage combo virtual models and routing strategies.",
     details: ["Alias hierarchy: ocx route combo ...", "Use --targets provider/model[:weight],provider/model[:weight]."],
   },
   {
@@ -291,6 +291,7 @@ export const CLI_COMMANDS: CliCommandEntry[] = [
       "Claude Desktop profile:",
       "  ocx claude desktop [apply]                         Save and apply the four-family profile",
       "  ocx claude desktop show [--json]                   Show routes, families, and defaults",
+      "  ocx claude desktop status [--json]                 Show applied state, drift, and health",
       "  ocx claude desktop move <route> <family> [--default]",
       "  ocx claude desktop default <family> <route|none>",
       "  ocx claude desktop export <path|->                 Export versioned JSON (`-` = stdout)",

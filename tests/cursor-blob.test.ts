@@ -5,6 +5,7 @@ import { toBinary } from "@bufbuild/protobuf";
 import {
   createCursorBlobRequestScope,
   cursorBlobMetrics,
+  cursorBlobByteLength,
   cursorBlobRetainedStoreSnapshot,
   cursorBlobStoreDebugSnapshotForTests,
   CursorBlobAdmissionError,
@@ -30,6 +31,7 @@ import {
   registerRetainedStore,
   resetAppOwnedMemoryForTests,
 } from "../src/lib/app-owned-memory";
+import { resetDebugSettingsForTests } from "../src/lib/debug-settings";
 import {
   CURSOR_EXTERNAL_ROOT_BYTE_LIMIT,
   CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT,
@@ -39,6 +41,10 @@ import {
   prepareCursorRunRequest,
 } from "../src/adapters/cursor/protobuf-request";
 import { estimateTokens } from "../src/lib/token-estimate";
+import type { OcxAssistantContentPart } from "../src/types";
+import { CursorRootEnvelopeLimitError } from "../src/adapters/cursor/cursor-errors";
+import { isRetryableCursorError } from "../src/adapters/cursor/transport-retry";
+import { encodeCursorCallId, resetCursorCallIdProvenanceForTests } from "../src/adapters/cursor/call-id";
 import {
   AgentClientMessageSchema,
   ConversationStepSchema,
@@ -506,6 +512,16 @@ describe("Cursor blob handshake", () => {
     expect(rootBytes).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BYTE_LIMIT);
     expect(JSON.stringify(roots)).toContain("[Tool Result]");
     expect(JSON.stringify(roots)).toContain("truncated for Cursor external replay budget");
+    // #1527: the result surviving is not enough. Byte pressure used to consume the whole budget
+    // with this one result and drop the user turn that asked for it, and `conversationTurns()`
+    // then discarded the result too for lack of a current turn. What went on the wire was system
+    // roots plus a bare result marker and a generic Continue action — no instruction, which a
+    // model answers in a handful of tokens. That is the reported symptom.
+    //
+    // Asserting the marker alone is what let it pass CI, so assert the instruction as well.
+    expect(JSON.stringify(roots)).toContain("read it");
+    expect(roots.find(root => root.role !== "system")?.role).toBe("user");
+    expect(run?.conversationState?.turns.length).toBe(1);
   });
 
   test("truncates multi-byte tool results by UTF-8 byte budget", () => {
@@ -779,6 +795,8 @@ describe("Cursor blob handshake", () => {
   });
 
   test("native Cursor replay preserves tool calls with results in turn steps", () => {
+    resetCursorCallIdProvenanceForTests();
+    const local = encodeCursorCallId("ocxc1e_");
     const bytes = encodeCursorRunRequest({
       modelId: "composer-2.5",
       conversationId: "c1",
@@ -790,9 +808,9 @@ describe("Cursor blob handshake", () => {
           role: "assistant",
           model: "cursor/auto",
           timestamp: 2,
-          content: [{ type: "toolCall", id: "call_1", name: "read_file", arguments: { path: "a.txt" } }],
+          content: [{ type: "toolCall", id: local, name: "read_file", arguments: { path: "a.txt" } }],
         },
-        { role: "toolResult", toolCallId: "call_1", toolName: "read_file", content: "contents", isError: false, timestamp: 3 },
+        { role: "toolResult", toolCallId: local, toolName: "read_file", content: "contents", isError: false, timestamp: 3 },
       ],
     });
     const msg = fromBinary(AgentClientMessageSchema, bytes);
@@ -808,7 +826,7 @@ describe("Cursor blob handshake", () => {
     const tool = step.message.value.tool;
     expect(tool.case).toBe("mcpToolCall");
     if (tool.case === "mcpToolCall") {
-      expect(tool.value.args?.toolCallId).toBe("call_1");
+      expect(tool.value.args?.toolCallId).toBe("ocxc1e_");
       expect(tool.value.result?.result.case).toBe("success");
       if (tool.value.result?.result.case === "success") {
         const content = tool.value.result.result.value.content[0]?.content;
@@ -819,6 +837,34 @@ describe("Cursor blob handshake", () => {
     expect(run?.action?.action.case).toBe("userMessageAction");
     const value = run?.action?.action.case === "userMessageAction" ? run.action.action.value : undefined;
     expect(value?.userMessage?.text).toBe(CURSOR_EXTERNAL_TOOL_CONTINUATION_TEXT);
+  });
+
+  test("native protobuf replay leaves an opaque escape lookalike byte-identical", () => {
+    resetCursorCallIdProvenanceForTests();
+    const opaque = "ocxc1e_b2N4YzFf";
+    const bytes = encodeCursorRunRequest({
+      modelId: "composer-2.5",
+      conversationId: "c-opaque-call-id",
+      system: [],
+      messages: [{ role: "tool", content: "ignored" }],
+      rawMessages: [
+        { role: "user", content: "read a file", timestamp: 1 },
+        {
+          role: "assistant",
+          model: "cursor/auto",
+          timestamp: 2,
+          content: [{ type: "toolCall", id: opaque, name: "read_file", arguments: { path: "a.txt" } }],
+        },
+        { role: "toolResult", toolCallId: opaque, toolName: "read_file", content: "contents", isError: false, timestamp: 3 },
+      ],
+    });
+    const msg = fromBinary(AgentClientMessageSchema, bytes);
+    const run = msg.message.case === "runRequest" ? msg.message.value : undefined;
+    const turn = fromBinary(ConversationTurnStructureSchema, blobData(run!.conversationState!.turns[0]!));
+    const step = fromBinary(ConversationStepSchema, blobData(turn.turn.value.steps[0]!));
+    const tool = step.message.value.tool;
+
+    expect(tool.value.args?.toolCallId).toBe(opaque);
   });
 
   test("composer-2.5 ordinary turns keep native replay semantics", () => {
@@ -1852,6 +1898,57 @@ describe("Cursor checkpoint request construction", () => {
     expect(serialized).not.toContain("old user");
   });
 
+  /**
+   * The blocker-8 regression guard. Full replay must never emit a tool result without the turn
+   * that caused it, but a CHECKPOINT suffix legitimately can: `checkpointSuffixStart` is the
+   * count of messages the checkpoint already carries, so the initiating turn is inside it.
+   *
+   * Slicing at 3 makes the suffix exactly `[toolResult]`. Applying the full-replay rule here
+   * would pull the covered user turn back in and replay it twice.
+   */
+  test("a checkpoint suffix may legitimately begin with a tool result", () => {
+    const checkpoint = create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: [new Uint8Array(32).fill(7)],
+      turns: [new Uint8Array(32).fill(8)],
+    });
+    const prepared = prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: "cursor_ckpt_result_only",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "result" }],
+      rawMessages: [
+        { role: "user", content: "old user", timestamp: 1 },
+        { role: "assistant", content: [{ type: "text", text: "old assistant" }], timestamp: 2 },
+        { role: "user", content: "please read the file", timestamp: 3 },
+        {
+          role: "toolResult",
+          toolCallId: "call_1",
+          toolName: "read_file",
+          content: "SUFFIX ONLY CONTENTS",
+          isError: false,
+          timestamp: 4,
+        },
+      ],
+      checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+      continuationMode: "checkpoint",
+      checkpointSuffixStart: 3,
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+
+    // The checkpoint's own root is preserved and the suffix is appended after it.
+    expect(Array.from(roots[0] ?? [])).toEqual(Array.from({ length: 32 }, () => 7));
+    const suffix = roots.slice(1).map(id => new TextDecoder().decode(blobData(id)));
+    const serialized = JSON.stringify(suffix);
+    expect(serialized).toContain("SUFFIX ONLY CONTENTS");
+
+    // The covered turn stays covered: pulling it back in would replay it a second time.
+    expect(serialized).not.toContain("please read the file");
+    // And no synthetic system root is re-appended on top of the checkpoint's own.
+    expect(suffix.some(root => root.includes('"role":"system"'))).toBe(false);
+  });
+
   test("active checkpoint lease keeps referenced blobs after request pin release", () => {
     clearCursorCheckpointsForTests();
     const data = new TextEncoder().encode('{"role":"system","content":"lease-me"}');
@@ -1997,5 +2094,1482 @@ describe("Cursor checkpoint idle TTL", () => {
     scheduled?.();
     expect(cursorCheckpointStoreMetricsForTests().count).toBe(0);
     expect(cursorBlobRetainedStoreSnapshot().pinnedBytes).toBe(0);
+  });
+});
+
+/**
+ * #1527 envelope enforcement. The 192-root / 512-KiB limits existed but were applied to the
+ * pruned history only, so three shapes escaped them entirely. Each of these reproduced a real
+ * over-envelope request before the guard moved to the final assembled root set.
+ */
+describe("Cursor external replay envelope", () => {
+  test("system roots alone cannot exceed the root count limit", () => {
+    // 193 system prompts: the history budget is zero, so the pruning branch had nothing to
+    // trim and emitted every system root.
+    const system = Array.from({ length: CURSOR_EXTERNAL_ROOT_BLOB_LIMIT + 1 }, (_, i) => `system-${i}`);
+
+    let thrown: unknown;
+    try {
+      encodeCursorRunRequest({
+        modelId: "gpt-5.6-sol-xhigh",
+        conversationId: "c-sys-count",
+        system,
+        messages: [{ role: "user", content: "hi" }],
+        rawMessages: [{ role: "user", content: "hi", timestamp: 1 }],
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(CursorRootEnvelopeLimitError);
+    const limit = thrown as CursorRootEnvelopeLimitError;
+    expect(limit.name).toBe("CursorRootEnvelopeLimitError");
+    expect(limit.code).toBe("cursor_root_envelope_limit");
+    expect(limit.status).toBe(400);
+    expect(limit.rootCount).toBeGreaterThan(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+    expect(limit.maxRootCount).toBe(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+    expect(limit.maxRootBytes).toBe(CURSOR_EXTERNAL_ROOT_BYTE_LIMIT);
+    // A local, deterministic rejection: replaying it reproduces it.
+    expect(isRetryableCursorError(limit)).toBe(false);
+  });
+
+  test("a single oversized system root cannot exceed the byte limit", () => {
+    const oversized = "s".repeat(CURSOR_EXTERNAL_ROOT_BYTE_LIMIT + 100_000);
+
+    let thrown: unknown;
+    try {
+      encodeCursorRunRequest({
+        modelId: "gpt-5.6-sol-xhigh",
+        conversationId: "c-sys-bytes",
+        system: [oversized],
+        messages: [{ role: "user", content: "hi" }],
+        rawMessages: [{ role: "user", content: "hi", timestamp: 1 }],
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(CursorRootEnvelopeLimitError);
+    expect((thrown as CursorRootEnvelopeLimitError).rootBytes).toBeGreaterThan(CURSOR_EXTERNAL_ROOT_BYTE_LIMIT);
+  });
+
+  // The early return at the top of `rootPromptMessages` skips the pruning branch entirely when
+  // there is no history, so a guard placed inside that branch never saw this shape.
+  test("the empty-history path is bounded too", () => {
+    const system = Array.from({ length: CURSOR_EXTERNAL_ROOT_BLOB_LIMIT + 1 }, (_, i) => `only-system-${i}`);
+
+    expect(() => encodeCursorRunRequest({
+      modelId: "gpt-5.6-sol-xhigh",
+      conversationId: "c-no-history",
+      system,
+      messages: [{ role: "user", content: "hi" }],
+      rawMessages: [],
+    })).toThrow(CursorRootEnvelopeLimitError);
+  });
+
+  // Contiguous trailing results were byte-pruned but never count-pruned, so 193 small results
+  // sailed past the history limit that only checked `keptPrior`.
+  test("a long contiguous tool-result block cannot exceed the root count limit", () => {
+    const results = Array.from({ length: CURSOR_EXTERNAL_ROOT_BLOB_LIMIT + 1 }, (_, i) => ({
+      role: "toolResult" as const,
+      toolCallId: `call_${i}`,
+      toolName: "read_file",
+      content: `r${i}`,
+      isError: false,
+      timestamp: i + 2,
+    }));
+
+    let thrown: unknown;
+    try {
+      encodeCursorRunRequest({
+        modelId: "gpt-5.6-sol-xhigh",
+        conversationId: "c-many-results",
+        system: ["system"],
+        messages: [{ role: "tool", content: "ignored" }],
+        rawMessages: [{ role: "user", content: "go", timestamp: 1 }, ...results],
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    // Either bounded within the envelope, or rejected — never silently shortened past the cap.
+    if (thrown) {
+      expect(thrown).toBeInstanceOf(CursorRootEnvelopeLimitError);
+    } else {
+      const bytes = encodeCursorRunRequest({
+        modelId: "gpt-5.6-sol-xhigh",
+        conversationId: "c-many-results-2",
+        system: ["system"],
+        messages: [{ role: "tool", content: "ignored" }],
+        rawMessages: [{ role: "user", content: "go", timestamp: 1 }, ...results],
+      });
+      expect(decodeRootMessages(bytes).length).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+    }
+  });
+
+  test("a native model is not subject to the external envelope", () => {
+    const system = Array.from({ length: CURSOR_EXTERNAL_ROOT_BLOB_LIMIT + 1 }, (_, i) => `system-${i}`);
+
+    expect(() => encodeCursorRunRequest({
+      modelId: "composer-2.5",
+      conversationId: "c-native",
+      system,
+      messages: [{ role: "user", content: "hi" }],
+      rawMessages: [{ role: "user", content: "hi", timestamp: 1 }],
+    })).not.toThrow();
+  });
+
+  // Review probe: 191 small trailing results plus one system root already fill the count limit, so
+  // the initiator did not fit and the earlier single-result-only recovery branch never ran. The
+  // request then went out as bare results with nothing asking for them — and at exactly 192 roots
+  // the envelope guard could not catch it either. Recovery must make room, not give up.
+  test("a multi-result orphan block still recovers its initiating turn", () => {
+    const results = Array.from({ length: CURSOR_EXTERNAL_ROOT_BLOB_LIMIT - 1 }, (_, i) => ({
+      role: "toolResult" as const,
+      toolCallId: `call_${i}`,
+      toolName: "read_file",
+      content: `r${i}`,
+      isError: false,
+      timestamp: i + 2,
+    }));
+
+    const bytes = encodeCursorRunRequest({
+      modelId: "gpt-5.6-sol-xhigh",
+      conversationId: "c-orphan-multi",
+      system: ["system"],
+      messages: [{ role: "tool", content: "ignored" }],
+      rawMessages: [{ role: "user", content: "please read the files", timestamp: 1 }, ...results],
+    });
+
+    const roots = decodeRootMessages(bytes);
+    expect(roots.length).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+    // The initiating instruction must survive: a model handed only tool results has nothing to do.
+    const serialized = JSON.stringify(roots);
+    expect(serialized).toContain("please read the files");
+    // And it must come first, so the results read as answers to it rather than as an orphan block.
+    const nonSystem = roots.slice(1);
+    expect(JSON.stringify(nonSystem[0])).toContain("please read the files");
+  });
+
+  // Review probe, reproduced: three ~220 KB results used to emit only the last two — `call_0`
+  // disappeared while its tool call stayed in the transcript, which is exactly the pairing break
+  // #1527 describes. Every result must survive in some form, even a truncated one.
+  test("oversized parallel tool results are all retained, truncated rather than deleted", () => {
+    const results = [0, 1, 2].map(i => ({
+      role: "toolResult" as const,
+      toolCallId: `call_${i}`,
+      toolName: "read_file",
+      content: `UNIQUE_MARKER_${i} ` + "x".repeat(220_000),
+      isError: false,
+      timestamp: i + 3,
+    }));
+
+    const bytes = encodeCursorRunRequest({
+      modelId: "gpt-5.6-sol-xhigh",
+      conversationId: "c-parallel-results",
+      system: ["system"],
+      messages: [{ role: "tool", content: "ignored" }],
+      rawMessages: [
+        { role: "user", content: "read all three", timestamp: 1 },
+        {
+          role: "assistant",
+          model: "cursor/gpt-5.6-sol",
+          content: [0, 1, 2].map(i => ({
+            type: "toolCall" as const,
+            id: `call_${i}`,
+            name: "read_file",
+            arguments: { path: `f${i}.txt` },
+          })),
+          timestamp: 2,
+        },
+        ...results,
+      ],
+    });
+
+    const serialized = JSON.stringify(decodeRootMessages(bytes));
+    // Each result is present, identifiable by its own marker. None was silently deleted.
+    expect(serialized).toContain("UNIQUE_MARKER_0");
+    expect(serialized).toContain("UNIQUE_MARKER_1");
+    expect(serialized).toContain("UNIQUE_MARKER_2");
+    // And the whole set still fits the envelope, so retention did not come at the cost of the bound.
+    expect(serialized).toContain("truncated for Cursor external replay budget");
+  });
+
+  // The shape the guard was moved for. Review noted that every other new fixture here is an
+  // oversized full replay, so a guard that measured only the suffix (or only
+  // `rootPromptMessagesState`) would still satisfy them. These two do not: the suffix is tiny and
+  // legal on its own, and only the checkpoint plus the suffix crosses a limit.
+  //
+  // These two asserted a THROW until devlog 260829 070 (audit r8 finding 3). The throw was reachable
+  // because suffix pruning measured only its own slice, so it happily produced a suffix that was
+  // individually legal and cumulatively fatal — a non-retryable 400 on a long conversation. Pruning now
+  // subtracts the checkpoint's own roots, and a checkpoint with no room left for the suffix is abandoned
+  // for a full replay. The invariant is what matters and it is now stronger: the assembled request stays
+  // inside the envelope. Asserting the throw would pin the old mechanism, so these assert the bound.
+  test("a checkpoint plus a legal suffix stays inside the root count limit cumulatively", () => {
+    const checkpointRoots = Array.from(
+      { length: CURSOR_EXTERNAL_ROOT_BLOB_LIMIT },
+      (_, i) => new Uint8Array(32).fill(i % 251),
+    );
+    const checkpoint = create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: checkpointRoots,
+      turns: [new Uint8Array(32).fill(8)],
+    });
+
+    const prepared = prepareCursorRunRequest({
+      modelId: "gpt-5.6-sol-xhigh",
+      conversationId: "c-ckpt-cumulative",
+      system: ["You are helpful."],
+      messages: [{ role: "user", content: "next" }],
+      rawMessages: [
+        { role: "user", content: "old user", timestamp: 1 },
+        { role: "assistant", content: [{ type: "text", text: "old assistant" }], timestamp: 2 },
+        { role: "user", content: "mid user", timestamp: 3 },
+        { role: "assistant", content: [{ type: "text", text: "mid assistant" }], timestamp: 4 },
+        { role: "user", content: "next", timestamp: 5 },
+      ],
+      checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+      checkpointSuffixStart: 2,
+      continuationMode: "checkpoint",
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    expect(roots.length).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+    // Abandoned rather than pruned-to-fit: a full replay carries the whole conversation, so the
+    // uncovered messages are present instead of silently dropped.
+    const serialized = JSON.stringify(roots.map(id => JSON.parse(new TextDecoder().decode(blobData(id)))));
+    expect(serialized).toContain("mid user");
+  });
+
+  test("a checkpoint plus a legal suffix stays inside the byte limit cumulatively", () => {
+    // Roots the local store actually holds, so their bytes are measurable: a suffix-only or
+    // `rootPromptMessagesState`-only measurement reports far less than the assembled total.
+    const big = new Uint8Array(200_000).fill(65);
+    const checkpointRoots = [storeCursorBlob(big), storeCursorBlob(new Uint8Array(200_000).fill(66)), storeCursorBlob(new Uint8Array(200_000).fill(67))];
+    const checkpoint = create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: checkpointRoots,
+      turns: [new Uint8Array(32).fill(8)],
+    });
+
+    const prepared = prepareCursorRunRequest({
+      modelId: "gpt-5.6-sol-xhigh",
+      conversationId: "c-ckpt-bytes",
+      system: ["You are helpful."],
+      messages: [{ role: "user", content: "next" }],
+      rawMessages: [
+        { role: "user", content: "old user", timestamp: 1 },
+        { role: "assistant", content: [{ type: "text", text: "old assistant" }], timestamp: 2 },
+        { role: "user", content: "mid user", timestamp: 3 },
+        { role: "assistant", content: [{ type: "text", text: "mid assistant" }], timestamp: 4 },
+        { role: "user", content: "next", timestamp: 5 },
+      ],
+      checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+      checkpointSuffixStart: 2,
+      continuationMode: "checkpoint",
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    const measured = roots.reduce((sum, id) => sum + (cursorBlobByteLength(id) ?? 0), 0);
+    expect(measured).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BYTE_LIMIT);
+    // The 600 KB of checkpoint roots is gone, not merely trimmed: an exhausted checkpoint is dropped.
+    expect(roots.length).toBeLessThan(checkpointRoots.length + 5);
+  });
+
+  // The diagnostic used to read `rootPromptMessagesState?.byteLength`, which is undefined for a
+  // pure checkpoint continuation — so an operator sizing a conversation that was about to be
+  // rejected saw rootBytes=0. The guard and the telemetry now read the same measurement, and a
+  // root the local store never held is disclosed as `unmeasuredRoots` rather than silently
+  // making the total look small.
+  /**
+   * Audit r8 re-review finding D. The two rewritten envelope tests above both exit through the ABANDON
+   * branch — the count case uses unmeasurable checkpoint roots, the byte case a checkpoint large enough to
+   * trip abandonment — so neither exercises the `carriedRoots` subtraction that pruning depends on.
+   * Deleting that subtraction reintroduced every throw the fix removed while the whole suite stayed green.
+   *
+   * This case is built to discriminate: MEASURABLE checkpoint roots, a count just under the limit so
+   * abandonment does not fire, and a suffix that only fits if pruning knows what the checkpoint spends.
+   */
+  test("suffix pruning respects the roots the checkpoint already spends", () => {
+    const carried = CURSOR_EXTERNAL_ROOT_BLOB_LIMIT - 3;
+    const checkpointRoots = Array.from(
+      { length: carried },
+      (_, i) => storeCursorBlob(new TextEncoder().encode(JSON.stringify({ role: "user", content: [{ type: "text", text: `covered ${i}` }] }))),
+    );
+    const checkpoint = create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: checkpointRoots,
+      turns: [new Uint8Array(32).fill(8)],
+    });
+    const rawMessages: Parameters<typeof prepareCursorRunRequest>[0]["rawMessages"] = [
+      { role: "user", content: "Run each step once.", timestamp: 1 },
+    ];
+    let timestamp = 2;
+    for (let n = 1; n <= 6; n++) {
+      rawMessages!.push({
+        role: "assistant",
+        content: [
+          { type: "text", text: `Running STEP${n}.` },
+          { type: "toolCall", id: `call_${n}`, name: "exec_command", arguments: { cmd: `echo STEP${n}` } },
+        ],
+        timestamp: timestamp++,
+      });
+      rawMessages!.push({
+        role: "toolResult",
+        toolCallId: `call_${n}`,
+        toolName: "exec_command",
+        content: `STEP${n}`,
+        isError: false,
+        timestamp: timestamp++,
+      });
+    }
+    // Without the subtraction this throws CursorRootEnvelopeLimitError: the suffix is legal on its own and
+    // fatal once assembled. The assertion is that it does not throw AND stays inside the bound.
+    const prepared = prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: "cursor_ckpt_carried_measurable",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "result" }],
+      rawMessages,
+      checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+      continuationMode: "checkpoint",
+      checkpointSuffixStart: 1,
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    expect(roots.length).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+    // The checkpoint was kept, not abandoned: this is the pruning path, not the fallback path.
+    expect(roots.length).toBeGreaterThan(carried);
+  });
+
+  /**
+   * Audit r9. The case above and the byte-pressure cases cross COUNT pressure with a SEQUENTIAL suffix
+   * only, where the trailing tool-result run is always length 1 — the single width at which the abandon
+   * test's `carriedRoots.count + suffixSystemCount` happens to predict the suffix exactly. A parallel
+   * tool-call batch makes that run wider than 1, and nothing bounded it: `historyLimit` was consulted by
+   * the prior-history loop alone, and `truncateToolResultBlob` shrinks a result without ever freeing a
+   * root slot. Measured at the head this test was added to: 190 carried roots plus a 3-result batch
+   * assembled 193 roots, 188 carried plus 8 assembled 196, and each threw a NON-RETRYABLE 400 — the exact
+   * failure this unit exists to remove, and reachable by ordinary conversation growth rather than a
+   * crafted fixture. All 188 tests passed with and without the production fix before this case existed.
+   */
+  test.each([
+    [CURSOR_EXTERNAL_ROOT_BLOB_LIMIT - 2, 3],
+    [CURSOR_EXTERNAL_ROOT_BLOB_LIMIT - 4, 8],
+    [CURSOR_EXTERNAL_ROOT_BLOB_LIMIT - 22, 25],
+  ])("a count-pressured parallel result batch stays inside the envelope (carried=%i, results=%i)", (carried, batch) => {
+    const checkpointRoots = Array.from(
+      { length: carried },
+      (_, i) => storeCursorBlob(new TextEncoder().encode(JSON.stringify({ role: "user", content: [{ type: "text", text: `covered ${i}` }] }))),
+    );
+    const checkpoint = create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: checkpointRoots,
+      turns: [new Uint8Array(32).fill(8)],
+    });
+    const calls: OcxAssistantContentPart[] = Array.from({ length: batch }, (_, i) => ({
+      type: "toolCall",
+      id: `call_par_${i}`,
+      name: "exec_command",
+      arguments: { cmd: `echo P${i}` },
+    }));
+    const rawMessages: Parameters<typeof prepareCursorRunRequest>[0]["rawMessages"] = [
+      { role: "user", content: "Run every step once.", timestamp: 1 },
+      { role: "assistant", content: [{ type: "text", text: "Running every step." }, ...calls], timestamp: 2 },
+    ];
+    for (let i = 0; i < batch; i++) {
+      rawMessages!.push({
+        role: "toolResult",
+        toolCallId: `call_par_${i}`,
+        toolName: "exec_command",
+        content: `PARALLEL_OUT_${i}`,
+        isError: false,
+        timestamp: 3 + i,
+      });
+    }
+    const prepared = prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: `cursor_ckpt_count_parallel_${carried}_${batch}`,
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "result" }],
+      rawMessages,
+      checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+      continuationMode: "checkpoint",
+      checkpointSuffixStart: 1,
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    // The envelope bound is the whole point: over it, Cursor answers 400 and the retry path fails closed.
+    expect(roots.length).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+    // And the newest result still has to reach the model, whether the checkpoint was kept or abandoned —
+    // staying inside the envelope by sending nothing useful is the other half of this defect.
+    const texts = roots.map(id => {
+      try {
+        const parsed = JSON.parse(new TextDecoder().decode(blobData(id))) as { content?: string | [{ text?: string }] };
+        const content = parsed.content;
+        return typeof content === "string" ? content : (content?.[0]?.text ?? "");
+      } catch {
+        return "";
+      }
+    });
+    expect(texts.some(text => text.includes(`PARALLEL_OUT_${batch - 1}`))).toBe(true);
+  });
+
+  /**
+   * Audit r10. The count bound added for r9 acts in ROOT space; the abandon check derived its trailing run
+   * from `rawMessages`. The two disagree exactly when an assistant message emits no root — a bare tool call
+   * with no narration, which is the most common assistant shape in this file's own fixtures. Two
+   * sequentially-executed results then sit adjacent as roots, both enter the trailing run, the count bound
+   * drops the older one, and a raw-space scan that sees a run of one never notices: the request went out
+   * with a tool call answered by nothing, checkpoint retained, no throw, no diagnostic. Measured at 190
+   * carried roots with bare-call pairs, the first answer vanished from the wire entirely — not in a root, not
+   * in `turns[]`.
+   *
+   * Two defects, and this case covers both. The drop was also UNNECESSARY: `historyLimit` subtracted
+   * `systemEntryCount` on a path where the caller appends only history roots and the checkpoint's own
+   * system roots are already inside `carriedRoots`, so the limit came out 1 where 2 results fit.
+   */
+  test.each([
+    [CURSOR_EXTERNAL_ROOT_BLOB_LIMIT - 2, 2],
+    [CURSOR_EXTERNAL_ROOT_BLOB_LIMIT - 2, 4],
+    [CURSOR_EXTERNAL_ROOT_BLOB_LIMIT - 3, 3],
+    [CURSOR_EXTERNAL_ROOT_BLOB_LIMIT - 6, 8],
+  ])("a bare-tool-call continuation never answers a call with nothing (carried=%i, pairs=%i)", (carried, pairs) => {
+    const checkpointRoots = Array.from(
+      { length: carried },
+      (_, i) => storeCursorBlob(new TextEncoder().encode(JSON.stringify({ role: "user", content: [{ type: "text", text: `covered ${i}` }] }))),
+    );
+    const checkpoint = create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: checkpointRoots,
+      turns: [new Uint8Array(32).fill(8)],
+    });
+    const rawMessages: Parameters<typeof prepareCursorRunRequest>[0]["rawMessages"] = [
+      { role: "user", content: "Read each file once.", timestamp: 1 },
+    ];
+    let timestamp = 2;
+    for (let n = 0; n < pairs; n++) {
+      // No text part: this assistant message emits no root, which is what puts the two results next to
+      // each other in root space while raw space still separates them.
+      rawMessages!.push({
+        role: "assistant",
+        content: [{ type: "toolCall", id: `call_bare_${n}`, name: "read_file", arguments: { path: `f${n}.txt` } }],
+        timestamp: timestamp++,
+      });
+      rawMessages!.push({
+        role: "toolResult",
+        toolCallId: `call_bare_${n}`,
+        toolName: "read_file",
+        content: `BARE_ANSWER_${n}`,
+        isError: false,
+        timestamp: timestamp++,
+      });
+    }
+    const prepared = prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: `cursor_ckpt_bare_call_${carried}_${pairs}`,
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "result" }],
+      rawMessages,
+      checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+      continuationMode: "checkpoint",
+      checkpointSuffixStart: 1,
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    expect(roots.length).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+    const texts = roots.map(id => {
+      try {
+        const parsed = JSON.parse(new TextDecoder().decode(blobData(id))) as { content?: string | [{ text?: string }] };
+        const content = parsed.content;
+        return typeof content === "string" ? content : (content?.[0]?.text ?? "");
+      } catch {
+        return "";
+      }
+    });
+    // Either the checkpoint was abandoned and the full replay carries every answer, or it was kept and every
+    // replayed call still has its own. What must never happen is a kept checkpoint missing an answer: the
+    // model then sees a call with no result and re-issues it, which is the defect this whole unit exists to
+    // remove. A per-pair assertion states that without having to know which branch was taken.
+    for (let n = 0; n < pairs; n++) {
+      expect(texts.some(text => text.includes(`BARE_ANSWER_${n}`))).toBe(true);
+    }
+  });
+
+  /**
+   * Audit r10, second half. The silent-loss assertion above passes either way — with the double charge the
+   * checkpoint is abandoned and the full replay carries every answer, which is correct output reached
+   * wastefully. This case pins the arithmetic instead: with exactly as many free slots as results, the
+   * checkpoint must be KEPT and every slot used. `historyLimit` subtracted `systemEntryCount` on a path
+   * where the caller appends only `ids.slice(suffixSystemCount)` and the checkpoint's own system roots are
+   * already inside `carriedRoots.count`, so one genuinely free slot was paid for twice: the limit came out 1
+   * where 2 results fit, and a fully answerable continuation was thrown away.
+   */
+  test("a checkpoint continuation uses every root slot the envelope actually leaves free", () => {
+    const carried = CURSOR_EXTERNAL_ROOT_BLOB_LIMIT - 2;
+    const checkpointRoots = Array.from(
+      { length: carried },
+      (_, i) => storeCursorBlob(new TextEncoder().encode(JSON.stringify({ role: "user", content: [{ type: "text", text: `covered ${i}` }] }))),
+    );
+    const checkpoint = create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: checkpointRoots,
+      turns: [new Uint8Array(32).fill(8)],
+    });
+    const rawMessages: Parameters<typeof prepareCursorRunRequest>[0]["rawMessages"] = [
+      { role: "user", content: "Read each file once.", timestamp: 1 },
+    ];
+    let timestamp = 2;
+    for (let n = 0; n < 2; n++) {
+      rawMessages!.push({
+        role: "assistant",
+        content: [{ type: "toolCall", id: `call_fit_${n}`, name: "read_file", arguments: { path: `fit${n}.txt` } }],
+        timestamp: timestamp++,
+      });
+      rawMessages!.push({
+        role: "toolResult",
+        toolCallId: `call_fit_${n}`,
+        toolName: "read_file",
+        content: `FIT_ANSWER_${n}`,
+        isError: false,
+        timestamp: timestamp++,
+      });
+    }
+    const prepared = prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: "cursor_ckpt_exact_fit",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "result" }],
+      rawMessages,
+      checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+      continuationMode: "checkpoint",
+      checkpointSuffixStart: 1,
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    // Two results, two free slots, and the checkpoint retained: exactly the envelope, not one short of it.
+    expect(roots.length).toBe(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+    expect(roots.length).toBeGreaterThan(carried);
+  });
+
+  /**
+   * Audit r11. The repetition breaker appends a synthetic `[context note]` user root AFTER the transcript,
+   * standing for no message and therefore carrying no `messageIndex`. The trailing-result walk tested only
+   * for `role === "toolResult"`, so it stopped dead on that note: the trailing run came out EMPTY, the
+   * results lost their trailing-run status entirely and were pruned as ordinary history with no "keep at
+   * least one" floor, and the empty `activeMessageIndexes` sent the abandon check back to the raw-message
+   * scan that r10 exists to avoid. Measured: at 186 carried roots the note-armed shape was RETAINED while
+   * the identical shape without the note correctly abandoned.
+   *
+   * The note arms on three consecutive identical assistant narrations — the runaway-repetition shape this
+   * whole unit exists to end — so the input most likely to trigger it is the one the fix is for.
+   *
+   * Asserted as an A/B against the same pressure, because the defect is a DIVERGENCE: whatever the no-note
+   * shape does, the note must not change whether a call keeps its answer, and the note itself must survive.
+   */
+  test("a repetition note does not cost the trailing results their answers", () => {
+    const carried = CURSOR_EXTERNAL_ROOT_BLOB_LIMIT - 6;
+    const pairs = 8;
+    const build = (withNote: boolean) => {
+      const checkpointRoots = Array.from(
+        { length: carried },
+        (_, i) => storeCursorBlob(new TextEncoder().encode(JSON.stringify({ role: "user", content: [{ type: "text", text: `covered ${i}` }] }))),
+      );
+      const checkpoint = create(ConversationStateStructureSchema, {
+        rootPromptMessagesJson: checkpointRoots,
+        turns: [new Uint8Array(32).fill(8)],
+      });
+      const rawMessages: Parameters<typeof prepareCursorRunRequest>[0]["rawMessages"] = [
+        { role: "user", content: "Work through the plan.", timestamp: 1 },
+      ];
+      let timestamp = 2;
+      if (withNote) {
+        // Three consecutive identical narrations with no root between them: this is what arms the breaker.
+        for (let r = 0; r < 4; r++) {
+          rawMessages!.push({ role: "assistant", content: [{ type: "text", text: "Still working on it." }], timestamp: timestamp++ });
+        }
+      }
+      for (let n = 0; n < pairs; n++) {
+        rawMessages!.push({
+          role: "assistant",
+          content: [{ type: "toolCall", id: `call_note_${n}`, name: "exec_command", arguments: { cmd: `echo N${n}` } }],
+          timestamp: timestamp++,
+        });
+        rawMessages!.push({
+          role: "toolResult",
+          toolCallId: `call_note_${n}`,
+          toolName: "exec_command",
+          content: `NOTE_OUT_${String(n).padStart(3, "0")}`,
+          isError: false,
+          timestamp: timestamp++,
+        });
+      }
+      const prepared = prepareCursorRunRequest({
+        modelId: "grok-4.6",
+        conversationId: `cursor_ckpt_repetition_note_${withNote}`,
+        system: ["You are helpful."],
+        messages: [{ role: "tool", content: "result" }],
+        rawMessages,
+        checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+        continuationMode: "checkpoint",
+        checkpointSuffixStart: 1,
+      });
+      const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+      const run = message.message.case === "runRequest" ? message.message.value : undefined;
+      const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+      const texts = roots.map(id => {
+        try {
+          const parsed = JSON.parse(new TextDecoder().decode(blobData(id))) as { content?: string | [{ text?: string }] };
+          const content = parsed.content;
+          return typeof content === "string" ? content : (content?.[0]?.text ?? "");
+        } catch {
+          return "";
+        }
+      });
+      const blob = texts.join("\n");
+      return {
+        roots: roots.length,
+        kept: roots.length > carried,
+        note: blob.includes("[context note]"),
+        answered: Array.from({ length: pairs }, (_, n) => blob.includes(`NOTE_OUT_${String(n).padStart(3, "0")}`)),
+      };
+    };
+    const plain = build(false);
+    const noted = build(true);
+    expect(noted.roots).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+    // The note reached the model: excluding it from the trailing-result walk must not drop it.
+    expect(noted.note).toBe(true);
+    // Every replayed call still has its answer, and the note did not change which calls those are.
+    expect(noted.answered).toEqual(plain.answered);
+    expect(noted.answered.every(Boolean)).toBe(true);
+    // And the note did not flip a coherent full replay into a retained checkpoint.
+    expect(noted.kept).toBe(plain.kept);
+  });
+
+  /**
+   * Audit r11, second half. Excluding the repetition note from the trailing-result walk means it is
+   * re-appended after pruning, so its root slot has to be PAID FOR during pruning — the same mistake the
+   * count budget already made once, one root further along. Left uncharged, a note-armed continuation under
+   * count pressure assembles past the envelope and throws the non-retryable 400: measured at 188-190 carried
+   * roots for sequential and parallel suffixes alike.
+   *
+   * The note-armed A/B case above cannot catch this — it uses byte-free small results and lands below the
+   * count cliff — which is why the charge needs its own case at the boundary.
+   */
+  test.each([
+    [CURSOR_EXTERNAL_ROOT_BLOB_LIMIT - 4, 3, false],
+    [CURSOR_EXTERNAL_ROOT_BLOB_LIMIT - 3, 2, false],
+    [CURSOR_EXTERNAL_ROOT_BLOB_LIMIT - 4, 4, true],
+  ])("a repetition note is paid for out of the envelope, not added to it (carried=%i, results=%i, parallel=%s)", (carried, results, parallel) => {
+    const checkpointRoots = Array.from(
+      { length: carried },
+      (_, i) => storeCursorBlob(new TextEncoder().encode(JSON.stringify({ role: "user", content: [{ type: "text", text: `covered ${i}` }] }))),
+    );
+    const checkpoint = create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: checkpointRoots,
+      turns: [new Uint8Array(32).fill(8)],
+    });
+    const rawMessages: Parameters<typeof prepareCursorRunRequest>[0]["rawMessages"] = [
+      { role: "user", content: "Work through the plan.", timestamp: 1 },
+    ];
+    let timestamp = 2;
+    for (let r = 0; r < 4; r++) {
+      rawMessages!.push({ role: "assistant", content: [{ type: "text", text: "Same line again." }], timestamp: timestamp++ });
+    }
+    if (parallel) {
+      const calls: OcxAssistantContentPart[] = Array.from({ length: results }, (_, i) => ({
+        type: "toolCall",
+        id: `call_np_${i}`,
+        name: "exec_command",
+        arguments: { cmd: `echo NP${i}` },
+      }));
+      rawMessages!.push({ role: "assistant", content: calls, timestamp: timestamp++ });
+      for (let i = 0; i < results; i++) {
+        rawMessages!.push({ role: "toolResult", toolCallId: `call_np_${i}`, toolName: "exec_command", content: `NP_OUT_${i}`, isError: false, timestamp: timestamp++ });
+      }
+    } else {
+      for (let i = 0; i < results; i++) {
+        rawMessages!.push({
+          role: "assistant",
+          content: [{ type: "toolCall", id: `call_ns_${i}`, name: "exec_command", arguments: { cmd: `echo NS${i}` } }],
+          timestamp: timestamp++,
+        });
+        rawMessages!.push({ role: "toolResult", toolCallId: `call_ns_${i}`, toolName: "exec_command", content: `NS_OUT_${i}`, isError: false, timestamp: timestamp++ });
+      }
+    }
+    // Throwing here is the failure: the envelope error is a non-retryable 400 at the provider.
+    const prepared = prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: `cursor_ckpt_note_budget_${carried}_${results}_${parallel}`,
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "result" }],
+      rawMessages,
+      checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+      continuationMode: "checkpoint",
+      checkpointSuffixStart: 1,
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    expect(roots.length).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+  });
+
+  /**
+   * Audit r12. The note's BYTE reservation had no coverage at all: neutralizing every byte charge in one
+   * edit left the whole suite green, while a sweep against that same mutation produced 148
+   * `CursorRootEnvelopeLimitError` throws. Two distinct failures live here, and this case is built to
+   * catch both.
+   *
+   * The reservation must exist: the note is appended after pruning, so a budget that does not deduct it
+   * assembles past `CURSOR_EXTERNAL_ROOT_BYTE_LIMIT` and 400s non-retryably.
+   *
+   * And it must be deducted BEFORE the equal-share division, not after. Dividing the gross budget by
+   * `active.length` produces shares summing to the whole budget, so adding the note back always exceeds
+   * it: the shrink-toward-equal-share pass becomes structurally unfittable and control falls through to
+   * the loop that deletes a whole result. 246 bytes of note cost an entire 200 KB answer that way, and
+   * with a single large result the recovery block dropped it outright — the model received a 193-byte
+   * instruction to change strategy and no tool output whatsoever, which is precisely the re-execution
+   * loop this unit exists to end.
+   *
+   * Asserted as an A/B on the note alone, because the defect is a divergence: arming it must not cost an
+   * answer, and must not push the request out of the envelope.
+   */
+  test.each([
+    [1, 600_000],
+    [3, 200_000],
+    [4, 130_000],
+  ])("an armed repetition note costs no answer and no envelope room (results=%i, bytes=%i)", (results, resultBytes) => {
+    const build = (armed: boolean) => {
+      const rawMessages: Parameters<typeof prepareCursorRunRequest>[0]["rawMessages"] = [
+        { role: "user", content: "Run the plan and report.", timestamp: 1 },
+      ];
+      let timestamp = 2;
+      // Three consecutive identical narrations arm the breaker; two do not. Nothing else differs.
+      for (let r = 0; r < (armed ? 3 : 2); r++) {
+        rawMessages!.push({ role: "assistant", content: [{ type: "text", text: "Same line." }], timestamp: timestamp++ });
+      }
+      for (let i = 0; i < results; i++) {
+        rawMessages!.push({
+          role: "assistant",
+          content: [{ type: "toolCall", id: `call_byte_${i}`, name: "exec_command", arguments: { cmd: `echo B${i}` } }],
+          timestamp: timestamp++,
+        });
+        rawMessages!.push({
+          role: "toolResult",
+          toolCallId: `call_byte_${i}`,
+          toolName: "exec_command",
+          content: `BYTE_OUT_${i}_` + "y".repeat(resultBytes),
+          isError: false,
+          timestamp: timestamp++,
+        });
+      }
+      const prepared = prepareCursorRunRequest({
+        modelId: "grok-4.6",
+        conversationId: `cursor_note_bytes_${results}_${resultBytes}_${armed}`,
+        system: ["You are helpful."],
+        messages: [{ role: "tool", content: "result" }],
+        rawMessages,
+      });
+      const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+      const run = message.message.case === "runRequest" ? message.message.value : undefined;
+      const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+      let bytes = 0;
+      const texts = roots.map(id => {
+        const data = blobData(id);
+        bytes += data.byteLength;
+        try {
+          const parsed = JSON.parse(new TextDecoder().decode(data)) as { content?: string | [{ text?: string }] };
+          const content = parsed.content;
+          return typeof content === "string" ? content : (content?.[0]?.text ?? "");
+        } catch {
+          return "";
+        }
+      });
+      const blob = texts.join("\n");
+      return {
+        bytes,
+        note: blob.includes("[context note]"),
+        answered: Array.from({ length: results }, (_, i) => blob.includes(`BYTE_OUT_${i}_`)),
+      };
+    };
+    const plain = build(false);
+    const armed = build(true);
+    // The note reached the model, and paid for itself: still inside the byte envelope.
+    expect(armed.note).toBe(true);
+    expect(plain.note).toBe(false);
+    expect(armed.bytes).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BYTE_LIMIT);
+    // Every answer the un-armed request carried is still there. A truncated answer counts; a deleted one
+    // does not, which is the distinction the equal-share pass exists to make.
+    expect(armed.answered).toEqual(plain.answered);
+    expect(armed.answered.every(Boolean)).toBe(true);
+  });
+
+  /**
+   * Audit r13. The note's reservation is a subtraction clamped at zero, so it cannot represent a DEFICIT:
+   * when the note costs more than the budget has left, `Math.max(0, …)` reported "the note costs nothing"
+   * and the tail was appended anyway. An envelope with 26 bytes free emitted a 246-byte note and overran
+   * by 220, throwing the non-retryable 400 this unit exists to remove.
+   *
+   * Every fixture in this file is a tool continuation, and a trailing tool result HIDES this: the abandon
+   * check's survival disjuncts rescue that shape. The exposed shape is a turn that does not end in a
+   * result — an ordinary user interjection after a repetitive stretch — where nothing else bounds the
+   * tail. Measured 13 of 42 carried-byte positions throwing with the note armed and none without it.
+   *
+   * The note is dropped when it cannot be paid for, which is this unit's priority order: a missing
+   * instruction is recoverable, a missing tool result restarts the loop.
+   */
+  test.each([0, 100, 220, 400])("an unaffordable repetition note is dropped, not sent past the envelope (deficit=%i)", deficit => {
+    const build = (armed: boolean) => {
+      const checkpoint = create(ConversationStateStructureSchema, {
+        rootPromptMessagesJson: [storeCursorBlob(new Uint8Array(CURSOR_EXTERNAL_ROOT_BYTE_LIMIT - deficit).fill(65))],
+        turns: [new Uint8Array(32).fill(8)],
+      });
+      const rawMessages: Parameters<typeof prepareCursorRunRequest>[0]["rawMessages"] = [
+        { role: "user", content: "Go.", timestamp: 1 },
+      ];
+      let timestamp = 2;
+      for (let r = 0; r < (armed ? 4 : 2); r++) {
+        rawMessages!.push({ role: "assistant", content: [{ type: "text", text: "Same." }], timestamp: timestamp++ });
+      }
+      rawMessages!.push({
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_deficit", name: "exec_command", arguments: { cmd: "echo D" } }],
+        timestamp: timestamp++,
+      });
+      rawMessages!.push({
+        role: "toolResult",
+        toolCallId: "call_deficit",
+        toolName: "exec_command",
+        content: "DEFICIT_OUT",
+        isError: false,
+        timestamp: timestamp++,
+      });
+      // The shape the suite never had: the turn ends with a plain user message, so the abandon check's
+      // result-survival disjuncts cannot fire and nothing else bounds the appended note.
+      rawMessages!.push({ role: "user", content: "Actually, try something else.", timestamp: timestamp++ });
+      const prepared = prepareCursorRunRequest({
+        modelId: "grok-4.6",
+        conversationId: `cursor_note_deficit_${deficit}_${armed}`,
+        system: ["Be brief."],
+        messages: [{ role: "user", content: "next" }],
+        rawMessages,
+        checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+        continuationMode: "checkpoint",
+        checkpointSuffixStart: 1,
+      });
+      const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+      const run = message.message.case === "runRequest" ? message.message.value : undefined;
+      const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+      const bytes = roots.reduce((sum, id) => sum + blobData(id).byteLength, 0);
+      return { roots: roots.length, bytes };
+    };
+    // Arming the note must not push the request past the envelope, and must not throw at all: the guard
+    // raises a 400 the caller cannot retry.
+    const armed = build(true);
+    expect(armed.bytes).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BYTE_LIMIT);
+    expect(armed.roots).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+    // And the un-armed request is unaffected, so the bound is the note's cost rather than a blanket cut.
+    const plain = build(false);
+    expect(plain.bytes).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BYTE_LIMIT);
+  });
+
+  /**
+   * Audit r14. Two things the deficit case above cannot see, both proven by mutation to be real.
+   *
+   * The count axis. Affordability was briefly decided on bytes alone, on the reasoning that the count bound
+   * always leaves a slot free — wrong at exactly `historyLimit === 1`, where the one free slot is the one
+   * the surviving result takes. The note was then appended anyway and full replay assembled 193 roots: an
+   * armed-only non-retryable 400 where the same request without the note sent 192 and succeeded. Reached by
+   * full replay with many system prompts, which has no abandon branch to rescue it — not by carried roots,
+   * which is why a checkpoint-path sweep missed it.
+   *
+   * And the reservation itself, as distinct from the append. Neutralizing `syntheticCount`/`syntheticBytes`
+   * while leaving the append gated left the whole suite green, because asserting on the assembled payload
+   * cannot distinguish "the deficit was charged" from "the tail was simply not appended". Asserting the
+   * exact root count at the boundary does: with the reservation the result is admitted and the note is
+   * dropped, giving 192; without it the reservation is a no-op and pruning admits one root too few.
+   */
+  test.each([
+    ["result" as const, 1],
+    ["result" as const, 3],
+    ["user" as const, 1],
+    ["user" as const, 3],
+  ])("an armed note never spends a root slot it was not given (tail=%s, results=%i)", (tail, results) => {
+    // 191 system roots leaves exactly one free slot out of 192: the result takes it, so the note cannot fit.
+    const systemCount = CURSOR_EXTERNAL_ROOT_BLOB_LIMIT - 1;
+    const build = (armed: boolean) => {
+      const rawMessages: Parameters<typeof prepareCursorRunRequest>[0]["rawMessages"] = [
+        { role: "user", content: "Go.", timestamp: 1 },
+      ];
+      let timestamp = 2;
+      for (let r = 0; r < (armed ? 4 : 2); r++) {
+        rawMessages!.push({ role: "assistant", content: [{ type: "text", text: "Same." }], timestamp: timestamp++ });
+      }
+      const calls: OcxAssistantContentPart[] = Array.from({ length: results }, (_, i) => ({
+        type: "toolCall",
+        id: `call_slot_${i}`,
+        name: "exec_command",
+        arguments: { cmd: `echo S${i}` },
+      }));
+      rawMessages!.push({ role: "assistant", content: calls, timestamp: timestamp++ });
+      for (let i = 0; i < results; i++) {
+        rawMessages!.push({ role: "toolResult", toolCallId: `call_slot_${i}`, toolName: "exec_command", content: `SLOT_OUT_${i}`, isError: false, timestamp: timestamp++ });
+      }
+      if (tail === "user") rawMessages!.push({ role: "user", content: "Try something else.", timestamp: timestamp++ });
+      // Full replay on purpose: there is no abandon branch here, so nothing rescues an overrun.
+      const prepared = prepareCursorRunRequest({
+        modelId: "grok-4.6",
+        conversationId: `cursor_note_slot_${tail}_${results}_${armed}`,
+        system: Array.from({ length: systemCount }, (_, i) => `S${i}`),
+        messages: [{ role: tail === "user" ? "user" : "tool", content: "result" }],
+        rawMessages,
+      });
+      const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+      const run = message.message.case === "runRequest" ? message.message.value : undefined;
+      return (run?.conversationState?.rootPromptMessagesJson ?? []).length;
+    };
+    // Arming the note must not throw and must not cost a slot: exactly the envelope, same as un-armed.
+    expect(build(true)).toBe(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+    expect(build(false)).toBe(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+  });
+
+  /**
+   * Audit r15. The case above pins the affordability threshold from the loose side only: relaxing it
+   * reddens, but TIGHTENING `historyLimit - syntheticCountRaw >= 1` to `>= 2` left all 212 tests green.
+   * Over-conservative is safer than over-eager, but this unit has already dropped a guard as inert and had
+   * to restore it, so a suite that cannot tell a correct bound from an unnecessarily strict one is exactly
+   * the gap that cost round 14.
+   *
+   * Two free slots is the tight case: the result takes one, the note takes the other, and both must arrive.
+   */
+  test("a note that exactly fits the last free slot is kept, not dropped", () => {
+    // 190 system roots leaves two free slots out of 192: one for the result, one for the note.
+    const systemCount = CURSOR_EXTERNAL_ROOT_BLOB_LIMIT - 2;
+    const rawMessages: Parameters<typeof prepareCursorRunRequest>[0]["rawMessages"] = [
+      { role: "user", content: "Go.", timestamp: 1 },
+    ];
+    let timestamp = 2;
+    for (let r = 0; r < 4; r++) {
+      rawMessages!.push({ role: "assistant", content: [{ type: "text", text: "Same." }], timestamp: timestamp++ });
+    }
+    rawMessages!.push({
+      role: "assistant",
+      content: [{ type: "toolCall", id: "call_exact", name: "exec_command", arguments: { cmd: "echo E" } }],
+      timestamp: timestamp++,
+    });
+    rawMessages!.push({
+      role: "toolResult",
+      toolCallId: "call_exact",
+      toolName: "exec_command",
+      content: "EXACT_FIT_OUT",
+      isError: false,
+      timestamp: timestamp++,
+    });
+    const prepared = prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: "cursor_note_exact_fit",
+      system: Array.from({ length: systemCount }, (_, i) => `S${i}`),
+      messages: [{ role: "tool", content: "result" }],
+      rawMessages,
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    const blob = roots.map(id => {
+      try {
+        const parsed = JSON.parse(new TextDecoder().decode(blobData(id))) as { content?: string | [{ text?: string }] };
+        const content = parsed.content;
+        return typeof content === "string" ? content : (content?.[0]?.text ?? "");
+      } catch {
+        return "";
+      }
+    }).join("\n");
+    expect(roots.length).toBe(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+    // Both arrive. Dropping either one at an exact fit is a defect in a different direction.
+    expect(blob).toContain("EXACT_FIT_OUT");
+    expect(blob).toContain("[context note]");
+  });
+
+  /**
+   * Audit r10 finding 2. `outputElided` on the marker-only return had no coverage: removing the flag left
+   * all 191 tests green, and `tests/` is not typechecked (`tsconfig` include is `["src"]`), so nothing would
+   * have caught its removal. A result reduced to the truncation marker answers its call with nothing, which
+   * is why the abandon decision reads the flag — so assert the abandonment, not the flag.
+   */
+  test("a result truncated to the bare marker abandons the checkpoint instead of answering with nothing", () => {
+    // A checkpoint that consumes nearly the whole byte budget leaves room for a marker and no output.
+    const carriedBytes = CURSOR_EXTERNAL_ROOT_BYTE_LIMIT - 400;
+    const checkpoint = create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: [storeCursorBlob(new Uint8Array(carriedBytes).fill(65))],
+      turns: [new Uint8Array(32).fill(8)],
+    });
+    const prepared = prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: "cursor_ckpt_marker_only",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "result" }],
+      rawMessages: [
+        { role: "user", content: "Read the file.", timestamp: 1 },
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "call_marker", name: "read_file", arguments: { path: "big.txt" } }],
+          timestamp: 2,
+        },
+        {
+          role: "toolResult",
+          toolCallId: "call_marker",
+          toolName: "read_file",
+          content: "MARKER_ONLY_PAYLOAD".repeat(4096),
+          isError: false,
+          timestamp: 3,
+        },
+      ],
+      checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+      continuationMode: "checkpoint",
+      checkpointSuffixStart: 1,
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    // Abandoned: the oversized carried root is gone, so the reply is a self-contained full replay.
+    expect(roots.length).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+    const texts = roots.map(id => {
+      try {
+        const parsed = JSON.parse(new TextDecoder().decode(blobData(id))) as { content?: string | [{ text?: string }] };
+        const content = parsed.content;
+        return typeof content === "string" ? content : (content?.[0]?.text ?? "");
+      } catch {
+        return "";
+      }
+    });
+    // The replay carries the call's own output, not a marker standing in for it.
+    expect(texts.some(text => text.includes("MARKER_ONLY_PAYLOAD"))).toBe(true);
+  });
+
+  /**
+   * Audit r8 re-review finding B. The abandon test compared `carriedRoots.byteLength` against the raw byte
+   * limit while pruning subtracts the system prompt too, so a ~128-byte band just under the limit kept the
+   * checkpoint, gave the suffix a zero budget, and dropped the tool result the model was waiting for —
+   * silently, where the old code at least threw.
+   */
+  test("a checkpoint just under the byte limit still lets the latest result through", () => {
+    const systemPrompt = "You are helpful.";
+    // Land inside the old gap: below the limit, but not far enough below to leave the suffix any room once
+    // the system prompt is paid for.
+    const carriedBytes = CURSOR_EXTERNAL_ROOT_BYTE_LIMIT - 200;
+    const checkpoint = create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: [storeCursorBlob(new Uint8Array(carriedBytes).fill(65))],
+      turns: [new Uint8Array(32).fill(8)],
+    });
+    const prepared = prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: "cursor_ckpt_byte_band",
+      system: [systemPrompt],
+      messages: [{ role: "tool", content: "result" }],
+      rawMessages: [
+        { role: "user", content: "Run it.", timestamp: 1 },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Running." },
+            { type: "toolCall", id: "call_band", name: "exec_command", arguments: { cmd: "echo BAND" } },
+          ],
+          timestamp: 2,
+        },
+        { role: "toolResult", toolCallId: "call_band", toolName: "exec_command", content: "BAND-OUTPUT", isError: false, timestamp: 3 },
+      ],
+      checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+      continuationMode: "checkpoint",
+      checkpointSuffixStart: 1,
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    const serialized = JSON.stringify(roots.map(id => {
+      const data = cursorBlobByteLength(id) === null ? undefined : blobData(id);
+      return data ? JSON.parse(new TextDecoder().decode(data)) : null;
+    }));
+    // The whole point: whatever the pruning decides, the result the model is waiting on must be visible.
+    expect(serialized).toContain("BAND-OUTPUT");
+    const measured = roots.reduce((sum, id) => sum + (cursorBlobByteLength(id) ?? 0), 0);
+    expect(measured).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BYTE_LIMIT);
+  });
+
+  /**
+   * Audit r8 round 3, BLOCKER. The result-survival check asks whether the replayed result root survived
+   * pruning. A native resume model never HAS one: its result travels in server-side turn state, so
+   * `echoToolResultInRoot` is false and `rootPromptMessages` skips the root entirely. Unguarded, the check
+   * answered "no" on every native continuation and discarded the checkpoint 100% of the time — including
+   * `cursor/auto`, the default id.
+   *
+   * That is not cosmetic. `pendingToolCalls`, `readPaths` and `previousWorkspaceUris` exist only inside the
+   * checkpoint, and a full replay does not rebuild them, so the accumulated state was simply lost.
+   */
+  test("a native model keeps its checkpoint through a tool continuation", () => {
+    // Model class CROSSED with narration shape. Round 3 fixed the narrated shape and round 4 found the
+    // silent one still broken, because a bare tool call produces no assistant root either — so the suffix
+    // has zero history roots and a different disjunct of the same condition fired. Testing one shape per
+    // model class is what let the second path hide; the cross product is the point of this loop.
+    const assistantShapes: Array<{ label: string; content: OcxAssistantContentPart[] }> = [
+      { label: "narrated", content: [{ type: "text", text: "Reading." }, { type: "toolCall", id: "n1", name: "read_file", arguments: { path: "a.txt" } }] },
+      { label: "silent", content: [{ type: "toolCall", id: "n1", name: "read_file", arguments: { path: "a.txt" } }] },
+      { label: "empty-text", content: [{ type: "text", text: "" }, { type: "toolCall", id: "n1", name: "read_file", arguments: { path: "a.txt" } }] },
+      { label: "whitespace-text", content: [{ type: "text", text: "   " }, { type: "toolCall", id: "n1", name: "read_file", arguments: { path: "a.txt" } }] },
+    ];
+    for (const modelId of ["cursor/auto", "cursor/composer-1", "cursor/composer-2.5-fast", "cursor/composer-3"]) {
+    for (const shape of assistantShapes) {
+      const carriedRoot = storeCursorBlob(new TextEncoder().encode(JSON.stringify({
+        role: "user",
+        content: [{ type: "text", text: "covered by checkpoint" }],
+      })));
+      const checkpoint = create(ConversationStateStructureSchema, {
+        rootPromptMessagesJson: [carriedRoot],
+        turns: [new Uint8Array(32).fill(8)],
+        readPaths: ["a.txt", "b.txt"],
+      });
+      const prepared = prepareCursorRunRequest({
+        modelId,
+        conversationId: `cursor_native_ckpt_${modelId}_${shape.label}`,
+        system: ["You are helpful."],
+        messages: [{ role: "tool", content: "FILE-CONTENTS" }],
+        rawMessages: [
+          { role: "user", content: "Read the file.", timestamp: 1 },
+          { role: "assistant", content: shape.content, timestamp: 2 },
+          { role: "toolResult", toolCallId: "n1", toolName: "read_file", content: "FILE-CONTENTS", isError: false, timestamp: 3 },
+        ],
+        checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+        continuationMode: "checkpoint",
+        checkpointSuffixStart: 1,
+      });
+      const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+      const run = message.message.case === "runRequest" ? message.message.value : undefined;
+      const state = run?.conversationState;
+      // readPaths only ever comes from the decoded checkpoint, so it is the load-bearing assertion:
+      // it is empty exactly when the checkpoint was thrown away.
+      expect(state?.readPaths ?? []).toEqual(["a.txt", "b.txt"]);
+      const roots = state?.rootPromptMessagesJson ?? [];
+      expect(roots.some(id => Array.from(id).join(",") === Array.from(carriedRoot).join(","))).toBe(true);
+    }
+    }
+  });
+
+  /**
+   * Audit r8 round 3, MAJOR. The survival check read only the LAST replayed message. Parallel tool calls
+   * land as a run of results, and under byte pressure the older ones were the ones being emptied — measured
+   * a prompt carrying three calls and one answer. `historyOutputElided` already recorded them; only one
+   * index was consulted. The whole trailing run is checked now.
+   */
+  /**
+   * An exhausted checkpoint must still produce a usable request: the assembled roots stay inside the
+   * envelope and the conversation continues by full replay.
+   *
+   * It does NOT assert that the checkpoint store hears about it. Audit round 3 asked for that and round 4
+   * measured why it cannot be done here: `live-transport.ts` prepares a spread copy of the request, so a
+   * field written on the argument never reaches the caller that would invalidate the stored checkpoint.
+   * Asserting on the argument would have passed while proving nothing about the real path.
+   */
+  test("an exhausted checkpoint still assembles a legal full-replay request", () => {
+    const request = {
+      modelId: "grok-4.6",
+      conversationId: "cursor_ckpt_exhausted_reason",
+      system: ["You are helpful."],
+      messages: [{ role: "tool" as const, content: "x" }],
+      rawMessages: [
+        { role: "user" as const, content: "Run it.", timestamp: 1 },
+        {
+          role: "assistant" as const,
+          content: [
+            { type: "text" as const, text: "Running." },
+            { type: "toolCall" as const, id: "p1", name: "exec_command", arguments: { cmd: "echo X" } },
+          ],
+          timestamp: 2,
+        },
+        { role: "toolResult" as const, toolCallId: "p1", toolName: "exec_command", content: "OUT", isError: false, timestamp: 3 },
+      ],
+      checkpointBytes: toBinary(ConversationStateStructureSchema, create(ConversationStateStructureSchema, {
+        // A checkpoint that fills the root budget on its own: nothing is left for the suffix.
+        rootPromptMessagesJson: Array.from({ length: CURSOR_EXTERNAL_ROOT_BLOB_LIMIT }, (_, i) => new Uint8Array(32).fill(i % 251)),
+      })),
+      continuationMode: "checkpoint" as const,
+      checkpointSuffixStart: 1,
+    };
+    const prepared = prepareCursorRunRequest(request);
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    expect(roots.length).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+    // The oversized checkpoint is gone rather than pruned to fit, so the replay carries its own history.
+    const serialized = JSON.stringify(roots.map(id => (cursorBlobByteLength(id) === null ? null : JSON.parse(new TextDecoder().decode(blobData(id))))));
+    expect(serialized).toContain("OUT");
+  });
+
+  test("parallel results are never delivered as a partial answer set", () => {
+    const filler = "Q".repeat(40 * 1024);
+    // 375 bytes below the limit is where a last-index-only check leaves exactly one answer standing: any
+    // further down and pruning keeps all three, any further up and it keeps none. Derived by sweeping 628
+    // (delta, payload) positions against the last-index-only implementation, not guessed.
+    const checkpoint = create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: [storeCursorBlob(new Uint8Array(CURSOR_EXTERNAL_ROOT_BYTE_LIMIT - 375).fill(65))],
+      turns: [new Uint8Array(32).fill(8)],
+    });
+    const prepared = prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: "cursor_ckpt_parallel_partial",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "x" }],
+      rawMessages: [
+        { role: "user", content: "Run three at once.", timestamp: 1 },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Running three." },
+            { type: "toolCall", id: "r1", name: "exec_command", arguments: { cmd: "echo A" } },
+            { type: "toolCall", id: "r2", name: "exec_command", arguments: { cmd: "echo B" } },
+            { type: "toolCall", id: "r3", name: "exec_command", arguments: { cmd: "echo C" } },
+          ],
+          timestamp: 2,
+        },
+        { role: "toolResult", toolCallId: "r1", toolName: "exec_command", content: `SENTINEL-ONE${filler}`, isError: false, timestamp: 3 },
+        { role: "toolResult", toolCallId: "r2", toolName: "exec_command", content: `SENTINEL-TWO${filler}`, isError: false, timestamp: 4 },
+        { role: "toolResult", toolCallId: "r3", toolName: "exec_command", content: `SENTINEL-THREE${filler}`, isError: false, timestamp: 5 },
+      ],
+      checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+      continuationMode: "checkpoint",
+      checkpointSuffixStart: 1,
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    const serialized = roots
+      .map(id => (cursorBlobByteLength(id) === null ? "" : new TextDecoder().decode(blobData(id))))
+      .join("||");
+    const present = ["SENTINEL-ONE", "SENTINEL-TWO", "SENTINEL-THREE"].filter(s => serialized.includes(s));
+    // All three or none — a subset is a prompt with three calls and fewer answers.
+    expect(present.length === 0 || present.length === 3).toBe(true);
+  });
+
+  test("the run-request diagnostic reports the measured envelope, not zero", () => {
+    const previousDebug = process.env.OCX_DEBUG;
+    process.env.OCX_DEBUG = "1";
+    resetDebugSettingsForTests();
+    const lines: string[] = [];
+    const originalError = console.error;
+    console.error = (line: unknown) => { lines.push(String(line)); };
+    try {
+      // A PURE checkpoint continuation: no suffix, so `rootPromptMessagesState` is undefined and
+      // the old expression had nothing to read. One root is in the local store (measurable) and
+      // one was minted by Cursor (not), which is the mix a resumed conversation actually carries.
+      const storedRoot = storeCursorBlob(new TextEncoder().encode("root-payload-in-store"));
+      const checkpoint = create(ConversationStateStructureSchema, {
+        rootPromptMessagesJson: [storedRoot, new Uint8Array(32).fill(7)],
+        turns: [new Uint8Array(32).fill(8)],
+      });
+      prepareCursorRunRequest({
+        modelId: "grok-4.6",
+        conversationId: "cursor_telemetry",
+        system: ["You are helpful."],
+        messages: [{ role: "user", content: "new user" }],
+        rawMessages: [
+          { role: "user", content: "old user", timestamp: 1 },
+          { role: "assistant", content: [{ type: "text", text: "old assistant" }], timestamp: 2 },
+          { role: "user", content: "new user", timestamp: 3 },
+        ],
+        checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+        continuationMode: "checkpoint",
+      });
+      const runLine = lines.find(line => line.includes("[ocx:cursor:run-request]"));
+      expect(runLine).toBeDefined();
+      const payload = JSON.parse(runLine!.slice(runLine!.indexOf("{"))) as {
+        rootBlobs: number;
+        rootBytes: number;
+        unmeasuredRoots?: number;
+      };
+      expect(payload.rootBlobs).toBe(2);
+      // The load-bearing assertion: with no suffix state to read, the old expression reported 0.
+      expect(payload.rootBytes).toBeGreaterThan(0);
+      // Exactly the one root that came from the checkpoint and was never in the local store, so
+      // the reader knows rootBytes is a floor.
+      expect(payload.unmeasuredRoots).toBe(1);
+    } finally {
+      console.error = originalError;
+      if (previousDebug === undefined) delete process.env.OCX_DEBUG;
+      else process.env.OCX_DEBUG = previousDebug;
+      resetDebugSettingsForTests();
+    }
+  });
+});
+
+/**
+ * devlog 260829 070. The orphan-strip guard in `rootPromptMessages` assumed the replayed history
+ * starts where the CONVERSATION starts, which holds only for a full replay. A checkpoint suffix starts
+ * at `checkpointSuffixStart`, so its first entry is routinely the assistant message whose initiating
+ * user turn lives inside the checkpoint — and the loop stripped pair after pair until only the trailing
+ * active result survived, because its `break` fires only once the survivors ARE the active block.
+ *
+ * The consequence was not a cosmetic omission. Measured live against `cursor/grok-4.6`, three
+ * sequential commands produced 14 tool executions — STEP1 and STEP2 seven times each, STEP3 never —
+ * with six "was interrupted" narrations and no terminal answer. Each turn replayed the same collapsed
+ * payload, so the model never saw the output of the command it had just run.
+ *
+ * These assert the property the collapse violated: the replayed suffix grows with the history.
+ */
+describe("Cursor checkpoint suffix keeps its completed pairs", () => {
+  afterEach(() => {
+    clearCursorCheckpointsForTests();
+    resetCursorBlobStateForTests();
+  });
+
+  /** One covered opening user message, then `pairs` completed call/result exchanges. */
+  function growingHistory(pairs: number) {
+    const messages: Parameters<typeof prepareCursorRunRequest>[0]["rawMessages"] = [
+      { role: "user", content: "Run each step once.", timestamp: 1 },
+    ];
+    let timestamp = 2;
+    for (let n = 1; n <= pairs; n++) {
+      messages!.push({
+        role: "assistant",
+        content: [
+          { type: "text", text: `Running STEP${n}.` },
+          { type: "toolCall", id: `call_${n}`, name: "exec_command", arguments: { cmd: `echo STEP${n}` } },
+        ],
+        timestamp: timestamp++,
+      });
+      messages!.push({
+        role: "toolResult",
+        toolCallId: `call_${n}`,
+        toolName: "exec_command",
+        content: `STEP${n}`,
+        isError: false,
+        timestamp: timestamp++,
+      });
+    }
+    return messages;
+  }
+
+  /** Replayed root texts, minus the checkpoint-carried root this process cannot read back. */
+  function suffixTexts(pairs: number): string[] {
+    const checkpoint = create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: [new Uint8Array(32).fill(7)],
+      turns: [new Uint8Array(32).fill(8)],
+    });
+    const prepared = prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: `cursor_ckpt_pairs_${pairs}`,
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "result" }],
+      rawMessages: growingHistory(pairs),
+      checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+      continuationMode: "checkpoint",
+      // Only the opening user message is covered; every pair below it must be replayed.
+      checkpointSuffixStart: 1,
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    return roots.slice(1).map(id => {
+      const parsed = JSON.parse(new TextDecoder().decode(blobData(id))) as { content?: string | [{ text?: string }] };
+      const content = parsed.content;
+      return typeof content === "string" ? content : (content?.[0]?.text ?? "");
+    });
+  }
+
+  test("every completed pair in the uncovered suffix reaches the model", () => {
+    const texts = suffixTexts(3);
+    // Before the fix this was a single entry: the STEP3 result, with STEP1 and STEP2 discarded.
+    for (const step of ["STEP1", "STEP2", "STEP3"]) {
+      expect(texts.some(text => text.includes(`echo ${step}`))).toBe(true);
+      expect(texts.some(text => text.startsWith("[Tool Result]") && text.includes(step))).toBe(true);
+    }
+  });
+
+  test("the replayed suffix grows with the history instead of collapsing to a constant", () => {
+    // Exact counts are an implementation detail; a payload that does not grow at all is the defect.
+    const counts = [1, 2, 3, 4].map(pairs => suffixTexts(pairs).length);
+    expect(counts).toEqual([...counts].sort((a, b) => a - b));
+    expect(new Set(counts).size).toBeGreaterThan(1);
+    expect(counts.at(-1)!).toBeGreaterThan(counts[0]!);
+  });
+
+  /**
+   * Audit r8 finding 2: the orphan-guard fix alone was INERT under byte pressure, and measurably so —
+   * 8 pairs of 64 KiB results still emitted 2 roots. The `keptPrior` loop admits COMPLETE TURNS, and a
+   * turn starts at a user root; a checkpoint suffix has no user root at all, so `turnStart` walked to 0,
+   * the whole prior block became one all-or-nothing pseudo-turn, and the first budget overrun dropped
+   * every entry — leaving the orphan guard nothing to strip and the model nothing to read.
+   *
+   * Root replay is the only channel carrying suffix history (`conversationTurns` never opens a turn for a
+   * suffix with no user message), so this was a total loss of that history, not a partial one.
+   */
+  test("byte pressure prunes a checkpoint suffix incrementally instead of dropping all of it", () => {
+    const checkpoint = create(ConversationStateStructureSchema, {
+      rootPromptMessagesJson: [new Uint8Array(32).fill(7)],
+      turns: [new Uint8Array(32).fill(8)],
+    });
+    // Eight pairs whose results together far exceed CURSOR_EXTERNAL_ROOT_BYTE_LIMIT, so pruning must run.
+    const bulky = "X".repeat(64 * 1024);
+    const rawMessages: Parameters<typeof prepareCursorRunRequest>[0]["rawMessages"] = [
+      { role: "user", content: "Run each step once.", timestamp: 1 },
+    ];
+    let timestamp = 2;
+    for (let n = 1; n <= 8; n++) {
+      rawMessages!.push({
+        role: "assistant",
+        content: [
+          { type: "text", text: `Running STEP${n}.` },
+          { type: "toolCall", id: `call_${n}`, name: "exec_command", arguments: { cmd: `echo STEP${n}` } },
+        ],
+        timestamp: timestamp++,
+      });
+      rawMessages!.push({
+        role: "toolResult",
+        toolCallId: `call_${n}`,
+        toolName: "exec_command",
+        content: bulky,
+        isError: false,
+        timestamp: timestamp++,
+      });
+    }
+    const prepared = prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: "cursor_ckpt_byte_pressure",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "result" }],
+      rawMessages,
+      checkpointBytes: toBinary(ConversationStateStructureSchema, checkpoint),
+      continuationMode: "checkpoint",
+      checkpointSuffixStart: 1,
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    // Two roots (checkpoint seed + one active result) is the defect. More than a handful survive now.
+    expect(roots.length).toBeGreaterThan(4);
+    // And the bound still holds: retention did not come at the cost of the envelope.
+    expect(roots.length).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BLOB_LIMIT);
+    const measured = roots.reduce((sum, id) => sum + (cursorBlobByteLength(id) ?? 0), 0);
+    expect(measured).toBeLessThanOrEqual(CURSOR_EXTERNAL_ROOT_BYTE_LIMIT);
+  });
+
+  test("a full replay still strips a genuinely orphaned leading entry", () => {
+    // The guard's reason to exist (#1527). With no checkpoint there is no covered turn, so a leading
+    // assistant entry IS orphaned and must not survive — this is what keeps the fix narrow.
+    const prepared = prepareCursorRunRequest({
+      modelId: "grok-4.6",
+      conversationId: "cursor_full_replay_orphan",
+      system: ["You are helpful."],
+      messages: [{ role: "tool", content: "result" }],
+      rawMessages: [
+        { role: "assistant", content: [{ type: "text", text: "ORPHAN LEADING ASSISTANT" }], timestamp: 1 },
+        { role: "user", content: "please read", timestamp: 2 },
+        { role: "toolResult", toolCallId: "call_1", toolName: "read_file", content: "FILE", isError: false, timestamp: 3 },
+      ],
+    });
+    const message = fromBinary(AgentClientMessageSchema, prepared.bytes);
+    const run = message.message.case === "runRequest" ? message.message.value : undefined;
+    const roots = run?.conversationState?.rootPromptMessagesJson ?? [];
+    const serialized = JSON.stringify(roots.map(id => JSON.parse(new TextDecoder().decode(blobData(id)))));
+    expect(serialized).not.toContain("ORPHAN LEADING ASSISTANT");
+    expect(serialized).toContain("FILE");
   });
 });

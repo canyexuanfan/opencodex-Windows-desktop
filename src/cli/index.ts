@@ -858,6 +858,11 @@ async function handleStatus() {
     console.log(`❌ Proxy: ${status.proxyLabel}`);
   }
   console.log(`   Health: ${status.healthLabel}`);
+  if (status.json.claudeDesktop.desiredEnabled && !status.json.claudeDesktop.policy.ok) {
+    console.log(`   ⚠️  Claude Desktop 3P health: ${status.json.claudeDesktop.policy.status}`);
+    console.log(`      ${status.json.claudeDesktop.policy.message}`);
+    console.log(`      Action: ${status.json.claudeDesktop.policy.action}`);
+  }
   // Printed here, not only in --json: a stale ocx on PATH is exactly the situation where
   // the operator is reading human output and wondering why the CLI disagrees with the
   // dashboard. Adding the JSON field alone would satisfy a test and help nobody (#2701).
@@ -877,6 +882,17 @@ async function handleStatus() {
     // contradicted it in the same report, and install re-registers: UAC on Windows and a
     // possible WinSW-to-scheduler switch for someone who already has a service.
     const installed = status.json.startup.serviceInstalled && !status.json.startup.serviceConflict;
+    // #1419: the records outliving the process is the only evidence the user gets that a
+    // previous run ended without cleanup. Deliberately hedged and cause-neutral — cleanup
+    // ignores unlink failures and the records carry no session provenance, so this cannot
+    // prove a crash, only that the last run left state behind. The restart advice below is
+    // not repeated here; one recommendation per report.
+    if (status.json.proxy.staleProcessState) {
+      console.log("     Stale process records remain, so the previous run may have exited unexpectedly.");
+      if (!installed) {
+        console.log("     No background service was available to restart it.");
+      }
+    }
     console.log(installed
       ? "     Restart with 'ocx start', or refresh the installed service: 'ocx service repair'."
       : "     Restart with 'ocx start', or install the persistent service: 'ocx service install'.");

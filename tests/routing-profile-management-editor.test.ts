@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fallbackCodexAccountLogLabel } from "../src/codex/account-label";
 import { handleManagementAPI } from "../src/server/management-api";
 import { ManagementRequest } from "./helpers/management-auth";
+import { removeTreeWithRetry } from "./helpers/remove-tree";
 import type { OcxConfig } from "../src/types";
 
 let testDir = "";
@@ -19,7 +20,27 @@ beforeEach(() => {
 afterEach(() => {
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
-  if (testDir) rmSync(testDir, { recursive: true, force: true });
+  // Cleanup must not be able to fail a passing test.
+  //
+  // One case here reads `/api/lab/catalog`, which opens the Lab projection SQLite
+  // under this OPENCODEX_HOME through a cached read connection this suite has no
+  // handle on. Windows refuses to unlink an open file, so the directory is still
+  // busy in a later `afterEach` -- and it stayed busy through all 50 retries of
+  // `removeTreeWithRetry` (2.6s), which is a held handle rather than the release
+  // race that helper is for. It failed the alias-migration case with EBUSY after
+  // every assertion in it had already passed.
+  //
+  // Temp directories under the OS temp root are reclaimed by the runner image, so
+  // leaving one behind costs nothing a CI job can observe. Losing the signal from
+  // a green test does cost something. Best-effort removal keeps the tidy path on
+  // POSIX without letting the untidy one lie about the code under test.
+  if (testDir) {
+    try {
+      removeTreeWithRetry(testDir);
+    } catch {
+      /* a live handle in a shared-process suite is not this test's verdict */
+    }
+  }
 });
 
 function baseConfig(): OcxConfig {
@@ -402,7 +423,12 @@ describe("routing profile management editor API", () => {
       req,
       new URL(req.url),
       config,
-      deps(() => { saves += 1; }),
+      {
+        ...deps(() => { saves += 1; }),
+        // Generated Claude agent files are part of this migration side effect,
+        // but a route test must keep them inside its own temporary root.
+        claudeAgentConfigDir: join(testDir, "claude"),
+      },
     );
 
     expect(response?.status).toBe(200);
@@ -513,6 +539,55 @@ describe("routing profile management editor API", () => {
     expect(config.routingProfiles?.fast).toMatchObject({ alias: "ocx/fast" });
     expect(config.claudeCode?.modelMap).toEqual({ "ocx/fast": "a/m1", "ocx/faster": "a/m2" });
     expect(saves).toBe(0);
+  });
+
+  test("PUT update rejects a migrated shadow-call self-target (#2706)", async () => {
+    const config = baseConfig();
+    config.defaultProvider = "xai";
+    config.providers = {
+      xai: {
+        adapter: "openai-chat",
+        baseUrl: "https://api.x.ai/v1",
+        apiKey: "test-xai-key",
+        models: ["custom-helper"],
+      },
+    };
+    config.routingProfiles!.fast = {
+      alias: "old-public",
+      candidates: [{ provider: "xai", model: "custom-helper" }],
+    };
+    config.shadowCallIntercept = {
+      enabled: true,
+      model: "old-public",
+      sourceModels: ["custom-helper"],
+    };
+    const before = structuredClone(config);
+    let saves = 0;
+    let refreshes = 0;
+    const req = new ManagementRequest("http://localhost/api/routing-profiles", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "fast",
+        mode: "update",
+        profile: {
+          alias: "custom-helper",
+          candidates: [{ provider: "xai", model: "custom-helper" }],
+        },
+      }),
+    });
+
+    const response = await handleManagementAPI(
+      req,
+      new URL(req.url),
+      config,
+      deps(() => { saves += 1; }, () => { refreshes += 1; }),
+    );
+
+    expect(response?.status).toBe(400);
+    expect(config).toEqual(before);
+    expect(saves).toBe(0);
+    expect(refreshes).toBe(0);
   });
 
   test("DELETE removes a profile, persists, and refreshes the catalog", async () => {

@@ -12,6 +12,8 @@ import {
   rotateGenericOAuthAccountOn429,
 } from "../src/oauth/generic-account-failover";
 import { getAccountSet, markAccountNeedsReauth, saveCredential } from "../src/oauth/store";
+import { resolveCopilotApiBaseUrl } from "../src/oauth/github-copilot";
+import { resolveProviderTransport } from "../src/providers/xai-transport";
 import type { OcxConfig, OcxProviderConfig } from "../src/types";
 
 const originalHome = process.env.OPENCODEX_HOME;
@@ -79,6 +81,26 @@ describe("#2568 generic OAuth account failover", () => {
     expect(rotateGenericOAuthAccountOn429(config(false), "xai", ids[0]!, null)).toBeNull();
     clearGenericFailoverHealth();
     expect(rotateGenericOAuthAccountOn429(config(true), "xai", ids[0]!, null)).toBe(ids[1]);
+  });
+
+  test("rotation continues AFTER the failed account, not from the top of the roster", async () => {
+    // Quota ranking now orders the candidates, so this pins the property the ranking must
+    // not disturb: with three accounts and no quota evidence anywhere, a 429 on the middle
+    // account moves to the one after it. Ranking the store's own order would answer the
+    // first account instead, silently changing every quota-less provider's traversal.
+    const ids = await seed(3);
+    expect(rotateGenericOAuthAccountOn429(config(), "xai", ids[1]!, null)).toBe(ids[2]);
+  });
+
+  test("the ring wraps when the failed account is last", async () => {
+    const ids = await seed(3);
+    expect(rotateGenericOAuthAccountOn429(config(), "xai", ids[2]!, null)).toBe(ids[0]);
+  });
+
+  test("an unknown failed account still yields a candidate", async () => {
+    // The account may have been removed between dispatch and the 429 landing.
+    const ids = await seed(2);
+    expect(rotateGenericOAuthAccountOn429(config(), "xai", "not-a-real-account", null)).toBe(ids[0]);
   });
 
   test("a per-provider override beats the global switch", async () => {
@@ -249,9 +271,113 @@ describe("sidecar on429 wiring", () => {
     // re-resolved with the rotated account's own apiBaseUrl.
     expect(body).toContain("github-copilot");
     expect(body).toContain("snapshot.apiBaseUrl");
+    // ...and RESOLVED before it is handed over, so a rotated account with no stored origin
+    // cannot fall through to the previous account's inherited baseUrl. See the behavioral
+    // test below for why asserting the bare expression was not enough.
+    expect(body).toContain("resolveCopilotApiBaseUrl(snapshot.apiBaseUrl)");
     expect(body).toContain("resolveProviderTransport(");
 
     // Kiro routing metadata still travels with its own token.
     expect(body).toContain("_kiroAuthContext");
+  });
+
+  test("pre-dispatch selection replaces the CCA project instead of inheriting one", () => {
+    // The same pairing rule as the rotation helper, at the OTHER site that can change which
+    // account serves a request. The ordinary path is guarded by `!route.provider.project`,
+    // so without an explicit branch a preferred account would install its own bearer next
+    // to the configured account's project — #2841 in its original shape.
+    const start = coreSource.indexOf("const preferredAccountId =");
+    expect(start).toBeGreaterThan(-1);
+    const region = coreSource.slice(start, start + 6000);
+    expect(region).toContain("usedPreferredAccount && resolved.projectId");
+    // A project-less preferred account falls BACK to the ordinary active-account resolution
+    // rather than erroring: a preference must never turn a working request into a failure,
+    // and Antigravity tolerates project discovery failing, so an account with no project is
+    // an ordinary stored state.
+    expect(region).toContain("usedPreferredAccount = false");
+    expect(region).not.toContain("has no Cloud Code Assist project");
+    // Both fallbacks — a project-less account and an unresolvable one — must reach the SAME
+    // active-account resolution, so neither can dispatch on a half-applied identity.
+    const fallbacks = region.match(/usedPreferredAccount = false;/g) ?? [];
+    expect(fallbacks.length).toBe(2);
+    expect(region).toContain("forgetGenericFailoverRoster(route.providerName)");
+  });
+});
+
+/**
+ * The rotation pairing bug that source-text guards could not see.
+ *
+ * `applyFailoverSnapshot` clones the FAILED account's provider (`{ ...route.provider }`) and then
+ * re-resolves Copilot transport with the rotated account's `snapshot.apiBaseUrl`. When the
+ * rotated account has no stored origin — a malformed or manually seeded state, because login and
+ * refresh always persist a resolved origin — the resolver's own fallback chain is
+ *
+ *     validateCopilotApiBaseUrl(apiBaseUrl)          // undefined for account B
+ *  ?? validateCopilotApiBaseUrl(provider.baseUrl)    // still account A's regional origin
+ *  ?? GITHUB_COPILOT_DEFAULT_API_BASE
+ *
+ * so B's bearer is sent to A's accepted origin. The defense-in-depth defect is in the PAIRING,
+ * and only a test that supplies one account WITH an origin and one WITHOUT can observe it.
+ */
+describe("#2807 a 429 rotation pairs the bearer with its OWN origin", () => {
+  const REGIONAL = "https://proxy.githubcopilot.com";
+  const CANONICAL = "https://api.githubcopilot.com";
+
+  /** The failed account's provider as `applyFailoverSnapshot` receives it: already resolved. */
+  function providerAfterAccountA(): OcxProviderConfig {
+    return {
+      adapter: "openai-chat",
+      authMode: "oauth",
+      baseUrl: REGIONAL,
+      apiKey: "bearer-account-a",
+    } as unknown as OcxProviderConfig;
+  }
+
+  test("an account with its own regional origin keeps it", () => {
+    const rotated = resolveProviderTransport(
+      "github-copilot",
+      { ...providerAfterAccountA(), apiKey: "bearer-account-b" },
+      undefined,
+      resolveCopilotApiBaseUrl("https://other.githubcopilot.com"),
+    ) as OcxProviderConfig;
+    expect(rotated.baseUrl).toBe("https://other.githubcopilot.com");
+    expect(rotated.apiKey).toBe("bearer-account-b");
+  });
+
+  test("an account with NO stored origin falls back to canonical, never to the failed account's", () => {
+    // This is the regression. Before the fix, `undefined` reached the transport resolver and its
+    // second fallback returned the cloned REGIONAL origin — account A's — paired with B's bearer.
+    const rotated = resolveProviderTransport(
+      "github-copilot",
+      { ...providerAfterAccountA(), apiKey: "bearer-account-b" },
+      undefined,
+      resolveCopilotApiBaseUrl(undefined),
+    ) as OcxProviderConfig;
+    expect(rotated.baseUrl).toBe(CANONICAL);
+    expect(rotated.baseUrl).not.toBe(REGIONAL);
+    expect(rotated.apiKey).toBe("bearer-account-b");
+  });
+
+  test("the unresolved form is what made the pairing possible", () => {
+    // Proves the assertion above is not vacuous: hand the resolver the raw snapshot value the
+    // way the code used to, and account A's origin comes back with account B's bearer.
+    const leaked = resolveProviderTransport(
+      "github-copilot",
+      { ...providerAfterAccountA(), apiKey: "bearer-account-b" },
+      undefined,
+      undefined,
+    ) as OcxProviderConfig;
+    expect(leaked.baseUrl).toBe(REGIONAL);
+    expect(leaked.apiKey).toBe("bearer-account-b");
+  });
+
+  test("a crafted non-Copilot origin on the rotated account is refused, not forwarded", () => {
+    const rotated = resolveProviderTransport(
+      "github-copilot",
+      { ...providerAfterAccountA(), apiKey: "bearer-account-b" },
+      undefined,
+      resolveCopilotApiBaseUrl("https://attacker.example.com"),
+    ) as OcxProviderConfig;
+    expect(rotated.baseUrl).toBe(CANONICAL);
   });
 });

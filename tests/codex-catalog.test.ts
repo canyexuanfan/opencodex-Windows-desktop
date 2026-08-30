@@ -7,7 +7,9 @@ import { applyProviderConfigHints } from "../src/codex/catalog/provider-fetch";
 import {
   CODEX_CUSTOM_MODEL_CATALOG_KIND,
   CODEX_PROVIDER_MODEL_CATALOG_KIND,
+  ensureStrictCatalogFields,
   findNativeTemplate,
+  findSupportedNativeTemplate,
 } from "../src/codex/catalog/parsing";
 import { withStubbedProviderFetch } from "./helpers/catalog-provider-fetch";
 import {
@@ -2732,6 +2734,20 @@ describe("Codex catalog routed normalization", () => {
     expect(terra?.multi_agent_version).toBe("v2");
     expect(luna?.multi_agent_version).toBe("v1");
 
+    const codex0151Contract = {
+      shell_type: "unified_exec",
+      node_repl_disabled: false,
+      node_repl_auto_review_required: false,
+      include_plugin_usage_instructions: true,
+      include_apps_usage_instructions: true,
+    };
+    for (const slug of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      expect(upstreamNativeEntry(slug)).toMatchObject(codex0151Contract);
+    }
+    for (const entry of [sol, terra, luna]) {
+      expect(entry).toMatchObject(codex0151Contract);
+    }
+
     // ocx adaptations: client-version gate stripped; ws preference gated off by default.
     for (const e of [sol, terra, luna]) {
       expect(e).not.toHaveProperty("minimal_client_version");
@@ -3238,7 +3254,14 @@ describe("Codex catalog routed normalization", () => {
     ]);
 
     const routed = rows.find(row => row.slug === "deepseek/deepseek-v4-flash");
-    expect(routed?.tool_mode).toBe("code_mode_only");
+    expect(routed).toMatchObject({
+      tool_mode: "code_mode_only",
+      shell_type: "unified_exec",
+      node_repl_disabled: false,
+      node_repl_auto_review_required: false,
+      include_plugin_usage_instructions: false,
+      include_apps_usage_instructions: true,
+    });
   });
 
   test("buildCatalogEntries preserves native tool mode on account-qualified rows", () => {
@@ -3732,13 +3755,33 @@ describe("Codex catalog routed normalization", () => {
         "kimi/kimi-k2.7-code-highspeed",
         "xai/grok-4.20-0309-non-reasoning",
         "xai/grok-4.20-0309-reasoning",
+        "xai/grok-4.20-multi-agent-0309",
         "xai/grok-4.3",
         "xai/grok-4.5",
         "xai/grok-build-0.1",
         "xai/grok-composer-2.5-fast",
       ]);
       expect(models.find(model => model.provider === "kimi" && model.id === "k3[1m]")?.contextWindow).toBe(1_048_576);
-      expect(models.some(model => model.id === "grok-4.20-multi-agent-0309")).toBe(false);
+      expect(models.find(model => model.provider === "xai" && model.id === "grok-4.20-multi-agent-0309"))
+        .toMatchObject({
+          contextWindow: 1_000_000,
+          inputModalities: ["text", "image"],
+          reasoningEfforts: ["low", "medium", "high", "xhigh"],
+        });
+      const catalogEntries = buildCatalogEntries(null, [], models);
+      const multiAgentCatalog = catalogEntries.find(entry => entry.slug === "xai/grok-4.20-multi-agent-0309");
+      expect((multiAgentCatalog?.supported_reasoning_levels as { effort: string }[]).map(level => level.effort))
+        .toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+      expect(models.find(model => model.provider === "xai" && model.id === "grok-4.20-multi-agent-0309")?.supportsReasoningSummaries)
+        .toBeUndefined();
+      expect(getModelMetadata("xai", "grok-4.20-multi-agent-0309")).toMatchObject({
+        contextWindow: 1_000_000,
+        maxTokens: 30_000,
+        input: ["text", "image"],
+        reasoning: true,
+        cost: { input: 1.25, output: 2.5, cacheRead: 0.2, cacheWrite: 0 },
+      });
+      expect(getModelMetadata("xai", "grok-4.20-multi-agent-0309")).not.toHaveProperty("supportsReasoningSummaries");
       expect(models.some(model => model.id === "configured-ghost")).toBe(false);
       expect(warning.mock.calls.flat().join(" ")).not.toContain("omitted configured model ids");
     } finally {
@@ -5861,5 +5904,148 @@ describe("#2465 model preset management routes", () => {
     };
     const { status } = await call(config, "PUT", { provider: "groq", mode: "preset" });
     expect(status).toBe(400);
+  });
+});
+
+/**
+ * #2813: a Reserve-shaped row injected by the Codex client carries `base_instructions`,
+ * so the permissive selector would let it become the template every routed model clones
+ * from. Template selection has to be strict — but catalog VALIDITY must stay permissive,
+ * or a catalog holding only a newly launched native model gets replaced by stale data.
+ * Plan review rejected restricting the shared function for exactly that reason.
+ */
+describe("routed template selection is strict, catalog validity is not", () => {
+  const unknownBareRow = (): Record<string, unknown> => ({
+    slug: "gpt-reserve",
+    display_name: "Luna Reserve",
+    description: "Reserve fallback",
+    visibility: "list",
+    base_instructions: "You are Codex.",
+    available_in_plans: ["reserve"],
+    supported_in_api: false,
+  });
+
+  test("the strict selector skips an unknown row ordered before a known one", () => {
+    // The unknown row is FIRST, so a first-match implementation would pick it.
+    const catalog = { models: [unknownBareRow(), nativeTemplate()] } as never;
+
+    expect(findSupportedNativeTemplate(catalog)?.slug).toBe("gpt-5.5");
+  });
+
+  test("the strict selector returns null rather than inheriting from an unknown row", () => {
+    const catalog = { models: [unknownBareRow()] } as never;
+
+    expect(findSupportedNativeTemplate(catalog)).toBeNull();
+  });
+
+  // The regression guard for the rejected fix: if this ever goes red, catalog validity
+  // has been narrowed and a new upstream model can invalidate a healthy catalog.
+  test("the permissive selector still accepts an unknown row, so validity stays forward-compatible", () => {
+    const catalog = { models: [unknownBareRow()] } as never;
+
+    expect(findNativeTemplate(catalog)?.slug).toBe("gpt-reserve");
+  });
+});
+
+/**
+ * Each eligibility field is asserted through `ensureStrictCatalogFields` DIRECTLY.
+ * Review found the build path cannot prove them: `deriveEntry` already neutralizes
+ * `upgrade` and `availability_nux` on its own, so a build-path assertion stays green
+ * after the corresponding sanitizer line is deleted.
+ */
+describe("routed rows never carry native eligibility metadata", () => {
+  const contaminated = (): Record<string, unknown> => ({
+    slug: "anthropic/claude-sonnet-5",
+    display_name: "claude-sonnet-5",
+    supported_in_api: false,
+    available_in_plans: ["reserve", "plus"],
+    minimal_client_version: "999.0.0",
+    availability_nux: { message: "reserve only" },
+    upgrade: { message: "subscribe" },
+  });
+
+  test("supported_in_api is forced true", () => {
+    const entry = ensureStrictCatalogFields(contaminated() as never, { isRouted: true });
+
+    expect(entry.supported_in_api).toBe(true);
+  });
+
+  test("available_in_plans is stripped", () => {
+    expect(ensureStrictCatalogFields(contaminated() as never, { isRouted: true }))
+      .not.toHaveProperty("available_in_plans");
+  });
+
+  test("minimal_client_version is stripped", () => {
+    expect(ensureStrictCatalogFields(contaminated() as never, { isRouted: true }))
+      .not.toHaveProperty("minimal_client_version");
+  });
+
+  test("availability_nux is stripped", () => {
+    expect(ensureStrictCatalogFields(contaminated() as never, { isRouted: true }))
+      .not.toHaveProperty("availability_nux");
+  });
+
+  test("upgrade is stripped", () => {
+    expect(ensureStrictCatalogFields(contaminated() as never, { isRouted: true }))
+      .not.toHaveProperty("upgrade");
+  });
+
+  // Routed-only. Native rows legitimately carry availability_nux and plan eligibility;
+  // sanitizing them here would corrupt the native picker.
+  test("a native row keeps its own eligibility metadata", () => {
+    const native = ensureStrictCatalogFields(contaminated() as never, {});
+
+    expect(native.available_in_plans).toEqual(["reserve", "plus"]);
+    expect(native.availability_nux).toEqual({ message: "reserve only" });
+    expect(native.supported_in_api).toBe(false);
+  });
+
+  // Review blocker 3: preserved degraded/foreign rows never pass through
+  // normalizeRoutedCatalogEntry, so sanitizing only there would leave rows already on
+  // disk contaminated. Both paths end in ensureStrictCatalogFields, which is why it owns
+  // the sanitation.
+  test("the routed normalizer inherits the same guarantees", () => {
+    const entry = normalizeRoutedCatalogEntry(contaminated() as never);
+
+    expect(entry.supported_in_api).toBe(true);
+    expect(entry).not.toHaveProperty("available_in_plans");
+    expect(entry).not.toHaveProperty("minimal_client_version");
+    expect(entry).not.toHaveProperty("availability_nux");
+    expect(entry).not.toHaveProperty("upgrade");
+  });
+});
+
+describe("Codex 0.151 catalog contract fields", () => {
+  test("legacy shell types canonicalize while disabled remains disabled", () => {
+    const normalizedLegacy = ["default", "local", "shell_command"].map(shell_type =>
+      ensureStrictCatalogFields({ slug: "test", shell_type }).shell_type);
+
+    expect(normalizedLegacy).toEqual(["unified_exec", "unified_exec", "unified_exec"]);
+    expect(ensureStrictCatalogFields({ slug: "test", shell_type: "disabled" }).shell_type)
+      .toBe("disabled");
+  });
+
+  test("missing booleans receive serde defaults", () => {
+    expect(ensureStrictCatalogFields({ slug: "test" })).toMatchObject({
+      node_repl_disabled: false,
+      node_repl_auto_review_required: false,
+      include_plugin_usage_instructions: false,
+      include_apps_usage_instructions: true,
+    });
+  });
+
+  test("explicit per-model booleans are never overwritten by defaults", () => {
+    expect(ensureStrictCatalogFields({
+      slug: "test",
+      node_repl_disabled: true,
+      node_repl_auto_review_required: true,
+      include_plugin_usage_instructions: true,
+      include_apps_usage_instructions: false,
+    })).toMatchObject({
+      node_repl_disabled: true,
+      node_repl_auto_review_required: true,
+      include_plugin_usage_instructions: true,
+      include_apps_usage_instructions: false,
+    });
   });
 });

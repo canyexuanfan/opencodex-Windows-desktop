@@ -283,10 +283,27 @@ async function handleCustomRemove(args: string[]): Promise<void> {
   // that row while the dash form matched both — the two relations disagreed on the same
   // config. Removal stays exact-or-refuse: an ambiguous selector still aborts below, which is
   // the right default for a destructive command.
+  const separator = target.indexOf("/");
+  const selectedProvider = separator >= 0 ? target.slice(0, separator) : undefined;
+  // Resolve ONCE against the provider's whole roster, then map the decision back onto rows.
+  // Calling the resolver per row with a singleton roster hid every cross-row fact it needs:
+  // a self-namespaced `acme/turbo` and a sibling `turbo` each matched their own singleton,
+  // so the command saw two matches and aborted as ambiguous even though the selector names
+  // one row exactly.
+  const rosterMatched = selectedProvider === undefined
+    ? undefined
+    : resolveSlugSelection(
+      selectedProvider,
+      target,
+      existing.filter(model => model.provider === selectedProvider).map(model => model.modelId),
+    );
+  // Deliberately admit the whole matched set rather than narrowing to `exact`: an encoded
+  // selector that spans a real collision must still abort below. Removal stays exact-or-refuse.
+  const admitted = new Set(rosterMatched?.matched ?? []);
   const matchingIndexes = existing.flatMap((model, index) => {
-    if (!target.includes("/")) return model.id === target ? [index] : [];
-    const resolved = resolveSlugSelection(model.provider, target, [model.modelId]);
-    return resolved.matched.length > 0 ? [index] : [];
+    if (selectedProvider === undefined) return model.id === target ? [index] : [];
+    if (model.provider !== selectedProvider) return [];
+    return admitted.has(model.modelId) ? [index] : [];
   });
   if (matchingIndexes.length === 0) fail(`custom model "${target}" not found`);
   if (matchingIndexes.length > 1) {

@@ -38,7 +38,7 @@ import { deriveProviderPresets } from "../../providers/derive";
 import { providerCodexAccountMode } from "../../providers/registry";
 import { routedSlug, slugEquals } from "../../providers/slug-codec";
 import { clearProviderQuotaCache, fetchProviderQuotaReports } from "../../providers/quota";
-import { isCanonicalOpenAiForwardProvider, OPENAI_CODEX_PROVIDER_ID } from "../../providers/openai-tiers";
+import { isCanonicalOpenAiForwardProvider } from "../../providers/openai-tiers";
 import { clearThreadAccountMap } from "../../codex/routing";
 import { primeCodexPoolQuotas } from "../../codex/auth-api";
 import {
@@ -88,6 +88,7 @@ import {
   type DebugFlag,
 } from "../../lib/debug-settings";
 import type { OcxClaudeCodeConfig, OcxConfig, OcxCustomModel, OcxProviderConfig } from "../../types";
+import { shadowCallTargetError } from "./shadow-call-validation";
 import { drainAndShutdown } from "../lifecycle";
 import { filterRequestLogs, getRequestLogEntries, type RequestLogEntry } from "../request-log";
 import { estimateComboCost, estimateRequestCost, normalizeCostTokens, tokensPerSecond } from "../../usage/cost";
@@ -863,6 +864,13 @@ export async function handleConfigRoutes(ctx: ManagementContext): Promise<Respon
     if (body.model !== undefined && typeof body.model !== "string") {
       return jsonResponse({ error: "model must be a string" }, 400);
     }
+    const candidateModel = typeof body.model === "string"
+      ? body.model
+      : body.enabled === true
+        ? config.shadowCallIntercept?.model
+        : undefined;
+    const targetError = shadowCallTargetError(config, candidateModel);
+    if (targetError) return jsonResponse({ error: targetError }, 400);
     config.shadowCallIntercept = { ...config.shadowCallIntercept };
     if (typeof body.enabled === "boolean") config.shadowCallIntercept.enabled = body.enabled;
     if (typeof body.model === "string") {

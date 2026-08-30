@@ -23,21 +23,52 @@ import {
   sweepExpiredOnWrite,
   type GenerationContext,
 } from "../lib/state-store-sweeper";
-import { readBoundedResponseBody } from "../lib/bounded-body";
+import {
+  ACCOUNT_QUOTA_TTL_MS,
+  asRecord,
+  CACHE_TTL_MS,
+  normalizePercent,
+  normalizeResetAt,
+  QUOTA_JSON_READ_FAILURE,
+  readQuotaJson,
+  REQUEST_TIMEOUT_MS,
+  toFiniteNumber,
+} from "./quota-wire";
+import {
+  clearCachedProviderQuotas,
+  replaceCachedProviderQuotas,
+} from "./quota-routing-cache";
 import {
   aggregateCodexPoolCapacity,
   CODEX_CAPACITY_MAX_QUOTA_AGE_MS,
   type CodexCapacityAggregation,
   type CodexCapacityQuota,
 } from "./codex-capacity";
+import type {
+  ProviderQuota,
+  ProviderQuotaCreditsUsd,
+  ProviderQuotaWindow,
+} from "./quota-types";
+import {
+  clearKiroAccountUsageState,
+  commitKiroAccountUsageState,
+  fetchKiroUsageSnapshot,
+  type KiroUsageSnapshot,
+  kiroUsageContextForAccount,
+  reconcileKiroAccountUsageState,
+} from "./kiro-usage";
+import {
+  cancelPendingAccountQuotaPersist,
+  readPersistedAccountQuotas,
+  schedulePersistAccountQuotas,
+} from "./account-quota-disk";
+
+export type { ProviderQuota, ProviderQuotaCreditsUsd, ProviderQuotaWindow } from "./quota-types";
 
 /** Match oauth/index REFRESH_SKEW_MS — use stored access without refresh when still fresh. */
 const ACCOUNT_TOKEN_SKEW_MS = 60_000;
-
-const CACHE_TTL_MS = 5 * 60_000;
-const REQUEST_TIMEOUT_MS = 8_000;
 /** Successful provider quota payloads are small; reject oversized or stalled JSON before parsing. */
-export const QUOTA_RESPONSE_MAX_BYTES = 512 * 1024;
+export { QUOTA_RESPONSE_MAX_BYTES } from "./quota-wire";
 const KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1";
 const KIMI_CODE_USAGE_URL = `${KIMI_CODE_BASE_URL}/usages`;
 const COMMAND_CODE_BASE_URL = "https://api.commandcode.ai";
@@ -73,34 +104,23 @@ export function setProviderQuotaBeforePublishForTests(
   providerQuotaBeforePublishForTests = hook;
 }
 const TERMINAL_QUOTA_FAILURE = Symbol("terminal-quota-failure");
-type ProviderQuotaProbeResult = ProviderQuotaReport | null | typeof TERMINAL_QUOTA_FAILURE;
-
-export interface ProviderQuotaWindow {
-  label: string;
-  percent: number;
-  resetAt?: number;
-}
-
-export interface ProviderQuotaCreditsUsd {
-  used: number;
-  limit: number;
-  remaining: number;
-  percent: number;
-  expiresAt?: number;
-  unlimited?: boolean;
-}
-
-export interface ProviderQuota {
-  fiveHourPercent?: number;
-  fiveHourResetAt?: number;
-  weeklyPercent?: number;
-  weeklyResetAt?: number;
-  monthlyPercent?: number;
-  monthlyResetAt?: number;
-  customWindows?: ProviderQuotaWindow[];
-  creditsUsd?: ProviderQuotaCreditsUsd;
-  updatedAt: number;
-}
+/**
+ * The probe succeeded and the upstream authoritatively reported NO model-quota windows.
+ *
+ * Distinct from `null`, which means "this probe told us nothing" and deliberately preserves
+ * the last-good row for up to 30 minutes. Collapsing the two would let a stale report outlive
+ * the authoritative answer that replaced it: a GLM plan whose payload carries only MCP
+ * `TIME_LIMIT` rows has no model windows, and the dashboard and quota-aware routing must stop
+ * showing the previous token windows rather than keep them for another half hour.
+ *
+ * Suppression is shared with `TERMINAL_QUOTA_FAILURE`; only the reason differs.
+ */
+const AUTHORITATIVE_EMPTY_QUOTA = Symbol("authoritative-empty-quota");
+type ProviderQuotaProbeResult =
+  | ProviderQuotaReport
+  | null
+  | typeof TERMINAL_QUOTA_FAILURE
+  | typeof AUTHORITATIVE_EMPTY_QUOTA;
 
 export interface ProviderQuotaReport {
   provider: string;
@@ -125,6 +145,7 @@ let invalidationEpoch = 0;
 /** Invalidate the report cache (e.g. after switching a provider's active account). */
 export function clearProviderQuotaCache(): void {
   cache = null;
+  clearCachedProviderQuotas();
   invalidationEpoch += 1;
 }
 
@@ -258,77 +279,6 @@ function hasQuotaRows(quota: ProviderQuota | null | undefined): quota is Provide
 
 function providerLabel(providerId: string): string {
   return getProviderRegistryEntry(providerId)?.label ?? providerId;
-}
-
-function normalizeResetAt(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) return epochMillis(value);
-  if (typeof value === "string" && value.trim()) {
-    const trimmed = value.trim();
-    // Cursor Connect RPC returns billingCycleEnd as a unix-ms decimal string ("1771077734000").
-    // Date.parse treats that as invalid; numeric epoch strings must be handled explicitly.
-    if (/^[+-]?\d+(\.\d+)?$/.test(trimmed)) {
-      const numeric = Number(trimmed);
-      return epochMillis(numeric);
-    }
-    const parsed = Date.parse(trimmed);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-  }
-  return undefined;
-}
-
-/** Unix 0 / negative values are sentinels, not reset clocks (Command Code fiveHour.resetAt: 0). */
-function epochMillis(value: number): number | undefined {
-  if (!Number.isFinite(value) || value <= 0) return undefined;
-  return value > 10_000_000_000 ? value : value * 1000;
-}
-
-function toFiniteNumber(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-  return undefined;
-}
-
-function normalizePercent(value: unknown): number | undefined {
-  const numeric = toFiniteNumber(value);
-  return numeric === undefined ? undefined : Math.max(0, Math.min(100, numeric));
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-const QUOTA_JSON_READ_FAILURE = Symbol("quota-json-read-failure");
-
-async function readQuotaJson(
-  response: Response,
-  timeoutMs = REQUEST_TIMEOUT_MS,
-): Promise<unknown | typeof QUOTA_JSON_READ_FAILURE> {
-  const declaredLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declaredLength) && declaredLength > QUOTA_RESPONSE_MAX_BYTES) {
-    try {
-      void response.body?.cancel(
-        new DOMException("Provider quota response is too large", "QuotaExceededError"),
-      ).catch(() => undefined);
-    } catch {
-      // Best-effort cancellation only.
-    }
-    return QUOTA_JSON_READ_FAILURE;
-  }
-
-  try {
-    const bounded = await readBoundedResponseBody(response, {
-      maxBytes: QUOTA_RESPONSE_MAX_BYTES,
-      totalTimeoutMs: timeoutMs,
-      inactivityTimeoutMs: timeoutMs,
-    });
-    if (bounded.oversized || bounded.truncated || !bounded.displaySafe) return QUOTA_JSON_READ_FAILURE;
-    return JSON.parse(bounded.text) as unknown;
-  } catch {
-    return QUOTA_JSON_READ_FAILURE;
-  }
 }
 
 /** Test-only access to the quota reader's deadline and cancellation contract. */
@@ -702,10 +652,19 @@ async function fetchClineQuota(provider: string, config: OcxProviderConfig): Pro
  * same rows `CREDIT_LIMIT`) and `TIME_LIMIT` rows. `TOKENS_LIMIT`/`CREDIT_LIMIT`
  * rows carry the window length as `unit`/`number`: unit 3 is hours (number 5 →
  * the rolling five-hour window), unit 6 is weeks (number 1 → the weekly
- * window). `TIME_LIMIT` rows are the monthly MCP tool budget (Web Search / Web
- * Reader / Zread). Every row's `percentage` is the consumed share (falling
+ * window). Every row's `percentage` is the consumed share (falling
  * back to `currentValue`/`usage` when absent) and `nextResetTime` (unix ms)
  * the window reset.
+ *
+ * `TIME_LIMIT` rows are deliberately ignored (issue #1168). They are the shared
+ * monthly MCP *call* allowance for Web Search / Web Reader / Zread — not a
+ * model-token budget — and `ProviderQuota.monthlyPercent` is consumed as a
+ * model-capacity signal: `headroomOf()` in `src/oauth/account-quota-rank.ts`
+ * takes the MAX across every window, so a user who spent their MCP search
+ * allowance would be ranked as having no model capacity left, and the dashboard
+ * would draw a full monthly bar for a plan whose model tokens are untouched.
+ * A payload carrying only `TIME_LIMIT` rows therefore reports no quota at all,
+ * which is the honest answer rather than a fabricated one.
  */
 export function parseZaiQuotaLimits(data: Record<string, unknown> | null): ProviderQuota | null {
   const limits = Array.isArray(data?.limits) ? data.limits as unknown[] : null;
@@ -715,6 +674,9 @@ export function parseZaiQuotaLimits(data: Record<string, unknown> | null): Provi
   for (const raw of limits) {
     const row = asRecord(raw);
     if (!row) continue;
+    // Gate on row type before deriving a percentage: an MCP row must not even
+    // contribute a parsed value to a model-quota report.
+    if (row.type !== "TOKENS_LIMIT" && row.type !== "CREDIT_LIMIT") continue;
     const resetAt = normalizeResetAt(row.nextResetTime);
     let percent = normalizePercent(row.percentage);
     if (percent === undefined) {
@@ -725,21 +687,15 @@ export function parseZaiQuotaLimits(data: Record<string, unknown> | null): Provi
       }
     }
     if (percent === undefined) continue;
-    if (row.type === "TOKENS_LIMIT" || row.type === "CREDIT_LIMIT") {
-      const unit = toFiniteNumber(row.unit);
-      const number = toFiniteNumber(row.number);
-      if (unit === 3 && number === 5) {
-        quota.fiveHourPercent = percent;
-        if (resetAt !== undefined) quota.fiveHourResetAt = resetAt;
-        windows += 1;
-      } else if (unit === 6 && number === 1) {
-        quota.weeklyPercent = percent;
-        if (resetAt !== undefined) quota.weeklyResetAt = resetAt;
-        windows += 1;
-      }
-    } else if (row.type === "TIME_LIMIT") {
-      quota.monthlyPercent = percent;
-      if (resetAt !== undefined) quota.monthlyResetAt = resetAt;
+    const unit = toFiniteNumber(row.unit);
+    const number = toFiniteNumber(row.number);
+    if (unit === 3 && number === 5) {
+      quota.fiveHourPercent = percent;
+      if (resetAt !== undefined) quota.fiveHourResetAt = resetAt;
+      windows += 1;
+    } else if (unit === 6 && number === 1) {
+      quota.weeklyPercent = percent;
+      if (resetAt !== undefined) quota.weeklyResetAt = resetAt;
       windows += 1;
     }
   }
@@ -781,9 +737,16 @@ function parseZaiQuotaLegacyFields(data: Record<string, unknown> | null): Provid
 
 /**
  * Fetches the Z.AI GLM Coding Plan quota — on whichever region the provider
- * points at (api.z.ai or open.bigmodel.cn). Authenticates with the API key as
- * a Bearer token per Z.AI's API reference. The `limits` array shape is
+ * points at (api.z.ai or open.bigmodel.cn). The `limits` array shape is
  * preferred; older field-name payloads fall back to the legacy parser.
+ *
+ * Authentication differs by host (issue #1168). `api.z.ai` takes the API key as
+ * a Bearer token per Z.AI's API reference; `open.bigmodel.cn` expects the key
+ * directly in `Authorization` with no scheme prefix and answers a Bearer header
+ * with an auth error, which is why BigModel Coding Plan quota never rendered.
+ * The host is already canonicalized by `isCanonicalZaiBaseUrl` above and
+ * `redirect: "error"` stays set, so the bare key cannot travel to a lookalike
+ * host or follow a redirect off-origin.
  */
 async function fetchZaiQuota(provider: string, config: OcxProviderConfig): Promise<ProviderQuotaProbeResult> {
   if (!isCanonicalZaiBaseUrl(config.baseUrl)) return null;
@@ -793,8 +756,9 @@ async function fetchZaiQuota(provider: string, config: OcxProviderConfig): Promi
   const monitorHost = normalized === ZAI_BASE_URL || normalized === `${ZAI_BASE_URL}/api/coding/paas/v4`
     ? ZAI_BASE_URL
     : ZAI_CN_BASE_URL;
+  const authorization = monitorHost === ZAI_CN_BASE_URL ? apiKey : `Bearer ${apiKey}`;
   const response = await fetch(`${monitorHost}/api/monitor/usage/quota/limit`, {
-    headers: { Accept: "application/json", Authorization: `Bearer ${apiKey}` },
+    headers: { Accept: "application/json", Authorization: authorization },
     redirect: "error",
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
@@ -806,10 +770,16 @@ async function fetchZaiQuota(provider: string, config: OcxProviderConfig): Promi
   const body = asRecord(await readQuotaJson(response));
   if (!body || body.success === false) return null;
   const data = asRecord(body.data) ?? body;
-  const quota = Array.isArray(data?.limits)
-    ? parseZaiQuotaLimits(data)
-    : parseZaiQuotaLegacyFields(data);
-  return quota ? report(provider, "zai:quota-limit", quota) : null;
+  if (Array.isArray(data?.limits)) {
+    const quota = parseZaiQuotaLimits(data);
+    // A well-formed `limits[]` we fully understood is authoritative even when it yields no
+    // model window — for example a plan reporting only the monthly MCP `TIME_LIMIT` row.
+    // Returning `null` here would preserve the previous token windows for up to 30 minutes
+    // and keep quota-aware routing acting on a report the provider has already superseded.
+    return quota ? report(provider, "zai:quota-limit", quota) : AUTHORITATIVE_EMPTY_QUOTA;
+  }
+  const legacy = parseZaiQuotaLegacyFields(data);
+  return legacy ? report(provider, "zai:quota-limit", legacy) : null;
 }
 
 /**
@@ -1219,14 +1189,17 @@ export function parseXaiCreditsResponse(value: unknown): { percent: number; rese
   if (!config) return null;
   const period = asRecord(config.currentPeriod);
   if (!period || period.type !== "USAGE_PERIOD_TYPE_WEEKLY") return null;
-  const resetAt = normalizeResetAt(period.end);
-  if (resetAt === undefined) return null;
+  let percent = 0;
   if (config.creditUsagePercent !== undefined) {
-    const percent = normalizePercent(config.creditUsagePercent);
-    if (percent === undefined) return null;
-    return { percent, resetAt };
+    const normalized = normalizePercent(config.creditUsagePercent);
+    if (normalized === undefined) return null;
+    percent = normalized;
   }
-  return { percent: 0, resetAt };
+  const resetAt = normalizeResetAt(period.end);
+  return {
+    percent,
+    ...(resetAt !== undefined ? { resetAt } : {}),
+  };
 }
 
 async function fetchXaiWeeklyCredits(accessToken: string, userId: string): Promise<ProviderQuota | null> {
@@ -1409,20 +1382,44 @@ async function fetchAnthropicQuota(provider: string): Promise<ProviderQuotaRepor
   return report(provider, "anthropic:oauth-usage", quota);
 }
 
+/**
+ * Provider-level Kiro row: the active account's usage, shown on the Providers page.
+ *
+ * The per-account cache is seeded from the same probe so opening that page does not read
+ * the active account twice, and the account id is captured before the await so a
+ * concurrent account switch cannot file this answer under the wrong account.
+ */
+async function fetchKiroQuota(provider: string): Promise<ProviderQuotaReport | null> {
+  const probedAccountId = getAccountSet("kiro")?.activeAccountId;
+  if (!probedAccountId) return null;
+  const probedAccountKey = accountCacheKey("kiro", probedAccountId);
+  const writerGeneration = captureConfigGeneration();
+  let snapshot: KiroUsageSnapshot | null;
+  try {
+    snapshot = await fetchKiroUsageSnapshot(await kiroUsageContextForAccount(probedAccountId));
+  } catch {
+    return null;
+  }
+  if (!snapshot) return null;
+  if (mayCommitAccountQuotaKey(probedAccountKey, writerGeneration)) {
+    accountQuotaCache.set(probedAccountKey, { ts: Date.now(), quota: snapshot.quota });
+    commitKiroAccountUsageState(probedAccountKey, snapshot);
+  }
+  return report(provider, "kiro:usage-limits", snapshot.quota);
+}
+
 // ---------------------------------------------------------------------------
 // Per-account quota (multiauth)
 // ---------------------------------------------------------------------------
 
 /**
- * Anthropic reports usage per CREDENTIAL, so every logged-in account can be probed with its
- * own bearer token — the active-account selection and the local usage log are irrelevant here.
- * Mirrors the Codex pool behaviour (codex/auth-api.ts:fetchPoolAccountQuota), including a
- * per-account TTL so N accounts cost at most N upstream calls per window.
- *
- * The TTL is deliberately longer than the provider-level one: this path multiplies by account
- * count, and Anthropic rate-limits the usage endpoint (observed 429 under repeated probing).
+ * Anthropic and Kiro both report usage per CREDENTIAL, so every logged-in account can be
+ * probed with its own bearer token — the active-account selection and the local usage log
+ * are irrelevant here. Mirrors the Codex pool behaviour
+ * (codex/auth-api.ts:fetchPoolAccountQuota), including a per-account TTL so N accounts cost
+ * at most N upstream calls per window. `ACCOUNT_QUOTA_TTL_MS` lives in `quota-wire.ts`
+ * because the Kiro exhaustion reader applies the same staleness bound.
  */
-const ACCOUNT_QUOTA_TTL_MS = 10 * 60_000;
 type AccountQuotaCacheEntry = {
   ts: number;
   quota: ProviderQuota | null;
@@ -1430,6 +1427,31 @@ type AccountQuotaCacheEntry = {
   unavailable?: true;
 };
 const accountQuotaCache = new Map<string, AccountQuotaCacheEntry>();
+
+/**
+ * Seed the cache from the last run, once.
+ *
+ * Without this a restart forgets every measurement, so the pool opens its next turn with
+ * no idea which account has room — the exact blindness pre-dispatch selection exists to
+ * remove. A hydrated row is still subject to the ordinary TTL, so it orders the first
+ * request and is replaced by a live probe immediately after.
+ */
+let diskHydrated = false;
+function hydrateAccountQuotaCache(): void {
+  if (diskHydrated) return;
+  diskHydrated = true;
+  for (const [key, quota] of readPersistedAccountQuotas()) {
+    if (!accountQuotaCache.has(key)) accountQuotaCache.set(key, { ts: quota.updatedAt, quota });
+  }
+}
+
+function persistAccountQuotaCache(): void {
+  schedulePersistAccountQuotas(function* () {
+    for (const [key, entry] of accountQuotaCache) {
+      if (entry.quota) yield [key, entry.quota] as [string, ProviderQuota];
+    }
+  });
+}
 const accountQuotaInflight = new Map<string, Promise<AccountQuotaCacheEntry>>();
 let lastReconciledGeneration = 0;
 let liveAccountQuotaKeys = new Set<string>();
@@ -1452,7 +1474,7 @@ export interface ProviderAccountQuota {
 
 /** Providers whose per-account quota can be probed. Extend as other OAuth APIs are covered. */
 export function supportsPerAccountQuota(provider: string): boolean {
-  return provider === "anthropic";
+  return provider === "anthropic" || provider === "kiro";
 }
 
 function accountCacheKey(provider: string, accountId: string): string {
@@ -1500,10 +1522,14 @@ export function reconcileProviderAccountQuotaRows(context: GenerationContext): n
     accountQuotaCache.delete(key);
     removed += 1;
   }
+  // Kiro exhaustion rows are keyed identically, so they retire with their quota row; a
+  // verdict outliving its account would hand the replacement a cooldown it never earned.
+  removed += reconcileKiroAccountUsageState(context.oauthAccountKeys);
   if (cache) {
     const reports = cache.response.reports.filter(report => context.providerNames.has(report.provider));
     removed += cache.response.reports.length - reports.length;
     cache = { ...cache, response: { ...cache.response, reports } };
+    replaceCachedProviderQuotas(reports);
   }
   liveAccountQuotaKeys = new Set(context.oauthAccountKeys);
   liveProviderQuotaKeys = new Set(context.providerNames);
@@ -1523,16 +1549,23 @@ export function clearAccountQuotaCache(provider?: string): void {
   if (!provider) {
     accountQuotaCache.clear();
     accountQuotaInflight.clear();
+    clearKiroAccountUsageState();
+    // A cleared cache must not be re-seeded from the file it was just cleared of, and any
+    // pending write of the old rows is abandoned.
+    diskHydrated = false;
+    cancelPendingAccountQuotaPersist();
     return;
   }
   const prefix = `${provider}\u0000`;
   for (const key of [...accountQuotaCache.keys()]) {
     if (key.startsWith(prefix)) accountQuotaCache.delete(key);
   }
+  clearKiroAccountUsageState(prefix);
   // Drop in-flight probes too so a late resolve cannot repopulate after logout/remove.
   for (const key of [...accountQuotaInflight.keys()]) {
     if (key.startsWith(prefix)) accountQuotaInflight.delete(key);
   }
+  persistAccountQuotaCache();
 }
 
 /**
@@ -1571,8 +1604,21 @@ async function fetchAccountQuota(
 
   const probe = (async (): Promise<AccountQuotaCacheEntry> => {
     try {
-      const token = await getTokenForAccountQuotaProbe(provider, accountId);
-      const quota = await fetchAnthropicUsageQuota(token);
+      let quota: ProviderQuota | null;
+      let kiroSnapshot: KiroUsageSnapshot | null = null;
+      if (provider === "kiro") {
+        // Kiro resolves the bearer and its routing metadata from ONE account-scoped
+        // snapshot. It deliberately does not use getTokenForAccountQuotaProbe: that
+        // helper refuses to refresh a background `local-cli` slot because Anthropic's
+        // lock can adopt a mismatched Claude CLI identity, but Kiro marks every
+        // CLI-imported credential `local-cli`, so the same rule would blank the quota of
+        // every inactive pool account the moment its token expired.
+        kiroSnapshot = await fetchKiroUsageSnapshot(await kiroUsageContextForAccount(accountId));
+        quota = kiroSnapshot?.quota ?? null;
+      } else {
+        const token = await getTokenForAccountQuotaProbe(provider, accountId);
+        quota = await fetchAnthropicUsageQuota(token);
+      }
       if (!quota) {
         // Preserve last-good bars and mark unavailable; advance TTL so failures
         // negative-cache instead of re-probing on every GUI poll.
@@ -1583,6 +1629,7 @@ async function fetchAccountQuota(
         };
         if (mayCommitAccountQuotaKey(key, writerGeneration)) {
           accountQuotaCache.set(key, entry);
+          if (provider === "kiro") commitKiroAccountUsageState(key, null);
           sweepExpiredOnWrite(entry.ts);
         }
         return entry;
@@ -1590,6 +1637,9 @@ async function fetchAccountQuota(
       const entry: AccountQuotaCacheEntry = { ts: Date.now(), quota };
       if (mayCommitAccountQuotaKey(key, writerGeneration)) {
         accountQuotaCache.set(key, entry);
+        // Exhaustion state rides the SAME commit guard as the quota row: a probe from a
+        // superseded config generation must not publish either half.
+        if (provider === "kiro") commitKiroAccountUsageState(key, kiroSnapshot);
         sweepExpiredOnWrite(entry.ts);
       }
       return entry;
@@ -2199,6 +2249,7 @@ async function maybeFetchProviderQuota(
     if (provider.authMode === "oauth" && name === "anthropic") return fetchAnthropicQuota(name);
     if (provider.authMode === "oauth" && name === "cursor") return fetchCursorQuota(name);
     if (provider.authMode === "oauth" && name === "google-antigravity") return fetchAntigravityQuota(name, provider);
+    if (provider.authMode === "oauth" && name === "kiro") return fetchKiroQuota(name);
     // Kimi Code `/usages` accepts OAuth or coding-plan API keys, but only on the canonical
     // host and only for real key auth — forward/local modes carry no credential of ours.
     if (provider.authMode === "oauth" && name === "kimi") return fetchKimiQuota(name, provider);
@@ -2293,9 +2344,18 @@ export async function fetchProviderQuotaReports(config: OcxConfig, forceRefresh 
         maybeFetchProviderQuota(name, provider, config, forceRefresh, prefetchedCodexSnapshot)
       )),
     );
-    const fresh = probeResults.filter((item): item is ProviderQuotaReport => item !== null && item !== TERMINAL_QUOTA_FAILURE);
+    const fresh = probeResults.filter((item): item is ProviderQuotaReport => (
+      item !== null && item !== TERMINAL_QUOTA_FAILURE && item !== AUTHORITATIVE_EMPTY_QUOTA
+    ));
+    // Both sentinels suppress the previous row. A terminal failure means the response was
+    // invalid; an authoritative empty means the response was valid and said there are no
+    // model windows. Either way the old row is no longer true, which is what separates them
+    // from `null` (told us nothing — keep the last-good row).
     const terminalFailures = new Set(
-      Object.keys(config.providers).filter((_, index) => probeResults[index] === TERMINAL_QUOTA_FAILURE),
+      Object.keys(config.providers).filter((_, index) => (
+        probeResults[index] === TERMINAL_QUOTA_FAILURE
+        || probeResults[index] === AUTHORITATIVE_EMPTY_QUOTA
+      )),
     );
     await providerQuotaBeforePublishForTests?.();
     let commitKey: string | null = null;
@@ -2341,6 +2401,7 @@ export async function fetchProviderQuotaReports(config: OcxConfig, forceRefresh 
     ) {
       const reports = response.reports.filter(item => mayCommitProviderQuotaKey(item.provider, writerGeneration));
       cache = { key, ts: Date.now(), response: { ...response, reports } };
+      replaceCachedProviderQuotas(reports);
     }
     return response;
   })();

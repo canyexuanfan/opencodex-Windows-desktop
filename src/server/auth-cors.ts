@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { extractAccountId } from "../oauth/chatgpt";
 import { formatErrorResponse } from "../bridge";
 import {
   codexAutoStartEnabled,
@@ -27,6 +28,7 @@ import { providerConfigSeed } from "../providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { openRouterRoutingConfigError } from "../providers/openrouter-routing";
 import { modelAutoCompactTokenLimitsConfigError } from "../providers/auto-compact-budget";
+import { vercelGatewayRoutingConfigError } from "../providers/vercel-gateway-routing";
 import { googleVertexLocationConfigError } from "../providers/google-vertex-location";
 import { xaiResponsesOptInState } from "../providers/xai-responses-opt-in";
 
@@ -403,6 +405,10 @@ export const AUTH_MATRIX: readonly ApiAuthMatrixRow[] = [
   { endpoint: "/v1/chat/completions", bearer: "accepted", dedicated: "accepted", xApiKey: "rejected" },
   { endpoint: "/v1/messages", bearer: "accepted", dedicated: "accepted", xApiKey: "accepted" },
   { endpoint: "/v1/models", bearer: "accepted", dedicated: "accepted", xApiKey: "accepted" },
+  // #809: least-privilege catalog read for remote Codex clients. Same admission set as
+  // /v1/models and for the same reason — it forwards no caller credential upstream — so a
+  // remote client no longer needs an admin token just to read the model catalog.
+  { endpoint: "/v1/catalog", bearer: "accepted", dedicated: "accepted", xApiKey: "accepted" },
 ];
 
 /** Whether `token` is the environment-provided management secret. */
@@ -429,6 +435,14 @@ export class ForwardAdmissionCredentialError extends Error {
 export function validateForwardAdmissionCredential(headers: Headers, config: OcxConfig): void {
   const bearer = headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
   if (bearer && isProxyAdmissionSecret(bearer, config)) throw new ForwardAdmissionCredentialError();
+}
+
+/** Whether Authorization carries a caller-owned native Codex credential safe to forward. */
+export function hasForwardableCodexBearer(headers: Headers, config: OcxConfig): boolean {
+  const bearer = headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
+  const accountId = headers.get("chatgpt-account-id")?.trim()
+    || (bearer ? extractAccountId(undefined, bearer) : undefined);
+  return !!bearer && !!accountId && !isProxyAdmissionSecret(bearer, config);
 }
 
 /**
@@ -568,6 +582,11 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
     delete canonicalCandidate.modelContextWindows;
     // User-owned soft compaction policy; it does not alter the canonical transport seed.
     delete canonicalCandidate.modelAutoCompactTokenLimits;
+    // Same category: annotating empty tool outputs is a user-owned request-shaping preference,
+    // not part of the canonical transport seed. Without this the field is accepted by
+    // validation and then rejected by the seed comparison, so canonical OpenAI could never
+    // set OR clear it — the value was admitted and then refused in the same request.
+    delete canonicalCandidate.annotateEmptyToolOutputs;
     const canonical = seed && sameCanonicalProviderSeed(canonicalCandidate, seed);
     if (!canonical) {
       return `provider ${name} must equal the canonical built-in provider seed`;
@@ -636,6 +655,9 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
   if (raw.responsesSnapshotRepair !== undefined && typeof raw.responsesSnapshotRepair !== "boolean") {
     return `provider ${name} responsesSnapshotRepair must be a boolean`;
   }
+  if (raw.xaiResponsesXSearch !== undefined && typeof raw.xaiResponsesXSearch !== "boolean") {
+    return `provider ${name} xaiResponsesXSearch must be a boolean`;
+  }
   const defaultMaxOutputError = positiveIntegerConfigError(raw.defaultMaxOutputTokens, "defaultMaxOutputTokens");
   if (defaultMaxOutputError) return `provider ${name} ${defaultMaxOutputError}`;
   const maxOutputError = positiveIntegerRecordConfigError(raw.modelMaxOutputTokens, "modelMaxOutputTokens");
@@ -647,6 +669,8 @@ export function providerManagementConfigError(name: unknown, provider: unknown):
   if (structuredOutputOptOutError) return `provider ${name} ${structuredOutputOptOutError}`;
   const openRouterError = openRouterRoutingConfigError(typed);
   if (openRouterError) return `provider ${name} ${openRouterError}`;
+  const vercelError = vercelGatewayRoutingConfigError(typed);
+  if (vercelError) return `provider ${name} ${vercelError}`;
   if (typed.authMode === "local") {
     // "local" bypasses key-requirement enforcement (api-keys/key-failover treat non-oauth/
     // forward as key auth; openai-chat skips credential checks for local). Only providers
@@ -725,6 +749,8 @@ export function safeConfigDTO(config: OcxConfig): unknown {
       "modelMaxOutputTokens",
       "openRouterRouting",
       "modelOpenRouterRouting",
+      "vercelGatewayRouting",
+      "modelVercelGatewayRouting",
       "reasoningEfforts",
       "modelReasoningEfforts",
       "reasoningWireFormat",

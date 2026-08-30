@@ -240,6 +240,45 @@ describe("DeepSeek Responses endpoint contract", () => {
     expect(nativeBody.tools).toEqual(rawBody.tools);
   });
 
+  test("xAI multi-agent clamps synthetic max and ultra efforts to its real Responses ladder", () => {
+    const config: OcxConfig = {
+      port: 10100,
+      defaultProvider: "xai",
+      providers: {
+        xai: {
+          adapter: "openai-chat",
+          baseUrl: "https://api.x.ai/v1",
+          authMode: "key",
+          apiKey: "xai-test-key",
+        },
+      },
+    };
+    const route = routeModel(config, "xai/grok-4.20-multi-agent-0309");
+    const responsesProvider = resolveWireProtocolOverride(
+      "xai",
+      route.modelId,
+      route.provider,
+      "responses",
+    );
+
+    expect(responsesProvider.adapter).toBe("openai-responses");
+    for (const requested of ["max", "ultra"] as const) {
+      const body = JSON.parse(createResponsesPassthroughAdapter(responsesProvider).buildRequest({
+        modelId: route.modelId,
+        context: { messages: [] },
+        stream: true,
+        options: { reasoning: requested },
+        _rawBody: {
+          model: route.modelId,
+          input: "ping",
+          reasoning: { effort: requested },
+        },
+      }, { headers: new Headers() }).body) as { reasoning?: { effort?: string } };
+
+      expect(body.reasoning?.effort).toBe("xhigh");
+    }
+  });
+
   test("a config saved before the fix is backfilled, and a hand-set path is preserved", () => {
     const saved = { adapter: "openai-chat", baseUrl: "https://api.deepseek.com", apiKey: "sk-test" } as Parameters<typeof enrichProviderFromRegistry>[1];
     enrichProviderFromRegistry("deepseek", saved);
@@ -1645,6 +1684,120 @@ describe("OpenAI Responses passthrough sanitization", () => {
     const body = JSON.parse(request.body) as { tools: Record<string, unknown>[] };
 
     expect(body.tools).toEqual([{ type: "web_search", external_web_access: true }]);
+  });
+
+  function buildXaiXSearchBody({
+    baseUrl = "https://cli-chat-proxy.grok.com/v1",
+    enabled,
+    tools,
+    toolChoice,
+  }: {
+    baseUrl?: string;
+    enabled?: boolean;
+    tools: Record<string, unknown>[];
+    toolChoice?: unknown;
+  }): Record<string, unknown> {
+    const request = createResponsesPassthroughAdapter({
+      adapter: "openai-responses",
+      baseUrl,
+      authMode: "key",
+      apiKey: "xai-test",
+      supportsOpenAiWebSearchToolFields: false,
+      ...(enabled === undefined ? {} : { xaiResponsesXSearch: enabled }),
+    }).buildRequest({
+      modelId: "grok-4.6",
+      context: { messages: [] },
+      stream: true,
+      options: {},
+      _rawBody: {
+        model: "grok-4.6",
+        input: [],
+        tools,
+        ...(toolChoice === undefined ? {} : { tool_choice: toolChoice }),
+      },
+    }, { headers: new Headers() });
+    return JSON.parse(request.body) as Record<string, unknown>;
+  }
+
+  test.each([
+    "https://api.x.ai/v1",
+    "https://cli-chat-proxy.grok.com/v1",
+  ])("injects x_search after live web_search normalization for %s", baseUrl => {
+    const body = buildXaiXSearchBody({
+      baseUrl,
+      enabled: true,
+      tools: [
+        { type: "function", name: "shell", parameters: { type: "object" } },
+        { type: "web_search", external_web_access: true, search_context_size: "medium" },
+      ],
+    }) as { tools: Record<string, unknown>[] };
+
+    expect(body.tools).toEqual([
+      { type: "function", name: "shell", parameters: { type: "object" } },
+      { type: "web_search" },
+      { type: "x_search" },
+    ]);
+  });
+
+  test("does not inject x_search outside the exact activation contract", () => {
+    const cases = [
+      buildXaiXSearchBody({
+        tools: [{ type: "web_search", external_web_access: true }],
+      }),
+      buildXaiXSearchBody({
+        baseUrl: "https://responses.example.test/v1",
+        enabled: true,
+        tools: [{ type: "web_search", external_web_access: true }],
+      }),
+      buildXaiXSearchBody({
+        baseUrl: "https://api.x.ai/v1",
+        enabled: true,
+        tools: [
+          { type: "function", name: "shell", parameters: { type: "object" } },
+          { type: "web_search", external_web_access: false },
+        ],
+      }),
+      buildXaiXSearchBody({
+        enabled: true,
+        tools: [{ type: "function", name: "shell", parameters: { type: "object" } }],
+      }),
+    ];
+
+    for (const body of cases) {
+      expect((body.tools as Record<string, unknown>[] | undefined)?.some(tool => tool.type === "x_search") ?? false)
+        .toBe(false);
+    }
+    expect(cases[2].tools).toEqual([
+      { type: "function", name: "shell", parameters: { type: "object" } },
+    ]);
+  });
+
+  test("keeps specific and allowed_tools selectors unchanged when x_search is injected", () => {
+    const selectors = [
+      { type: "function", name: "shell" },
+      {
+        type: "allowed_tools",
+        mode: "auto",
+        tools: [{ type: "function", name: "shell" }, { type: "web_search" }],
+      },
+    ];
+
+    for (const selector of selectors) {
+      const body = buildXaiXSearchBody({
+        enabled: true,
+        tools: [
+          { type: "function", name: "shell", parameters: { type: "object" } },
+          { type: "web_search", external_web_access: true },
+        ],
+        toolChoice: selector,
+      }) as { tools: Record<string, unknown>[]; tool_choice: Record<string, unknown> };
+      expect(body.tools.some(tool => tool.type === "x_search")).toBe(true);
+      expect(body.tool_choice).toEqual(selector);
+      const allowed = body.tool_choice.type === "allowed_tools"
+        ? body.tool_choice.tools as Record<string, unknown>[]
+        : [];
+      expect(allowed.some(tool => tool.type === "x_search")).toBe(false);
+    }
   });
 
   // `activateDeferredTool` clears `defer_loading` only for tools a `tool_search_output` already

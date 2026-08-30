@@ -5,7 +5,7 @@ import { codexAccountLogLabel } from "./account-label";
 import { isCodexAccountPaused } from "./account-pause";
 import { clearCodexAccountPin, codexAccountPriorityLookup, pinnedCodexAccountId } from "./account-priority";
 import { isCodexAccountUsable, type CodexAccountUsabilityOptions } from "./account-usability";
-import { isAccountNeedsReauth, markAccountNeedsReauth } from "./account-runtime-state";
+import { clearAccountNeedsReauth, isAccountNeedsReauth, markAccountNeedsReauth } from "./account-runtime-state";
 import {
   POOL_KEY_CODEX,
   normalizeAccountPoolStickyLimit,
@@ -19,7 +19,11 @@ import {
 } from "./pool-rotation";
 import { CODEX_UNKNOWN_USAGE_SCORE, getAccountQuota } from "./quota";
 import { isThirtyDayOnlyCodexPlan } from "./plan";
-import { MAIN_CODEX_ACCOUNT_ID, getMainAccountPlan } from "./main-account";
+import {
+  MAIN_CODEX_ACCOUNT_ID,
+  getMainAccountPlan,
+  hasMainAccountRefreshGrant,
+} from "./main-account";
 import { isSelectableCodexPoolAccount } from "./account-id";
 import type { OcxConfig } from "../types";
 import { captureConfigGeneration, type GenerationContext } from "../lib/state-store-sweeper";
@@ -87,6 +91,15 @@ type CodexUpstreamHealth = {
    * flaky account without throwing CodexAccountCooldownError (hard-only).
    */
   softAvoidUntil?: number;
+  /**
+   * Credential generation a 401/403 quarantine was derived from (#2892 gap 4).
+   *
+   * Provenance lives ON the entry rather than in a side map keyed by account id. A side map spends
+   * "whatever health is current when the old credential is found dead", which deletes a later
+   * unrelated entry: a G1 401, then a G2 save, then a genuine G2 503 would lose the 503. Only the
+   * entry that carries this field can be spent, and any later write simply replaces it.
+   */
+  credentialFailureGeneration?: number;
 };
 
 const CODEX_DEFAULT_QUOTA_COOLDOWN_MS = 60_000;
@@ -123,6 +136,22 @@ const upstreamHealth = new Map<string, CodexUpstreamHealth>();
  * from account-wide Retry-After/default throttles and transient health.
  */
 const quotaScopedHealth = new Map<string, Map<CodexQuotaScope, CodexUpstreamHealth>>();
+/**
+ * Spend a credential-failure health entry whose credential no longer exists (#2892 gap 4).
+ *
+ * A 401/403 describes one CREDENTIAL, not an account, and a replacement can land at any point after
+ * the outcome is recorded — so re-reading the store inside `recordCodexUpstreamOutcome` narrows the
+ * window without closing it. The reader decides instead, and it may only spend an entry that
+ * actually carries credential provenance: a later transient or quota write replaces the entry and
+ * with it the tag, so this can never delete evidence that belongs to a different failure.
+ */
+function dropSpentCredentialFailure(accountId: string): void {
+  const health = upstreamHealth.get(accountId);
+  const generation = health?.credentialFailureGeneration;
+  if (health === undefined || generation === undefined) return;
+  if (isCodexAccountGenerationLive(accountId, generation)) return;
+  upstreamHealth.delete(accountId);
+}
 let lastReconciledGeneration = 0;
 let liveHealthAccountIds = new Set<string>();
 
@@ -158,21 +187,20 @@ export type CodexQuotaRecoveryProbeProof = {
  * affinity so a Spark failover cannot displace the same thread's Terra/Luna
  * account (and vice versa).
  */
-type ThreadAffinityScope = CodexQuotaScope | "legacy";
+type BaseThreadAffinityScope = CodexQuotaScope | "legacy";
+type ModelDetourAffinityScope = `model-detour:${BaseThreadAffinityScope}:${string}`;
+type ThreadAffinityScope = BaseThreadAffinityScope | ModelDetourAffinityScope;
 const LEGACY_THREAD_AFFINITY_SCOPE = "legacy" as const;
 const threadAccountMap = new Map<string, Map<ThreadAffinityScope, ThreadAffinityEntry>>();
+let threadAffinityEntryTotal = 0;
+
+function isModelDetourAffinityScope(scope: ThreadAffinityScope): scope is ModelDetourAffinityScope {
+  return scope.startsWith("model-detour:");
+}
 
 const NATIVE_MODEL_QUOTA_SCOPES: Readonly<Record<string, CodexQuotaScope>> = {
   "gpt-5.3-codex-spark": "spark",
 };
-
-// A thread can have one legacy binding plus one binding for each known scope.
-// This upper-bound guard avoids an exact map scan until it can be over capacity.
-const MAX_THREAD_AFFINITY_SCOPES = new Set([
-  LEGACY_THREAD_AFFINITY_SCOPE,
-  "shared",
-  ...Object.values(NATIVE_MODEL_QUOTA_SCOPES),
-]).size;
 
 export function codexQuotaScopeForModel(modelId: string | undefined): CodexQuotaScope | undefined {
   if (!modelId?.trim()) return undefined;
@@ -228,6 +256,15 @@ export type CodexUpstreamOutcomeMeta = {
   promoteAccountId?: string;
   /** Generation captured when this routed account was selected. */
   writerGeneration?: number;
+  /**
+   * Credential generation this request's bearer was read at. Distinct from
+   * `writerGeneration`, which tracks the config store.
+   *
+   * A 401 that arrives after the credential was already replaced is evidence about a
+   * token nobody is using any more, so it must not quarantine the replacement. Absent
+   * means the caller cannot supply lineage and the historical unfenced handling stands.
+   */
+  credentialGeneration?: number;
 };
 
 function hasConfiguredPoolAccount(
@@ -253,12 +290,15 @@ export function listLiveCodexAccountIds(config: OcxConfig): ReadonlySet<string> 
 
 export function clearThreadAccountMap(): void {
   threadAccountMap.clear();
+  threadAffinityEntryTotal = 0;
 }
 
 export function clearThreadAccountMapForAccount(accountId: string): void {
   for (const [threadId, affinities] of threadAccountMap) {
     for (const [scope, entry] of affinities) {
-      if (entry.accountId === accountId) affinities.delete(scope);
+      if (entry.accountId === accountId && affinities.delete(scope)) {
+        threadAffinityEntryTotal = Math.max(0, threadAffinityEntryTotal - 1);
+      }
     }
     if (affinities.size === 0) threadAccountMap.delete(threadId);
   }
@@ -296,6 +336,7 @@ export function reconcileCodexRoutingHealth(context: GenerationContext): number 
 export function getCodexUpstreamHealth(
   accountId: string,
 ): CodexUpstreamHealth | null {
+  dropSpentCredentialFailure(accountId);
   return upstreamHealth.get(accountId) ?? null;
 }
 
@@ -675,7 +716,13 @@ function withProbeLeaseReleased(health: CodexUpstreamHealth, now: number): Codex
  */
 function preservedCooldownFields(health: CodexUpstreamHealth | undefined): Partial<CodexUpstreamHealth> {
   if (!health) return {};
-  const { consecutiveFailures: _f, consecutiveSuccesses: _s, lastFailureStatus: _st, lastFailureAt: _at, softAvoidUntil: _sa, ...cooldownFields } = health;
+  // `credentialFailureGeneration` is provenance for ONE credential failure, so it must not survive
+  // into a later transient or quota entry — otherwise that entry inherits the tag and gets spent
+  // when the old credential dies, deleting evidence that was never about it (#2892 gap 4 review).
+  const {
+    consecutiveFailures: _f, consecutiveSuccesses: _s, lastFailureStatus: _st, lastFailureAt: _at,
+    softAvoidUntil: _sa, credentialFailureGeneration: _cg, ...cooldownFields
+  } = health;
   return cooldownFields;
 }
 
@@ -830,7 +877,7 @@ function isCodexAccountSelectable(
     && isCodexAccountUsable(config, accountId, selectionOptions);
 }
 
-function threadAffinityScope(quotaScope?: CodexQuotaScope): ThreadAffinityScope {
+function threadAffinityScope(quotaScope?: CodexQuotaScope): BaseThreadAffinityScope {
   return quotaScope ?? LEGACY_THREAD_AFFINITY_SCOPE;
 }
 
@@ -838,17 +885,57 @@ function admissibleAffinityComponent(value: string): boolean {
   return retainedUtf8Bytes(value) <= MAX_AFFINITY_COMPONENT_BYTES;
 }
 
-function getThreadAffinity(threadId: string, quotaScope?: CodexQuotaScope): ThreadAffinityEntry | undefined {
-  if (!admissibleAffinityComponent(threadId)) return undefined;
-  return threadAccountMap.get(threadId)?.get(threadAffinityScope(quotaScope));
+function modelDetourAffinityScope(
+  modelId: string | undefined,
+  quotaScope?: CodexQuotaScope,
+): ModelDetourAffinityScope | undefined {
+  const canonicalModelId = modelId?.trim().toLowerCase();
+  if (!canonicalModelId || !admissibleAffinityComponent(canonicalModelId)) return undefined;
+  return `model-detour:${threadAffinityScope(quotaScope)}:${canonicalModelId}`;
 }
 
-function deleteThreadAffinity(threadId: string, quotaScope?: CodexQuotaScope): void {
+function getThreadAffinityForScope(
+  threadId: string,
+  scope: ThreadAffinityScope,
+): ThreadAffinityEntry | undefined {
+  if (!admissibleAffinityComponent(threadId)) return undefined;
+  return threadAccountMap.get(threadId)?.get(scope);
+}
+
+function getThreadAffinity(threadId: string, quotaScope?: CodexQuotaScope): ThreadAffinityEntry | undefined {
+  return getThreadAffinityForScope(threadId, threadAffinityScope(quotaScope));
+}
+
+function getModelDetourAffinity(
+  threadId: string,
+  modelId: string | undefined,
+  quotaScope?: CodexQuotaScope,
+): ThreadAffinityEntry | undefined {
+  const scope = modelDetourAffinityScope(modelId, quotaScope);
+  return scope ? getThreadAffinityForScope(threadId, scope) : undefined;
+}
+
+function deleteThreadAffinityForScope(threadId: string, scope: ThreadAffinityScope): void {
   if (!admissibleAffinityComponent(threadId)) return;
   const affinities = threadAccountMap.get(threadId);
   if (!affinities) return;
-  affinities.delete(threadAffinityScope(quotaScope));
+  if (affinities.delete(scope)) {
+    threadAffinityEntryTotal = Math.max(0, threadAffinityEntryTotal - 1);
+  }
   if (affinities.size === 0) threadAccountMap.delete(threadId);
+}
+
+function deleteThreadAffinity(threadId: string, quotaScope?: CodexQuotaScope): void {
+  deleteThreadAffinityForScope(threadId, threadAffinityScope(quotaScope));
+}
+
+function deleteModelDetourAffinity(
+  threadId: string,
+  modelId: string | undefined,
+  quotaScope?: CodexQuotaScope,
+): void {
+  const scope = modelDetourAffinityScope(modelId, quotaScope);
+  if (scope) deleteThreadAffinityForScope(threadId, scope);
 }
 
 /** Remove only the matching failed account's affinities for one thread. */
@@ -857,15 +944,15 @@ function deleteThreadAffinitiesForAccount(threadId: string, accountId: string): 
   const affinities = threadAccountMap.get(threadId);
   if (!affinities) return;
   for (const [scope, entry] of affinities) {
-    if (entry.accountId === accountId) affinities.delete(scope);
+    if (entry.accountId === accountId && affinities.delete(scope)) {
+      threadAffinityEntryTotal = Math.max(0, threadAffinityEntryTotal - 1);
+    }
   }
   if (affinities.size === 0) threadAccountMap.delete(threadId);
 }
 
 function threadAffinityEntryCount(): number {
-  let count = 0;
-  for (const affinities of threadAccountMap.values()) count += affinities.size;
-  return count;
+  return threadAffinityEntryTotal;
 }
 
 function isThreadAffinityExpired(entry: ThreadAffinityEntry, now: number): boolean {
@@ -877,46 +964,102 @@ function isThreadAffinityGenerationLive(entry: ThreadAffinityEntry): boolean {
   return isCodexAccountGenerationLive(entry.accountId, entry.generation);
 }
 
+/** Generations this account's affinity entries are bound at. Test observability only. */
+export function debugCodexAffinityGenerations(accountId: string): number[] {
+  const generations: number[] = [];
+  for (const affinities of threadAccountMap.values()) {
+    for (const entry of affinities.values()) {
+      if (entry.accountId === accountId) generations.push(entry.generation);
+    }
+  }
+  return generations;
+}
+
+/**
+ * Advance this account's affinity entries from the generation a rejected credential
+ * was bound under to the generation its own refresh produced.
+ *
+ * A 401 refresh-and-replay keeps the request on the same account, but the CAS write
+ * moves the credential from G to G+1, and {@link isThreadAffinityGenerationLive}
+ * demands exact equality — so without this the entry the replay just preserved is
+ * dead on the next request. Not quarantining an account is not the same as keeping
+ * its affinity.
+ *
+ * Lineage is proven by the CALLER, which must pass only a generation its own refresh
+ * produced. Re-deriving it here from `replacedAt` cannot work: the caller reads that
+ * field after the refresh and this function would re-read the same record, so the
+ * comparison is tautological and an external replacement passes it. An external
+ * replacement must retire the affinity, because that credential may belong to a
+ * different upstream identity.
+ */
+export function handOffThreadAffinityGeneration(
+  accountId: string,
+  fromGeneration: number,
+  toGeneration: number,
+): boolean {
+  if (accountId === MAIN_CODEX_ACCOUNT_ID) return false;
+  if (toGeneration !== fromGeneration + 1) return false;
+  const record = readCodexAccountRecord(accountId);
+  if (!record?.credential || record.deletedAt != null) return false;
+  if (record.generation !== toGeneration) return false;
+  let handedOff = false;
+  for (const affinities of threadAccountMap.values()) {
+    for (const entry of affinities.values()) {
+      if (entry.accountId !== accountId || entry.generation !== fromGeneration) continue;
+      entry.generation = toGeneration;
+      handedOff = true;
+    }
+  }
+  return handedOff;
+}
+
 function pruneExpiredThreadAffinities(now: number): void {
   for (const [threadId, affinities] of threadAccountMap) {
     for (const [scope, entry] of affinities) {
-      if (isThreadAffinityExpired(entry, now)) affinities.delete(scope);
+      if (isThreadAffinityExpired(entry, now) && affinities.delete(scope)) {
+        threadAffinityEntryTotal = Math.max(0, threadAffinityEntryTotal - 1);
+      }
     }
     if (affinities.size === 0) threadAccountMap.delete(threadId);
   }
 }
 
 function pruneLruThreadAffinities(): void {
-  if (threadAccountMap.size * MAX_THREAD_AFFINITY_SCOPES <= CODEX_THREAD_AFFINITY_MAX_ENTRIES) return;
+  if (threadAffinityEntryCount() <= CODEX_THREAD_AFFINITY_MAX_ENTRIES) return;
   while (threadAffinityEntryCount() > CODEX_THREAD_AFFINITY_MAX_ENTRIES) {
     let oldestThreadId: string | null = null;
     let oldestScope: ThreadAffinityScope | null = null;
     let oldestLastUsedAt = Number.POSITIVE_INFINITY;
+    let oldestIsDetour = false;
     for (const [threadId, affinities] of threadAccountMap) {
       for (const [scope, entry] of affinities) {
-        if (entry.lastUsedAt < oldestLastUsedAt) {
+        const candidateIsDetour = isModelDetourAffinityScope(scope);
+        if (
+          (candidateIsDetour && !oldestIsDetour)
+          || (candidateIsDetour === oldestIsDetour && entry.lastUsedAt < oldestLastUsedAt)
+        ) {
           oldestThreadId = threadId;
           oldestScope = scope;
           oldestLastUsedAt = entry.lastUsedAt;
+          oldestIsDetour = candidateIsDetour;
         }
       }
     }
     if (!oldestThreadId || !oldestScope) return;
-    deleteThreadAffinity(oldestThreadId, oldestScope === LEGACY_THREAD_AFFINITY_SCOPE ? undefined : oldestScope);
+    deleteThreadAffinityForScope(oldestThreadId, oldestScope);
   }
 }
 
-function bindThreadAffinity(
+function bindThreadAffinityForScope(
   threadId: string,
   accountId: string,
   now: number,
-  quotaScope?: CodexQuotaScope,
+  scope: ThreadAffinityScope,
 ): void {
   if (!admissibleAffinityComponent(threadId) || !admissibleAffinityComponent(accountId)) return;
   const record = accountId === MAIN_CODEX_ACCOUNT_ID ? undefined : readCodexAccountRecord(accountId);
   if (accountId !== MAIN_CODEX_ACCOUNT_ID && (!record?.credential || record.deletedAt != null)) return;
   pruneExpiredThreadAffinities(now);
-  const scope = threadAffinityScope(quotaScope);
   const affinities = threadAccountMap.get(threadId) ?? new Map<ThreadAffinityScope, ThreadAffinityEntry>();
   const previous = affinities.get(scope);
   affinities.set(scope, {
@@ -926,8 +1069,29 @@ function bindThreadAffinity(
     lastUsedAt: now,
     lastReevalAt: now,
   });
+  if (!previous) threadAffinityEntryTotal += 1;
   threadAccountMap.set(threadId, affinities);
   pruneLruThreadAffinities();
+}
+
+function bindThreadAffinity(
+  threadId: string,
+  accountId: string,
+  now: number,
+  quotaScope?: CodexQuotaScope,
+): void {
+  bindThreadAffinityForScope(threadId, accountId, now, threadAffinityScope(quotaScope));
+}
+
+function bindModelDetourAffinity(
+  threadId: string,
+  accountId: string,
+  now: number,
+  modelId: string | undefined,
+  quotaScope?: CodexQuotaScope,
+): void {
+  const scope = modelDetourAffinityScope(modelId, quotaScope);
+  if (scope) bindThreadAffinityForScope(threadId, accountId, now, scope);
 }
 
 function getEligiblePoolAccounts(
@@ -936,12 +1100,14 @@ function getEligiblePoolAccounts(
   now = Date.now(),
   quotaScope?: CodexQuotaScope,
   selectionOptions?: CodexAccountUsabilityOptions,
+  skipFailoverReadyCandidates = false,
 ): readonly string[] {
   const ids = (config.codexAccounts ?? [])
     .filter(account => isSelectableCodexPoolAccount(account)
       && account.id !== excludeId
       && !isCodexAccountPaused(config, account.id)
-      && !isAccountNeedsReauth(account.id))
+      && !isAccountNeedsReauth(account.id)
+      && (!skipFailoverReadyCandidates || !shouldFailover(config, account.id, now)))
     .filter(account => getCodexQuotaHealthSnapshot(account.id, quotaScope, now) === null)
     .filter(account => !isCodexAccountSoftAvoided(account.id, now))
     .filter(account => isCodexAccountUsable(config, account.id, selectionOptions))
@@ -951,9 +1117,10 @@ function getEligiblePoolAccounts(
   if (
     excludeId !== MAIN_CODEX_ACCOUNT_ID
     && !isCodexAccountPaused(config, MAIN_CODEX_ACCOUNT_ID)
-    && !isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID)
+    && (!isAccountNeedsReauth(MAIN_CODEX_ACCOUNT_ID) || hasMainAccountRefreshGrant())
     && getCodexQuotaHealthSnapshot(MAIN_CODEX_ACCOUNT_ID, quotaScope, now) === null
     && !isCodexAccountSoftAvoided(MAIN_CODEX_ACCOUNT_ID, now)
+    && (!skipFailoverReadyCandidates || !shouldFailover(config, MAIN_CODEX_ACCOUNT_ID, now))
     && isCodexAccountUsable(config, MAIN_CODEX_ACCOUNT_ID, selectionOptions)
   ) {
     ids.unshift(MAIN_CODEX_ACCOUNT_ID);
@@ -964,7 +1131,7 @@ function getEligiblePoolAccounts(
   return selectPriorityTier(
     ids,
     codexAccountPriorityLookup(config),
-    id => hasCodexQuotaHeadroom(config, id),
+    id => hasCodexQuotaHeadroom(config, id, selectionOptions),
     pinnedCodexAccountId(config),
   );
 }
@@ -992,10 +1159,17 @@ function stickyLimitForConfig(config: OcxConfig): number {
  * primed. A genuinely exhausted account 429s into cooldown and leaves
  * eligibility on its own.
  */
-function hasCodexQuotaHeadroom(config: OcxConfig, accountId: string): boolean {
+function hasCodexQuotaHeadroom(
+  config: OcxConfig,
+  accountId: string,
+  selectionOptions?: CodexAccountUsabilityOptions,
+): boolean {
   const threshold = config.autoSwitchThreshold ?? 80;
   if (threshold <= 0) return true;
-  const usage = computeCodexUsageScore(getAccountQuota(accountId), getPoolAccountPlan(config, accountId));
+  const usage = computeCodexUsageScore(
+    getAccountQuota(accountId),
+    getPoolAccountPlanForSelection(config, accountId, selectionOptions),
+  );
   if (isUnknownUsage(usage)) return true;
   return usage < threshold;
 }
@@ -1014,7 +1188,7 @@ function pickFillFirstCodexAccount(
   if (eligible.length === 0) return null;
 
   const active = getEffectiveActiveCodexAccountId(config);
-  if (active && eligible.includes(active) && hasCodexQuotaHeadroom(config, active)) {
+  if (active && eligible.includes(active) && hasCodexQuotaHeadroom(config, active, selectionOptions)) {
     return active;
   }
 
@@ -1034,7 +1208,7 @@ function pickNextFillFirstCodexAccount(
   if (!afterId) {
     // Prefer an under-threshold account when starting with no active cursor.
     for (const id of ordered) {
-      if (hasCodexQuotaHeadroom(config, id)) return id;
+      if (hasCodexQuotaHeadroom(config, id, selectionOptions)) return id;
     }
     return ordered[0] ?? null;
   }
@@ -1049,7 +1223,7 @@ function pickNextFillFirstCodexAccount(
   const startIdx = stableAll.indexOf(afterId);
   if (startIdx < 0) {
     for (const id of ordered) {
-      if (hasCodexQuotaHeadroom(config, id)) return id;
+      if (hasCodexQuotaHeadroom(config, id, selectionOptions)) return id;
     }
     return ordered[0] ?? null;
   }
@@ -1060,7 +1234,7 @@ function pickNextFillFirstCodexAccount(
     const candidate = stableAll[(startIdx + step) % stableAll.length]!;
     if (!eligible.includes(candidate)) continue;
     if (!fallback) fallback = candidate;
-    if (hasCodexQuotaHeadroom(config, candidate)) return candidate;
+    if (hasCodexQuotaHeadroom(config, candidate, selectionOptions)) return candidate;
   }
   return fallback ?? ordered[0] ?? null;
 }
@@ -1069,10 +1243,10 @@ function pickNextFillFirstCodexAccount(
  * Unbound new-session pick for round-robin / fill-first. Returns null to fall through
  * to the legacy quota path (or when the strategy is quota).
  *
- * When `commit` is true (resolve path), remembers active in-memory, binds thread affinity, and
- * notes RR success. When `commit` is false (preview), returns the same RR/fill-first
- * account resolve would pick via a dry-run peek — without mutating ring weights,
- * activeKey, sticky counters, config, or affinity.
+ * When `commit` is true (resolve path), advances RR state. `commitSharedActive`
+ * and `commitAffinity` independently control the two cross-request side effects:
+ * model-scoped entitlement selection can bind a new task without replacing an
+ * existing task binding or global active choice. Preview remains a dry-run peek.
  *
  * Automatic strategy picks never sync-write config; only manual selection persists active.
  *
@@ -1087,6 +1261,8 @@ function pickUnboundStrategyAccount(
   commit: boolean,
   quotaScope?: CodexQuotaScope,
   selectionOptions?: CodexAccountUsabilityOptions,
+  commitSharedActive = commit,
+  commitAffinity = commit,
 ): string | null {
   const strategy = normalizeAccountPoolStrategy(config.accountPoolStrategy);
   if (strategy === "quota") return null;
@@ -1101,8 +1277,10 @@ function pickUnboundStrategyAccount(
     }
     picked = pickRoundRobinAccount(poolKey, eligible, limit);
     if (!picked) return null;
-    if (!isIndependentCodexQuotaScope(quotaScope)) rememberActiveCodexAccount(config, picked);
-    if (threadId) bindThreadAffinity(threadId, picked, now, quotaScope);
+    if (commitSharedActive) {
+      if (!isIndependentCodexQuotaScope(quotaScope)) rememberActiveCodexAccount(config, picked);
+    }
+    if (commitAffinity && threadId) bindThreadAffinity(threadId, picked, now, quotaScope);
     notePoolRotationSuccess(poolKey, picked, limit);
     return picked;
   }
@@ -1110,10 +1288,10 @@ function pickUnboundStrategyAccount(
   if (strategy === "fill-first") {
     picked = pickFillFirstCodexAccount(config, now, quotaScope, selectionOptions);
     if (!picked) return null;
-    if (commit) {
+    if (commitSharedActive) {
       if (!isIndependentCodexQuotaScope(quotaScope)) rememberActiveCodexAccount(config, picked);
-      if (threadId) bindThreadAffinity(threadId, picked, now, quotaScope);
     }
+    if (commitAffinity && threadId) bindThreadAffinity(threadId, picked, now, quotaScope);
     return picked;
   }
 
@@ -1126,6 +1304,36 @@ export function getPoolAccountPlan(config: OcxConfig, accountId: string): string
     .find(account => isSelectableCodexPoolAccount(account) && account.id === accountId)?.plan;
 }
 
+/** Selection-only main routing must not lazily read the fenced native credential for its plan. */
+function getPoolAccountPlanForSelection(
+  config: OcxConfig,
+  accountId: string,
+  selectionOptions?: CodexAccountUsabilityOptions,
+): string | undefined {
+  if (accountId === MAIN_CODEX_ACCOUNT_ID && selectionOptions?.nativeMainSelectionOnly === true) {
+    return undefined;
+  }
+  return getPoolAccountPlan(config, accountId);
+}
+
+/** Shared routing state must ignore a request-scoped entitlement roster. */
+function sharedStateSelectionOptions(
+  selectionOptions?: CodexAccountUsabilityOptions,
+): Pick<
+  CodexAccountUsabilityOptions,
+  "nativeMainSelectionOnly" | "isMainAccountTokenLive"
+> | undefined {
+  if (!selectionOptions) return undefined;
+  return {
+    ...(selectionOptions.nativeMainSelectionOnly !== undefined
+      ? { nativeMainSelectionOnly: selectionOptions.nativeMainSelectionOnly }
+      : {}),
+    ...(selectionOptions.isMainAccountTokenLive
+      ? { isMainAccountTokenLive: selectionOptions.isMainAccountTokenLive }
+      : {}),
+  };
+}
+
 function pickLowerUsageAccount(
   config: OcxConfig,
   active: string,
@@ -1133,11 +1341,22 @@ function pickLowerUsageAccount(
   now: number,
   quotaScope?: CodexQuotaScope,
   selectionOptions?: CodexAccountUsabilityOptions,
+  skipFailoverReadyCandidates = false,
 ): string {
   let best = active;
   let bestUsage = activeUsage;
-  for (const id of getEligiblePoolAccounts(config, active, now, quotaScope, selectionOptions)) {
-    const usage = computeCodexUsageScore(getAccountQuota(id), getPoolAccountPlan(config, id));
+  for (const id of getEligiblePoolAccounts(
+    config,
+    active,
+    now,
+    quotaScope,
+    selectionOptions,
+    skipFailoverReadyCandidates,
+  )) {
+    const usage = computeCodexUsageScore(
+      getAccountQuota(id),
+      getPoolAccountPlanForSelection(config, id, selectionOptions),
+    );
     if (usage < bestUsage) {
       best = id;
       bestUsage = usage;
@@ -1147,11 +1366,18 @@ function pickLowerUsageAccount(
 }
 
 /** Coolest account in an already-selected candidate list; first index wins ties. */
-function pickLowestUsageAmong(config: OcxConfig, ids: readonly string[]): string | null {
+function pickLowestUsageAmong(
+  config: OcxConfig,
+  ids: readonly string[],
+  selectionOptions?: CodexAccountUsabilityOptions,
+): string | null {
   let best: string | null = null;
   let bestUsage = Number.POSITIVE_INFINITY;
   for (const id of ids) {
-    const usage = computeCodexUsageScore(getAccountQuota(id), getPoolAccountPlan(config, id));
+    const usage = computeCodexUsageScore(
+      getAccountQuota(id),
+      getPoolAccountPlanForSelection(config, id, selectionOptions),
+    );
     if (usage < bestUsage) {
       best = id;
       bestUsage = usage;
@@ -1167,7 +1393,11 @@ export function pickLowestUsageCodexAccount(
   quotaScope?: CodexQuotaScope,
   selectionOptions?: CodexAccountUsabilityOptions,
 ): string | null {
-  return pickLowestUsageAmong(config, getEligiblePoolAccounts(config, excludeId, now, quotaScope, selectionOptions));
+  return pickLowestUsageAmong(
+    config,
+    getEligiblePoolAccounts(config, excludeId, now, quotaScope, selectionOptions),
+    selectionOptions,
+  );
 }
 
 /**
@@ -1307,12 +1537,20 @@ function pickPriorityPreemption(
   // A live pin already lowered the tier ceiling; never preempt past an explicit
   // operator choice. Same liveness test the tier filter applies, so preview and
   // resolve agree even before the pin is garbage-collected.
-  if (pinned !== undefined && eligible.includes(pinned) && hasCodexQuotaHeadroom(config, pinned)) return null;
+  if (
+    pinned !== undefined
+    && eligible.includes(pinned)
+    && hasCodexQuotaHeadroom(config, pinned, selectionOptions)
+  ) return null;
   const priorityOf = codexAccountPriorityLookup(config);
   if (priorityOf(eligible[0]!) <= priorityOf(active)) return null;
   // Members without headroom are in the tier only because a sibling has some;
   // picking one would hand the request straight back to a drained account.
-  return pickLowestUsageAmong(config, eligible.filter(id => hasCodexQuotaHeadroom(config, id)));
+  return pickLowestUsageAmong(
+    config,
+    eligible.filter(id => hasCodexQuotaHeadroom(config, id, selectionOptions)),
+    selectionOptions,
+  );
 }
 
 /**
@@ -1322,13 +1560,27 @@ function pickPriorityPreemption(
  * on its own. Clearing the pin also removes the condition, so this writes at
  * most once per pin.
  */
-function releaseDrainedCodexAccountPin(config: OcxConfig): void {
+function releaseDrainedCodexAccountPin(
+  config: OcxConfig,
+  selectionOptions?: Pick<
+    CodexAccountUsabilityOptions,
+    "nativeMainSelectionOnly" | "isMainAccountTokenLive"
+  >,
+): void {
   const pinned = pinnedCodexAccountId(config);
   if (pinned === undefined) return;
-  const drained = !isCodexAccountUsable(config, pinned)
-    || isAccountNeedsReauth(pinned)
-    || isCodexAccountPaused(config, pinned)
-    || !hasCodexQuotaHeadroom(config, pinned);
+  const knownUnavailable = isAccountNeedsReauth(pinned) || isCodexAccountPaused(config, pinned);
+  if (knownUnavailable) {
+    clearCodexAccountPin(config);
+    saveConfigPreservingClaudeCode(config);
+    return;
+  }
+  // Temporary drain deliberately forbids every native-main read. A pin on main
+  // cannot be classified by credential liveness or quota until the fenced profile
+  // is readable. Cached reauth and configured pause state were handled above.
+  if (pinned === MAIN_CODEX_ACCOUNT_ID && selectionOptions?.nativeMainSelectionOnly === true) return;
+  const drained = !isCodexAccountUsable(config, pinned, selectionOptions)
+    || !hasCodexQuotaHeadroom(config, pinned, selectionOptions);
   if (!drained) return;
   clearCodexAccountPin(config);
   saveConfigPreservingClaudeCode(config);
@@ -1340,18 +1592,24 @@ function applyQuotaAutoSwitch(
   now: number,
   quotaScope?: CodexQuotaScope,
   selectionOptions?: CodexAccountUsabilityOptions,
+  commitSharedSelection = true,
 ): string {
   const threshold = config.autoSwitchThreshold ?? 80;
   if (threshold <= 0) return active;
   const quota = getAccountQuota(active);
-  const activeUsage = computeCodexUsageScore(quota, getPoolAccountPlan(config, active));
+  const activeUsage = computeCodexUsageScore(
+    quota,
+    getPoolAccountPlanForSelection(config, active, selectionOptions),
+  );
   // Unknown usage is not evidence that a user's explicit selection crossed the
   // threshold. Wait for quota priming instead of rotating among guesses.
   if (isUnknownUsage(activeUsage)) return active;
   if (activeUsage < threshold) return active;
   const best = pickLowerUsageAccount(config, active, activeUsage, now, quotaScope, selectionOptions);
   if (best !== active) {
-    if (!isIndependentCodexQuotaScope(quotaScope)) setActiveCodexAccount(config, best);
+    if (commitSharedSelection && !isIndependentCodexQuotaScope(quotaScope)) {
+      setActiveCodexAccount(config, best);
+    }
     return best;
   }
 
@@ -1361,9 +1619,46 @@ function applyQuotaAutoSwitch(
 function shouldFailover(config: OcxConfig, accountId: string, now: number): boolean {
   const threshold = config.upstreamFailoverThreshold ?? 3;
   if (threshold <= 0) return false;
+  dropSpentCredentialFailure(accountId);
   const health = upstreamHealth.get(accountId);
   if (health?.lastFailureAt && now - health.lastFailureAt > CODEX_FAILURE_WINDOW_MS) return false;
   return !!health && health.consecutiveFailures >= threshold;
+}
+
+function isHealthySharedCodexSelection(
+  config: OcxConfig,
+  accountId: string,
+  now: number,
+  quotaScope: CodexQuotaScope | undefined,
+  selectionOptions: CodexAccountUsabilityOptions | undefined,
+): boolean {
+  return isCodexAccountSelectable(config, accountId, now, quotaScope, selectionOptions)
+    && hasCodexQuotaHeadroom(config, accountId, selectionOptions)
+    && !shouldFailover(config, accountId, now);
+}
+
+function strategySelectionOptionsForModelDetour(
+  config: OcxConfig,
+  now: number,
+  quotaScope: CodexQuotaScope | undefined,
+  selectionOptions: CodexAccountUsabilityOptions | undefined,
+): CodexAccountUsabilityOptions | undefined {
+  if (selectionOptions?.modelEligibleAccountIds === undefined) return selectionOptions;
+  const sharedSelectionOptions = sharedStateSelectionOptions(selectionOptions) ?? {};
+  return {
+    ...selectionOptions,
+    modelEligibleAccountIds: new Set(
+      [...selectionOptions.modelEligibleAccountIds].filter(accountId =>
+        isHealthySharedCodexSelection(
+          config,
+          accountId,
+          now,
+          quotaScope,
+          sharedSelectionOptions,
+        )
+      ),
+    ),
+  };
 }
 
 function applyFailureFailover(
@@ -1372,6 +1667,7 @@ function applyFailureFailover(
   now: number,
   quotaScope?: CodexQuotaScope,
   selectionOptions?: CodexAccountUsabilityOptions,
+  commitSharedSelection = true,
 ): string {
   if (!shouldFailover(config, active, now)) return active;
   const best = pickAlternateCodexAccount(config, active, now, quotaScope, selectionOptions);
@@ -1382,7 +1678,9 @@ function applyFailureFailover(
     // the moment of the failure; the streak outlives the soft avoid, so a later
     // scoped resolve reaches here with the streak still tripped and would otherwise
     // move the shared cursor after all.
-    if (!isIndependentCodexQuotaScope(quotaScope)) promoteActiveCodexAccount(config, best);
+    if (commitSharedSelection && !isIndependentCodexQuotaScope(quotaScope)) {
+      promoteActiveCodexAccount(config, best);
+    }
     return best;
   }
   return active;
@@ -1396,6 +1694,88 @@ export function resolveCodexAccountForThread(
 ): string | null {
   const resolution = resolveCodexAccountForThreadDetailed(threadId, config, now, quotaScope);
   return resolution.status === "selected" ? resolution.accountId : null;
+}
+
+function previewReusableAffinityAccount(
+  entry: ThreadAffinityEntry | undefined,
+  config: OcxConfig,
+  now: number,
+  quotaScope?: CodexQuotaScope,
+  selectionOptions?: CodexAccountUsabilityOptions,
+): string | null {
+  if (
+    !entry
+    || isThreadAffinityExpired(entry, now)
+    || !isThreadAffinityGenerationLive(entry)
+    || !isCodexAccountSelectable(config, entry.accountId, now, quotaScope, selectionOptions)
+    || shouldFailover(config, entry.accountId, now)
+  ) {
+    return null;
+  }
+  // Quota strategy only: non-quota strategies keep affinity for ongoing threads
+  // (new-session-only rotation — docs / affinity policy A).
+  if (normalizeAccountPoolStrategy(config.accountPoolStrategy) === "quota") {
+    const threshold = config.autoSwitchThreshold ?? 80;
+    if (threshold > 0) {
+      const usage = computeCodexUsageScore(
+        getAccountQuota(entry.accountId),
+        getPoolAccountPlanForSelection(config, entry.accountId, selectionOptions),
+      );
+      if (!isUnknownUsage(usage) && usage >= threshold) {
+        const best = pickLowerUsageAccount(
+          config,
+          entry.accountId,
+          usage,
+          now,
+          quotaScope,
+          selectionOptions,
+          true,
+        );
+        if (best !== entry.accountId) return best;
+      }
+    }
+  }
+  return entry.accountId;
+}
+
+/**
+ * Re-evaluate an affined account under the quota strategy. Returns a strictly
+ * cooler replacement, or null when the current binding should remain.
+ */
+function reevaluateAffinityQuota(
+  entry: ThreadAffinityEntry,
+  config: OcxConfig,
+  now: number,
+  quotaScope?: CodexQuotaScope,
+  selectionOptions?: CodexAccountUsabilityOptions,
+): string | null {
+  if (normalizeAccountPoolStrategy(config.accountPoolStrategy) !== "quota") return null;
+  const threshold = config.autoSwitchThreshold ?? 80;
+  const usage = threshold > 0
+    ? computeCodexUsageScore(
+        getAccountQuota(entry.accountId),
+        getPoolAccountPlanForSelection(config, entry.accountId, selectionOptions),
+      )
+    : 0;
+  const overThreshold = threshold > 0 && !isUnknownUsage(usage) && usage >= threshold;
+  if (
+    !overThreshold
+    && now - entry.lastReevalAt < CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS
+  ) {
+    return null;
+  }
+  entry.lastReevalAt = now;
+  if (!overThreshold) return null;
+  const best = pickLowerUsageAccount(
+    config,
+    entry.accountId,
+    usage,
+    now,
+    quotaScope,
+    selectionOptions,
+    true,
+  );
+  return best === entry.accountId ? null : best;
 }
 
 /**
@@ -1412,42 +1792,31 @@ export function previewCodexAccountForRequest(
   now = Date.now(),
   quotaScope?: CodexQuotaScope,
   selectionOptions?: CodexAccountUsabilityOptions,
+  modelId?: string,
 ): string | null {
-  const entry = threadId ? getThreadAffinity(threadId, quotaScope) : undefined;
-  if (threadId && entry) {
-    if (
-      !isThreadAffinityExpired(entry, now)
-      && isThreadAffinityGenerationLive(entry)
-      && isCodexAccountSelectable(config, entry.accountId, now, quotaScope, selectionOptions)
-      && !shouldFailover(config, entry.accountId, now)
-    ) {
-      // Quota strategy only: non-quota strategies keep affinity for ongoing threads
-      // (new-session-only rotation — docs / affinity policy A).
-      const strategy = normalizeAccountPoolStrategy(config.accountPoolStrategy);
-      if (strategy === "quota") {
-        const threshold = config.autoSwitchThreshold ?? 80;
-        if (threshold > 0) {
-          const usage = computeCodexUsageScore(
-            getAccountQuota(entry.accountId),
-            getPoolAccountPlan(config, entry.accountId),
-          );
-          if (!isUnknownUsage(usage) && usage >= threshold) {
-            const best = pickLowerUsageAccount(
-              config,
-              entry.accountId,
-              usage,
-              now,
-              quotaScope,
-              selectionOptions,
-            );
-            if (best !== entry.accountId) return best;
-          }
-        }
-      }
-      return entry.accountId;
-    }
-    // Stale/unusable affinity is ignored for preview (no map mutation).
+  // A request-scoped model detour keeps its own serving-account affinity. Preview
+  // reads it before the ordinary lane, but never repairs or deletes it. Roster
+  // expansion therefore preserves the already-serving account, and preview mirrors
+  // final resolution even when the ordinary lane was independently retired.
+  if (threadId && selectionOptions?.modelEligibleAccountIds !== undefined) {
+    const detourPreview = previewReusableAffinityAccount(
+      getModelDetourAffinity(threadId, modelId, quotaScope),
+      config,
+      now,
+      quotaScope,
+      selectionOptions,
+    );
+    if (detourPreview) return detourPreview;
   }
+  const entry = threadId ? getThreadAffinity(threadId, quotaScope) : undefined;
+  const ordinaryPreview = previewReusableAffinityAccount(
+    entry,
+    config,
+    now,
+    quotaScope,
+    selectionOptions,
+  );
+  if (ordinaryPreview) return ordinaryPreview;
 
   const strategyPick = pickUnboundStrategyAccount(
     config,
@@ -1455,7 +1824,7 @@ export function previewCodexAccountForRequest(
     now,
     false,
     quotaScope,
-    selectionOptions,
+    strategySelectionOptionsForModelDetour(config, now, quotaScope, selectionOptions),
   );
   if (strategyPick) return strategyPick;
 
@@ -1476,7 +1845,10 @@ export function previewCodexAccountForRequest(
 
   const threshold = config.autoSwitchThreshold ?? 80;
   if (threshold > 0) {
-    const usage = computeCodexUsageScore(getAccountQuota(active), getPoolAccountPlan(config, active));
+    const usage = computeCodexUsageScore(
+      getAccountQuota(active),
+      getPoolAccountPlanForSelection(config, active, selectionOptions),
+    );
     if (!isUnknownUsage(usage) && usage >= threshold) {
       active = pickLowerUsageAccount(config, active, usage, now, quotaScope, selectionOptions);
     }
@@ -1501,12 +1873,64 @@ export function resolveCodexAccountForThreadDetailed(
   now = Date.now(),
   quotaScope?: CodexQuotaScope,
   selectionOptions?: CodexAccountUsabilityOptions,
+  modelId?: string,
 ): CodexThreadResolution {
+  // An entitlement roster constrains only this model request. It must not rewrite
+  // the operator's shared active/pin choice or the task's ordinary-model affinity.
+  const modelScopedSelection = selectionOptions?.modelEligibleAccountIds !== undefined;
+  let preserveExistingModelScopedAffinity = false;
+  const sharedSelectionOptions: CodexAccountUsabilityOptions | undefined = modelScopedSelection
+    ? sharedStateSelectionOptions(selectionOptions) ?? {}
+    : selectionOptions;
   // Retiring a spent manual pin is independent of affinity: an existing thread
   // keeps its account below, but the operator's tier ceiling must not silently
   // revive after quota resets. Independent model scopes must never persist a
   // change to shared routing state.
-  if (!isIndependentCodexQuotaScope(quotaScope)) releaseDrainedCodexAccountPin(config);
+  if (!isIndependentCodexQuotaScope(quotaScope)) {
+    releaseDrainedCodexAccountPin(config, sharedStateSelectionOptions(selectionOptions));
+  }
+  const sharedActiveBeforeSelection = getEffectiveActiveCodexAccountId(config);
+  const preserveSharedSelectionForModelDetour = modelScopedSelection && (
+    sharedActiveBeforeSelection === undefined
+    || isHealthySharedCodexSelection(
+      config,
+      sharedActiveBeforeSelection,
+      now,
+      quotaScope,
+      sharedSelectionOptions,
+    )
+  );
+
+  if (threadId && modelScopedSelection) {
+    const detourEntry = getModelDetourAffinity(threadId, modelId, quotaScope);
+    if (detourEntry) {
+      const detourReusable = !isThreadAffinityExpired(detourEntry, now)
+        && isThreadAffinityGenerationLive(detourEntry)
+        && isCodexAccountSelectable(config, detourEntry.accountId, now, quotaScope, selectionOptions)
+        && !shouldFailover(config, detourEntry.accountId, now);
+      if (detourReusable) {
+        detourEntry.lastUsedAt = now;
+        // Model detours follow the same affinity policy as ordinary bindings:
+        // RR/fill-first stay sticky, while quota strategy may re-evaluate an
+        // over-threshold account without changing the ordinary lane.
+        const cooler = reevaluateAffinityQuota(
+          detourEntry,
+          config,
+          now,
+          quotaScope,
+          selectionOptions,
+        );
+        if (cooler) {
+          bindModelDetourAffinity(threadId, cooler, now, modelId, quotaScope);
+          return { status: "selected", accountId: cooler };
+        }
+        return { status: "selected", accountId: detourEntry.accountId };
+      }
+      // Detour expiry or invalidation must not expire the ordinary task. Drop only
+      // this model lane and select from ordinary/shared state below.
+      deleteModelDetourAffinity(threadId, modelId, quotaScope);
+    }
+  }
 
   const entry = threadId ? getThreadAffinity(threadId, quotaScope) : undefined;
   if (threadId && entry) {
@@ -1514,12 +1938,20 @@ export function resolveCodexAccountForThreadDetailed(
       deleteThreadAffinity(threadId, quotaScope);
       return { status: "expired", accountId: entry.accountId };
     }
+    const generationLive = isThreadAffinityGenerationLive(entry);
+    const selectableForSharedState = generationLive
+      && isCodexAccountSelectable(config, entry.accountId, now, quotaScope, sharedSelectionOptions);
+    const selectableForRequest = selectableForSharedState
+      && isCodexAccountSelectable(config, entry.accountId, now, quotaScope, selectionOptions);
+    const failoverReady = shouldFailover(config, entry.accountId, now);
+    const healthyForSharedAffinity = selectableForSharedState
+      && hasCodexQuotaHeadroom(config, entry.accountId, sharedSelectionOptions)
+      && !failoverReady;
     if (
-      isThreadAffinityGenerationLive(entry)
-      && isCodexAccountSelectable(config, entry.accountId, now, quotaScope, selectionOptions)
+      selectableForRequest
       // Affined threads must leave a failing account once the streak trips failover
       // (soft-avoid covers the first-hit case; this catches post-avoid residual streaks).
-      && !shouldFailover(config, entry.accountId, now)
+      && !failoverReady
     ) {
       entry.lastUsedAt = now;
       // Periodic quota re-eval: a long-lived bound thread must still switch when
@@ -1530,48 +1962,107 @@ export function resolveCodexAccountForThreadDetailed(
       // serving for up to 60s after a secondary with quota is available (#584).
       // Non-quota strategies (RR / fill-first) keep affinity for ongoing threads —
       // rotation is new-session-only (affinity policy A).
-      const strategy = normalizeAccountPoolStrategy(config.accountPoolStrategy);
-      if (strategy === "quota") {
-        const threshold = config.autoSwitchThreshold ?? 80;
-        const usage = threshold > 0
-          ? computeCodexUsageScore(
-            getAccountQuota(entry.accountId),
-            getPoolAccountPlan(config, entry.accountId),
-          )
-          : 0;
-        const overThreshold = threshold > 0 && !isUnknownUsage(usage) && usage >= threshold;
-        if (overThreshold || now - entry.lastReevalAt >= CODEX_THREAD_AFFINITY_REEVAL_INTERVAL_MS) {
-          entry.lastReevalAt = now;
-          if (overThreshold) {
-            const best = pickLowerUsageAccount(config, entry.accountId, usage, now, quotaScope, selectionOptions);
-            if (best !== entry.accountId) {
-              if (!isIndependentCodexQuotaScope(quotaScope)) setActiveCodexAccount(config, best);
-              bindThreadAffinity(threadId, best, now, quotaScope); // rebinds + resets clocks
-              return { status: "selected", accountId: best };
-            }
-          }
+      const cooler = reevaluateAffinityQuota(entry, config, now, quotaScope, selectionOptions);
+      if (cooler) {
+        if (!isIndependentCodexQuotaScope(quotaScope)) {
+          setActiveCodexAccount(config, cooler);
         }
+        bindThreadAffinity(threadId, cooler, now, quotaScope); // rebinds + resets clocks
+        return { status: "selected", accountId: cooler };
       }
       return { status: "selected", accountId: entry.accountId };
     }
-    deleteThreadAffinity(threadId, quotaScope);
+    // A model-only exclusion does not invalidate the shared task binding. Health,
+    // generation, pause, cooldown, and failure evidence still retire it normally.
+    if (!modelScopedSelection || !healthyForSharedAffinity) {
+      deleteThreadAffinity(threadId, quotaScope);
+    } else {
+      preserveExistingModelScopedAffinity = true;
+    }
   }
 
-  const strategyPick = pickUnboundStrategyAccount(config, threadId, now, true, quotaScope, selectionOptions);
-  if (strategyPick) return { status: "selected", accountId: strategyPick };
+  // A request-scoped roster may still contain unhealthy candidates. Non-quota strategies return
+  // before the quota/failover helpers below, so prefer only shared-healthy roster members here;
+  // otherwise RR/fill-first can immediately re-pick a known failing account even when another
+  // entitled account is healthy. If no healthy member exists, the normal fallback path below
+  // still decides whether the sole eligible candidate must be used.
+  const strategySelectionOptions = strategySelectionOptionsForModelDetour(
+    config,
+    now,
+    quotaScope,
+    selectionOptions,
+  );
+  const strategyPick = pickUnboundStrategyAccount(
+    config,
+    threadId,
+    now,
+    true,
+    quotaScope,
+    strategySelectionOptions,
+    !modelScopedSelection,
+    !preserveExistingModelScopedAffinity,
+  );
+  if (strategyPick) {
+    if (threadId && preserveExistingModelScopedAffinity) {
+      bindModelDetourAffinity(threadId, strategyPick, now, modelId, quotaScope);
+    }
+    if (
+      modelScopedSelection
+      && !preserveSharedSelectionForModelDetour
+      && !isIndependentCodexQuotaScope(quotaScope)
+    ) {
+      promoteActiveCodexAccount(config, strategyPick);
+    }
+    return { status: "selected", accountId: strategyPick };
+  }
 
   let active = getEffectiveActiveCodexAccountId(config);
   if (!active) {
     const selected = pickLowestUsageCodexAccount(config, undefined, now, quotaScope, selectionOptions);
-    if (!selected) return { status: "none" };
-    if (!isIndependentCodexQuotaScope(quotaScope)) setActiveCodexAccount(config, selected);
+    if (!selected) {
+      if (
+        selectionOptions?.nativeMainSelectionOnly === true
+        && selectionOptions.modelEligibleAccountIds !== undefined
+      ) {
+        return { status: "selected", accountId: MAIN_CODEX_ACCOUNT_ID };
+      }
+      return { status: "none" };
+    }
+    if (!isIndependentCodexQuotaScope(quotaScope) && !modelScopedSelection) {
+      setActiveCodexAccount(config, selected);
+    }
     active = selected;
   }
+  const activeSelectableForSharedState = isCodexAccountSelectable(
+    config,
+    active,
+    now,
+    quotaScope,
+    sharedSelectionOptions,
+  );
+  const activeHealthyForSharedSelection = activeSelectableForSharedState
+    && hasCodexQuotaHeadroom(config, active, sharedSelectionOptions)
+    && !shouldFailover(config, active, now);
   if (!isCodexAccountSelectable(config, active, now, quotaScope, selectionOptions)) {
     const fallback = pickLowestUsageCodexAccount(config, active, now, quotaScope, selectionOptions);
     if (fallback) {
-      if (!isIndependentCodexQuotaScope(quotaScope)) setActiveCodexAccount(config, fallback);
+      const modelOnlyMove = modelScopedSelection
+        && preserveSharedSelectionForModelDetour
+        && activeHealthyForSharedSelection;
+      if (!isIndependentCodexQuotaScope(quotaScope) && !modelOnlyMove) {
+        setActiveCodexAccount(config, fallback);
+      }
       active = fallback;
+    } else if (
+      selectionOptions?.nativeMainSelectionOnly === true
+      && selectionOptions.modelEligibleAccountIds !== undefined
+    ) {
+      // Entitlement discovery intentionally excludes main while a temporary drain
+      // fences its credential. Once every eligible non-main candidate is unavailable,
+      // return main only as a non-mutating sentinel so the caller's atomic claim can
+      // classify maintenance. Do not fall through to the configured-but-ineligible
+      // active account or persist/bind this synthetic selection.
+      return { status: "selected", accountId: MAIN_CODEX_ACCOUNT_ID };
     } else if (
       hasConfiguredPoolAccount(config, active, selectionOptions)
       && !isCodexAccountPaused(config, active)
@@ -1589,11 +2080,30 @@ export function resolveCodexAccountForThreadDetailed(
     // stays the operator's selection and getEffectiveActiveCodexAccountId is what
     // surfaces this to the API and dashboard. An independent quota group must not
     // move the shared cursor at all — its ordering decision is its own.
-    if (!isIndependentCodexQuotaScope(quotaScope)) rememberActiveCodexAccount(config, preempted);
+    if (
+      !preserveSharedSelectionForModelDetour
+      && !isIndependentCodexQuotaScope(quotaScope)
+    ) {
+      rememberActiveCodexAccount(config, preempted);
+    }
     active = preempted;
   }
-  active = applyQuotaAutoSwitch(config, active, now, quotaScope, selectionOptions);
-  active = applyFailureFailover(config, active, now, quotaScope, selectionOptions);
+  active = applyQuotaAutoSwitch(
+    config,
+    active,
+    now,
+    quotaScope,
+    selectionOptions,
+    !preserveSharedSelectionForModelDetour,
+  );
+  active = applyFailureFailover(
+    config,
+    active,
+    now,
+    quotaScope,
+    selectionOptions,
+    !preserveSharedSelectionForModelDetour,
+  );
   if (!isCodexAccountUsable(config, active, selectionOptions)) {
     return hasConfiguredPoolAccount(config, active, selectionOptions)
       ? { status: "selected", accountId: active }
@@ -1605,7 +2115,13 @@ export function resolveCodexAccountForThreadDetailed(
       ? { status: "selected", accountId: active }
       : { status: "none" };
   }
-  if (threadId) bindThreadAffinity(threadId, active, now, quotaScope);
+  if (threadId) {
+    if (preserveExistingModelScopedAffinity) {
+      bindModelDetourAffinity(threadId, active, now, modelId, quotaScope);
+    } else {
+      bindThreadAffinity(threadId, active, now, quotaScope);
+    }
+  }
   return { status: "selected", accountId: active };
 }
 
@@ -1628,6 +2144,16 @@ export function recordCodexUpstreamOutcome(
   const now = meta.now ?? Date.now();
   const outcomeClass = classifyCodexUpstreamOutcome(outcome, meta.denial);
   const quotaScope = codexQuotaScopeForModel(meta.modelId);
+  /*
+   * Spend a stale credential failure BEFORE any branch reads health (#2892 gap 4 review).
+   *
+   * Reader-side spending alone is not enough: the transient and workspace branches derive their new
+   * entry from the current one, so a spent G1 401 would donate its `consecutiveFailures` to G2's
+   * first genuine 503 and drop the tag while doing it. The account then reaches the failover
+   * threshold one failure early, and no later read can tell. Clearing it here means every branch
+   * starts from evidence that still describes a live credential.
+   */
+  dropSpentCredentialFailure(accountId);
   if (outcomeClass === "success") {
     const scopedProbe = meta.probeQuotaScope
       ? scopedHealthFor(accountId, meta.probeQuotaScope)
@@ -1721,13 +2247,48 @@ export function recordCodexUpstreamOutcome(
   if (outcomeClass === "credential") {
     // 401/403 quarantines the account for reauth. That supersedes quota state
     // entirely: a cooldown (and any probe lease) on an unusable account is moot.
+    // Unless the rejected credential is already gone: a stale 401 racing a
+    // replacement would otherwise take the fresh credential out of rotation and
+    // sweep affinities that belong to it (#2887).
+    if (
+      meta.credentialGeneration !== undefined
+      && !isCodexAccountGenerationLive(accountId, meta.credentialGeneration)
+    ) {
+      return;
+    }
+    /*
+     * The pre-check above closes the same-process race, but not a cross-process one (#2892 gap 4).
+     * `isCodexAccountGenerationLive` is an unlocked read while credential writers coordinate under
+     * the mutation lock, and OS preemption needs no `await` — so another process can replace the
+     * credential after this check, or at any point after this whole function returns. No re-read here
+     * can close that: a replacement is always free to land one instruction later.
+     *
+     * Taking the credential lock is not an option either: it runs with `busy_timeout=0`, so acquiring
+     * it per outcome would turn ordinary contention into thrown request-path errors.
+     *
+     * So the evidence is TAGGED with the credential it describes and judged when it is READ. The
+     * health entry carries `credentialFailureGeneration` and the reauth map carries the same
+     * generation; `dropSpentCredentialFailure` and `isAccountNeedsReauth` discard an entry whose
+     * credential is gone. A later transient or quota write replaces the entry along with its tag, and
+     * `preservedCooldownFields` drops the tag explicitly, so this provenance can never be spent
+     * against a failure it did not describe.
+     *
+     * Affinity sweeping needs no tag: an affinity entry already carries a credential generation and
+     * self-invalidates on the next check, and re-adding swept entries would be a worse bug.
+     */
     upstreamHealth.set(accountId, {
       consecutiveFailures: 1,
       lastFailureStatus,
       lastFailureAt: now,
+      // Provenance rides on the entry: only this failure can be spent when its credential dies.
+      ...(meta.credentialGeneration !== undefined
+        ? { credentialFailureGeneration: meta.credentialGeneration }
+        : {}),
     });
     quotaScopedHealth.delete(accountId);
-    markAccountNeedsReauth(accountId, writerGeneration);
+    // The reauth flag carries the same provenance, so a replacement landing after this call cannot
+    // inherit a quarantine that was never about it.
+    markAccountNeedsReauth(accountId, writerGeneration, meta.credentialGeneration);
     clearThreadAccountMapForAccount(accountId);
     return;
   }

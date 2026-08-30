@@ -265,6 +265,34 @@ export function findNativeTemplate(catalog: RawCatalog | null): RawEntry | null 
 }
 
 /**
+ * Template selection, as opposed to catalog VALIDITY.
+ *
+ * `findNativeTemplate` answers "does this look like a real catalog?" and must stay
+ * permissive: four call sites use it as a validity gate, and a catalog holding only a
+ * newly launched native model has to keep passing or sync falls back to stale data.
+ *
+ * This answers a different question — "which row should every routed model inherit
+ * from?" — and must be strict. `deriveEntry` deep-clones the chosen row, so an unknown
+ * bare row carrying `base_instructions` would become the template for every routed
+ * model and hand them its native eligibility metadata. #2813 is the report that made
+ * that concrete: a Reserve-shaped row injected by the client is exactly such a row.
+ *
+ * Returning null is safe and expected; `deriveEntry` falls back to a conservative
+ * synthetic template.
+ */
+export function findSupportedNativeTemplate(catalog: RawCatalog | null): RawEntry | null {
+  return catalog?.models?.find(
+    m => typeof m.slug === "string"
+      && SUPPORTED_NATIVE_OPENAI_SLUGS.has(m.slug)
+      && !m.slug.includes("/")
+      && "base_instructions" in m
+      && m.opencodex_catalog_kind !== CODEX_NATIVE_ALIAS_CATALOG_KIND
+      && m.owned_by !== COMBO_NAMESPACE
+      && !(typeof m.description === "string" && m.description.startsWith("Routed via opencodex → ")),
+  ) ?? null;
+}
+
+/**
  * Native OpenAI slugs that do NOT support the Fast (priority) service tier.
  * Upstream may advertise service_tiers for these models, but the tier is not
  * actually available — strip it so the Codex UI does not offer a dead toggle.
@@ -403,10 +431,22 @@ export function ensureStrictCatalogFields(
   entry: RawEntry,
   options: { preserveExactInputModalities?: boolean; isRouted?: boolean } = {},
 ): RawEntry {
+  if (entry.shell_type === "default" || entry.shell_type === "local" || entry.shell_type === "shell_command") {
+    entry.shell_type = "unified_exec";
+  }
+  if (typeof entry.node_repl_disabled !== "boolean") entry.node_repl_disabled = false;
+  if (typeof entry.node_repl_auto_review_required !== "boolean") entry.node_repl_auto_review_required = false;
+  if (typeof entry.include_plugin_usage_instructions !== "boolean") entry.include_plugin_usage_instructions = false;
+  if (typeof entry.include_apps_usage_instructions !== "boolean") entry.include_apps_usage_instructions = true;
   if (typeof entry.supports_reasoning_summaries !== "boolean") entry.supports_reasoning_summaries = false;
   if (typeof entry.default_reasoning_summary !== "string") entry.default_reasoning_summary = "none";
   if (typeof entry.support_verbosity !== "boolean") entry.support_verbosity = true;
-  if (typeof entry.default_verbosity !== "string") entry.default_verbosity = "low";
+  // A row that has declared it does NOT support verbosity must not also ship a default for the
+  // control it just disowned: Codex seeds its picker from `default_verbosity`, so leaving the
+  // strict-fields fallback in place re-creates the dead toggle the explicit opt-out removed.
+  // Scoped to an explicit `false`, so rows that never declare a capability keep the default.
+  if (entry.support_verbosity === false) delete entry.default_verbosity;
+  else if (typeof entry.default_verbosity !== "string") entry.default_verbosity = "low";
   if (typeof entry.apply_patch_tool_type !== "string") entry.apply_patch_tool_type = "freeform";
   if (!entry.truncation_policy || typeof entry.truncation_policy !== "object" || Array.isArray(entry.truncation_policy)) {
     entry.truncation_policy = { mode: "tokens", limit: 10000 };
@@ -438,6 +478,22 @@ export function ensureStrictCatalogFields(
   }
   if (typeof entry.effective_context_window_percent !== "number") entry.effective_context_window_percent = 95;
   if (typeof entry.comp_hash !== "string") entry.comp_hash = "opencodex";
+  // Routed rows must not carry NATIVE eligibility metadata. `deriveEntry` deep-clones a
+  // native template and deletes a fixed denylist, so these five survive onto rows backed
+  // by unrelated provider credentials — advertising ChatGPT plan eligibility for a model
+  // that never touches a ChatGPT account (#2813).
+  //
+  // This lives here rather than only in `normalizeRoutedCatalogEntry` because that runs on
+  // freshly derived rows only. Degraded-provider and foreign routed rows are preserved
+  // from disk and reach the merge through this function alone, so sanitizing there would
+  // leave already-contaminated rows contaminated forever.
+  if (options.isRouted === true) {
+    entry.supported_in_api = true;
+    delete entry.available_in_plans;
+    delete entry.minimal_client_version;
+    delete entry.availability_nux;
+    delete entry.upgrade;
+  }
   return ensureAutoCompactTokenLimit(entry);
 }
 

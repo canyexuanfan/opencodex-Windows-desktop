@@ -358,8 +358,12 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
   );
   const shadowCallOptions = useMemo(() => {
     const activeNamespaced = new Set(shadowModelOptions.map(option => option.value));
-    return shadowCallModelOptions(models.filter(model => activeNamespaced.has(model.namespaced)), shadowCall?.model);
-  }, [models, shadowCall?.model, shadowModelOptions]);
+    return shadowCallModelOptions(
+      models.filter(model => activeNamespaced.has(model.namespaced)),
+      shadowCall?.model,
+      shadowCall?.sourceModels,
+    );
+  }, [models, shadowCall?.model, shadowCall?.sourceModels, shadowModelOptions]);
 
   const loadShadowCall = useCallback(async () => {
     const bounded = createBoundedFetch(15_000);
@@ -1222,7 +1226,7 @@ export default function Models({ apiBase, restartEpoch = 0 }: { apiBase: string;
             className="row models-provider-toggle"
             onClick={() => toggleCollapse(provider)}
             aria-expanded={!isCollapsed}
-            style={{ flex: 1, border: 0, background: "transparent", padding: 0, color: "inherit", cursor: "pointer", textAlign: "left" }}
+            style={{ flex: "1 1 auto", border: 0, background: "transparent", padding: 0, color: "inherit", cursor: "pointer", textAlign: "left" }}
           >
           <IconChevron style={{ width: 14, height: 14, color: "var(--muted)", transform: isCollapsed ? "none" : "rotate(90deg)", transition: "transform .12s" }} />
           <span className="text-body font-semibold" style={{ whiteSpace: "nowrap" }}>{providerDisplaySlug(provider)}</span>

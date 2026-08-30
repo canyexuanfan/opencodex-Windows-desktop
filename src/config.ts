@@ -61,6 +61,7 @@ import { providerDestinationConfigError } from "./lib/destination-policy";
 import { redactSecretString } from "./lib/redact";
 import { openRouterRoutingConfigError } from "./providers/openrouter-routing";
 import { MODEL_ALIAS_PATTERN } from "./providers/default-aliases";
+import { vercelGatewayRoutingConfigError } from "./providers/vercel-gateway-routing";
 import {
   MODEL_ADAPTER_OVERRIDE_ALLOWED,
   OPENAI_PROVIDER_TIER_VERSION,
@@ -445,6 +446,16 @@ const retryOn429PolicySchema = z.object({
   respectRetryAfter: z.boolean().optional(),
 }).strict();
 
+/**
+ * `transientRetryOn5xx` accepts only these keys. `attempts` is a TOTAL send budget shared by
+ * both retry layers, so the ceiling is deliberately lower than `retryOn429`'s: 10 total sends
+ * against an already-failing provider is already generous.
+ */
+const transientRetryOn5xxPolicySchema = z.object({
+  enabled: z.boolean().optional(),
+  attempts: z.number().int().min(1).max(10).optional(),
+}).strict();
+
 const requestPacingRuleSchema = z.object({
   // Keep the RPM-derived timer within the same one-hour bound as minIntervalMs.
   requestsPerMinute: z.number().min(1 / 60).max(60_000).optional(),
@@ -500,6 +511,7 @@ const providerConfigSchema = z.object({
   responsesPath: z.string().min(1).optional(),
   statelessResponses: z.boolean().optional(),
   requiresAdjacentResponsesToolResults: z.boolean().optional(),
+  annotateEmptyToolOutputs: z.boolean().optional(),
   fastWire: fastWireSchema.nullable().optional(),
   supportsServiceTier: z.boolean().optional(),
   modelSupportsServiceTier: z.record(z.string().min(1), z.boolean()).optional(),
@@ -517,6 +529,7 @@ const providerConfigSchema = z.object({
     .transform(normalizeNonBlankStringArray)
     .optional(),
   retryOn429: retryOn429PolicySchema.optional(),
+  transientRetryOn5xx: transientRetryOn5xxPolicySchema.optional(),
   codexAccountMode: z.enum(["pool", "direct"]).optional(),
   // Validated rather than passed through: this schema ends in `.passthrough()`, so an
   // undeclared key survives verbatim. A misspelled `codexToolMode` therefore used to be
@@ -530,6 +543,7 @@ const providerConfigSchema = z.object({
     repairInvalidIds: z.boolean().optional(),
   }).strict().optional(),
   responsesSnapshotRepair: z.boolean().optional(),
+  xaiResponsesXSearch: z.boolean().optional(),
 }).passthrough();
 
 export { isValidProviderName, hasOwnProvider } from "./config/provider-name";
@@ -930,6 +944,7 @@ const configSchema = z.object({
   // parse: a hand-edited typo must never trip the backup-and-defaults repair
   // path below and wipe providers/pool accounts. Warning emitted in loadConfig.
   streamMode: z.enum(["auto", "legacy-tee", "eager-relay"]).optional().catch(undefined),
+  blockedModelRedirects: z.record(z.string(), z.string()).optional().catch(undefined),
   // Same degrade-don't-reject rationale as the fields above: a hand-edited
   // non-string must not trip the backup-and-defaults repair path. Unset then
   // takes the canonical sideband path (src/server/live.ts normalizeSidebandRoot).
@@ -1028,6 +1043,20 @@ const configSchema = z.object({
             : "openRouterRouting",
         ],
         message: openRouterRoutingError,
+      });
+    }
+    const vercelRoutingError = vercelGatewayRoutingConfigError(provider);
+    if (vercelRoutingError) {
+      ctx.addIssue({
+        code: "custom",
+        path: [
+          "providers",
+          redactSecretString(name),
+          vercelRoutingError.startsWith("modelVercelGatewayRouting")
+            ? "modelVercelGatewayRouting"
+            : "vercelGatewayRouting",
+        ],
+        message: vercelRoutingError,
       });
     }
     if (Object.hasOwn(provider, "virtualModels")) {
@@ -3109,6 +3138,26 @@ export function resolveEnvValue(value: string | undefined): string | undefined {
   return value;
 }
 
+const warnedProxyConfigDiscards = new Set<"proxy" | "noProxy" | "noProxyElements">();
+
+function warnProxyConfigDiscardOnce(kind: "proxy" | "noProxy" | "noProxyElements"): void {
+  if (warnedProxyConfigDiscards.has(kind)) return;
+  warnedProxyConfigDiscards.add(kind);
+  if (kind === "proxy") {
+    console.warn(
+      "⚠️  config.json proxy was discarded because it is not a non-empty resolved string — configured proxy routing is disabled; existing proxy environment variables remain authoritative, otherwise outbound requests use direct egress",
+    );
+  } else if (kind === "noProxy") {
+    console.warn(
+      "⚠️  config.json noProxy was discarded because it is not a string, string array, or resolved environment reference — existing NO_PROXY and loopback bypasses remain",
+    );
+  } else {
+    console.warn(
+      "⚠️  config.json noProxy contains invalid elements — invalid elements were ignored; valid entries, existing NO_PROXY, and loopback bypasses remain",
+    );
+  }
+}
+
 /**
  * Mirror `config.proxy` into HTTP(S)_PROXY env vars so Bun's native fetch routes every outbound
  * provider call through the proxy — no per-callsite changes (verified: Bun honors these plus
@@ -3117,8 +3166,18 @@ export function resolveEnvValue(value: string | undefined): string | undefined {
  * that makes outbound provider requests (server start, catalog sync).
  */
 export function applyProxyEnv(config: OcxConfig): void {
-  const proxy = resolveEnvValue(config.proxy);
-  if (!proxy) return;
+  // `proxy` and `noProxy` are not declared in the top-level schema, which ends in
+  // `.passthrough()`, so whatever is on disk arrives here verbatim. A non-string value
+  // reached string-only methods and threw out of this function, and it runs once per
+  // process entry point — the failure was a startup crash, not a degraded proxy. Ignore
+  // malformed values with a privacy-safe warning instead: they cannot express a routing
+  // intent, and refusing to start is a worse answer than starting without them.
+  const rawProxy = config.proxy;
+  const proxy = typeof rawProxy === "string" ? resolveEnvValue(rawProxy) : undefined;
+  if (!proxy) {
+    if (rawProxy !== undefined) warnProxyConfigDiscardOnce("proxy");
+    return;
+  }
   if (!process.env.HTTP_PROXY?.trim() && !process.env.http_proxy?.trim()) process.env.HTTP_PROXY = proxy;
   if (!process.env.HTTPS_PROXY?.trim() && !process.env.https_proxy?.trim()) process.env.HTTPS_PROXY = proxy;
   const existing = process.env.NO_PROXY ?? process.env.no_proxy ?? "";
@@ -3127,7 +3186,20 @@ export function applyProxyEnv(config: OcxConfig): void {
   // Configured entries first, then loopback: loopback is unconditional, so appending it last
   // keeps it present even when the operator lists a loopback host themselves.
   const raw = config.noProxy;
-  const configured = (Array.isArray(raw) ? raw : (resolveEnvValue(raw) ?? "").split(","))
+  let configuredEntries: string[];
+  if (Array.isArray(raw)) {
+    // One unusable element must not discard the operator's other entries.
+    if (raw.some(entry => typeof entry !== "string")) warnProxyConfigDiscardOnce("noProxyElements");
+    configuredEntries = raw.filter((entry): entry is string => typeof entry === "string");
+  } else if (typeof raw === "string") {
+    const resolved = resolveEnvValue(raw);
+    if (raw && resolved === undefined) warnProxyConfigDiscardOnce("noProxy");
+    configuredEntries = (resolved ?? "").split(",");
+  } else {
+    if (raw !== undefined) warnProxyConfigDiscardOnce("noProxy");
+    configuredEntries = [];
+  }
+  const configured = configuredEntries
     .map(entry => entry.trim())
     .filter(Boolean);
   for (const host of [...configured, "localhost", "127.0.0.1", "::1", "[::1]"]) {
