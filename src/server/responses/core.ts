@@ -86,7 +86,7 @@ import {
 import { injectionDebugLog } from "../../lib/injection-debug-log";
 import { resolveClientRetryAfter } from "../../lib/retry-after";
 import { enrichOpenCodeZenRateLimitMessage } from "../../providers/opencode-zen-rate-limit";
-import { modelInList, namespacedToolName } from "../../types";
+import { CODE_MODE_EXEC_TOOL_NAME, modelInList, namespacedToolName } from "../../types";
 import type {
   AdapterEvent,
   OcxConfig,
@@ -351,6 +351,7 @@ import { createRoutedToolSearchRestoreBlockRewrite } from "../responses-tool-sea
 import {
   createRoutedNamespaceCallRestoreRewrite,
   NamespaceToolCollisionError,
+  restoreRoutedNamespaceCalls,
   restoreRoutedNamespaceCallsInJson,
   type RoutedNamespaceToolAliases,
 } from "../../responses/namespace-tool-compat";
@@ -3634,6 +3635,23 @@ async function handleResponsesInner(
     let outboundRequestBody: Record<string, unknown> | undefined;
     const declaredWireToolNames = new Set<string>();
     const declaredNamelessClientCallTypes = new Set<string>();
+    // `buildToolBridgeMaps` creates a bare alias only when the caller selected exactly one
+    // namespaced tool through a bare tool_choice. Restore that request-bounded identity before
+    // authorization checks instead of admitting the bare name into the declared set: for `exec`,
+    // the latter would also authorize the unrelated code-mode helper names.
+    const authorizedBareNamespaceToolAliases: RoutedNamespaceToolAliases = new Map(
+      [...toolBridgeMaps.toolNsMap].flatMap(([alias, identity]) =>
+        alias === identity.name
+          ? [[alias, {
+              namespace: identity.namespace,
+              name: identity.name,
+              kind: identity.freeform ? "custom" as const : "function" as const,
+            }] as const]
+          : []
+      ),
+    );
+    const restoreAuthorizedBareNamespaceToolCalls = (value: unknown): unknown =>
+      restoreRoutedNamespaceCalls(value, authorizedBareNamespaceToolAliases).value;
     let undeclaredToolGuardActive = false;
     const refreshUndeclaredToolGuard = (builtRequest: AdapterRequest): void => {
       outboundRequestBody = parseOutboundRequestBody(builtRequest.body);
@@ -3677,7 +3695,19 @@ async function handleResponsesInner(
       // however, the parsed maps also contain historical catalog entries, so only the bounded
       // current-turn wire snapshot above may authorize a call.
       if (replayedInputPrefixLength === 0) {
-        for (const name of toolBridgeMaps.declaredToolNames) declaredWireToolNames.add(name);
+        for (const name of toolBridgeMaps.declaredToolNames) {
+          // `buildToolBridgeMaps` also aliases a namespaced tool under its bare name when the
+          // caller's `tool_choice` selected it unambiguously, which the bridge needs to route the
+          // call back. For `exec` alone that alias would also switch on nested-helper
+          // normalization and re-authorize `exec_command`/`shell_command`/`apply_patch`, so it is
+          // admitted here only when the caller's own catalog declared a bare `exec`. Selecting an
+          // MCP `exec` is not a declaration of the code-mode shell tool.
+          if (
+            name === CODE_MODE_EXEC_TOOL_NAME
+            && !clientDeclaredWireToolNames.has(CODE_MODE_EXEC_TOOL_NAME)
+          ) continue;
+          declaredWireToolNames.add(name);
+        }
       }
       undeclaredToolGuardActive = (
         declaredWireToolNames.size > 0
@@ -3703,7 +3733,7 @@ async function handleResponsesInner(
       // state for exactly the passthrough traffic the guard deliberately stands down for.
       if (!undeclaredToolGuardActive || inspectionSawUndeclaredTool) return;
       if (undeclaredToolCallName(
-        payload,
+        restoreAuthorizedBareNamespaceToolCalls(payload),
         declaredWireToolNames,
         declaredNamelessClientCallTypes,
         providerExecutedCallTypes,
@@ -3715,7 +3745,7 @@ async function handleResponsesInner(
       ? (response: { id?: unknown; output?: unknown; status?: unknown }) => {
         if (inspectionSawUndeclaredTool) return;
         const restoredResponse = restoreRoutedCustomCalls(
-          response,
+          restoreAuthorizedBareNamespaceToolCalls(response),
           routedCustomToolNames,
           routedCustomToolRepairNames,
           declaredWireToolNames,
@@ -4449,6 +4479,9 @@ async function handleResponsesInner(
         routedNamespaceToolAliases.size > 0
           ? createRoutedNamespaceCallRestoreRewrite(routedNamespaceToolAliases)
           : undefined,
+        authorizedBareNamespaceToolAliases.size > 0
+          ? createRoutedNamespaceCallRestoreRewrite(authorizedBareNamespaceToolAliases)
+          : undefined,
         hasResponsesItemIdRepair(repairConfig)
           ? createResponsesItemIdPayloadRewrite(repairConfig!, translatorBudget)
           : undefined,
@@ -4678,8 +4711,12 @@ async function handleResponsesInner(
           restoreImageGenCallsInJson(text, imageGenCallAliases),
           routedNamespaceToolAliases,
         );
-        const restored = restoreRoutedCustomCallsInJson(
+        const restoredAuthorizedBareNamespace = restoreRoutedNamespaceCallsInJson(
           restoredNamespace,
+          authorizedBareNamespaceToolAliases,
+        );
+        const restored = restoreRoutedCustomCallsInJson(
+          restoredAuthorizedBareNamespace,
           routedCustomToolNames,
           routedCustomToolRepairNames,
           declaredWireToolNames,
