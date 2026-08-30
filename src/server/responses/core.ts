@@ -6144,7 +6144,15 @@ async function handleResponsesInner(
           {
             abortSignal: upstream.signal,
             label: safeHostLabel(builtContinuationRequest.url),
-            ...(continuationTransientPolicy ? { attempts: continuationTransientPolicy.attempts } : {}),
+            // Same request-scoped budget as the initial send and the 429/rotation refetches:
+            // a terminal-guard continuation is another leg of ONE request, so handing it a
+            // fresh `attempts` would let one request exceed the configured total-send ceiling.
+            ...(continuationTransientPolicy
+              ? {
+                attempts: remainingTransientSendBudget(continuationTransientPolicy.attempts),
+                onSendsConsumed: noteTransientSends,
+              }
+              : {}),
           },
           );
       } finally {
