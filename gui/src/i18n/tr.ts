@@ -1715,7 +1715,8 @@ export const tr: Record<TKey, string> = {
   "codexAuth.requestUserInputLoadFailed": "Özellik okunamadı.",
 
   "anthropicPool.title": "Claude hesap havuzu (deneysel)",
-  "anthropicPool.enabledDesc": "Kullanım %{threshold} seviyesine ulaştığında sonraki anahtara geçin.",
+  "anthropicPool.enabledDesc": "429 alındığında hesabı bekletir ve başka bir hesaba geçer. Yeni oturumlar {window} değerine göre %{threshold} altında kullanıma sahip hesapları tercih eder.",
+  "anthropicPool.enabledNoProactiveDesc": "429 alındığında hesabı bekletir ve başka bir hesaba geçer. Eşik 0 iken kullanıma dayalı öngörülü geçiş kapalıdır, ancak yeni oturum seçimi ve 429 kurtarma hâlâ {window} penceresini kullanır.",
   "anthropicPool.disabledDesc": "Yalnızca aktif Claude hesabını kullanır.",
   "anthropicPool.experimentalWarning": "Deneysel: Claude OAuth hesaplarını döndürmek desteklenmeyen bir kullanım yoludur ve Anthropic hesap kısıtlamalarına veya hesabın askıya alınmasına yol açabilir. Aynı kuruluşu paylaşan hesaplar oran limitlerini paylaşır ve döndürmeden ek kapasite kazanmaz. Riskleri anlamıyorsanız kapalı tutun.",
   "anthropicPool.needTwoAccounts": "Havuzu etkinleştirmeden önce en az iki Claude OAuth hesabı ekleyin.",
@@ -1745,6 +1746,14 @@ export const tr: Record<TKey, string> = {
   "accountPool.stickyLimitInvalid": "1 ile 100 arasında bir tam sayı girin",
   "accountPool.strategyLoadFailed": "Strateji yüklenemedi.",
   "accountPool.strategyUpdateFailed": "Strateji kaydedilemedi.",
+
+  "accountPool.quotaWindow": "Kota penceresi",
+  "accountPool.quotaWindowDesc": "Kotaya dayalı yeni oturum seçimi, İlk doldurma eşik kontrolleri ve uygun 429 yedekleri için hangi önbelleğe alınmış kullanım çubuğunun kullanılacağını belirler.",
+  "accountPool.quotaWindowFiveHour": "5 saatlik çubuk",
+  "accountPool.quotaWindowWeekly": "Haftalık çubuk",
+  "accountPool.quotaWindowMaxUtilization": "Daha yüksek çubuk",
+  "accountPool.quotaWindowHint": "Haftalık çubuk, başka uygun hesap kaldığı sürece 5 saatlik çubuğu tükenmiş hesapları atlar; hiçbiri kalmazsa bu hesaplara geri döner. Eşitlikte 5 saatlik kullanımı daha düşük olan seçilir; hesap başına haftalık çubuklar ancak Sağlayıcılar sayfası sorguladıktan sonra bilinir.",
+  "accountPool.quotaWindowInert": "Kullanım çubuğunu yalnızca Kota ya da eşiği 0'ın üzerinde olan İlk doldurma puanlar; bu yüzden geçerli rotasyon stratejisi için bu ayar hiçbir şeyi değiştirmez.",
 
   "accountPool.priority": "Seçim sırası",
   "accountPool.priorityAria": "Bu hesap için seçim sırası",

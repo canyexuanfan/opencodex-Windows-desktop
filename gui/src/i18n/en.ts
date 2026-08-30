@@ -1724,7 +1724,8 @@ export const en = {
   "codexAuth.catalogRefreshPending": "The change was saved, but the Codex model catalog refresh is pending. Run ocx sync to retry.",
 
   "anthropicPool.title": "Claude account pool (experimental)",
-  "anthropicPool.enabledDesc": "On 429, cools the account and fails over. New sessions prefer usage under {threshold}% (5-hour bar).",
+  "anthropicPool.enabledDesc": "On 429, cools the account and fails over. New sessions prefer usage under {threshold}% ({window}).",
+  "anthropicPool.enabledNoProactiveDesc": "On 429, cools the account and fails over. Proactive usage-based switching is off at threshold 0, but new-session selection and 429 recovery still use the {window} window.",
   "anthropicPool.disabledDesc": "Uses only the active Claude account. Enable only if you accept experimental routing.",
   "anthropicPool.experimentalWarning": "Experimental and not battle-tested. Anthropic may restrict accounts that look like automated multi-account rotation. Same organization can share quota — pooling those accounts will not help. Keep this off unless you understand the risk.",
   "anthropicPool.needTwoAccounts": "Add at least two Claude OAuth accounts before enabling the pool.",
@@ -1754,6 +1755,17 @@ export const en = {
   "accountPool.stickyLimitInvalid": "Enter a whole number from 1 to 100",
   "accountPool.strategyLoadFailed": "Rotation strategy could not be loaded.",
   "accountPool.strategyUpdateFailed": "Rotation strategy could not be saved.",
+
+  // The three window labels double as the {window} name inlined into
+  // anthropicPool.enabledDesc, so each locale owns its own inline casing instead of the
+  // call site lowercasing a translated string (which breaks for Turkish and CJK).
+  "accountPool.quotaWindow": "Quota window",
+  "accountPool.quotaWindowDesc": "Which cached usage bar controls quota-based new-session selection, fill-first threshold checks, and eligible 429 replacements.",
+  "accountPool.quotaWindowFiveHour": "5-hour bar",
+  "accountPool.quotaWindowWeekly": "Weekly bar",
+  "accountPool.quotaWindowMaxUtilization": "Higher bar",
+  "accountPool.quotaWindowHint": "Weekly skips accounts whose 5-hour bar is exhausted while another eligible account remains, but falls back to them when none do. Weekly ties prefer lower 5-hour usage; per-account weekly bars are only known once the Providers page has polled them.",
+  "accountPool.quotaWindowInert": "Only quota — or fill-first above a 0 threshold — scores a usage bar, so this setting changes nothing for the current rotation strategy.",
 
   // Selection order. User-visible copy stays in sequence words (first/earlier/later/last);
   // only identifiers use the internal "priority" name.
