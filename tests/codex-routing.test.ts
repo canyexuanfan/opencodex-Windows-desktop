@@ -466,9 +466,34 @@ describe("codex routing", () => {
     expect(isAccountNeedsReauth("a")).toBe(false);
     // The failure is still recorded so routing can prefer a healthier account.
     expect(getCodexUpstreamHealth("a")).toMatchObject({ consecutiveFailures: 1, lastFailureStatus: 403 });
-    // Credential quarantine sweeps thread affinity because reauth is account-wide;
-    // a workspace denial is not account-wide, so the existing binding survives.
-    expect(resolveCodexAccountForThread("workspace-affinity", config)).toBe("a");
+    // The denial soft-avoids the account so turns stop landing on it while it is
+    // denied. The affinity map is not swept (no quarantine-style purge), but
+    // resolution now re-binds the pre-bound thread to a healthy account through
+    // the ordinary selectability path — the same route a pause or quota cooldown
+    // takes — so an existing conversation escapes the denied account too.
+    expect(isCodexAccountSoftAvoided("a")).toBe(true);
+    expect(resolveCodexAccountForThread("workspace-affinity", config)).toBe("b");
+
+    // Recovery is the normal success path: one healthy terminal clears the avoid.
+    recordCodexUpstreamOutcome(config, "a", 200);
+    expect(isCodexAccountSoftAvoided("a")).toBe(false);
+    expect(getCodexUpstreamHealth("a")).toBeNull();
+  });
+  test("a workspace denial renews the soft-avoid without dropping preserved health fields", () => {
+    const config = makeConfig();
+    updateAccountQuota("a", 10);
+    updateAccountQuota("b", 20);
+
+    recordCodexUpstreamOutcome(config, "a", 403, { denial: "workspace" });
+    const firstAvoidUntil = getCodexUpstreamHealth("a")?.softAvoidUntil ?? 0;
+    expect(firstAvoidUntil).toBeGreaterThan(0);
+
+    // A repeated denial extends the window instead of resetting health to a bare
+    // failure counter, so the account keeps backing off instead of absorbing turns.
+    recordCodexUpstreamOutcome(config, "a", 403, { denial: "workspace" });
+    const health = getCodexUpstreamHealth("a");
+    expect(health?.consecutiveFailures).toBe(2);
+    expect(health?.softAvoidUntil ?? 0).toBeGreaterThanOrEqual(firstAvoidUntil);
   });
   test("403 credential outcome quarantines the account under the conservative policy", () => {
     const config = makeConfig();

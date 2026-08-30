@@ -103,6 +103,15 @@ export const CODEX_QUOTA_PROBE_INTERVAL_MS = 5 * 60_000;
 export const CODEX_FAILURE_WINDOW_MS = 5 * 60_000;
 /** How long a transient failure keeps the account out of pool selection. */
 export const CODEX_TRANSIENT_SOFT_AVOID_MS = 30_000;
+/**
+ * How long a workspace-denial 403 keeps the account out of pool selection.
+ * The credential stays valid (#1789 — no reauth marking, no affinity sweep), but
+ * the failure counter alone only acts through the failover threshold, so new turns
+ * kept landing on an account whose workspace grant cannot serve them. A bounded,
+ * self-expiring avoid closes that gap; expiry makes the account retryable, and the
+ * normal success path clears it once the grant is fixed.
+ */
+export const CODEX_WORKSPACE_SOFT_AVOID_MS = 10 * 60_000;
 const CODEX_TRANSIENT_SOFT_AVOID_ESCALATION_MS = [
   CODEX_TRANSIENT_SOFT_AVOID_MS,
   2 * 60_000,
@@ -1699,13 +1708,18 @@ export function recordCodexUpstreamOutcome(
   const lastFailureStatus = typeof outcome === "number" ? outcome : 0;
   if (outcomeClass === "workspace") {
     // The credential is valid; this account just cannot reach this workspace (#1789).
-    // Record the failure so routing stops preferring it, but do not mark it for
+    // Soft-avoid the account so live selection skips it, but do not mark it for
     // reauthentication and do not sweep its thread affinities: telling the user to
-    // re-login is wrong advice that cannot fix a workspace grant.
+    // re-login is wrong advice that cannot fix a workspace grant. Merging into the
+    // existing health (instead of a fresh object) preserves any owned probe lease,
+    // and the success path clears the avoid once the grant is fixed.
+    const current = upstreamHealth.get(accountId);
     upstreamHealth.set(accountId, {
-      consecutiveFailures: (upstreamHealth.get(accountId)?.consecutiveFailures ?? 0) + 1,
+      ...current,
+      consecutiveFailures: (current?.consecutiveFailures ?? 0) + 1,
       lastFailureStatus,
       lastFailureAt: now,
+      softAvoidUntil: Math.max(current?.softAvoidUntil ?? 0, now + CODEX_WORKSPACE_SOFT_AVOID_MS),
     });
     return;
   }
