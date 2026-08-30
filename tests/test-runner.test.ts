@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, posix, win32 } from "node:path";
 import {
   changedSelectionFailure,
   createIsolatedTestEnvironment,
+  ensureGuiDependencies,
   inspectChangedRun,
   resolveBunTestArgs,
   resolveBunTestPlan,
@@ -585,5 +586,89 @@ describe("bun test user lock", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("ensureGuiDependencies", () => {
+  // `gui` is not a workspace, so a root `bun install` leaves gui/node_modules absent and the
+  // twenty-five tests importing gui/src die on `Cannot find package 'react'` — an "Unhandled error
+  // between tests" that names no test. CI already installs them; this closes the local gap.
+  const paths = (present: string[]) => {
+    const normalized = present.map(path => path.replaceAll("\\", "/"));
+    return (path: string) => normalized.some(entry => path.replaceAll("\\", "/").endsWith(entry));
+  };
+
+  test("mocked paths match POSIX and Windows separators", () => {
+    const exists = paths(["gui/package.json"]);
+    expect(exists("/repo/gui/package.json")).toBe(true);
+    expect(exists("C:\\repo\\gui\\package.json")).toBe(true);
+  });
+
+  test("installs when gui/package.json exists but node_modules does not", () => {
+    const installed: string[] = [];
+    const logged: string[] = [];
+    const result = ensureGuiDependencies({
+      cwd: "/repo",
+      exists: paths(["gui/package.json"]),
+      install: dir => { installed.push(dir); return { ok: true, detail: "" }; },
+      log: message => logged.push(message),
+    });
+
+    expect(result).toEqual({ kind: "installed" });
+    expect(installed).toEqual([join("/repo", "gui")]);
+    expect(logged[0]).toContain("gui dependencies are missing or incomplete");
+  });
+
+  test("retries when node_modules exists without the required dependency", () => {
+    let installs = 0;
+    const result = ensureGuiDependencies({
+      cwd: "/repo",
+      exists: paths(["gui/package.json", "gui/node_modules"]),
+      install: () => { installs += 1; return { ok: true, detail: "" }; },
+      log: () => {},
+    });
+
+    expect(result).toEqual({ kind: "installed" });
+    expect(installs).toBe(1);
+  });
+
+  test("does nothing when the required dependency is already there", () => {
+    let installs = 0;
+    const result = ensureGuiDependencies({
+      cwd: "/repo",
+      exists: paths(["gui/package.json", "gui/node_modules/react/package.json"]),
+      install: () => { installs += 1; return { ok: true, detail: "" }; },
+      log: () => {},
+    });
+
+    expect(result).toEqual({ kind: "present" });
+    expect(installs).toBe(0);
+  });
+
+  // A published install tree has no gui/ at all; the runner must not try to install there.
+  test("does nothing when there is no gui package", () => {
+    let installs = 0;
+    const result = ensureGuiDependencies({
+      cwd: "/repo",
+      exists: () => false,
+      install: () => { installs += 1; return { ok: true, detail: "" }; },
+      log: () => {},
+    });
+
+    expect(result).toEqual({ kind: "absent" });
+    expect(installs).toBe(0);
+  });
+
+  // Offline or a lockfile drift has to surface as its own message, not as twenty-five
+  // unexplained React failures once the lanes start.
+  test("reports the failure detail instead of continuing", () => {
+    const result = ensureGuiDependencies({
+      cwd: "/repo",
+      exists: paths(["gui/package.json"]),
+      install: () => ({ ok: false, detail: "lockfile had changes" }),
+      log: () => {},
+    });
+
+    expect(result).toEqual({ kind: "failed", detail: "lockfile had changes" });
   });
 });
