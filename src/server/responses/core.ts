@@ -227,6 +227,7 @@ import {
   rateLimitRetryDelayMs,
   rateLimitRetryPolicyFor,
   rotateProviderTransportOn429,
+  transientRetryPolicyFor,
 } from "../../providers/key-failover";
 import { shouldAttemptImageTierRetry } from "../image-retry";
 import { isXaiResponsesDestination, resolveProviderTransport } from "../../providers/xai-transport";
@@ -5504,6 +5505,13 @@ async function handleResponsesInner(
       { headers: { "Content-Type": "application/json" } },
     );
   }
+  // One request-scoped transient-retry budget owner, declared here so BOTH the initial send
+  // and the later recovery refetches (429, key/account rotation, OAuth replay) share it. A
+  // per-leg budget would let a request that recovers several times multiply upstream load.
+  let transientSendsUsed = 0;
+  const noteTransientSends = (used: number): void => { transientSendsUsed += Math.max(0, used); };
+  const remainingTransientSendBudget = (budget: number): number =>
+    Math.max(1, budget - transientSendsUsed);
   try {
     initialRequest = await activeAdapter.buildRequest(parsed, { headers: selectedForwardHeaders, translatorBudget });
     refreshRoutedNamespaceToolAliases(initialRequest);
@@ -5558,7 +5566,13 @@ async function handleResponsesInner(
       // direct Google AI Studio only (Vertex/Antigravity use fetchResponse above). Other
       // adapters keep reset-only retry so combo failover still hops on the first 5xx
       // instead of burning ~1.2s of same-target retries per hop.
-      const fetchWithRetryPolicy = route.provider.adapter === "google" ? fetchWithTransientRetry : fetchWithResetRetry;
+      // #2643: an opted-in key-auth openai-chat provider also gets transient-5xx retry. The
+      // legacy direct-Google exception is preserved exactly; every other adapter still keeps
+      // reset-only semantics so combo failover hops on the first 5xx.
+      const transientPolicy = transientRetryPolicyFor(route.provider);
+      const fetchWithRetryPolicy = (route.provider.adapter === "google" || transientPolicy)
+        ? fetchWithTransientRetry
+        : fetchWithResetRetry;
       upstreamResponse = await fetchWithRetryPolicy(
         recovery => {
           noteAttemptSend(logCtx.activeAttempt, inputTokenEstimate, recovery);
@@ -5572,7 +5586,13 @@ async function handleResponsesInner(
               modelId: route.modelId,
             }));
         },
-        { abortSignal: upstream.signal, label: safeHostLabel(builtInitialRequest.url) },
+        {
+          abortSignal: upstream.signal,
+          label: safeHostLabel(builtInitialRequest.url),
+          ...(transientPolicy
+            ? { attempts: transientPolicy.attempts, onSendsConsumed: noteTransientSends }
+            : {}),
+        },
       );
     }
   } catch (err) {
@@ -5661,13 +5681,36 @@ async function handleResponsesInner(
               }),
             });
           }
-          return await fetchWithHeaderTimeout(retryRequest.url, {
-            method: retryRequest.method, headers: retryRequest.headers, body: retryRequest.body,
-          }, upstream.signal, connectMs, parsed.stream,
-            providerFetch(route.provider, options.codexWsRuntimeIdentity, {
-              providerName: route.providerName,
-              modelId: route.modelId,
-            }));
+          // #2643 review: this leg used to call fetchWithHeaderTimeout directly, so an
+          // opted-in provider's transient-5xx policy applied to the initial send and to
+          // native chat but was silently bypassed here — a 429 that recovered into a
+          // retryable 503 got no retry on the Responses path. Route it through the same
+          // selection, and pass what is LEFT of the request-scoped budget rather than a
+          // fresh one, so a recovery loop cannot multiply total upstream sends.
+          const refetchTransientPolicy = transientRetryPolicyFor(route.provider);
+          const refetchWithPolicy = (route.provider.adapter === "google" || refetchTransientPolicy)
+            ? fetchWithTransientRetry
+            : fetchWithResetRetry;
+          return await refetchWithPolicy(
+            recoveryKind => fetchWithHeaderTimeout(retryRequest.url,
+              applyUpstreamRecoveryInit({
+                method: retryRequest.method, headers: retryRequest.headers, body: retryRequest.body,
+              }, recoveryKind), upstream.signal, connectMs, parsed.stream,
+              providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+                providerName: route.providerName,
+                modelId: route.modelId,
+              })),
+            {
+              abortSignal: upstream.signal,
+              label: safeHostLabel(retryRequest.url),
+              ...(refetchTransientPolicy
+                ? {
+                  attempts: remainingTransientSendBudget(refetchTransientPolicy.attempts),
+                  onSendsConsumed: noteTransientSends,
+                }
+                : {}),
+            },
+          );
         } finally {
           retryRequest.releaseBodyObservation?.();
         }
@@ -6075,7 +6118,10 @@ async function handleResponsesInner(
         }
         // Same #1851 scope guard as the initial send: transient-5xx retry only for direct
         // Google AI Studio; every other adapter keeps reset-only semantics here.
-        const fetchContinuationWithRetryPolicy = route.provider.adapter === "google" ? fetchWithTransientRetry : fetchWithResetRetry;
+        const continuationTransientPolicy = transientRetryPolicyFor(route.provider);
+        const fetchContinuationWithRetryPolicy = (route.provider.adapter === "google" || continuationTransientPolicy)
+          ? fetchWithTransientRetry
+          : fetchWithResetRetry;
         return await fetchContinuationWithRetryPolicy(
           recovery => {
             noteAttemptSend(logCtx.activeAttempt, continuationEstimate, recovery ?? replayKind);
@@ -6095,7 +6141,11 @@ async function handleResponsesInner(
               }),
             );
           },
-          { abortSignal: upstream.signal, label: safeHostLabel(builtContinuationRequest.url) },
+          {
+            abortSignal: upstream.signal,
+            label: safeHostLabel(builtContinuationRequest.url),
+            ...(continuationTransientPolicy ? { attempts: continuationTransientPolicy.attempts } : {}),
+          },
           );
       } finally {
         builtContinuationRequest.releaseBodyObservation?.();
