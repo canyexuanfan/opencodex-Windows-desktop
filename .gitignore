@@ -74,3 +74,8 @@ desktop/*.exe
 # `git add` three separate times and reached `dev` once — see
 # tests/repo-hygiene.test.ts, which fails if any path here becomes tracked again.
 go/
+
+# 内部过程文件：仅本地留存，不进入公开树（见 questions/GitHub公开树资源缺失排查指南.md）
+/questions/
+/reference/
+/todolist.md
